@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../lib/api'
-import { clearToken, getExpiresAt } from '../lib/auth'
+import { clearSession, getExpiresAt } from '../lib/auth'
 import { useNotify } from '../lib/NotifyContext'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 import {
@@ -59,15 +59,27 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
     void loadSystem()
   }, [loadSystem])
 
-  const sessionHint = useMemo(() => {
-    const exp = getExpiresAt()
-    if (exp == null) return ''
-    const ms = exp * 1000 - Date.now()
-    if (ms <= 0) return 'Session expired'
-    const h = Math.floor(ms / 3_600_000)
-    if (h >= 24) return `~${Math.ceil(h / 24)}d left`
-    if (h > 0) return `~${h}h left`
-    return `~${Math.max(1, Math.floor(ms / 60_000))}m left`
+  const [sessionHint, setSessionHint] = useState('')
+  useEffect(() => {
+    const tick = () => {
+      const exp = getExpiresAt()
+      if (exp == null) {
+        setSessionHint('')
+        return
+      }
+      const ms = exp * 1000 - Date.now()
+      if (ms <= 0) {
+        setSessionHint('Session expired')
+        return
+      }
+      const h = Math.floor(ms / 3_600_000)
+      if (h >= 24) setSessionHint(`~${Math.ceil(h / 24)}d left`)
+      else if (h > 0) setSessionHint(`~${h}h left`)
+      else setSessionHint(`~${Math.max(1, Math.floor(ms / 60_000))}m left`)
+    }
+    tick()
+    const t = setInterval(tick, 30_000)
+    return () => clearInterval(t)
   }, [])
 
   function chooseTheme(mode: ThemeMode) {
@@ -88,7 +100,7 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
   }
 
   function doSignOut() {
-    clearToken()
+    clearSession('signed_out')
     setConfirmSignOut(false)
     onSignedOut()
   }

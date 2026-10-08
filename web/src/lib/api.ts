@@ -1,4 +1,4 @@
-import { clearToken, getToken } from './auth'
+import { clearSession, getToken, type AuthLostReason } from './auth'
 import type { FsEntry, NotificationItem, Project, Session, TraceLine } from './types'
 
 /**
@@ -44,9 +44,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         typeof err.detail === 'object' && err.detail && 'code' in err.detail
           ? String((err.detail as { code?: string }).code || '')
           : ''
-      if (code === 'expired' || code === 'invalid_token' || code === 'missing_token') {
-        clearToken()
+      const reasons: Record<string, AuthLostReason> = {
+        expired: 'expired',
+        invalid_token: 'unauthorized',
+        missing_token: 'unauthorized',
+        stale_session: 'stale_session',
+        invalid_kind: 'unauthorized',
+        share_token: 'unauthorized',
       }
+      const reason = reasons[code]
+      if (reason) clearSession(reason)
     }
     throw err
   }

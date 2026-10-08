@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { api } from '../lib/api'
-import { setSession } from '../lib/auth'
+import { setSession, takeAuthLostReason } from '../lib/auth'
 import { isLocalHostPage } from '../lib/types'
+
+const AUTH_REASON_COPY: Record<string, string> = {
+  expired: 'Session expired — sign in again',
+  signed_out: 'Signed out',
+  unauthorized: 'Session ended — sign in again',
+  stale_session: 'Password changed — sign in again',
+}
 
 function formatWait(sec: number): string {
   if (sec >= 86400) return `${Math.ceil(sec / 86400)}d`
@@ -47,10 +54,16 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
   const [confirm, setConfirm] = useState('')
   const [show, setShow] = useState(false)
   const [error, setError] = useState('')
+  const [banner, setBanner] = useState('')
   const [retryAfter, setRetryAfter] = useState(0)
   const [autoStatus, setAutoStatus] = useState('')
   const [canBootstrap, setCanBootstrap] = useState<boolean | null>(null)
   const local = isLocalHostPage()
+
+  useEffect(() => {
+    const reason = takeAuthLostReason()
+    if (reason && AUTH_REASON_COPY[reason]) setBanner(AUTH_REASON_COPY[reason])
+  }, [])
 
   useEffect(() => {
     if (retryAfter <= 0) return
@@ -174,8 +187,13 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
         {autoStatus && (
           <p className="mt-5 text-sm font-mono text-sky animate-pulse">{autoStatus}</p>
         )}
+        {banner && !autoStatus && (
+          <p className="mt-5 text-sm font-mono text-warn" role="status">
+            {banner}
+          </p>
+        )}
 
-        <form onSubmit={submit} className="mt-8 hb-surface p-5 sm:p-6 space-y-4">
+        <form onSubmit={submit} className="mt-8 hb-login-form hb-surface p-5 sm:p-6 space-y-4">
           <label className="block space-y-1.5">
             <span className="hb-label">{setupMode ? 'New password' : 'Password'}</span>
             <div className="relative">

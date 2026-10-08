@@ -6,7 +6,9 @@ export type ChatMsg = {
   id: string
   role: ChatRole
   text?: string
-  tool?: { name: string; status: string; detail?: string }
+  /** True while this bubble is still receiving streamed tokens. */
+  streaming?: boolean
+  tool?: { name: string; status: string; detail?: string; callId?: string }
   file?: { path: string; action: string }
 }
 

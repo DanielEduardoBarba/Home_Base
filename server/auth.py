@@ -149,11 +149,23 @@ def validate_password_strength(password: str) -> str:
     return pw
 
 
+def auth_epoch() -> int:
+    """Monotonic counter bumped whenever the password hash is rewritten."""
+    try:
+        return int(_load_auth().get("authEpoch", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _write_password_hash(password: str, *, initialized: bool) -> None:
     pw = validate_password_strength(password)
     salt = secrets.token_bytes(16)
     digest = _hash_password(pw, salt)
     prev = _load_auth()
+    try:
+        prev_epoch = int(prev.get("authEpoch", 0) or 0)
+    except (TypeError, ValueError):
+        prev_epoch = 0
     _save_auth(
         {
             **{k: v for k, v in prev.items() if k not in {"salt", "passwordHash"}},
@@ -164,6 +176,7 @@ def _write_password_hash(password: str, *, initialized: bool) -> None:
             "salt": _b64e(salt),
             "passwordHash": _b64e(digest),
             "initialized": bool(initialized),
+            "authEpoch": prev_epoch + 1,
             "updatedAt": int(time.time()),
         }
     )
@@ -215,6 +228,7 @@ def issue_jwt(*, subject: str = "homebase", kind: str = "session", ttl: int = JW
         "exp": exp,
         "kind": kind,
         "jti": secrets.token_hex(8),
+        "ae": auth_epoch(),
     }
     token = jwt.encode(payload, jwt_secret(), algorithm=JWT_ALG)
     if isinstance(token, bytes):
@@ -373,6 +387,18 @@ def verify_access_token(token: Optional[str], *, ip: str = "unknown") -> dict[st
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"message": "Share token cannot access the API", "code": "share_token"},
         )
+    try:
+        token_epoch = int(claims.get("ae", 0) or 0)
+    except (TypeError, ValueError):
+        token_epoch = 0
+    if token_epoch != auth_epoch():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "message": "Session invalidated — sign in again",
+                "code": "stale_session",
+            },
+        )
     return claims
 
 
@@ -397,6 +423,7 @@ async def require_auth(
 
 
 async def ws_authenticate(websocket: WebSocket) -> bool:
+    """Validate WS JWT before accept. On failure close with 44xx + reason `code:message`."""
     token = websocket.query_params.get("token")
     if not token:
         auth = websocket.headers.get("authorization")
@@ -405,16 +432,24 @@ async def ws_authenticate(websocket: WebSocket) -> bool:
         verify_access_token(token, ip=_client_ip(websocket=websocket))
         return True
     except HTTPException as e:
-        code = 4401
+        close_code = 4401
         if e.status_code == 429:
-            code = 4429
+            close_code = 4429
         elif e.status_code == 503:
-            code = 4403
+            close_code = 4403
         detail = e.detail
-        reason = detail if isinstance(detail, str) else str(
-            (detail or {}).get("message", "Unauthorized")  # type: ignore[union-attr]
-        )
-        await websocket.close(code=code, reason=reason[:120])
+        if isinstance(detail, dict):
+            err_code = str(detail.get("code") or "unauthorized")
+            message = str(detail.get("message") or "Unauthorized")
+        else:
+            err_code = "unauthorized"
+            message = str(detail or "Unauthorized")
+        # Prefix with machine-readable code so the SPA can stop reconnecting.
+        reason = f"{err_code}:{message}"[:120]
+        try:
+            await websocket.close(code=close_code, reason=reason)
+        except Exception:
+            pass
         return False
 
 

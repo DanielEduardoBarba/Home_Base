@@ -39,18 +39,21 @@ Each project entry:
   - `compose`: `[actionId, …]` when `type` is `compose` (e.g. Run + Expo → two PTYs)
   - `kind`: `run` | `expo` | `ship` | `action` (PTY session kind)
 
-Committed preset: `config/presets/example.json`. Personal presets under `config/presets/` are gitignored. Live registry: `config/projects.json` (ignored).
+Committed presets: `config/presets/example.json` and `config/presets/homebase.json`. Other presets under `config/presets/` are gitignored. Live registry: `config/projects.json` (ignored).
 
 ## Security
 
 - Password (set/changed only on localhost) → JWT session (24h TTL) in `localStorage`
 - Password stored as scrypt hash in `.runtime/auth.json`; JWT HMAC key in `.runtime/jwt_secret`
+- `authEpoch` in `auth.json` is embedded in JWTs (`ae`); password rewrite bumps epoch and invalidates old sessions
 - Share QR: one-time redeem id (20s) → 24h JWT (never embeds the password)
 - Progressive lockout after 5 failures (10s … 1 day)
+- Same-origin SPA only — no open CORS middleware
 - Daily JSONL logs: `.runtime/logs/YYYY-MM-DD.log`
 - Notifications capped at 2000 rows on disk; UI paginates
 - In-memory Logs tab ring (`/api/trace`) capped at 300 lines — server + web console
 - Stop kills PTY sessions, pidfile PIDs, **and** listeners on configured project ports
+- Intended access model: VPN to laptop; do not public-port-forward
 
 ## Files API
 
@@ -67,12 +70,19 @@ Committed preset: `config/presets/example.json`. Personal presets under `config/
 - Active binary: `/usr/share/homebased/homebase` (previous known-good → `homebase.bak`)
 - Wrapper `/usr/bin/homebase` (unit `homebased.service`) self-tests, then exec; on failure runs `.bak` with `HOMEBASE_RUNNING_BACKUP=1`
 - Deploy syncs `CURSOR_API_KEY` from repo `.env` → `/var/lib/homebased/.env` (VPN/prod uses the latter)
-- Version: repo `VERSION` file; shown bottom-right in UI; also `/api/version`
+- Version: repo `VERSION` file; status bar + `/api/version`
+- Deploy also syncs `CURSOR_MODEL` / `HOMEBASE_JWT_SECRET` and installs the cursor-sdk Node bridge (omitted from Nuitka onefile)
 
 Writable state: `/var/lib/homebased` (`HOMEBASE_HOME`). Unit **homebased** runs as **root** on **port 8888**.
+
+## Capabilities vs non-goals
+
+- **Supports:** local Cursor agents, project actions/PTY, Files (project + absolute host with JWT), WireGuard/homebased restart
+- **Does not:** remote desktop/screen stream, Cursor IDE buffer sync, cloud agents, public internet exposure
 
 ## Do not
 
 - Commit `.env`, `config/projects.json`, personal presets, or `dist/homebase`
 - Use cloud Cursor agents (local only)
 - Allow scripts outside the project directory
+- Weaken auth/TTL or add open CORS for convenience

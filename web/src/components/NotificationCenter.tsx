@@ -170,7 +170,6 @@ export function NotificationCenter() {
     markOne,
     markAll,
     openHistory,
-    refresh,
     unlockAudio,
   } = useNotify()
 
@@ -237,13 +236,6 @@ export function NotificationCenter() {
           ) : (
             <span className="text-[11px] text-mute px-2">Inbox empty</span>
           )}
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            className="text-mute text-xs px-2 py-1 ml-auto"
-          >
-            Refresh
-          </button>
         </div>
 
         <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2.5">

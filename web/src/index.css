@@ -101,6 +101,15 @@ html {
   height: 100%;
   height: 100dvh;
   background-color: var(--hb-bg-2);
+  overscroll-behavior-y: contain;
+}
+
+/* While pull-to-refresh is engaged, block iOS rubber-band so our gesture wins */
+html.hb-pulling,
+html.hb-pulling body {
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: none;
 }
 
 html[data-theme='day'] {
@@ -277,23 +286,61 @@ html[data-safe-top='1'] {
   min-height: 2.5rem;
 }
 
-.hb-version {
-  position: fixed;
-  right: 0.65rem;
-  bottom: var(--hb-nav-clearance, 5.25rem);
-  z-index: 25;
+.hb-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+  padding: 0.35rem 0.75rem;
+  padding-top: max(0.35rem, env(safe-area-inset-top, 0px));
   font-family: var(--font-mono);
-  font-size: 0.62rem;
+  font-size: 0.65rem;
   letter-spacing: 0.02em;
-  color: color-mix(in srgb, var(--hb-mute) 85%, transparent);
-  pointer-events: none;
-  user-select: none;
+  color: var(--hb-mute);
+  border-bottom: 1px solid var(--hb-line);
+  background: color-mix(in srgb, var(--hb-panel) 88%, transparent);
+  min-height: 1.75rem;
+}
+
+.hb-status-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background: var(--hb-mute);
+}
+
+.hb-status-dot--ok {
+  background: var(--hb-ok, #4ade80);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--hb-ok, #4ade80) 25%, transparent);
+}
+
+.hb-status-dot--warn {
+  background: var(--hb-amber, #fbbf24);
+}
+
+.hb-status-dot--err {
+  background: var(--hb-danger, #fb7185);
+}
+
+.hb-status-host {
+  font-weight: 600;
+  color: var(--hb-text);
+  max-width: 7rem;
+}
+
+.hb-status-sep {
+  opacity: 0.45;
+  flex-shrink: 0;
+}
+
+.hb-status-ver {
+  opacity: 0.75;
 }
 
 @media (min-width: 768px) {
-  .hb-version {
-    bottom: calc(5rem + env(safe-area-inset-bottom));
-    right: 1rem;
+  .hb-status-host {
+    max-width: 14rem;
   }
 }
 
@@ -939,7 +986,18 @@ html[data-safe-top='1'] {
 }
 
 .hb-work-body {
-  /* room for dock on phone; desktop docks over the main pane */
+  /* when chat dock is open on phone, leave scroll room under the scene */
+}
+
+.hb-work-body:has(.hb-chat-dock) .hb-work-main {
+  padding-bottom: min(58vh, 28rem);
+}
+
+@media (min-width: 768px) {
+  .hb-work-body:has(.hb-chat-dock) .hb-work-main {
+    padding-bottom: 0;
+    padding-right: min(24rem, 40%);
+  }
 }
 
 .hb-chat-present-btn {
@@ -990,6 +1048,28 @@ html[data-safe-top='1'] {
   animation: hb-pulse-soft 1.2s ease-in-out infinite;
 }
 
+/* Dimmed click-catcher behind the Work chat dock — same language as Alerts inbox */
+.hb-chat-dock-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 25;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: default;
+  background: var(--hb-overlay);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  animation: hb-fade-up 180ms ease-out both;
+}
+
+.hb-chat-caret {
+  display: inline-block;
+  margin-left: 1px;
+  color: var(--hb-accent);
+  animation: hb-pulse-soft 1s ease-in-out infinite;
+}
+
 .hb-chat-dock {
   position: absolute;
   z-index: 26;
@@ -1001,18 +1081,47 @@ html[data-safe-top='1'] {
   height: min(58vh, 28rem);
   max-height: calc(100% - 0.75rem);
   border-radius: 1.1rem;
-  border: 1px solid var(--hb-line);
-  background: color-mix(in srgb, var(--hb-panel) 96%, transparent);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+  /* Distinct from Work scene: deeper + cooler surface so it reads as a floating chat */
+  border: 1px solid color-mix(in srgb, var(--hb-accent) 28%, var(--hb-line));
+  background: color-mix(in srgb, var(--hb-ink) 55%, var(--hb-panel));
+  color: var(--hb-text);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--hb-accent) 12%, transparent),
+    0 18px 48px rgba(0, 0, 0, 0.45);
   overflow: hidden;
   animation: hb-fade-up 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+[data-theme='day'] .hb-chat-dock {
+  background: color-mix(in srgb, #dbe7f8 72%, #ffffff);
+  border-color: color-mix(in srgb, var(--hb-accent) 22%, var(--hb-line));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--hb-accent) 10%, transparent),
+    0 16px 40px rgba(11, 18, 32, 0.16);
+}
+
 .hb-chat-dock-chrome {
-  border-bottom: 1px solid var(--hb-line);
-  background: color-mix(in srgb, var(--hb-panel) 88%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--hb-accent) 16%, var(--hb-line));
+  background: color-mix(in srgb, var(--hb-ink) 35%, transparent);
+}
+
+[data-theme='day'] .hb-chat-dock-chrome {
+  background: color-mix(in srgb, #c9daf2 55%, #ffffff);
+}
+
+.hb-chat-dock .hb-chat-dock-body,
+.hb-chat-dock .hb-select,
+.hb-chat-dock textarea,
+.hb-chat-dock input {
+  background-color: color-mix(in srgb, var(--hb-panel-2) 70%, var(--hb-ink));
+}
+
+[data-theme='day'] .hb-chat-dock .hb-select,
+[data-theme='day'] .hb-chat-dock textarea,
+[data-theme='day'] .hb-chat-dock input {
+  background-color: color-mix(in srgb, #ffffff 80%, #c9daf2);
 }
 
 @media (min-width: 768px) {
@@ -1030,14 +1139,36 @@ html[data-safe-top='1'] {
   }
 }
 
-/* Slightly tighter nav labels — 8 tabs */
+/* 8-tab phone nav — keep labels readable without horizontal page scroll */
 .hb-nav-item {
-  font-size: 0.52rem;
-  padding-inline: 0.05rem;
+  font-size: 0.6rem;
+  padding-inline: 0.02rem;
+  gap: 0.12rem;
+  min-height: 3.15rem;
+  letter-spacing: -0.01em;
+}
+
+.hb-nav-item .hb-nav-icon {
+  width: 1.2rem;
+  height: 1.2rem;
 }
 
 @media (min-width: 640px) {
   .hb-nav-item {
-    font-size: 0.62rem;
+    font-size: 0.66rem;
+    min-height: 3.5rem;
+    gap: 0.28rem;
+    letter-spacing: 0.01em;
+  }
+}
+
+/* Login: keep submit above software keyboard */
+.hb-login-form {
+  padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
+}
+
+@supports (height: 100dvh) {
+  .hb-login-shell {
+    min-height: 100dvh;
   }
 }

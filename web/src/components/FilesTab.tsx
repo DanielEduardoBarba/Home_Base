@@ -512,7 +512,10 @@ export function FilesTab({
 
           <div className="flex items-center justify-between gap-2">
             <p className="text-[11px] font-mono text-mute truncate min-w-0">
+              <span className="text-sky/90">Home Base files</span>
+              <span className="opacity-50"> · </span>
               {status || project.name}
+              <span className="opacity-40"> — not Cursor’s open editor</span>
             </p>
             {error && <p className="text-danger text-xs shrink-0">{error}</p>}
           </div>

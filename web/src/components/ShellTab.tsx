@@ -39,13 +39,14 @@ export function ShellTab({
   const [error, setError] = useState('')
   const lastStartKey = useRef(startShellKey)
 
+  const attachKey = attachSessionIds?.join(',') || ''
   useEffect(() => {
-    if (attachSessionIds?.length) {
-      setAttach(attachSessionIds)
-      setInteractive(false)
-      setError('')
-    }
-  }, [attachSessionIds])
+    if (!attachKey) return
+    const ids = attachKey.split(',').filter(Boolean)
+    setAttach(ids)
+    setInteractive(false)
+    setError('')
+  }, [attachKey])
 
   useEffect(() => {
     if (!startShellKey || startShellKey === lastStartKey.current) return

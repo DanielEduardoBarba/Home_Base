@@ -9,6 +9,12 @@ import { presentFromTool, presentLabel } from '../lib/present'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 import { speechSupported, startSpeechDictation, type SpeechHandle } from '../lib/speech'
 import type { CursorModel, FsEntry, Project } from '../lib/types'
+import {
+  connStateLabel,
+  connectWithReconnect,
+  type WsConnState,
+  type WsReconnectHandle,
+} from '../lib/wsReconnect'
 import { IconBtn } from './IconBtn'
 import { ProjectSelect } from './ProjectSelect'
 
@@ -32,7 +38,9 @@ function MessageCard({
   if (m.role === 'thinking') {
     return (
       <div className="hb-chat-thinking rounded-xl px-3 py-2 text-xs font-mono text-amber mr-8">
-        <span className="uppercase tracking-wider text-[10px] opacity-80">thinking</span>
+        <span className="uppercase tracking-wider text-[10px] opacity-80">
+          thinking{m.streaming ? '…' : ''}
+        </span>
         <div className="mt-1 whitespace-pre-wrap opacity-90">{m.text}</div>
       </div>
     )
@@ -98,9 +106,18 @@ function MessageCard({
   }
   return (
     <div className="hb-chat-assistant rounded-2xl px-3.5 py-3 text-sm leading-relaxed mr-4 shadow-sm">
-      <div className="markdown-body">
-        <ReactMarkdown>{m.text || ''}</ReactMarkdown>
-      </div>
+      {m.streaming ? (
+        <div className="whitespace-pre-wrap break-words">
+          {m.text}
+          <span className="hb-chat-caret" aria-hidden>
+            ▍
+          </span>
+        </div>
+      ) : (
+        <div className="markdown-body">
+          <ReactMarkdown>{m.text || ''}</ReactMarkdown>
+        </div>
+      )}
     </div>
   )
 }
@@ -129,7 +146,8 @@ export function ChatPanel({
   const [tabs, setTabs] = useState<ChatTab[]>([])
   const [activeId, setActiveId] = useState('')
   const [input, setInput] = useState('')
-  const [connected, setConnected] = useState(false)
+  const [connState, setConnState] = useState<WsConnState>('connecting')
+  const connected = connState === 'live'
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState('')
   const [models, setModels] = useState<CursorModel[]>([])
@@ -171,6 +189,8 @@ export function ChatPanel({
 
   const notify = useNotifyOptional()
   const wsRef = useRef<WebSocket | null>(null)
+  const wsHandleRef = useRef<WsReconnectHandle | null>(null)
+  const dockRef = useRef<HTMLElement | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const assistantBuf = useRef('')
   const activeIdRef = useRef(activeId)
@@ -203,12 +223,32 @@ export function ChatPanel({
 
   useEffect(() => {
     if (!project || !tabs.length || !activeId) return
-    persistChatTabs(project.id, tabs, activeId)
-  }, [project?.id, tabs, activeId])
+    // Debounce while streaming so every token doesn't hit localStorage
+    const delay = streaming ? 750 : 0
+    const t = window.setTimeout(() => persistChatTabs(project.id, tabs, activeId), delay)
+    return () => window.clearTimeout(t)
+  }, [project?.id, tabs, activeId, streaming])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [active?.messages, streaming])
+
+  // Work dock: click outside the chat panel → minimize
+  useEffect(() => {
+    if (!isDock || !dockOpen) return
+    const onPointer = (ev: PointerEvent) => {
+      const el = dockRef.current
+      const t = ev.target
+      if (!(t instanceof Node)) return
+      if (el?.contains(t)) return
+      // Ignore while a dock modal is open (still inside panel, but be safe)
+      if (newOpen || deleteId) return
+      setDockOpen(false)
+    }
+    // Capture so we run before scene controls swallow the event
+    document.addEventListener('pointerdown', onPointer, true)
+    return () => document.removeEventListener('pointerdown', onPointer, true)
+  }, [isDock, dockOpen, newOpen, deleteId])
 
   const refreshModels = useCallback(async () => {
     try {
@@ -246,94 +286,107 @@ export function ChatPanel({
 
   useEffect(() => {
     if (!project) return
-    let closed = false
-    const ws = new WebSocket(wsUrl(`/ws/cursor?project=${encodeURIComponent(project.id)}`))
-    wsRef.current = ws
-
-    ws.onopen = () => {
-      if (closed) return
-      setConnected(true)
-      const tab = tabsRef.current.find((t) => t.id === activeIdRef.current)
-      ws.send(
-        JSON.stringify({
-          type: 'bind',
-          chatId: activeIdRef.current || 'default',
-          cwd: tab?.cwd || '',
-        }),
-      )
-    }
-    ws.onclose = () => {
-      if (!closed) setConnected(false)
-    }
-    ws.onerror = () => {
-      if (!closed) setError('Cursor socket error')
-    }
-
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data)
-        const chatId = activeIdRef.current
-        if (msg.type === 'ready') {
-          if (msg.chatId && msg.chatId !== chatId) return
-          patchTab(chatId, (t) => ({ ...t, agentId: msg.cursor?.agentId || null }))
-          if (!msg.cursor?.configured) {
-            setError(
-              'Cursor key missing on this server. On the host, put CURSOR_API_KEY in .env then run ./build.sh --deploy (or restart homebased after syncing /var/lib/homebased/.env).',
-            )
-          }
-        } else if (msg.type === 'agent') {
-          patchTab(chatId, (t) => ({ ...t, agentId: msg.agentId }))
-        } else if (msg.type === 'text') {
-          assistantBuf.current += msg.text || ''
-          pushAssistant(chatId, assistantBuf.current)
-        } else if (msg.type === 'message') {
-          handleSdkMessage(chatId, msg.message)
-        } else if (msg.type === 'done') {
-          const wasStreaming = streamingRef.current
-          setStreaming(false)
-          assistantBuf.current = ''
-          const err = msg.status === 'error'
-          if (err) setError('Agent run ended with error')
-          if (wasStreaming && notifyRef.current) {
-            const tab = tabsRef.current.find((t) => t.id === activeIdRef.current)
-            const label = tab?.title || 'Chat'
-            notifyRef.current.ping({
-              title: err ? 'Cursor finished with error' : 'Cursor finished',
-              body: `${label} is ready to check`,
-              level: err ? 'error' : 'success',
-              category: 'cursor',
-            })
-          }
-        } else if (msg.type === 'error') {
-          const wasStreaming = streamingRef.current
-          setStreaming(false)
-          setError(msg.error || 'Agent error')
-          if (wasStreaming && notifyRef.current) {
-            notifyRef.current.ping({
-              title: 'Cursor error',
-              body: String(msg.error || 'Agent error').slice(0, 160),
-              level: 'error',
-              category: 'cursor',
-            })
-          }
-        } else if (msg.type === 'cancelled') {
+    const projectId = project.id
+    const handle = connectWithReconnect({
+      url: () => wsUrl(`/ws/cursor?project=${encodeURIComponent(projectId)}`),
+      onState: (s) => {
+        setConnState(s)
+        if (s === 'reconnecting' || s === 'offline') {
           setStreaming(false)
         }
-      } catch {
-        /* ignore */
-      }
-    }
+        if (s === 'reconnecting') {
+          setError('')
+        }
+      },
+      onOpen: (ws) => {
+        wsRef.current = ws
+        const tab = tabsRef.current.find((t) => t.id === activeIdRef.current)
+        ws.send(
+          JSON.stringify({
+            type: 'bind',
+            chatId: activeIdRef.current || 'default',
+            cwd: tab?.cwd || '',
+          }),
+        )
+      },
+      onMessage: (ev) => {
+        try {
+          const msg = JSON.parse(ev.data as string)
+          const chatId = (msg.chatId as string) || activeIdRef.current
+          if (msg.type === 'ready') {
+            if (msg.chatId && msg.chatId !== activeIdRef.current) return
+            patchTab(chatId, (t) => ({ ...t, agentId: msg.cursor?.agentId || null }))
+            if (!msg.cursor?.configured) {
+              setError(
+                'Cursor key missing on this server. On the host, put CURSOR_API_KEY in .env then run ./build.sh --deploy (or restart homebased after syncing /var/lib/homebased/.env).',
+              )
+            }
+          } else if (msg.type === 'agent') {
+            patchTab(chatId, (t) => ({ ...t, agentId: msg.agentId }))
+          } else if (msg.type === 'text-delta' || msg.type === 'text') {
+            assistantBuf.current += msg.text || ''
+            pushAssistant(chatId, assistantBuf.current, true)
+          } else if (msg.type === 'thinking-delta') {
+            appendThinking(chatId, msg.text || '')
+          } else if (msg.type === 'thinking-completed') {
+            finishThinking(chatId)
+          } else if (msg.type === 'tool-delta') {
+            upsertTool(chatId, {
+              callId: msg.callId ? String(msg.callId) : undefined,
+              name: String(msg.name || 'tool'),
+              status: String(msg.status || 'running'),
+              args: msg.args,
+              file: msg.file,
+            })
+          } else if (msg.type === 'status-delta') {
+            /* light activity — avoid spamming status rows for every step */
+          } else if (msg.type === 'message') {
+            handleSdkMessage(chatId, msg.message)
+          } else if (msg.type === 'done') {
+            const wasStreaming = streamingRef.current
+            setStreaming(false)
+            finalizeStreamingBubbles(chatId)
+            assistantBuf.current = ''
+            const err = msg.status === 'error'
+            if (err) setError('Agent run ended with error')
+            if (wasStreaming && notifyRef.current) {
+              const tab = tabsRef.current.find((t) => t.id === activeIdRef.current)
+              const label = tab?.title || 'Chat'
+              notifyRef.current.ping({
+                title: err ? 'Cursor finished with error' : 'Cursor finished',
+                body: `${label} is ready to check`,
+                level: err ? 'error' : 'success',
+                category: 'cursor',
+              })
+            }
+          } else if (msg.type === 'error') {
+            const wasStreaming = streamingRef.current
+            setStreaming(false)
+            finalizeStreamingBubbles(chatId)
+            setError(msg.error || 'Agent error')
+            if (wasStreaming && notifyRef.current) {
+              notifyRef.current.ping({
+                title: 'Cursor error',
+                body: String(msg.error || 'Agent error').slice(0, 160),
+                level: 'error',
+                category: 'cursor',
+              })
+            }
+          } else if (msg.type === 'cancelled') {
+            setStreaming(false)
+            finalizeStreamingBubbles(chatId)
+          }
+        } catch {
+          /* ignore */
+        }
+      },
+    })
+    wsHandleRef.current = handle
 
     return () => {
-      closed = true
-      try {
-        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-          ws.close(1000, 'project-switch')
-        }
-      } catch {
-        /* ignore */
-      }
-      if (wsRef.current === ws) wsRef.current = null
+      handle.dispose()
+      if (wsHandleRef.current === handle) wsHandleRef.current = null
+      wsRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.id])
@@ -349,19 +402,118 @@ export function ChatPanel({
     patchTab(chatId, (t) => ({ ...t, messages: [...t.messages, m] }))
   }
 
-  function pushAssistant(chatId: string, text: string) {
+  function pushAssistant(chatId: string, text: string, live = false) {
     patchTab(chatId, (t) => {
       const msgs = [...t.messages]
       const last = msgs[msgs.length - 1]
       if (last?.role === 'assistant') {
-        msgs[msgs.length - 1] = { ...last, text }
+        msgs[msgs.length - 1] = { ...last, text, streaming: live }
         return { ...t, messages: msgs }
       }
       return {
         ...t,
-        messages: [...msgs, { id: uid(), role: 'assistant', text }],
+        messages: [...msgs, { id: uid(), role: 'assistant', text, streaming: live }],
       }
     })
+  }
+
+  function appendThinking(chatId: string, chunk: string) {
+    if (!chunk) return
+    patchTab(chatId, (t) => {
+      const msgs = [...t.messages]
+      const last = msgs[msgs.length - 1]
+      if (last?.role === 'thinking') {
+        msgs[msgs.length - 1] = {
+          ...last,
+          text: (last.text || '') + chunk,
+          streaming: true,
+        }
+        return { ...t, messages: msgs }
+      }
+      return {
+        ...t,
+        messages: [
+          ...msgs,
+          { id: uid(), role: 'thinking', text: chunk, streaming: true },
+        ],
+      }
+    })
+  }
+
+  function finishThinking(chatId: string) {
+    patchTab(chatId, (t) => {
+      const msgs = [...t.messages]
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role === 'thinking' && msgs[i].streaming) {
+          msgs[i] = { ...msgs[i], streaming: false }
+          break
+        }
+      }
+      return { ...t, messages: msgs }
+    })
+  }
+
+  function finalizeStreamingBubbles(chatId: string) {
+    patchTab(chatId, (t) => ({
+      ...t,
+      messages: t.messages.map((m) =>
+        m.streaming ? { ...m, streaming: false } : m,
+      ),
+    }))
+  }
+
+  function upsertTool(
+    chatId: string,
+    opts: {
+      callId?: string
+      name: string
+      status: string
+      args?: unknown
+      file?: { path: string; action: string }
+    },
+  ) {
+    const detail =
+      typeof opts.args === 'string'
+        ? opts.args
+        : opts.args
+          ? JSON.stringify(opts.args).slice(0, 400)
+          : undefined
+    let newlyCompleted = false
+    patchTab(chatId, (t) => {
+      const msgs = [...t.messages]
+      const idx = opts.callId
+        ? msgs.findIndex((m) => m.role === 'tool' && m.tool?.callId === opts.callId)
+        : -1
+      const prevStatus = idx >= 0 ? msgs[idx].tool?.status : undefined
+      const tool = {
+        name: opts.name,
+        status: opts.status,
+        detail: detail ?? (idx >= 0 ? msgs[idx].tool?.detail : undefined),
+        callId: opts.callId,
+      }
+      if (idx >= 0) {
+        msgs[idx] = { ...msgs[idx], tool }
+      } else {
+        msgs.push({ id: uid(), role: 'tool', tool })
+      }
+      newlyCompleted = opts.status === 'completed' && prevStatus !== 'completed'
+      if (newlyCompleted && opts.file?.path) {
+        const already = msgs.some(
+          (m) => m.role === 'file' && m.file?.path === opts.file!.path,
+        )
+        if (!already) {
+          msgs.push({ id: uid(), role: 'file', file: opts.file })
+        }
+      }
+      return { ...t, messages: msgs }
+    })
+    if (newlyCompleted && opts.file?.path) {
+      onPresentRef.current?.({ scene: 'files', path: opts.file.path })
+    }
+    const shellHint = presentFromTool(opts.name)
+    if (shellHint && newlyCompleted) {
+      onPresentRef.current?.(shellHint)
+    }
   }
 
   function handleSdkMessage(
@@ -371,6 +523,8 @@ export function ChatPanel({
       text?: string
       name?: string
       status?: string
+      callId?: string
+      call_id?: string
       args?: unknown
       file?: { path: string; action: string }
       content?: { type: string; text?: string }[]
@@ -378,40 +532,30 @@ export function ChatPanel({
   ) {
     const mtype = message?.type
     if (mtype === 'thinking') {
-      pushMsg(chatId, { id: uid(), role: 'thinking', text: message.text || '' })
+      // Complete thinking snapshot — replace last thinking bubble (don't stack)
+      patchTab(chatId, (t) => {
+        const msgs = [...t.messages]
+        const last = msgs[msgs.length - 1]
+        const text = message.text || ''
+        if (last?.role === 'thinking') {
+          msgs[msgs.length - 1] = { ...last, text, streaming: false }
+          return { ...t, messages: msgs }
+        }
+        return {
+          ...t,
+          messages: [...msgs, { id: uid(), role: 'thinking', text, streaming: false }],
+        }
+      })
       return
     }
     if (mtype === 'tool_call') {
-      if (message.file?.path) {
-        pushMsg(chatId, {
-          id: uid(),
-          role: 'file',
-          file: message.file,
-        })
-        // Auto-present file edits into Work when available
-        if (message.status === 'completed' || message.status === 'running') {
-          onPresentRef.current?.({ scene: 'files', path: message.file.path })
-        }
-      }
-      const detail =
-        typeof message.args === 'string'
-          ? message.args
-          : message.args
-            ? JSON.stringify(message.args).slice(0, 400)
-            : undefined
-      pushMsg(chatId, {
-        id: uid(),
-        role: 'tool',
-        tool: {
-          name: message.name || 'tool',
-          status: String(message.status || 'running'),
-          detail,
-        },
+      upsertTool(chatId, {
+        callId: message.callId || message.call_id,
+        name: message.name || 'tool',
+        status: String(message.status || 'running'),
+        args: message.args,
+        file: message.file,
       })
-      const shellHint = presentFromTool(message.name || '')
-      if (shellHint && message.status === 'completed') {
-        onPresentRef.current?.(shellHint)
-      }
       return
     }
     if (mtype === 'status' || mtype === 'task') {
@@ -427,8 +571,19 @@ export function ChatPanel({
       .map((b) => b.text || '')
       .join('')
     if ((mtype === 'assistant' || text) && text) {
-      assistantBuf.current += text
-      pushAssistant(chatId, assistantBuf.current)
+      // Final assistant snapshot after deltas — replace, don't double-append
+      if (
+        assistantBuf.current &&
+        (text.startsWith(assistantBuf.current.slice(0, Math.min(40, assistantBuf.current.length))) ||
+          assistantBuf.current.startsWith(text.slice(0, Math.min(40, text.length))))
+      ) {
+        assistantBuf.current = text
+      } else if (!assistantBuf.current) {
+        assistantBuf.current = text
+      } else {
+        assistantBuf.current += text
+      }
+      pushAssistant(chatId, assistantBuf.current, false)
     }
   }
 
@@ -706,15 +861,22 @@ export function ChatPanel({
               onSelect={onSelect}
               className="flex-1 !min-h-10 !py-2 text-sm"
             />
-            <span
+            <button
+              type="button"
+              title={connected ? 'Cursor agent socket live' : 'Tap to reconnect'}
+              onClick={() => {
+                if (!connected) wsHandleRef.current?.reconnect()
+              }}
               className={`text-[10px] shrink-0 px-2 py-1 rounded-md border font-semibold ${
                 connected
                   ? 'text-ok border-ok/30 bg-ok/10'
-                  : 'text-danger border-danger/30 bg-danger/10'
+                  : connState === 'reconnecting' || connState === 'connecting'
+                    ? 'text-amber border-amber/30 bg-amber/10'
+                    : 'text-danger border-danger/30 bg-danger/10'
               }`}
             >
-              {connected ? 'On' : 'Off'}
-            </span>
+              {connStateLabel(connState)}
+            </button>
           </div>
         )}
 
@@ -789,15 +951,22 @@ export function ChatPanel({
             <span className="text-sky font-medium">{cwdLabel}</span>
           </span>
           {isDock && (
-            <span
+            <button
+              type="button"
+              title={connected ? 'Cursor agent socket live' : 'Tap to reconnect'}
+              onClick={() => {
+                if (!connected) wsHandleRef.current?.reconnect()
+              }}
               className={`text-[10px] shrink-0 px-1.5 py-0.5 rounded border font-semibold ${
                 connected
                   ? 'text-ok border-ok/30 bg-ok/10'
-                  : 'text-danger border-danger/30 bg-danger/10'
+                  : connState === 'reconnecting' || connState === 'connecting'
+                    ? 'text-amber border-amber/30 bg-amber/10'
+                    : 'text-danger border-danger/30 bg-danger/10'
               }`}
             >
-              {connected ? 'On' : 'Off'}
-            </span>
+              {connStateLabel(connState)}
+            </button>
           )}
           {!isDock && (
             <button
@@ -1003,12 +1172,20 @@ export function ChatPanel({
 
   if (isDock) {
     return (
-      <aside className="hb-chat-dock" aria-label="Work chat">
-        {modals}
-        {header}
-        {messages}
-        {composer}
-      </aside>
+      <>
+        <button
+          type="button"
+          className="hb-chat-dock-scrim"
+          aria-label="Minimize chat"
+          onClick={() => setDockOpen(false)}
+        />
+        <aside ref={dockRef} className="hb-chat-dock" aria-label="Work chat">
+          {modals}
+          {header}
+          {messages}
+          {composer}
+        </aside>
+      </>
     )
   }
 

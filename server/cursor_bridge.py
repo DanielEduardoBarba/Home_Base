@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Mapping, Optional
 
 from .config import AGENTS_PATH, get_project, get_settings
 from .cursor_env import ensure_cursor_bridge_env
@@ -319,23 +319,46 @@ class CursorBridge:
                 "cwd": self._cwds.get(key),
             }
 
-        run = await agent.send(prompt, SendOptions(model=model_id))
+        # on_delta enables enableDeltas on the wire — without it, thinking/text
+        # arrive as complete messages only (feels like one dump at the end).
+        run = await agent.send(
+            prompt,
+            SendOptions(model=model_id, on_delta=_noop_delta),
+        )
         self._models[key] = model_id
         self._active_run[key] = run
         run_id = getattr(run, "id", None) or getattr(run, "run_id", None)
         yield {"type": "run", "runId": run_id, "model": model_id, "chatId": chat_id}
 
         try:
-            if hasattr(run, "messages"):
-                async for message in run.messages():
-                    yield {"type": "message", "message": _serialize_message(message)}
+            # Prefer events(): yields interaction_update deltas + sdk_message.
+            # stream()/messages() only forward sdk_message (no live deltas).
+            if hasattr(run, "events"):
+                async for event in run.events():
+                    update = getattr(event, "interaction_update", None)
+                    if update is not None:
+                        payload = _serialize_delta(update)
+                        if payload:
+                            payload["chatId"] = chat_id
+                            yield payload
+                    message = getattr(event, "sdk_message", None)
+                    if message is not None:
+                        yield {
+                            "type": "message",
+                            "chatId": chat_id,
+                            "message": _serialize_message(message),
+                        }
             elif hasattr(run, "stream"):
                 async for message in run.stream():
-                    yield {"type": "message", "message": _serialize_message(message)}
+                    yield {
+                        "type": "message",
+                        "chatId": chat_id,
+                        "message": _serialize_message(message),
+                    }
             elif hasattr(run, "iter_text"):
                 async for text in run.iter_text():
                     if text:
-                        yield {"type": "text", "text": text}
+                        yield {"type": "text-delta", "text": text, "chatId": chat_id}
 
             result = await run.wait()
             status = getattr(result, "status", "finished")
@@ -380,6 +403,71 @@ class CursorBridge:
             self._active_run.pop(key, None)
 
 
+def _noop_delta(_update: Any) -> None:
+    """SendOptions requires on_delta to flip enableDeltas=true; body unused."""
+    return None
+
+
+def _serialize_delta(update: Any) -> Optional[dict[str, Any]]:
+    """Map SDK InteractionUpdate → WS payload for live UI streaming."""
+    utype = getattr(update, "type", None)
+    if utype == "text-delta":
+        text = getattr(update, "text", "") or ""
+        return {"type": "text-delta", "text": text} if text else None
+    if utype == "thinking-delta":
+        text = getattr(update, "text", "") or ""
+        return {"type": "thinking-delta", "text": text} if text else None
+    if utype == "thinking-completed":
+        return {
+            "type": "thinking-completed",
+            "ms": getattr(update, "thinking_duration_ms", None),
+        }
+    if utype in {"tool-call-started", "partial-tool-call", "tool-call-completed"}:
+        tool = getattr(update, "tool_call", None) or {}
+        if not isinstance(tool, Mapping):
+            tool = {}
+        name = (
+            tool.get("name")
+            or tool.get("toolName")
+            or tool.get("tool_name")
+            or "tool"
+        )
+        status = (
+            "completed"
+            if utype == "tool-call-completed"
+            else "running"
+        )
+        call_id = getattr(update, "call_id", None) or tool.get("callId") or tool.get("id")
+        args = tool.get("args") or tool.get("arguments") or tool.get("input")
+        hint = _file_hint_from_args(args)
+        out: dict[str, Any] = {
+            "type": "tool-delta",
+            "callId": call_id,
+            "name": str(name),
+            "status": status,
+            "phase": utype,
+        }
+        if args is not None:
+            try:
+                out["args"] = (
+                    args
+                    if isinstance(args, (dict, list, str, int, float, bool))
+                    else str(args)[:800]
+                )
+            except Exception:
+                out["args"] = str(args)[:800]
+        if hint:
+            out["file"] = hint
+        return out
+    if utype in {"step-started", "step-completed", "token-delta", "turn-ended"}:
+        return {
+            "type": "status-delta",
+            "phase": utype,
+            "text": str(utype).replace("-", " "),
+        }
+    return None
+
+
 def _file_hint_from_args(args: Any) -> Optional[dict[str, str]]:
     if args is None:
         return None
@@ -418,7 +506,7 @@ def _serialize_message(message: Any) -> dict[str, Any]:
         result = getattr(message, "result", None)
         out["name"] = name
         out["status"] = status
-        out["callId"] = getattr(message, "call_id", None)
+        out["callId"] = getattr(message, "call_id", None) or getattr(message, "callId", None)
         try:
             out["args"] = args if isinstance(args, (dict, list, str, int, float, bool)) or args is None else str(args)[:2000]
         except Exception:

@@ -1,45 +1,56 @@
 import { useEffect, useRef, useState } from 'react'
 
 /** Soft pull — refresh in-app data (projects, scene, notifications). */
-const SOFT_THRESHOLD = 72
+const SOFT_THRESHOLD = 64
 /** Deeper pull — full `window.location.reload()`. */
-const HARD_THRESHOLD = 140
-const MAX_PULL = HARD_THRESHOLD * 1.15
+const HARD_THRESHOLD = 130
+const MAX_PULL = HARD_THRESHOLD * 1.2
+/** Engage drag after this many px of downward movement. */
+const ENGAGE = 8
 
-function scrollParentAt(x: number, y: number): HTMLElement | null {
-  let el = document.elementFromPoint(x, y) as HTMLElement | null
-  while (el) {
+function overlaysBlocking(): boolean {
+  return !!(
+    document.querySelector(
+      '[data-open="true"].hb-inbox-panel, [data-open="true"].hb-drawer, .hb-chat-dock-scrim, .hb-overlay',
+    )
+  )
+}
+
+/** Walk from the event target — works better on iOS than elementFromPoint mid-gesture. */
+function atScrollTopFromTarget(target: EventTarget | null): boolean {
+  if (window.scrollY > 2 || document.documentElement.scrollTop > 2 || document.body.scrollTop > 2) {
+    return false
+  }
+  let el: HTMLElement | null =
+    target instanceof HTMLElement
+      ? target
+      : target instanceof Node
+        ? (target.parentElement as HTMLElement | null)
+        : null
+  while (el && el !== document.documentElement) {
     const style = getComputedStyle(el)
     const oy = style.overflowY
     if (
       (oy === 'auto' || oy === 'scroll' || oy === 'overlay') &&
       el.scrollHeight > el.clientHeight + 1
     ) {
-      return el
+      if (el.scrollTop > 2) return false
     }
     el = el.parentElement
   }
-  return null
-}
-
-function atScrollTop(x: number, y: number): boolean {
-  if (document.documentElement.scrollTop > 2 || document.body.scrollTop > 2) return false
-  const scroller = scrollParentAt(x, y)
-  if (scroller && scroller.scrollTop > 2) return false
   return true
 }
 
 function cueLabel(offset: number): string {
   if (offset >= HARD_THRESHOLD) return 'release to reload page'
   if (offset >= SOFT_THRESHOLD) return 'release to refresh'
-  if (offset >= SOFT_THRESHOLD * 0.55) return 'pull further to reload'
+  if (offset >= SOFT_THRESHOLD * 0.5) return 'keep pulling to reload…'
   return 'pull to refresh'
 }
 
 /**
- * Global drag-down refresh — does not wrap layout.
- * Part-way → soft data refresh. Further → hard window reload.
- * Full-app spinner is owned by App; this only shows the pull cue.
+ * Global drag-down refresh — phone-first (touch + pointer).
+ * Part-way → soft scene/data refresh. Further → hard window reload.
  */
 export function PullToRefresh({ onRefresh }: { onRefresh: () => void | Promise<void> }) {
   const startY = useRef(0)
@@ -51,6 +62,8 @@ export function PullToRefresh({ onRefresh }: { onRefresh: () => void | Promise<v
   const [busy, setBusy] = useState(false)
   const offsetRef = useRef(0)
   const busyRef = useRef(false)
+  const onRefreshRef = useRef(onRefresh)
+  onRefreshRef.current = onRefresh
 
   useEffect(() => {
     offsetRef.current = offset
@@ -66,31 +79,27 @@ export function PullToRefresh({ onRefresh }: { onRefresh: () => void | Promise<v
       dragging.current = false
       pointerId.current = null
       setOffset(0)
+      document.documentElement.classList.remove('hb-pulling')
     }
 
-    function onDown(e: PointerEvent) {
-      if (busyRef.current || e.button !== 0) return
-      // Ignore while overlays / drawers are open
-      if (document.querySelector('[data-open="true"].hb-inbox-panel, [data-open="true"].hb-drawer')) {
-        return
-      }
-      if (!atScrollTop(e.clientX, e.clientY)) return
-      startY.current = e.clientY
-      startX.current = e.clientX
+    function begin(clientX: number, clientY: number, target: EventTarget | null, id: number | null) {
+      if (busyRef.current) return false
+      if (overlaysBlocking()) return false
+      if (!atScrollTopFromTarget(target)) return false
+      startY.current = clientY
+      startX.current = clientX
       active.current = true
       dragging.current = false
-      pointerId.current = e.pointerId
+      pointerId.current = id
+      return true
     }
 
-    function onMove(e: PointerEvent) {
+    function move(clientX: number, clientY: number, target: EventTarget | null, ev?: Event) {
       if (!active.current || busyRef.current) return
-      if (pointerId.current != null && e.pointerId !== pointerId.current) return
+      const dy = clientY - startY.current
+      const dx = clientX - startX.current
 
-      const dy = e.clientY - startY.current
-      const dx = e.clientX - startX.current
-
-      // Horizontal swipe — let the page handle it
-      if (!dragging.current && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy)) {
+      if (!dragging.current && Math.abs(dx) > 14 && Math.abs(dx) > Math.abs(dy)) {
         reset()
         return
       }
@@ -100,37 +109,28 @@ export function PullToRefresh({ onRefresh }: { onRefresh: () => void | Promise<v
         return
       }
 
-      if (!atScrollTop(e.clientX, e.clientY)) {
+      if (!atScrollTopFromTarget(target)) {
         reset()
         return
       }
 
-      // Engage after a small intentional pull so taps/scrolls stay clean
       if (!dragging.current) {
-        if (dy < 10) return
+        if (dy < ENGAGE) return
         dragging.current = true
-        try {
-          ;(e.target as Element | null)?.setPointerCapture?.(e.pointerId)
-        } catch {
-          /* ignore */
-        }
+        document.documentElement.classList.add('hb-pulling')
       }
 
-      // Rubber-band: easier at first, then resists toward hard reload
-      const raw = dy * 0.45
+      const raw = dy * 0.42
       const pulled = Math.min(raw, MAX_PULL)
       setOffset(pulled)
-      e.preventDefault()
+      if (ev && ev.cancelable) ev.preventDefault()
     }
 
-    async function onUp(e: PointerEvent) {
+    async function finish() {
       if (!active.current) return
-      if (pointerId.current != null && e.pointerId !== pointerId.current) return
-
       const pulled = offsetRef.current
       const wasDragging = dragging.current
       reset()
-
       if (!wasDragging || busyRef.current) return
 
       if (pulled >= HARD_THRESHOLD) {
@@ -138,28 +138,69 @@ export function PullToRefresh({ onRefresh }: { onRefresh: () => void | Promise<v
         window.location.reload()
         return
       }
-
       if (pulled >= SOFT_THRESHOLD) {
         setBusy(true)
         try {
-          await onRefresh()
+          await onRefreshRef.current()
         } finally {
           setBusy(false)
         }
       }
     }
 
-    window.addEventListener('pointerdown', onDown, { capture: true })
-    window.addEventListener('pointermove', onMove, { capture: true, passive: false })
-    window.addEventListener('pointerup', onUp, { capture: true })
-    window.addEventListener('pointercancel', onUp, { capture: true })
-    return () => {
-      window.removeEventListener('pointerdown', onDown, { capture: true })
-      window.removeEventListener('pointermove', onMove, { capture: true })
-      window.removeEventListener('pointerup', onUp, { capture: true })
-      window.removeEventListener('pointercancel', onUp, { capture: true })
+    /* ── Pointer (desktop + modern iOS) ── */
+    function onPointerDown(e: PointerEvent) {
+      if (e.pointerType === 'touch') return // touch handlers own phones
+      if (e.button !== 0) return
+      begin(e.clientX, e.clientY, e.target, e.pointerId)
     }
-  }, [onRefresh])
+    function onPointerMove(e: PointerEvent) {
+      if (e.pointerType === 'touch') return
+      if (!active.current) return
+      if (pointerId.current != null && e.pointerId !== pointerId.current) return
+      move(e.clientX, e.clientY, e.target, e)
+    }
+    function onPointerUp(e: PointerEvent) {
+      if (e.pointerType === 'touch') return
+      if (pointerId.current != null && e.pointerId !== pointerId.current) return
+      void finish()
+    }
+
+    /* ── Touch (iPhone Safari — reliable overscroll control) ── */
+    function onTouchStart(e: TouchEvent) {
+      if (e.touches.length !== 1) return
+      const t = e.touches[0]
+      begin(t.clientX, t.clientY, e.target, null)
+    }
+    function onTouchMove(e: TouchEvent) {
+      if (!active.current || e.touches.length !== 1) return
+      const t = e.touches[0]
+      move(t.clientX, t.clientY, e.target, e)
+    }
+    function onTouchEnd() {
+      void finish()
+    }
+
+    window.addEventListener('pointerdown', onPointerDown, { capture: true })
+    window.addEventListener('pointermove', onPointerMove, { capture: true, passive: false })
+    window.addEventListener('pointerup', onPointerUp, { capture: true })
+    window.addEventListener('pointercancel', onPointerUp, { capture: true })
+    window.addEventListener('touchstart', onTouchStart, { capture: true, passive: true })
+    window.addEventListener('touchmove', onTouchMove, { capture: true, passive: false })
+    window.addEventListener('touchend', onTouchEnd, { capture: true })
+    window.addEventListener('touchcancel', onTouchEnd, { capture: true })
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true)
+      window.removeEventListener('pointermove', onPointerMove, true)
+      window.removeEventListener('pointerup', onPointerUp, true)
+      window.removeEventListener('pointercancel', onPointerUp, true)
+      window.removeEventListener('touchstart', onTouchStart, true)
+      window.removeEventListener('touchmove', onTouchMove, true)
+      window.removeEventListener('touchend', onTouchEnd, true)
+      window.removeEventListener('touchcancel', onTouchEnd, true)
+      document.documentElement.classList.remove('hb-pulling')
+    }
+  }, [])
 
   const show = offset > 6 && !busy
   const hard = offset >= HARD_THRESHOLD
@@ -167,10 +208,11 @@ export function PullToRefresh({ onRefresh }: { onRefresh: () => void | Promise<v
 
   return (
     <div
-      className="pointer-events-none fixed inset-x-0 top-0 z-50 flex justify-center pt-3"
+      className="pointer-events-none fixed inset-x-0 top-0 z-[60] flex justify-center"
       style={{
+        paddingTop: 'max(0.75rem, env(safe-area-inset-top, 0px))',
         opacity: show ? 1 : 0,
-        transform: `translateY(${Math.max(offset * 0.28, 0)}px)`,
+        transform: `translateY(${Math.max(offset * 0.3, 0)}px)`,
         transition: show ? 'none' : 'opacity 160ms ease',
       }}
       aria-hidden
@@ -184,7 +226,7 @@ export function PullToRefresh({ onRefresh }: { onRefresh: () => void | Promise<v
               : 'border-line bg-ink/90 text-mute'
         }`}
       >
-        {cueLabel(offset)}
+        {busy ? 'refreshing…' : cueLabel(offset)}
       </span>
     </div>
   )

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from starlette.middleware.gzip import GZipMiddleware
 
@@ -95,13 +95,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Home Base", version=APP_VERSION, lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Same-origin SPA only (Vite proxies /api+/ws in dev; FastAPI serves both in prod).
+# No open CORS — the browser never needs cross-origin API access.
 # On-the-fly gzip for API JSON / HTML when no precompressed body is set
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
@@ -614,11 +609,18 @@ async def ws_pty(websocket: WebSocket):
             msg = await websocket.receive_json()
             mtype = msg.get("type")
             if mtype == "input":
-                await pty_manager.write(session.id, msg.get("data", ""))
+                try:
+                    await pty_manager.write(session.id, msg.get("data", ""))
+                except KeyError:
+                    await websocket.send_json({"type": "exit", "sessionId": session.id})
+                    break
             elif mtype == "resize":
-                await pty_manager.resize(
-                    session.id, int(msg.get("cols", cols)), int(msg.get("rows", rows))
-                )
+                try:
+                    c = max(2, int(msg.get("cols") or cols))
+                    r = max(2, int(msg.get("rows") or rows))
+                except (TypeError, ValueError):
+                    continue
+                await pty_manager.resize(session.id, c, r)
             elif mtype == "ping":
                 await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:
@@ -650,15 +652,24 @@ async def ws_session(websocket: WebSocket, session_id: str):
             msg = await websocket.receive_json()
             mtype = msg.get("type")
             if mtype == "input":
-                await pty_manager.write(session_id, msg.get("data", ""))
+                try:
+                    await pty_manager.write(session_id, msg.get("data", ""))
+                except KeyError:
+                    await websocket.send_json({"type": "exit", "sessionId": session_id})
+                    break
             elif mtype == "resize":
-                await pty_manager.resize(
-                    session_id, int(msg.get("cols", 100)), int(msg.get("rows", 32))
-                )
+                try:
+                    c = max(2, int(msg.get("cols") or 100))
+                    r = max(2, int(msg.get("rows") or 32))
+                except (TypeError, ValueError):
+                    continue
+                await pty_manager.resize(session_id, c, r)
             elif mtype == "ping":
                 await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        log.exception("session ws error: %s", e)
     finally:
         pty_manager.unsubscribe(session_id, websocket)
 
@@ -730,6 +741,8 @@ async def ws_cursor(websocket: WebSocket):
                     cwd=send_cwd,
                 ):
                     await websocket.send_json(event)
+                    # Yield so other WS traffic (cancel/ping) can interleave mid-stream
+                    await asyncio.sleep(0)
             elif mtype == "cancel":
                 cancel_chat = (
                     (msg.get("chatId") or msg.get("chat") or chat_id).strip()

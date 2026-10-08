@@ -11,7 +11,7 @@ import { ShellTab } from './components/ShellTab'
 import { ToastStack } from './components/ToastStack'
 import { WorkTab } from './components/WorkTab'
 import { api } from './lib/api'
-import { clearToken, isSessionValid } from './lib/auth'
+import { clearSession, isSessionValid, watchSessionExpiry } from './lib/auth'
 import type { PresentRequest } from './lib/chatTypes'
 import { installClientLog } from './lib/clientLog'
 import { NotifyProvider, useNotify } from './lib/NotifyContext'
@@ -99,6 +99,8 @@ function TabIcon({ id }: { id: Tab }) {
   }
 }
 
+type HostLink = 'live' | 'reconnecting' | 'unreachable'
+
 function AuthedApp() {
   const [tab, setTab] = useState<Tab>('apps')
   const [projects, setProjects] = useState<Project[]>([])
@@ -112,6 +114,10 @@ function AuthedApp() {
   const [version, setVersion] = useState('')
   const [backup, setBackup] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [hostLink, setHostLink] = useState<HostLink>('reconnecting')
+  const [cursorConfigured, setCursorConfigured] = useState(false)
+  const [hostLabel, setHostLabel] = useState(() => location.hostname || 'host')
+  const failStreak = useRef(0)
   const {
     unread,
     inboxOpen,
@@ -122,6 +128,7 @@ function AuthedApp() {
   } = useNotify()
 
   const tabs = useMemo(() => TABS, [])
+  const activeProject = projects.find((p) => p.id === selectedId) || projects[0]
 
   /** Chat → Work: show Apps / Shell / Files (and optionally a shell or file). */
   const presentInWork = useCallback((req: PresentRequest) => {
@@ -133,27 +140,46 @@ function AuthedApp() {
 
   const refreshProjects = useCallback(async () => {
     try {
-      const data = await api.projects()
+      const [data, health] = await Promise.all([
+        api.projects(),
+        api.health().catch(() => null),
+      ])
       setProjects(data.projects)
       setLoadError('')
+      failStreak.current = 0
+      setHostLink('live')
+      setHostLabel(location.hostname || 'host')
+      if (health) {
+        setCursorConfigured(!!health.cursorConfigured)
+        if (health.version) setVersion(health.version)
+        if (typeof health.backup === 'boolean') setBackup(health.backup)
+      }
       if (!data.projects.find((p) => p.id === selectedId)) {
         setSelectedId(data.projects[0]?.id || '')
       }
-      try {
-        const v = await api.version()
-        setVersion(v.version || '')
-        setBackup(!!v.backup)
-      } catch {
-        /* ignore */
+      if (!health) {
+        try {
+          const v = await api.version()
+          setVersion(v.version || '')
+          setBackup(!!v.backup)
+        } catch {
+          /* ignore */
+        }
       }
       void refreshNotify()
     } catch (e) {
       const err = e as Error & { status?: number }
       const msg = err.message || String(e)
       setLoadError(msg)
-      if (err.status === 401 || err.status === 429 || /unauthorized|401/i.test(msg)) {
-        clearToken()
-        window.dispatchEvent(new Event('hb-auth-lost'))
+      failStreak.current += 1
+      setHostLink(failStreak.current >= 2 ? 'unreachable' : 'reconnecting')
+      if (err.status === 401 || /unauthorized|401/i.test(msg)) {
+        // clearSession already fired by api.ts for JWT codes; ensure UI resets
+        if (isSessionValid()) clearSession('unauthorized')
+        else
+          window.dispatchEvent(
+            new CustomEvent('hb-auth-lost', { detail: { reason: 'unauthorized' } }),
+          )
       }
     }
   }, [selectedId, refreshNotify])
@@ -231,12 +257,16 @@ function AuthedApp() {
     body = (
       <SettingsTab
         onSignedOut={() => {
-          window.dispatchEvent(new Event('hb-auth-lost'))
           setTab('apps')
         }}
       />
     )
   }
+
+  const linkLabel =
+    hostLink === 'live' ? 'Live' : hostLink === 'reconnecting' ? 'Reconnecting' : 'Unreachable'
+  const cursorHint = activeProject?.cursor
+  const cursorRunning = !!(cursorHint?.running || cursorHint?.active)
 
   return (
     <div className="hb-app-shell h-full flex flex-col">
@@ -246,17 +276,58 @@ function AuthedApp() {
           <div className="hb-spinner" />
         </div>
       )}
+      <div className="hb-status-bar" role="status" aria-live="polite">
+        <span
+          className={`hb-status-dot ${
+            hostLink === 'live'
+              ? 'hb-status-dot--ok'
+              : hostLink === 'reconnecting'
+                ? 'hb-status-dot--warn'
+                : 'hb-status-dot--err'
+          }`}
+        />
+        <span className="hb-status-host truncate" title={hostLabel}>
+          {hostLabel}
+        </span>
+        <span className="hb-status-sep">·</span>
+        <span
+          className={
+            hostLink === 'live'
+              ? 'text-ok'
+              : hostLink === 'reconnecting'
+                ? 'text-amber'
+                : 'text-danger'
+          }
+        >
+          {linkLabel}
+        </span>
+        {activeProject && (
+          <>
+            <span className="hb-status-sep">·</span>
+            <span className="truncate min-w-0" title={activeProject.path}>
+              {activeProject.name}
+            </span>
+          </>
+        )}
+        {cursorConfigured && (
+          <>
+            <span className="hb-status-sep">·</span>
+            <span className={cursorRunning ? 'text-sky' : 'text-mute'} title="Local Cursor agent">
+              Cursor{cursorRunning ? ' run' : ''}
+            </span>
+          </>
+        )}
+        {version && (
+          <span className="hb-status-ver ml-auto shrink-0">
+            v{version}
+            {backup ? ' · bak' : ''}
+          </span>
+        )}
+      </div>
       <main className="flex-1 min-h-0 overflow-hidden">{body}</main>
 
       <ToastStack />
       <NotificationCenter />
-
-      {version && (
-        <div className="hb-version" aria-hidden>
-          v{version}
-          {backup ? ' · bak' : ''}
-        </div>
-      )}
 
       <nav className="hb-nav" aria-label="Primary">
         <div
@@ -304,6 +375,11 @@ export default function App() {
     window.addEventListener('hb-auth-lost', onLost)
     return () => window.removeEventListener('hb-auth-lost', onLost)
   }, [])
+
+  useEffect(() => {
+    if (!authed) return
+    return watchSessionExpiry()
+  }, [authed])
 
   if (!authed) {
     return <Login onAuthed={() => setAuthed(true)} />
