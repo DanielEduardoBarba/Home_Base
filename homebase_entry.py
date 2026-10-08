@@ -4,11 +4,29 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 
 
 def self_test() -> int:
-    """Smoke test used by /usr/bin/homebased wrapper before exec."""
+    """
+    Smoke test used by /usr/bin/homebased wrapper before exec.
+
+    Uses a throwaway HOMEBASE_HOME (and TMPDIR) so the probe never needs write
+    access to /var/lib/homebased or /usr/share — works as the deploying user or root.
+    """
+    tmp: str | None = None
+    owns_tmp = False
     try:
+        preset = os.environ.get("HOMEBASE_HOME", "").strip()
+        if preset and os.path.isdir(preset):
+            tmp = preset
+        else:
+            tmp = tempfile.mkdtemp(prefix="homebased-selftest-")
+            owns_tmp = True
+        os.environ["HOMEBASE_HOME"] = tmp
+        os.environ["HOMEBASE_RUNTIME"] = os.path.join(tmp, ".runtime")
+        os.environ["TMPDIR"] = tmp
+        # Reloading is unnecessary if we import after setting env — do imports here.
         from server.config import BUNDLE_ROOT, get_settings
         from server.main import app  # noqa: F401
         from server.version import read_version
@@ -16,16 +34,22 @@ def self_test() -> int:
         settings = get_settings()
         _ = settings.host, settings.port
         web = BUNDLE_ROOT / "web" / "dist"
-        if not web.is_dir():
-            # Dev source tree may not have dist; allow if index exists under web/
-            if not (BUNDLE_ROOT / "web" / "index.html").is_file():
-                print("self-test: web assets missing", file=sys.stderr)
-                return 1
+        if not web.is_dir() and not (BUNDLE_ROOT / "web" / "index.html").is_file():
+            print("self-test: web assets missing", file=sys.stderr)
+            return 1
         print(f"self-test ok version={read_version()}")
         return 0
     except Exception as e:
         print(f"self-test failed: {e}", file=sys.stderr)
         return 1
+    finally:
+        if owns_tmp and tmp:
+            try:
+                import shutil
+
+                shutil.rmtree(tmp, ignore_errors=True)
+            except Exception:
+                pass
 
 
 def main() -> None:

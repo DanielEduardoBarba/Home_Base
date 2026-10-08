@@ -10,8 +10,14 @@ MARKER="$SHARE/.running-backup"
 run_probe() {
   local target="$1"
   [[ -x "$target" ]] || return 1
-  # Short import/smoke test — must exit 0 quickly without binding ports.
-  HOMEBASE_SELF_TEST=1 "$target" >/dev/null 2>&1
+  # Probe never writes into /var/lib/homebased or /usr/share (Nuitka unpack + jwt).
+  local tmp
+  tmp="$(mktemp -d /tmp/homebased-probe.XXXXXX)"
+  TMPDIR="$tmp" HOMEBASE_SELF_TEST=1 HOMEBASE_HOME="$tmp" HOMEBASE_RUNTIME="$tmp/.runtime" \
+    "$target" >/dev/null 2>&1
+  local rc=$?
+  rm -rf "$tmp" 2>/dev/null || true
+  return "$rc"
 }
 
 if [[ ! -x "$BIN" ]]; then

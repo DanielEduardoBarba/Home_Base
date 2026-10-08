@@ -61,10 +61,12 @@ Projects live in config/projects.json (gitignored). Presets are templates
 (actions/ports only) — always pass --path for where the repo lives.
 
 Deployed layout:
-  /usr/share/homebased/homebased      active binary
+  /usr/share/homebased/homebased      active binary (root:root 755)
   /usr/share/homebased/homebased.bak  last known-good
   /usr/bin/homebased                  wrapper (self-test → exec, else backup)
-  HOMEBASE_HOME=/var/lib/homebased    .env / config / runtime
+  HOMEBASE_HOME=/var/lib/homebased    .env / config / runtime (root:root)
+  dist/homebased                      always reclaimed to the workspace user
+Safe as you (sudo) or root — ownership is normalized each deploy.
 Production binds :8888.
 EOF
 }
@@ -126,6 +128,124 @@ run_priv() {
   else
     "$@"
   fi
+}
+
+# Repo / dist owner: SUDO_USER when elevated, else filesystem owner of ROOT, else self.
+workspace_owner() {
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    echo "$SUDO_USER"
+    return
+  fi
+  if [[ "$(id -u)" -eq 0 ]]; then
+    stat -c '%U' "$ROOT" 2>/dev/null || echo root
+    return
+  fi
+  id -un
+}
+
+workspace_group() {
+  local u
+  u="$(workspace_owner)"
+  id -gn "$u" 2>/dev/null || echo "$u"
+}
+
+# Ensure dist/ is writable for the current build; leave it owned by the workspace user
+# so root deploys do not brick the next non-root ./build.sh --bin.
+ensure_dist_writable() {
+  local owner group
+  owner="$(workspace_owner)"
+  group="$(workspace_group)"
+  if [[ ! -d "$BIN_OUT_DIR" ]]; then
+    mkdir -p "$BIN_OUT_DIR" 2>/dev/null || run_priv mkdir -p "$BIN_OUT_DIR"
+  fi
+  if [[ ! -w "$BIN_OUT_DIR" ]] || { [[ -e "$BIN_PATH" ]] && [[ ! -w "$BIN_PATH" ]]; }; then
+    echo "    reclaiming $BIN_OUT_DIR → ${owner}:${group}"
+    run_priv chown -R "${owner}:${group}" "$BIN_OUT_DIR"
+  fi
+}
+
+claim_dist_to_workspace() {
+  local owner group
+  owner="$(workspace_owner)"
+  group="$(workspace_group)"
+  [[ -d "$BIN_OUT_DIR" ]] || return 0
+  if [[ "$(id -u)" -eq 0 ]]; then
+    chown -R "${owner}:${group}" "$BIN_OUT_DIR"
+  elif [[ -e "$BIN_PATH" ]] && [[ ! -O "$BIN_PATH" ]]; then
+    run_priv chown -R "${owner}:${group}" "$BIN_OUT_DIR"
+  fi
+  if [[ -e "$BIN_PATH" ]]; then
+    chmod 755 "$BIN_PATH" 2>/dev/null || run_priv chmod 755 "$BIN_PATH"
+  fi
+}
+
+# Installed system paths always root:root so both user (sudo) and root deploys converge.
+secure_install_ownership() {
+  run_priv bash -c "
+    set -e
+    mkdir -p $(printf %q "$INSTALL_SHARE")
+    chown root:root $(printf %q "$INSTALL_SHARE")
+    chmod 755 $(printf %q "$INSTALL_SHARE")
+    for f in \
+      $(printf %q "$INSTALL_BIN_REAL") \
+      $(printf %q "$INSTALL_BIN_BAK") \
+      $(printf %q "$INSTALL_WRAPPER") \
+      $(printf %q "$INSTALL_SHARE/VERSION") \
+      $(printf %q "$INSTALL_SHARE/.running-backup"); do
+      [[ -e \"\$f\" ]] || continue
+      chown root:root \"\$f\"
+    done
+    [[ -e $(printf %q "$INSTALL_BIN_REAL") ]] && chmod 755 $(printf %q "$INSTALL_BIN_REAL")
+    [[ -e $(printf %q "$INSTALL_BIN_BAK") ]] && chmod 755 $(printf %q "$INSTALL_BIN_BAK")
+    [[ -e $(printf %q "$INSTALL_WRAPPER") ]] && chmod 755 $(printf %q "$INSTALL_WRAPPER")
+    [[ -e $(printf %q "$INSTALL_SHARE/VERSION") ]] && chmod 644 $(printf %q "$INSTALL_SHARE/VERSION")
+  "
+}
+
+secure_var_ownership() {
+  run_priv bash -c "
+    set -e
+    mkdir -p \
+      $(printf %q "$HOMEBASE_VAR/config") \
+      $(printf %q "$HOMEBASE_VAR/.runtime/logs")
+    chown -R root:root $(printf %q "$HOMEBASE_VAR")
+    chmod 755 \
+      $(printf %q "$HOMEBASE_VAR") \
+      $(printf %q "$HOMEBASE_VAR/config") \
+      $(printf %q "$HOMEBASE_VAR/.runtime") \
+      $(printf %q "$HOMEBASE_VAR/.runtime/logs") || true
+    [[ -f $(printf %q "$HOMEBASE_VAR/.env") ]] && chmod 600 $(printf %q "$HOMEBASE_VAR/.env")
+    [[ -f $(printf %q "$HOMEBASE_VAR/config/projects.json") ]] && \
+      chmod 644 $(printf %q "$HOMEBASE_VAR/config/projects.json")
+    for secret in jwt_secret auth.json; do
+      f=$(printf %q "$HOMEBASE_VAR/.runtime")/\$secret
+      [[ -f \"\$f\" ]] && chmod 600 \"\$f\"
+    done
+  "
+}
+
+# Probe must work as the invoking user (sudo deploy) or as root. Temp HOME + TMPDIR
+# keep jwt/runtime and Nuitka onefile unpack off /var/lib and /usr/share.
+probe_bin() {
+  local target="$1"
+  local tmp rc
+  [[ -x "$target" ]] || return 1
+  tmp="$(mktemp -d /tmp/homebased-probe.XXXXXX)"
+  set +e
+  TMPDIR="$tmp" HOMEBASE_SELF_TEST=1 HOMEBASE_HOME="$tmp" HOMEBASE_RUNTIME="$tmp/.runtime" \
+    "$target" >/dev/null 2>&1
+  rc=$?
+  set -e
+  if [[ "$rc" -ne 0 ]]; then
+    set +e
+    run_priv env TMPDIR="$tmp" HOMEBASE_SELF_TEST=1 \
+      HOMEBASE_HOME="$tmp" HOMEBASE_RUNTIME="$tmp/.runtime" \
+      "$target" >/dev/null 2>&1
+    rc=$?
+    set -e
+  fi
+  rm -rf "$tmp" 2>/dev/null || true
+  return "$rc"
 }
 
 ensure_venv() {
@@ -547,6 +667,7 @@ cmd_bin() {
     exit 1
   fi
 
+  ensure_dist_writable
   mkdir -p "$BIN_OUT_DIR"
   rm -f "$BIN_PATH"
 
@@ -593,8 +714,9 @@ cmd_bin() {
     exit 1
   fi
 
-  chmod +x "$BIN_PATH"
-  echo "==> Binary ready: $BIN_PATH ($(du -h "$BIN_PATH" | cut -f1))"
+  chmod +x "$BIN_PATH" 2>/dev/null || run_priv chmod +x "$BIN_PATH"
+  claim_dist_to_workspace
+  echo "==> Binary ready: $BIN_PATH ($(du -h "$BIN_PATH" | cut -f1)) [$(workspace_owner):$(workspace_group)]"
 }
 
 force_prod_port_in_env() {
@@ -684,6 +806,7 @@ prepare_var_lib() {
   elif [[ ! -f "$HOMEBASE_VAR/config/projects.json" ]]; then
     run_priv cp config/projects.example.json "$HOMEBASE_VAR/config/projects.json"
   fi
+  secure_var_ownership
 }
 
 stop_homebased() {
@@ -717,9 +840,14 @@ install_binary() {
     echo "Error: missing wrapper $WRAPPER_SRC" >&2
     exit 1
   fi
+  # Root builds leave root-owned dist/; reclaim so cp source is readable and next
+  # non-root build can overwrite. Install targets are always root:root below.
+  claim_dist_to_workspace
   echo "==> Safe install → $INSTALL_SHARE (+ wrapper $INSTALL_WRAPPER)"
   stop_homebased
   run_priv mkdir -p "$INSTALL_SHARE"
+  run_priv chown root:root "$INSTALL_SHARE"
+  run_priv chmod 755 "$INSTALL_SHARE"
 
   # Migrate legacy fat binary at /usr/bin/homebased into the share layout once
   if [[ ! -x "$INSTALL_BIN_REAL" ]] && [[ -x "$INSTALL_WRAPPER" ]]; then
@@ -737,14 +865,14 @@ install_binary() {
 
   # Promote current → .bak only if it still passes self-test
   if [[ -x "$INSTALL_BIN_REAL" ]]; then
-    if HOMEBASE_SELF_TEST=1 "$INSTALL_BIN_REAL" >/dev/null 2>&1; then
+    if probe_bin "$INSTALL_BIN_REAL"; then
       echo "    keeping known-good as .bak"
       run_priv cp -f "$INSTALL_BIN_REAL" "$INSTALL_BIN_BAK"
       run_priv chmod 755 "$INSTALL_BIN_BAK"
     elif [[ -x "$INSTALL_BIN_BAK" ]]; then
       echo "    current failed probe — leaving existing .bak untouched"
     else
-      echo "    warning: current binary fails probe and no .bak yet"
+      echo "    warning: current binary fails probe and no .bak yet (legacy build)"
     fi
   fi
 
@@ -761,13 +889,23 @@ install_binary() {
   run_priv chmod 755 "${INSTALL_WRAPPER}.new"
   run_priv mv -f "${INSTALL_WRAPPER}.new" "$INSTALL_WRAPPER"
 
+  secure_install_ownership
+
   # Probe new binary; if it fails, immediately restore .bak as active
-  if ! HOMEBASE_SELF_TEST=1 "$INSTALL_BIN_REAL" >/dev/null 2>&1; then
+  if ! probe_bin "$INSTALL_BIN_REAL"; then
     echo "    NEW binary failed self-test" >&2
+    # Show failure reason once for debugging
+    tmp="$(mktemp -d /tmp/homebased-probe.XXXXXX)"
+    TMPDIR="$tmp" HOMEBASE_SELF_TEST=1 HOMEBASE_HOME="$tmp" HOMEBASE_RUNTIME="$tmp/.runtime" \
+      "$INSTALL_BIN_REAL" 2>&1 | tail -n 5 || \
+      run_priv env TMPDIR="$tmp" HOMEBASE_SELF_TEST=1 HOMEBASE_HOME="$tmp" \
+        HOMEBASE_RUNTIME="$tmp/.runtime" "$INSTALL_BIN_REAL" 2>&1 | tail -n 5 || true
+    rm -rf "$tmp" 2>/dev/null || true
     if [[ -x "$INSTALL_BIN_BAK" ]]; then
       echo "    restoring .bak as active binary" >&2
       run_priv cp -f "$INSTALL_BIN_BAK" "$INSTALL_BIN_REAL"
       run_priv bash -c "echo 1 > $(printf %q "$INSTALL_SHARE/.running-backup")"
+      secure_install_ownership
     else
       echo "    no .bak available — deploy left a broken primary" >&2
       exit 1
