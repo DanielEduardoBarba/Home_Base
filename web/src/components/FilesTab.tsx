@@ -6,9 +6,10 @@ import { markdown } from '@codemirror/lang-markdown'
 import { python } from '@codemirror/lang-python'
 import { oneDark } from '@codemirror/theme-one-dark'
 import CodeMirror from '@uiw/react-codemirror'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../lib/api'
 import type { FsEntry, Project } from '../lib/types'
+import { ProjectSelect } from './ProjectSelect'
 
 function langExt(language: string) {
   switch (language) {
@@ -35,6 +36,17 @@ function langExt(language: string) {
   }
 }
 
+function crumbs(path: string): { label: string; path: string }[] {
+  const parts = path.split('/').filter(Boolean)
+  const out: { label: string; path: string }[] = [{ label: 'root', path: '' }]
+  let acc = ''
+  for (const p of parts) {
+    acc = acc ? `${acc}/${p}` : p
+    out.push({ label: p, path: acc })
+  }
+  return out
+}
+
 export function FilesTab({
   projects,
   selectedId,
@@ -54,6 +66,7 @@ export function FilesTab({
   const [status, setStatus] = useState('')
   const [navOpen, setNavOpen] = useState(true)
   const [error, setError] = useState('')
+  const [filter, setFilter] = useState('')
 
   const loadDir = useCallback(
     async (path: string) => {
@@ -63,6 +76,7 @@ export function FilesTab({
         const data = await api.fsList(project.id, path)
         setDir(data.path === '.' ? '' : data.path)
         setEntries(data.entries)
+        setFilter('')
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
       }
@@ -75,6 +89,7 @@ export function FilesTab({
     setContent('')
     setDirty(false)
     setDir('')
+    setNavOpen(true)
     loadDir('')
   }, [project?.id, loadDir])
 
@@ -114,79 +129,131 @@ export function FilesTab({
     return parts.join('/')
   }
 
+  const trail = useMemo(() => crumbs(dir), [dir])
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase()
+    if (!q) return entries
+    return entries.filter((e) => e.name.toLowerCase().includes(q))
+  }, [entries, filter])
+
   if (!project) {
     return <p className="p-6 text-mute text-sm">Add a workspace to browse files.</p>
   }
 
+  const editing = !!filePath && !navOpen
+
   return (
     <div className="h-full flex flex-col min-h-0 pb-16">
-      <div className="shrink-0 px-3 pt-3 pb-2 border-b border-line/80 bg-panel/50 backdrop-blur-md flex flex-wrap gap-2 items-center">
-        <select
-          value={project.id}
-          onChange={(e) => onSelect(e.target.value)}
-          className="hb-select"
-        >
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          className="md:hidden rounded-xl border border-line px-3 py-2 text-xs"
-          onClick={() => setNavOpen((v) => !v)}
-        >
-          {navOpen ? 'Editor' : 'Files'}
-        </button>
-        {filePath && (
+      <div className="shrink-0 px-3 pt-3 pb-2 border-b border-line bg-panel/80 backdrop-blur-md space-y-2 max-w-6xl mx-auto w-full">
+        <div className="flex flex-wrap gap-2 items-center">
+          <ProjectSelect projects={projects} selectedId={project.id} onSelect={onSelect} />
           <button
             type="button"
-            disabled={!dirty}
-            onClick={save}
-            className="rounded-xl bg-accent text-ink font-semibold px-3 py-2 text-sm disabled:opacity-40"
+            className="md:hidden hb-btn hb-btn-ghost px-3 py-2 text-xs"
+            onClick={() => setNavOpen((v) => !v)}
           >
-            Save
+            {navOpen ? (filePath ? 'Open editor' : 'Browse') : '← Files'}
           </button>
-        )}
-        <span className="text-[11px] font-mono text-mute truncate flex-1">{status}</span>
+          {filePath && (
+            <button
+              type="button"
+              disabled={!dirty}
+              onClick={save}
+              className="hb-btn hb-btn-primary px-3 py-2 text-sm"
+            >
+              Save{dirty ? ' •' : ''}
+            </button>
+          )}
+          <span className="text-[11px] font-mono text-mute truncate flex-1 min-w-[6rem]">
+            {status}
+          </span>
+        </div>
+
+        {/* Breadcrumb trail — works on phone, tablet, desktop */}
+        <nav
+          className="flex items-center gap-1 overflow-x-auto text-[12px] font-mono pb-0.5"
+          aria-label="Path"
+        >
+          {editing && (
+            <button
+              type="button"
+              className="shrink-0 rounded-lg border border-accent/40 bg-accent/10 text-accent px-2.5 py-1.5 mr-1 font-semibold"
+              onClick={() => setNavOpen(true)}
+            >
+              ← Back
+            </button>
+          )}
+          {trail.map((c, i) => (
+            <span key={c.path || 'root'} className="flex items-center gap-1 shrink-0">
+              {i > 0 && <span className="text-mute/70">/</span>}
+              <button
+                type="button"
+                onClick={() => {
+                  setNavOpen(true)
+                  loadDir(c.path)
+                }}
+                className={`rounded-md px-2 py-1 ${
+                  i === trail.length - 1 && navOpen
+                    ? 'bg-sky/15 text-sky font-semibold'
+                    : 'text-mute hover:text-text hover:bg-panel-2'
+                }`}
+              >
+                {c.label}
+              </button>
+            </span>
+          ))}
+        </nav>
       </div>
 
       <div className="flex-1 min-h-0 flex">
         <aside
           className={`${
             navOpen ? 'flex' : 'hidden'
-          } md:flex w-full md:w-64 shrink-0 flex-col border-r border-line bg-panel/40`}
+          } md:flex w-full md:w-72 lg:w-80 shrink-0 flex-col border-r border-line bg-panel/40`}
         >
-          <div className="px-2 py-2 flex gap-1 border-b border-line">
+          <div className="px-2 py-2 flex gap-2 border-b border-line items-center">
             <button
               type="button"
-              className="text-xs font-mono text-accent px-2 py-1"
+              className="hb-btn hb-btn-ghost text-xs px-2.5 py-1.5 shrink-0 disabled:opacity-30"
               onClick={() => loadDir(parentDir(dir))}
               disabled={!dir}
+              title="Up one folder"
             >
-              ..
+              ↑ Up
             </button>
-            <span className="text-[11px] font-mono text-mute truncate py-1">
-              {dir || '/'}
-            </span>
+            <input
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filter…"
+              className="flex-1 min-w-0 rounded-lg bg-panel-2 border border-line px-2.5 py-1.5 text-xs outline-none focus:border-accent"
+            />
           </div>
           <ul className="flex-1 overflow-y-auto text-sm">
-            {entries.map((e) => (
+            {filtered.length === 0 && (
+              <li className="px-3 py-6 text-mute text-xs text-center">Empty folder</li>
+            )}
+            {filtered.map((e) => (
               <li key={e.path}>
                 <button
                   type="button"
-                  className={`w-full text-left px-3 py-2.5 border-b border-line/60 hover:bg-panel-2 ${
-                    filePath === e.path ? 'bg-accent/10 text-accent' : ''
+                  className={`w-full text-left px-3 py-3 md:py-2.5 border-b border-line/50 active:bg-accent/10 ${
+                    filePath === e.path
+                      ? 'bg-accent/12 text-accent border-l-2 border-l-accent'
+                      : 'hover:bg-panel-2'
                   }`}
-                  onClick={() =>
-                    e.type === 'dir' ? loadDir(e.path) : openFile(e.path)
-                  }
+                  onClick={() => (e.type === 'dir' ? loadDir(e.path) : openFile(e.path))}
                 >
-                  <span className="font-mono text-[11px] text-mute mr-2">
+                  <span
+                    className={`inline-flex items-center justify-center w-6 mr-2 text-[11px] font-mono ${
+                      e.type === 'dir' ? 'text-sky' : 'text-mute'
+                    }`}
+                  >
                     {e.type === 'dir' ? '▸' : '·'}
                   </span>
-                  {e.name}
+                  <span className="font-medium">{e.name}</span>
+                  {e.type === 'dir' && (
+                    <span className="float-right text-mute text-[10px] mt-1">folder</span>
+                  )}
                 </button>
               </li>
             ))}
@@ -214,7 +281,10 @@ export function FilesTab({
             />
           ) : (
             <div className="flex-1 flex items-center justify-center text-mute text-sm p-6 text-center">
-              Select a file to edit
+              <div>
+                <p className="text-text font-semibold mb-1">Select a file</p>
+                <p className="text-xs">Tap folders to drill in · breadcrumbs jump up the path</p>
+              </div>
             </div>
           )}
         </div>

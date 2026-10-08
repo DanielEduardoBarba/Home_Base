@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
@@ -28,6 +30,33 @@ def _agent_id(agent: Any) -> Optional[str]:
     return getattr(agent, "agent_id", None) or getattr(agent, "agentId", None)
 
 
+def _resolve_model(model: Optional[str] = None) -> str:
+    settings = get_settings()
+    chosen = (model or "").strip()
+    return chosen or settings.cursor_model
+
+
+def _session_key(project_id: str, chat_id: str) -> str:
+    cid = (chat_id or "default").strip() or "default"
+    return f"{project_id}:{cid}"
+
+
+def _resolve_cwd(project_id: str, cwd: Optional[str] = None) -> Path:
+    project = get_project(project_id)
+    root = project.path.resolve()
+    rel = (cwd or "").strip().lstrip("/")
+    if not rel or rel in {".", "./"}:
+        return root
+    target = (root / rel).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as e:
+        raise PermissionError("cwd escapes project root") from e
+    if not target.is_dir():
+        raise NotADirectoryError(f"cwd is not a directory: {rel}")
+    return target
+
+
 class CursorBridge:
     """Local Cursor agents via cursor-sdk (no cloud runtime)."""
 
@@ -36,10 +65,51 @@ class CursorBridge:
         self._client_workspace: Optional[str] = None
         self._agents: dict[str, Any] = {}
         self._active_run: dict[str, Any] = {}
+        self._models: dict[str, str] = {}
+        self._cwds: dict[str, str] = {}
 
     @property
     def configured(self) -> bool:
         return bool(get_settings().cursor_api_key)
+
+    async def list_models(self) -> dict[str, Any]:
+        settings = get_settings()
+        default = settings.cursor_model
+        if not settings.cursor_api_key:
+            return {
+                "configured": False,
+                "default": default,
+                "models": [{"id": default, "displayName": default, "description": ""}],
+            }
+
+        def _fetch() -> list[dict[str, str]]:
+            from cursor_sdk import Cursor
+
+            models = Cursor.models.list(api_key=settings.cursor_api_key)
+            return [
+                {
+                    "id": m.id,
+                    "displayName": m.display_name or m.id,
+                    "description": m.description or "",
+                }
+                for m in models
+            ]
+
+        try:
+            models = await asyncio.to_thread(_fetch)
+        except Exception as e:
+            log.warning("list_models failed: %s", e)
+            return {
+                "configured": True,
+                "default": default,
+                "models": [{"id": default, "displayName": default, "description": ""}],
+                "error": str(e),
+            }
+
+        if not any(m["id"] == default for m in models):
+            models.insert(0, {"id": default, "displayName": default, "description": ""})
+
+        return {"configured": True, "default": default, "models": models}
 
     async def _ensure_client(self, workspace: Path):
         from cursor_sdk import AsyncClient
@@ -50,9 +120,7 @@ class CursorBridge:
 
         await self.close()
 
-        # launch_bridge returns an AsyncClient (also supports async context manager)
         client = await AsyncClient.launch_bridge(workspace=ws)
-        # Enter if it is a context manager wrapper
         if hasattr(client, "__aenter__") and not hasattr(client, "create_agent"):
             client = await client.__aenter__()
         self._client = client
@@ -60,7 +128,7 @@ class CursorBridge:
         return client
 
     async def close(self) -> None:
-        for pid, agent in list(self._agents.items()):
+        for key, agent in list(self._agents.items()):
             try:
                 if hasattr(agent, "aclose"):
                     await agent.aclose()
@@ -69,6 +137,9 @@ class CursorBridge:
             except Exception:
                 pass
         self._agents.clear()
+        self._models.clear()
+        self._cwds.clear()
+        self._active_run.clear()
         if self._client is not None:
             try:
                 if hasattr(self._client, "aclose"):
@@ -82,63 +153,84 @@ class CursorBridge:
         self._client = None
         self._client_workspace = None
 
-    async def get_or_create_agent(self, project_id: str):
+    async def get_or_create_agent(
+        self,
+        project_id: str,
+        *,
+        chat_id: str = "default",
+        cwd: Optional[str] = None,
+        model: Optional[str] = None,
+    ):
         from cursor_sdk import AsyncAgent, LocalAgentOptions
 
-        if project_id in self._agents:
-            return self._agents[project_id]
+        key = _session_key(project_id, chat_id)
+        model_id = _resolve_model(model)
+        work_cwd = _resolve_cwd(project_id, cwd)
+
+        if key in self._agents:
+            self._models[key] = model_id
+            self._cwds[key] = str(work_cwd)
+            return self._agents[key]
 
         settings = get_settings()
         if not settings.cursor_api_key:
             raise RuntimeError("CURSOR_API_KEY is not set")
 
         project = get_project(project_id)
+        # Bridge client is scoped to project root; agent cwd may be a subdirectory
         client = await self._ensure_client(project.path)
         stored = _load_agents()
-        agent_id = stored.get(project_id)
-        local = LocalAgentOptions(cwd=str(project.path))
+        agent_id = stored.get(key) or stored.get(project_id)
+        local = LocalAgentOptions(cwd=str(work_cwd))
 
         if agent_id:
             try:
                 options = {
                     "api_key": settings.cursor_api_key,
-                    "model": settings.cursor_model,
+                    "model": model_id,
                     "local": local,
                 }
                 if hasattr(client, "resume_agent"):
                     agent = await client.resume_agent(agent_id, options)
                 else:
                     agent = await AsyncAgent.resume(agent_id, options, client=client)
-                self._agents[project_id] = agent
+                self._agents[key] = agent
+                self._models[key] = model_id
+                self._cwds[key] = str(work_cwd)
                 return agent
             except Exception as e:
-                log.warning("resume failed for %s: %s — creating new", project_id, e)
+                log.warning("resume failed for %s: %s — creating new", key, e)
 
-        # Prefer client.create_agent when available
         if hasattr(client, "create_agent"):
             agent = await client.create_agent(
-                model=settings.cursor_model,
+                model=model_id,
                 api_key=settings.cursor_api_key,
                 local=local,
             )
         else:
             agent = await AsyncAgent.create(
                 client=client,
-                model=settings.cursor_model,
+                model=model_id,
                 api_key=settings.cursor_api_key,
                 local=local,
             )
 
-        self._agents[project_id] = agent
+        self._agents[key] = agent
+        self._models[key] = model_id
+        self._cwds[key] = str(work_cwd)
         aid = _agent_id(agent)
         if aid:
             data = _load_agents()
-            data[project_id] = aid
+            data[key] = aid
             _save_agents(data)
         return agent
 
-    async def reset_agent(self, project_id: str) -> None:
-        agent = self._agents.pop(project_id, None)
+    async def reset_agent(self, project_id: str, chat_id: str = "default") -> None:
+        key = _session_key(project_id, chat_id)
+        agent = self._agents.pop(key, None)
+        self._models.pop(key, None)
+        self._cwds.pop(key, None)
+        self._active_run.pop(key, None)
         if agent:
             try:
                 if hasattr(agent, "aclose"):
@@ -148,23 +240,34 @@ class CursorBridge:
             except Exception:
                 pass
         data = _load_agents()
-        data.pop(project_id, None)
+        data.pop(key, None)
+        # legacy single-agent key
+        if chat_id in {"default", ""}:
+            data.pop(project_id, None)
         _save_agents(data)
 
-    def agent_info(self, project_id: str) -> dict[str, Any]:
+    def agent_info(
+        self, project_id: str, chat_id: str = "default"
+    ) -> dict[str, Any]:
+        key = _session_key(project_id, chat_id)
         stored = _load_agents()
-        agent = self._agents.get(project_id)
+        agent = self._agents.get(key)
         aid = _agent_id(agent) if agent else None
         return {
             "projectId": project_id,
-            "agentId": aid or stored.get(project_id),
+            "chatId": chat_id or "default",
+            "agentId": aid or stored.get(key) or stored.get(project_id),
             "configured": self.configured,
-            "active": project_id in self._agents,
-            "running": project_id in self._active_run,
+            "active": key in self._agents,
+            "running": key in self._active_run,
+            "model": self._models.get(key) or get_settings().cursor_model,
+            "defaultModel": get_settings().cursor_model,
+            "cwd": self._cwds.get(key),
         }
 
-    async def cancel(self, project_id: str) -> bool:
-        run = self._active_run.get(project_id)
+    async def cancel(self, project_id: str, chat_id: str = "default") -> bool:
+        key = _session_key(project_id, chat_id)
+        run = self._active_run.get(key)
         if not run:
             return False
         try:
@@ -183,32 +286,51 @@ class CursorBridge:
         return False
 
     async def send_stream(
-        self, project_id: str, prompt: str
+        self,
+        project_id: str,
+        prompt: str,
+        *,
+        model: Optional[str] = None,
+        chat_id: str = "default",
+        cwd: Optional[str] = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        agent = await self.get_or_create_agent(project_id)
+        from cursor_sdk import SendOptions
+
+        key = _session_key(project_id, chat_id)
+        model_id = _resolve_model(model)
+        agent = await self.get_or_create_agent(
+            project_id, chat_id=chat_id, cwd=cwd, model=model_id
+        )
         aid = _agent_id(agent)
         if aid:
             data = _load_agents()
-            data[project_id] = aid
+            data[key] = aid
             _save_agents(data)
-            yield {"type": "agent", "agentId": aid}
+            yield {
+                "type": "agent",
+                "agentId": aid,
+                "model": model_id,
+                "chatId": chat_id,
+                "cwd": self._cwds.get(key),
+            }
 
-        run = await agent.send(prompt)
-        self._active_run[project_id] = run
+        run = await agent.send(prompt, SendOptions(model=model_id))
+        self._models[key] = model_id
+        self._active_run[key] = run
         run_id = getattr(run, "id", None) or getattr(run, "run_id", None)
-        yield {"type": "run", "runId": run_id}
+        yield {"type": "run", "runId": run_id, "model": model_id, "chatId": chat_id}
 
         try:
-            if hasattr(run, "iter_text"):
-                async for text in run.iter_text():
-                    if text:
-                        yield {"type": "text", "text": text}
-            elif hasattr(run, "messages"):
+            if hasattr(run, "messages"):
                 async for message in run.messages():
                     yield {"type": "message", "message": _serialize_message(message)}
             elif hasattr(run, "stream"):
                 async for message in run.stream():
                     yield {"type": "message", "message": _serialize_message(message)}
+            elif hasattr(run, "iter_text"):
+                async for text in run.iter_text():
+                    if text:
+                        yield {"type": "text", "text": text}
 
             result = await run.wait()
             yield {
@@ -221,12 +343,72 @@ class CursorBridge:
             log.exception("send_stream failed")
             yield {"type": "error", "error": str(e)}
         finally:
-            self._active_run.pop(project_id, None)
+            self._active_run.pop(key, None)
+
+
+def _file_hint_from_args(args: Any) -> Optional[dict[str, str]]:
+    if args is None:
+        return None
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except Exception:
+            m = re.search(r"[\w./\\-]+\.\w{1,12}", args)
+            return {"path": m.group(0), "action": "touch"} if m else None
+    if isinstance(args, dict):
+        for key in ("path", "file", "filePath", "filename", "target"):
+            val = args.get(key)
+            if isinstance(val, str) and val.strip():
+                action = "edit"
+                if any(k in args for k in ("contents", "content", "new_string", "newString")):
+                    action = "write"
+                elif "old_string" in args or "oldString" in args:
+                    action = "edit"
+                return {"path": val.strip(), "action": action}
+    return None
 
 
 def _serialize_message(message: Any) -> dict[str, Any]:
     mtype = getattr(message, "type", None) or getattr(message, "role", None)
     out: dict[str, Any] = {"type": mtype}
+
+    if mtype == "thinking":
+        out["text"] = getattr(message, "text", "") or ""
+        out["content"] = [{"type": "text", "text": out["text"]}]
+        return out
+
+    if mtype == "tool_call":
+        name = getattr(message, "name", "") or "tool"
+        status = getattr(message, "status", "") or ""
+        args = getattr(message, "args", None)
+        result = getattr(message, "result", None)
+        out["name"] = name
+        out["status"] = status
+        out["callId"] = getattr(message, "call_id", None)
+        try:
+            out["args"] = args if isinstance(args, (dict, list, str, int, float, bool)) or args is None else str(args)[:2000]
+        except Exception:
+            out["args"] = str(args)[:2000]
+        try:
+            out["result"] = (
+                result
+                if isinstance(result, (dict, list, str, int, float, bool)) or result is None
+                else str(result)[:2000]
+            )
+        except Exception:
+            out["result"] = str(result)[:2000]
+        hint = _file_hint_from_args(args)
+        if hint:
+            out["file"] = hint
+        out["content"] = [{"type": "text", "text": f"{name} · {status}"}]
+        return out
+
+    if mtype in {"status", "task"}:
+        text = getattr(message, "message", None) or getattr(message, "text", "") or ""
+        out["status"] = getattr(message, "status", "")
+        out["text"] = text
+        out["content"] = [{"type": "text", "text": str(text)}]
+        return out
 
     inner = getattr(message, "message", None)
     if inner is not None:
@@ -237,6 +419,14 @@ def _serialize_message(message: Any) -> dict[str, Any]:
                 btype = getattr(block, "type", None)
                 if btype == "text":
                     blocks.append({"type": "text", "text": getattr(block, "text", "")})
+                elif btype == "tool_use":
+                    blocks.append(
+                        {
+                            "type": "tool_use",
+                            "name": getattr(block, "name", "tool"),
+                            "raw": str(block)[:2000],
+                        }
+                    )
                 else:
                     blocks.append({"type": str(btype), "raw": str(block)[:2000]})
             out["content"] = blocks

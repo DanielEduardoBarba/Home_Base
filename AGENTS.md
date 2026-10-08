@@ -1,6 +1,6 @@
 # Home Base — agent guide
 
-Generic control plane. **Production `:80`** (systemd as root). **Dev API `:8080`**, **Vite `:3080`** (proxies `/api` + `/ws`). Projects are configured in **gitignored** `config/projects.json` — nothing is hardcoded until added via CLI.
+Generic control plane. **Production `:8888`** (systemd as root). **Dev API `:8080`**, **Vite `:3080`** (proxies `/api` + `/ws`). Projects are configured in **gitignored** `config/projects.json` — nothing is hardcoded until added via CLI.
 
 ## Setup
 
@@ -12,7 +12,7 @@ Generic control plane. **Production `:80`** (systemd as root). **Dev API `:8080`
 
 Presets never embed a default filesystem path — always pass `--path`.
 
-Open the UI at `http://localhost:3080` in dev (Vite). Production is `http://<host>/` on port 80.
+Open the UI at `http://localhost:3080` in dev (Vite). Production is `http://<host>:8888/`.
 
 ## Same-origin client API
 
@@ -37,6 +37,8 @@ Committed preset: `config/presets/example.json`. Personal presets under `config/
 - Progressive lockout after 5 failures (10s … 1 day)
 - Daily JSONL logs: `.runtime/logs/YYYY-MM-DD.log`
 - Notifications capped at 2000 rows on disk; UI paginates
+- In-memory Logs tab ring (`/api/trace`) capped at 300 lines — server + web console
+- Stop kills PTY sessions, pidfile PIDs, **and** listeners on configured project ports
 
 ## Files API
 
@@ -45,13 +47,13 @@ Paths are resolved under the project root only. Skip `node_modules`, `.git`, etc
 ## Deploy
 
 ```bash
-./build.sh --deploy # Nuitka onefile → /usr/bin/homebase + homebase.service
+./build.sh --deploy # Nuitka onefile → /usr/bin/homebased + homebased.service
 ```
 
-Writable state for the service: `/var/lib/homebase` (`HOMEBASE_HOME`). Binary build artifacts under `dist/` are gitignored. Unit runs as **root** on **port 80**.
+Writable state for the service: `/var/lib/homebased` (`HOMEBASE_HOME`). Binary build artifacts under `dist/` are gitignored. Unit runs as **root** on **port 8888**.
 
 ## Do not
 
-- Commit `.env`, `config/projects.json`, personal presets, or `dist/homebase`
+- Commit `.env`, `config/projects.json`, personal presets, or `dist/homebased`
 - Use cloud Cursor agents (local only)
 - Allow scripts outside the project directory

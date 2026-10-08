@@ -1,38 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import json
-import signal
 from pathlib import Path
 from typing import Any, Optional
 
 from .config import SESSIONS_PATH, ActionDef, Project, get_project, list_projects
 from .notifications import push as notify
-from .pty_manager import PtySession, pty_manager
+from .ports import kill_pids, kill_ports
+from .pty_manager import pty_manager
+from .trace_log import append as trace
 
 
 def _persist() -> None:
     payload = {"sessions": pty_manager.list_sessions()}
     SESSIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
     SESSIONS_PATH.write_text(json.dumps(payload, indent=2))
-
-
-def os_kill_tree(pid: int) -> None:
-    import os
-
-    try:
-        os.killpg(pid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-    try:
-        os.killpg(pid, signal.SIGKILL)
-    except Exception:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except Exception:
-            pass
 
 
 def _stop_pidfile(project: Project) -> list[int]:
@@ -44,21 +27,25 @@ def _stop_pidfile(project: Project) -> list[int]:
         lines = pid_file.read_text().splitlines()
     except OSError:
         return stopped
+    pids: list[int] = []
     for line in lines:
         line = line.strip()
-        if not line.isdigit():
-            continue
-        pid = int(line)
-        try:
-            os_kill_tree(pid)
-            stopped.append(pid)
-        except Exception:
-            pass
+        if line.isdigit():
+            pids.append(int(line))
+    stopped = kill_pids(pids)
     try:
         pid_file.unlink(missing_ok=True)
     except OSError:
         pass
     return stopped
+
+
+def _stop_by_ports(project: Project) -> list[int]:
+    """Kill listeners on configured ports (covers stacks started outside Home Base)."""
+    ports = [p.port for p in project.ports]
+    if not ports:
+        return []
+    return kill_ports(ports)
 
 
 def _resolve_script(project: Project, script: str) -> Path:
@@ -82,16 +69,31 @@ async def stop_project(project_id: str) -> dict[str, Any]:
     killed = await pty_manager.kill_by_project(
         project_id, kinds={"run", "expo", "ship", "action"}
     )
-    extra = _stop_pidfile(project)
+    extra = await asyncio.to_thread(_stop_pidfile, project)
+    # Always free configured ports so Stop works even when nothing was started via PTY.
+    port_killed = await asyncio.to_thread(_stop_by_ports, project)
     _persist()
+    msg = (
+        f"sessions={len(killed)} pidfile={len(extra)} ports={len(port_killed)}"
+    )
+    trace("info", f"stop {project.id}: {msg}", projectId=project_id)
     notify(
         f"Stopped {project.name}",
-        f"Killed {len(killed)} session(s)",
+        msg,
         level="info",
         category="process",
-        meta={"projectId": project_id, "killed": killed},
+        meta={
+            "projectId": project_id,
+            "killed": killed,
+            "pidFileStopped": extra,
+            "portStopped": port_killed,
+        },
     )
-    return {"killedSessions": killed, "pidFileStopped": extra}
+    return {
+        "killedSessions": killed,
+        "pidFileStopped": extra,
+        "portStopped": port_killed,
+    }
 
 
 async def run_action_def(
@@ -138,6 +140,12 @@ async def run_action_def(
         env=env,
     )
     _persist()
+    trace(
+        "info",
+        f"action {action.id} → session {session.id}",
+        projectId=project_id,
+        actionId=action.id,
+    )
     notify(
         f"{project.name}: {action.label}",
         session.label,

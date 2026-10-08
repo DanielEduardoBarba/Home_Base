@@ -20,7 +20,7 @@ def _home_root() -> Path:
     Writable home for .env, projects.json, .runtime.
     - HOMEBASE_HOME if set
     - else source tree when build.sh is present (dev)
-    - else /var/lib/homebase (installed binary / systemd)
+    - else /var/lib/homebased (installed binary / systemd)
     """
     env = os.environ.get("HOMEBASE_HOME", "").strip()
     if env:
@@ -28,13 +28,18 @@ def _home_root() -> Path:
     bundle = _bundle_root()
     if (bundle / "build.sh").is_file():
         return bundle
-    return Path("/var/lib/homebase")
+    # Prefer new name; fall back if an older install still exists
+    for candidate in (Path("/var/lib/homebased"), Path("/var/lib/homebase")):
+        if candidate.is_dir():
+            return candidate
+    return Path("/var/lib/homebased")
 
 
 BUNDLE_ROOT = _bundle_root()
 ROOT = _home_root()
 ROOT.mkdir(parents=True, exist_ok=True)
-load_dotenv(ROOT / ".env")
+# Never override vars already set by systemd / the shell (e.g. HOMEBASE_PORT=8888)
+load_dotenv(ROOT / ".env", override=False)
 
 RUNTIME_DIR = Path(os.environ.get("HOMEBASE_RUNTIME", str(ROOT / ".runtime")))
 RUNTIME_DIR.mkdir(parents=True, exist_ok=True)

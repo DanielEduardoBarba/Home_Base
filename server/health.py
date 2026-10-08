@@ -1,27 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-import socket
 from typing import Any
 
 import httpx
 
 from .config import Project
-
-
-def port_open(host: str, port: int, timeout: float = 0.35) -> bool:
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
+from .ports import port_listening
 
 
 async def check_port(project: Project, port_id: str) -> dict[str, Any]:
     port_def = next((p for p in project.ports if p.id == port_id), None)
     if not port_def:
         return {"id": port_id, "up": False, "error": "unknown port"}
-    listening = await asyncio.to_thread(port_open, "127.0.0.1", port_def.port)
+    listening = await asyncio.to_thread(port_listening, port_def.port)
     result: dict[str, Any] = {
         "id": port_def.id,
         "label": port_def.display,
@@ -40,6 +32,7 @@ async def check_port(project: Project, port_id: str) -> dict[str, Any]:
                     "status": r.status_code,
                 }
         except Exception:
+            # Still "up" if the port accepts TCP — health is advisory only.
             result["health"] = {"ok": False, "url": url, "status": None}
     return result
 

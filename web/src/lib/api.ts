@@ -1,9 +1,9 @@
 import { getToken } from './auth'
-import type { FsEntry, NotificationItem, Project, Session } from './types'
+import type { FsEntry, NotificationItem, Project, Session, TraceLine } from './types'
 
 /**
  * Same-origin paths only — identical in dev and prod:
- * - prod: FastAPI serves SPA + API on :80
+ * - prod: FastAPI serves SPA + API on :8888
  * - dev: Vite (:3080) proxies /api and /ws → uvicorn (:8080)
  * Never hardcode host/port here.
  */
@@ -97,8 +97,18 @@ export const api = {
     ),
   killSession: (sessionId: string) =>
     request<{ ok: boolean }>(`/api/sessions/${sessionId}`, { method: 'DELETE' }),
-  resetCursor: (id: string) =>
-    request<{ ok: boolean }>(`/api/cursor/${id}/reset`, { method: 'POST' }),
+  resetCursor: (id: string, chatId = 'default') =>
+    request<{ ok: boolean }>(
+      `/api/cursor/${id}/reset?chatId=${encodeURIComponent(chatId)}`,
+      { method: 'POST' },
+    ),
+  cursorModels: () =>
+    request<{
+      configured: boolean
+      default: string
+      models: { id: string; displayName: string; description: string }[]
+      error?: string
+    }>('/api/cursor/models'),
   fsList: (id: string, path = '') =>
     request<{ path: string; entries: FsEntry[] }>(
       `/api/projects/${id}/fs?path=${encodeURIComponent(path)}`,
@@ -137,4 +147,8 @@ export const api = {
       body: JSON.stringify({ ids, all }),
     }),
   clearRead: () => request<{ removed: number }>('/api/notifications/read', { method: 'DELETE' }),
+  trace: (limit = 300, afterId = 0) =>
+    request<{ items: TraceLine[]; lastId: number; max: number }>(
+      `/api/trace?limit=${limit}&afterId=${afterId}`,
+    ),
 }

@@ -2,7 +2,7 @@
 
 Generic mobile-first control plane for any local projects — run scripts, shells, edit files, and chat with local Cursor agents.
 
-- **Production:** `:80` (systemd service runs as **root**)
+- **Production:** `:8888` (systemd service runs as **root**)
 - **Dev:** API `:8080`, Vite UI `:3080` (proxies `/api` + `/ws` so the SPA uses the same paths as prod)
 
 ## Quick start
@@ -14,7 +14,7 @@ Generic mobile-first control plane for any local projects — run scripts, shell
 ./build.sh --run
 ```
 
-Open `http://localhost:3080` in development (or `http://<host>/` on port 80 in production). Paste the token once — it is **remembered** in the browser (`localStorage`).
+Open `http://localhost:3080` in development (or `http://<host>:8888/` in production). Paste the token once — it is **remembered** in the browser (`localStorage`).
 
 ## Same-origin API
 
@@ -76,18 +76,18 @@ Copy [`.env.example`](.env.example). Never commit `.env` or `config/projects.jso
 |-----|------|
 | `HOMEBASE_TOKEN` | Access token |
 | `CURSOR_API_KEY` | Local Cursor agents |
-| `HOMEBASE_HOST` / `HOMEBASE_PORT` | Bind (dev default `0.0.0.0:8080`; systemd forces `:80`) |
+| `HOMEBASE_HOST` / `HOMEBASE_PORT` | Bind (dev default `0.0.0.0:8080`; systemd forces `:8888`) |
 
 ## Binary + systemd
 
 ```bash
-./build.sh --bin                 # Nuitka one-file → dist/homebase (gitignored)
-./build.sh --service             # install homebase.service (needs /usr/bin/homebase)
-./build.sh --deploy              # --bin → cp /usr/bin/homebase → enable/restart service
+./build.sh --bin                 # Nuitka one-file → dist/homebased (gitignored)
+./build.sh --service             # install homebased.service (needs /usr/bin/homebased)
+./build.sh --deploy              # --bin → cp /usr/bin/homebased → enable/restart service
 ```
 
-Service runs as **root**, binds **port 80**, and uses `HOMEBASE_HOME=/var/lib/homebase` for `.env`, `config/projects.json`, and `.runtime/`.  
-Unit file: [`packaging/homebase.service`](packaging/homebase.service).
+Service **`homebased`** runs as **root**, binds **port 8888**, and uses `HOMEBASE_HOME=/var/lib/homebased` for `.env`, `config/projects.json`, and `.runtime/`.  
+Unit file: [`packaging/homebased.service`](packaging/homebased.service).
 
 ## Dev
 

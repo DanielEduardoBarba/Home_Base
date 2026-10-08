@@ -7,9 +7,8 @@ from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.middleware.gzip import GZipMiddleware
 
 from .auth import lockout_status, require_auth, verify_token, ws_authenticate
 from .config import BUNDLE_ROOT, ROOT, get_project, get_settings, list_projects, load_projects
@@ -20,9 +19,13 @@ from .logging_util import append_daily, read_daily
 from .notifications import clear_read, list_notifications, mark_read, push as notify
 from .process_manager import list_projects_meta, stop_project, tail_logs, trigger_action
 from .pty_manager import pty_manager
+from .static_compress import compressed_file_response
+from .trace_log import install_logging_handler, snapshot as trace_snapshot
+from .trace_log import append as trace_append
 
 log = logging.getLogger("homebase")
 logging.basicConfig(level=logging.INFO)
+install_logging_handler()
 
 # SPA is bundled with the binary (Nuitka) or built under the repo.
 WEB_DIST = BUNDLE_ROOT / "web" / "dist"
@@ -40,6 +43,7 @@ async def lifespan(app: FastAPI):
         log.warning("CURSOR_API_KEY is empty — Cursor chat disabled")
     n = len(list_projects())
     log.info("Loaded %d project(s) from config", n)
+    trace_append("info", f"startup: {n} project(s)", source="server")
     yield
     await cursor_bridge.close()
     for s in list(pty_manager.list_sessions()):
@@ -47,6 +51,7 @@ async def lifespan(app: FastAPI):
             await pty_manager.kill(s["id"])
         except Exception:
             pass
+    trace_append("info", "shutdown", source="server")
 
 
 app = FastAPI(title="Home Base", version="1.1.0", lifespan=lifespan)
@@ -57,6 +62,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# On-the-fly gzip for API JSON / HTML when no precompressed body is set
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 
 class ActionBody(BaseModel):
@@ -268,22 +275,35 @@ async def api_kill_session(session_id: str, _: None = Depends(require_auth)):
     return {"ok": True}
 
 
+@app.get("/api/cursor/models")
+async def api_cursor_models(_: None = Depends(require_auth)):
+    return await cursor_bridge.list_models()
+
+
 @app.get("/api/cursor/{project_id}")
-async def api_cursor_info(project_id: str, _: None = Depends(require_auth)):
+async def api_cursor_info(
+    project_id: str,
+    chatId: str = "default",
+    _: None = Depends(require_auth),
+):
     try:
         get_project(project_id)
     except KeyError:
         raise HTTPException(404, "Unknown project")
-    return cursor_bridge.agent_info(project_id)
+    return cursor_bridge.agent_info(project_id, chat_id=chatId)
 
 
 @app.post("/api/cursor/{project_id}/reset")
-async def api_cursor_reset(project_id: str, _: None = Depends(require_auth)):
+async def api_cursor_reset(
+    project_id: str,
+    chatId: str = "default",
+    _: None = Depends(require_auth),
+):
     try:
         get_project(project_id)
     except KeyError:
         raise HTTPException(404, "Unknown project")
-    await cursor_bridge.reset_agent(project_id)
+    await cursor_bridge.reset_agent(project_id, chat_id=chatId)
     return {"ok": True}
 
 
@@ -319,6 +339,39 @@ async def api_daily_logs(
     _: None = Depends(require_auth),
 ):
     return read_daily(day=day, limit=limit, offset=offset)
+
+
+@app.get("/api/trace")
+async def api_trace(
+    limit: int = 300,
+    afterId: int = 0,
+    _: None = Depends(require_auth),
+):
+    """In-memory server console ring (max 300). No disk growth."""
+    return trace_snapshot(limit=limit, after_id=afterId)
+
+
+@app.post("/api/trace/client")
+async def api_trace_client(request: Request, _: None = Depends(require_auth)):
+    """Accept a small batch of browser console lines into the same ring."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "invalid json")
+    lines = body.get("lines") if isinstance(body, dict) else None
+    if not isinstance(lines, list):
+        raise HTTPException(400, "lines required")
+    accepted = 0
+    for raw in lines[:50]:
+        if not isinstance(raw, dict):
+            continue
+        msg = str(raw.get("message") or "")[:2000]
+        if not msg:
+            continue
+        level = str(raw.get("level") or "info")[:16]
+        trace_append(level, msg, source="web")
+        accepted += 1
+    return {"ok": True, "accepted": accepted}
 
 
 @app.websocket("/ws/pty")
@@ -432,6 +485,8 @@ async def ws_cursor(websocket: WebSocket):
         return
     await websocket.accept()
     project_id = websocket.query_params.get("project")
+    chat_id = (websocket.query_params.get("chat") or "default").strip() or "default"
+    cwd = (websocket.query_params.get("cwd") or "").strip()
     if not project_id:
         await websocket.send_json({"type": "error", "error": "project required"})
         await websocket.close()
@@ -444,7 +499,12 @@ async def ws_cursor(websocket: WebSocket):
         return
 
     await websocket.send_json(
-        {"type": "ready", "cursor": cursor_bridge.agent_info(project_id)}
+        {
+            "type": "ready",
+            "cursor": cursor_bridge.agent_info(project_id, chat_id=chat_id),
+            "chatId": chat_id,
+            "cwd": cwd,
+        }
     )
 
     try:
@@ -455,15 +515,29 @@ async def ws_cursor(websocket: WebSocket):
                 prompt = (msg.get("prompt") or "").strip()
                 if not prompt:
                     continue
-                async for event in cursor_bridge.send_stream(project_id, prompt):
+                model = (msg.get("model") or "").strip() or None
+                send_cwd = (msg.get("cwd") or cwd or "").strip() or None
+                async for event in cursor_bridge.send_stream(
+                    project_id,
+                    prompt,
+                    model=model,
+                    chat_id=chat_id,
+                    cwd=send_cwd,
+                ):
                     await websocket.send_json(event)
             elif mtype == "cancel":
-                ok = await cursor_bridge.cancel(project_id)
+                ok = await cursor_bridge.cancel(project_id, chat_id=chat_id)
                 await websocket.send_json({"type": "cancelled", "ok": ok})
             elif mtype == "reset":
-                await cursor_bridge.reset_agent(project_id)
+                await cursor_bridge.reset_agent(project_id, chat_id=chat_id)
                 await websocket.send_json(
-                    {"type": "ready", "cursor": cursor_bridge.agent_info(project_id)}
+                    {
+                        "type": "ready",
+                        "cursor": cursor_bridge.agent_info(
+                            project_id, chat_id=chat_id
+                        ),
+                        "chatId": chat_id,
+                    }
                 )
             elif mtype == "ping":
                 await websocket.send_json({"type": "pong"})
@@ -478,21 +552,34 @@ async def ws_cursor(websocket: WebSocket):
             pass
 
 
-if WEB_DIST.is_dir():
-    assets = WEB_DIST / "assets"
-    if assets.is_dir():
-        app.mount("/assets", StaticFiles(directory=assets), name="assets")
+@app.get("/assets/{asset_path:path}")
+async def spa_assets(asset_path: str, request: Request):
+    """Serve hashed Vite assets, preferring build-time .br / .gz."""
+    root = (WEB_DIST / "assets").resolve()
+    target = (root / asset_path).resolve()
+    if not str(target).startswith(str(root)) or not target.is_file():
+        raise HTTPException(404)
+    if target.suffix in {".br", ".gz"}:
+        raise HTTPException(404)
+    return compressed_file_response(target, request)
 
 
 @app.get("/{full_path:path}")
-async def spa(full_path: str):
+async def spa(full_path: str, request: Request):
     if full_path.startswith("api/") or full_path.startswith("ws/"):
         raise HTTPException(404)
     index = WEB_DIST / "index.html"
-    if full_path and (WEB_DIST / full_path).is_file():
-        return FileResponse(WEB_DIST / full_path)
+    if full_path:
+        candidate = (WEB_DIST / full_path).resolve()
+        root = WEB_DIST.resolve()
+        if (
+            str(candidate).startswith(str(root))
+            and candidate.is_file()
+            and candidate.suffix not in {".br", ".gz"}
+        ):
+            return compressed_file_response(candidate, request)
     if index.is_file():
-        return FileResponse(index)
+        return compressed_file_response(index, request)
     return {
         "message": "Home Base API is running. Run: ./build.sh --setup && ./build.sh --run",
         "docs": "/docs",

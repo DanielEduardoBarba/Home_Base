@@ -1,4 +1,12 @@
-export type Tab = 'apps' | 'files' | 'shell' | 'cursor' | 'monitor' | 'alerts'
+export type Tab = 'apps' | 'shell' | 'files' | 'cursor' | 'logs' | 'alerts'
+
+export interface TraceLine {
+  id: number
+  ts: number
+  level: string
+  source: string
+  message: string
+}
 
 export interface PortDef {
   id: string
@@ -55,7 +63,15 @@ export interface Project {
     configured: boolean
     active: boolean
     running: boolean
+    model?: string
+    defaultModel?: string
   }
+
+export interface CursorModel {
+  id: string
+  displayName: string
+  description: string
+}
   logs?: { path: string; exists: boolean; text: string }
 }
 

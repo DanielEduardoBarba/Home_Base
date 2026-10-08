@@ -1,14 +1,17 @@
 ---
-description: Mobile-first SPA UI constraints for Home Base web
+description: SPA UI constraints for Home Base web (phone + desktop)
 globs: web/**/*.{tsx,ts,css}
 alwaysApply: false
 ---
 
 # Home Base UI
 
-- Primary viewport is an iPhone Safari webview over VPN.
-- Bottom tab bar: Apps · Shell · Cursor · Monitor.
-- Large tap targets; avoid dense dashboard chrome on Apps.
+- Primary viewport is still iPhone Safari over VPN; also keep desktop readable (wider max widths, clear contrast).
+- Bottom tabs: Apps · Shell · Files · Cursor · Logs · Alerts.
+- Shell = interactive PTY + session attach (former Mon). Logs = capped console ring (300).
+- Workspace pickers and Run stacks use native `<select>` dropdowns (`hb-select`).
+- Ship actions are hold-to-confirm; Run/Stop is a toggle from port/session state.
+- Pull-to-refresh is global (top-of-scroll drag).
 - Visual system: dark graphite + teal accent (`--color-accent`), Syne + IBM Plex Mono. Avoid purple gradients and cream/serif clichés.
 - Shell tab must remain usable with on-screen Ctrl/Esc helpers.
 - Cursor tab streams markdown; show project cwd and agent id.

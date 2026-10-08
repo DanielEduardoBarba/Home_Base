@@ -11,6 +11,10 @@ from typing import Any, Callable, Optional
 from ptyprocess import PtyProcessUnicode
 
 
+# Late attach (Apps → Shell) needs recent output; keep a ring of chunks.
+OUTPUT_BUFFER_MAX = 256_000
+
+
 @dataclass
 class PtySession:
     id: str
@@ -22,8 +26,19 @@ class PtySession:
     created_at: float
     label: str = ""
     subscribers: set[Any] = field(default_factory=set)
+    output_buffer: list[str] = field(default_factory=list)
+    output_bytes: int = 0
     _reader_task: Optional[asyncio.Task] = None
     _closed: bool = False
+
+    def append_output(self, data: str) -> None:
+        if not data:
+            return
+        self.output_buffer.append(data)
+        self.output_bytes += len(data)
+        while self.output_bytes > OUTPUT_BUFFER_MAX and self.output_buffer:
+            dropped = self.output_buffer.pop(0)
+            self.output_bytes -= len(dropped)
 
     @property
     def pid(self) -> Optional[int]:
@@ -143,6 +158,7 @@ class PtyManager:
                 if not data:
                     await asyncio.sleep(0.02)
                     continue
+                session.append_output(data)
                 dead: list[Any] = []
                 for ws in list(session.subscribers):
                     try:
@@ -184,6 +200,13 @@ class PtyManager:
         if not session:
             raise KeyError(session_id)
         session.subscribers.add(websocket)
+        # Replay buffered output so Apps→Shell attach isn't a blank screen
+        if session.output_buffer:
+            replay = "".join(session.output_buffer)
+            try:
+                await websocket.send_json({"type": "output", "data": replay})
+            except Exception:
+                pass
         return session
 
     def unsubscribe(self, session_id: str, websocket: Any) -> None:

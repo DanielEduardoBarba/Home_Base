@@ -77,7 +77,7 @@ def list_notifications(
     unread_only: bool = False,
     history: bool = False,
 ) -> dict[str, Any]:
-    """Newest-first pagination. history=True includes read; False focuses inbox."""
+    """Newest-first pagination. inbox=unread; history=read archive."""
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
     with _lock:
@@ -85,9 +85,9 @@ def list_notifications(
     items = list(reversed(items))
     if unread_only:
         items = [i for i in items if not i.get("read")]
-    elif not history:
-        # inbox: unread first, then recent read (still paginated from full newest list)
-        pass
+    elif history:
+        # History is the read archive (mark-read moves items here)
+        items = [i for i in items if i.get("read")]
     total = len(items)
     unread = sum(1 for i in _read_all() if not i.get("read"))
     page = items[offset : offset + limit]

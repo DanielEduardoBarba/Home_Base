@@ -4,18 +4,23 @@ import { AppsTab } from './components/AppsTab'
 import { CursorTab } from './components/CursorTab'
 import { FilesTab } from './components/FilesTab'
 import { Login } from './components/Login'
-import { MonitorTab } from './components/MonitorTab'
+import { LogsTab } from './components/LogsTab'
+import { PullToRefresh } from './components/PullToRefresh'
 import { ShellTab } from './components/ShellTab'
 import { api } from './lib/api'
 import { clearToken, getToken } from './lib/auth'
+import { installClientLog } from './lib/clientLog'
 import type { Project, Tab } from './lib/types'
 
+installClientLog()
+
+/** Apps · Shell · Files · Cursor · Logs · Alerts */
 const TABS: { id: Tab; label: string }[] = [
   { id: 'apps', label: 'Apps' },
-  { id: 'files', label: 'Files' },
   { id: 'shell', label: 'Shell' },
+  { id: 'files', label: 'Files' },
   { id: 'cursor', label: 'Cursor' },
-  { id: 'monitor', label: 'Mon' },
+  { id: 'logs', label: 'Logs' },
   { id: 'alerts', label: 'Alerts' },
 ]
 
@@ -62,6 +67,7 @@ export default function App() {
 
   return (
     <div className="h-full flex flex-col">
+      <PullToRefresh onRefresh={refresh} />
       <main className="flex-1 min-h-0 overflow-hidden">
         {loadError && tab === 'apps' && (
           <p className="px-4 pt-3 text-sm text-danger">{loadError}</p>
@@ -73,22 +79,24 @@ export default function App() {
               selectedId={selectedId}
               onSelect={setSelectedId}
               onRefresh={refresh}
-              onOpenMonitor={(sid) => {
+              onOpenShell={(sid) => {
                 if (sid) setAttachSessionId(sid)
-                setTab('monitor')
+                setTab('shell')
               }}
             />
           </div>
         )}
-        {tab === 'files' && (
-          <FilesTab
+        {tab === 'shell' && (
+          <ShellTab
             projects={projects}
             selectedId={selectedId}
             onSelect={setSelectedId}
+            attachSessionId={attachSessionId}
+            onClearAttach={() => setAttachSessionId(null)}
           />
         )}
-        {tab === 'shell' && (
-          <ShellTab
+        {tab === 'files' && (
+          <FilesTab
             projects={projects}
             selectedId={selectedId}
             onSelect={setSelectedId}
@@ -101,19 +109,12 @@ export default function App() {
             onSelect={setSelectedId}
           />
         )}
-        {tab === 'monitor' && (
-          <MonitorTab
-            projects={projects}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            attachSessionId={attachSessionId}
-          />
-        )}
+        {tab === 'logs' && <LogsTab />}
         {tab === 'alerts' && <AlertsTab />}
       </main>
 
-      <nav className="fixed bottom-0 inset-x-0 z-20 border-t border-line/80 bg-ink/90 backdrop-blur-xl pb-[env(safe-area-inset-bottom)] shadow-[0_-12px_40px_rgba(0,0,0,0.35)]">
-        <div className="max-w-2xl mx-auto grid grid-cols-6">
+      <nav className="fixed bottom-0 inset-x-0 z-20 border-t border-line bg-ink/95 backdrop-blur-xl pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_32px_rgba(0,0,0,0.45)]">
+        <div className="max-w-5xl mx-auto grid grid-cols-6">
           {TABS.map((t) => (
             <button
               key={t.id}

@@ -19,18 +19,22 @@ ADD_ID=""
 ADD_NAME=""
 
 BIN_OUT_DIR="$ROOT/dist"
-BIN_NAME="homebase"
+BIN_NAME="homebased"
 BIN_PATH="$BIN_OUT_DIR/$BIN_NAME"
-INSTALL_BIN="/usr/bin/homebase"
-SERVICE_NAME="homebase.service"
-SERVICE_SRC="$ROOT/packaging/homebase.service"
+INSTALL_BIN="/usr/bin/homebased"
+SERVICE_NAME="homebased.service"
+SERVICE_SRC="$ROOT/packaging/homebased.service"
 SERVICE_DST="/etc/systemd/system/$SERVICE_NAME"
-HOMEBASE_VAR="/var/lib/homebase"
+HOMEBASE_VAR="/var/lib/homebased"
+# Legacy names removed on deploy
+LEGACY_BIN="/usr/bin/homebase"
+LEGACY_SERVICE="homebase.service"
+LEGACY_VAR="/var/lib/homebase"
 
-# Ports: prod :80 (systemd/root); dev API :8080; Vite :3080 (proxies /api + /ws)
+# Ports: prod :8888 (systemd/root); dev API :8080; Vite :3080 (proxies /api + /ws)
 DEV_API_PORT=8080
 DEV_WEB_PORT=3080
-PROD_PORT=80
+PROD_PORT=8888
 
 usage() {
   cat <<EOF
@@ -41,15 +45,16 @@ USAGE
   ./build.sh --run                Dev: API (uvicorn --reload) + Vite, with hotkeys
   ./build.sh --add-project --preset NAME --path /abs/or/rel/path
   ./build.sh --add-project --path /abs/or/rel/path [--id ID] [--name NAME]
-  ./build.sh --bin                Nuitka one-file standalone → dist/homebase
-  ./build.sh --service            Install homebase.service, daemon-reload, enable, restart
-  ./build.sh --deploy             --bin → cp to /usr/bin/homebase → --service
+  ./build.sh --bin                Nuitka one-file standalone → dist/homebased
+  ./build.sh --service            Install homebased.service, daemon-reload, enable, restart
+  ./build.sh --deploy             --bin → cp to /usr/bin/homebased → --service
   ./build.sh -h|--help
 
 Projects live in config/projects.json (gitignored). Presets are templates
 (actions/ports only) — always pass --path for where the repo lives.
 
-Deployed binary uses HOMEBASE_HOME=/var/lib/homebase for .env / config / runtime.
+Deployed binary uses HOMEBASE_HOME=/var/lib/homebased for .env / config / runtime.
+Production binds :8888.
 EOF
 }
 
@@ -510,11 +515,21 @@ cmd_run() {
   export HOMEBASE_HOST="${HOMEBASE_HOST:-0.0.0.0}"
   export HOMEBASE_PORT="${HOMEBASE_PORT:-$DEV_API_PORT}"
 
+  local lan_ips=""
+  if command -v hostname >/dev/null 2>&1; then
+    lan_ips="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -4 | tr '\n' ' ' || true)"
+  fi
+
   echo ""
   echo "${C_BOLD}Home Base · dev${C_RESET}"
-  echo "  ${C_CYAN}API${C_RESET}   http://localhost:${HOMEBASE_PORT}  (uvicorn --reload)"
+  echo "  ${C_CYAN}API${C_RESET}   http://localhost:${HOMEBASE_PORT}  (uvicorn --host ${HOMEBASE_HOST})"
   echo "  ${C_GREEN}Vite${C_RESET}  http://localhost:${DEV_WEB_PORT}  (proxies /api + /ws → :${HOMEBASE_PORT})"
-  echo "  ${C_DIM}UI + API use same-origin /api and /ws (unchanged in production :${PROD_PORT})${C_RESET}"
+  if [[ -n "${lan_ips// }" ]]; then
+    for ip in $lan_ips; do
+      echo "  ${C_GREEN}LAN${C_RESET}   http://${ip}:${DEV_WEB_PORT}  ${C_DIM}(phone / iPad — use Vite, not :${HOMEBASE_PORT})${C_RESET}"
+    done
+  fi
+  echo "  ${C_DIM}UI + API use same-origin /api and /ws (production :${PROD_PORT} also binds 0.0.0.0)${C_RESET}"
   echo ""
 
   install_session_traps
@@ -590,12 +605,62 @@ cmd_bin() {
   echo "==> Binary ready: $BIN_PATH ($(du -h "$BIN_PATH" | cut -f1))"
 }
 
+force_prod_port_in_env() {
+  local env_file="$1"
+  [[ -f "$env_file" ]] || return 0
+  # Production always binds :8888 — rewrite any copied dev HOMEBASE_PORT=8080.
+  if run_priv grep -qE '^HOMEBASE_PORT=' "$env_file" 2>/dev/null; then
+    run_priv sed -i "s/^HOMEBASE_PORT=.*/HOMEBASE_PORT=${PROD_PORT}/" "$env_file"
+  else
+    run_priv bash -c "echo 'HOMEBASE_PORT=${PROD_PORT}' >> $(printf %q "$env_file")"
+  fi
+}
+
+migrate_legacy_var() {
+  if [[ -d "$LEGACY_VAR" ]] && [[ ! -d "$HOMEBASE_VAR" ]]; then
+    echo "==> Migrating $LEGACY_VAR → $HOMEBASE_VAR"
+    run_priv mv "$LEGACY_VAR" "$HOMEBASE_VAR"
+  elif [[ -d "$LEGACY_VAR" ]] && [[ -d "$HOMEBASE_VAR" ]]; then
+    echo "==> Removing leftover $LEGACY_VAR (already have $HOMEBASE_VAR)"
+    run_priv rm -rf "$LEGACY_VAR"
+  fi
+}
+
+remove_legacy_install() {
+  echo "==> Removing legacy homebase install"
+  if systemctl list-unit-files "$LEGACY_SERVICE" &>/dev/null; then
+    run_priv systemctl disable --now "$LEGACY_SERVICE" 2>/dev/null || true
+  fi
+  run_priv rm -f "/etc/systemd/system/$LEGACY_SERVICE"
+  run_priv rm -f "$LEGACY_BIN"
+  # Also drop any leftover binary named homebase under dist
+  rm -f "$BIN_OUT_DIR/homebase" 2>/dev/null || true
+}
+
+free_prod_port() {
+  echo "==> Freeing production port $PROD_PORT"
+  local pid
+  for pid in $(pids_on_port "$PROD_PORT"); do
+    echo "    killing pid $pid on :$PROD_PORT"
+    run_priv kill -TERM "$pid" 2>/dev/null || true
+  done
+  sleep 0.5
+  for pid in $(pids_on_port "$PROD_PORT"); do
+    run_priv kill -KILL "$pid" 2>/dev/null || true
+  done
+}
+
 prepare_var_lib() {
+  migrate_legacy_var
   echo "==> Preparing $HOMEBASE_VAR"
   run_priv mkdir -p "$HOMEBASE_VAR/config" "$HOMEBASE_VAR/.runtime/logs"
   if [[ -f .env ]] && [[ ! -f "$HOMEBASE_VAR/.env" ]]; then
     run_priv cp .env "$HOMEBASE_VAR/.env"
     echo "    copied .env → $HOMEBASE_VAR/.env"
+  fi
+  if [[ -f "$HOMEBASE_VAR/.env" ]]; then
+    force_prod_port_in_env "$HOMEBASE_VAR/.env"
+    echo "    set HOMEBASE_PORT=$PROD_PORT in $HOMEBASE_VAR/.env"
   fi
   if [[ -f config/projects.json ]] && [[ ! -f "$HOMEBASE_VAR/config/projects.json" ]]; then
     run_priv cp config/projects.json "$HOMEBASE_VAR/config/projects.json"
@@ -605,33 +670,101 @@ prepare_var_lib() {
   fi
 }
 
+stop_homebased() {
+  # Must stop before replacing /usr/bin/homebased — Linux returns ETXTBSY ("Text file busy")
+  # when cp overwrites an executable that is still mapped/running.
+  if systemctl list-unit-files "$SERVICE_NAME" &>/dev/null; then
+    run_priv systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+  fi
+  if systemctl list-unit-files "$LEGACY_SERVICE" &>/dev/null; then
+    run_priv systemctl stop "$LEGACY_SERVICE" 2>/dev/null || true
+  fi
+  # Ensure no leftover process holds the inode
+  local waited=0
+  while pgrep -x homebased >/dev/null 2>&1 || pgrep -x homebase >/dev/null 2>&1; do
+    if [[ "$waited" -ge 30 ]]; then
+      run_priv pkill -KILL -x homebased 2>/dev/null || true
+      run_priv pkill -KILL -x homebase 2>/dev/null || true
+      break
+    fi
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+}
+
+install_binary() {
+  if [[ ! -x "$BIN_PATH" ]]; then
+    echo "Error: missing binary $BIN_PATH — run ./build.sh --bin first" >&2
+    exit 1
+  fi
+  echo "==> Installing binary → $INSTALL_BIN"
+  stop_homebased
+  # Atomic replace: write beside target then mv (avoids ETXTBSY even if something races)
+  run_priv cp "$BIN_PATH" "${INSTALL_BIN}.new"
+  run_priv chmod 755 "${INSTALL_BIN}.new"
+  run_priv mv -f "${INSTALL_BIN}.new" "$INSTALL_BIN"
+}
+
+port_is_listening() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -tln 2>/dev/null | grep -F ":${port}" >/dev/null
+    return $?
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+    return $?
+  fi
+  return 1
+}
+
+wait_for_listen() {
+  local port="$1"
+  local i
+  for i in $(seq 1 40); do
+    if port_is_listening "$port"; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
 cmd_service() {
   echo "==> Installing $SERVICE_NAME"
   if [[ ! -f "$SERVICE_SRC" ]]; then
     echo "Error: missing $SERVICE_SRC" >&2
     exit 1
   fi
-  if [[ ! -x "$INSTALL_BIN" ]]; then
-    echo "Error: $INSTALL_BIN not found — run ./build.sh --bin && copy to /usr/bin, or ./build.sh --deploy" >&2
+  if [[ -x "$BIN_PATH" ]]; then
+    # Refresh /usr/bin from dist when available (covers failed mid-deploy ETXTBSY retries)
+    install_binary
+  elif [[ ! -x "$INSTALL_BIN" ]]; then
+    echo "Error: $INSTALL_BIN not found — run ./build.sh --bin or ./build.sh --deploy" >&2
     exit 1
   fi
 
+  remove_legacy_install
+  free_prod_port
   prepare_var_lib
   run_priv cp "$SERVICE_SRC" "$SERVICE_DST"
   run_priv systemctl daemon-reload
   run_priv systemctl enable "$SERVICE_NAME"
   run_priv systemctl restart "$SERVICE_NAME"
   run_priv systemctl --no-pager --full status "$SERVICE_NAME" || true
+  if wait_for_listen "$PROD_PORT"; then
+    echo "==> Listening on :$PROD_PORT — open http://localhost:${PROD_PORT}/"
+  else
+    echo "Warning: nothing listening on :$PROD_PORT yet — check: journalctl -u $SERVICE_NAME -n 50" >&2
+  fi
   echo "==> Service $SERVICE_NAME enabled and restarted"
-  echo "    HOMEBASE_HOME=$HOMEBASE_VAR  binary=$INSTALL_BIN"
+  echo "    HOMEBASE_HOME=$HOMEBASE_VAR  binary=$INSTALL_BIN  port=$PROD_PORT"
 }
 
 cmd_deploy() {
   echo "==> Deploy: build binary → install /usr/bin → systemd"
   cmd_bin
-  echo "==> Installing binary → $INSTALL_BIN"
-  run_priv cp "$BIN_PATH" "$INSTALL_BIN"
-  run_priv chmod 755 "$INSTALL_BIN"
+  install_binary
   cmd_service
   echo "==> Deploy complete → http://0.0.0.0:${PROD_PORT} as root (see $HOMEBASE_VAR/.env)"
 }
@@ -649,9 +782,7 @@ if [[ "$DO_DEPLOY" == true ]]; then
 elif [[ "$DO_BIN" == true ]]; then
   cmd_bin
   if [[ "$DO_SERVICE" == true ]]; then
-    echo "==> Copying binary → $INSTALL_BIN (required before --service)"
-    run_priv cp "$BIN_PATH" "$INSTALL_BIN"
-    run_priv chmod 755 "$INSTALL_BIN"
+    install_binary
     cmd_service
   fi
 elif [[ "$DO_SERVICE" == true ]]; then

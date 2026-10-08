@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Home Base
 
-Generic control plane. Production **:80** (systemd as root). Dev API **:8080**, Vite **:3080** (proxies `/api` + `/ws`). Projects come from gitignored `config/projects.json`.
+Generic control plane (`homebased`). Production **:8888** (systemd as root). Dev API **:8080**, Vite **:3080** (proxies `/api` + `/ws`). Projects come from gitignored `config/projects.json`.
 
 ## Hard rules
 
