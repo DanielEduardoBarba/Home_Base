@@ -82,7 +82,7 @@ class PortDef:
 class ActionDef:
     id: str
     label: str
-    type: str = "script"  # script | stop | restart
+    type: str = "script"  # script | stop | restart | compose
     script: str = ""
     args: tuple[str, ...] = ()
     kind: str = "action"  # run | expo | ship | action | shell
@@ -90,11 +90,13 @@ class ActionDef:
     variant: str = "default"
     hint: str = ""
     restart_action: str = ""
+    compose: tuple[str, ...] = ()  # action ids for type=compose (e.g. run + expo)
     env: tuple[tuple[str, str], ...] = ()
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "ActionDef":
         env_raw = raw.get("env") or {}
+        compose_raw = raw.get("compose") or []
         return cls(
             id=str(raw["id"]),
             label=str(raw.get("label") or raw["id"]),
@@ -106,6 +108,7 @@ class ActionDef:
             variant=str(raw.get("variant") or "default"),
             hint=str(raw.get("hint") or ""),
             restart_action=str(raw.get("restartAction") or raw.get("restart_action") or ""),
+            compose=tuple(str(a) for a in compose_raw),
             env=tuple((str(k), str(v)) for k, v in env_raw.items()),
         )
 
@@ -164,6 +167,7 @@ class Project:
                     "group": a.group,
                     "variant": a.variant,
                     "hint": a.hint,
+                    "compose": list(a.compose),
                 }
                 for a in self.actions
             ],

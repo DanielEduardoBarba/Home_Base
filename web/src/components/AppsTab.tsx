@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../lib/api'
+import { useSceneRefresh } from '../lib/sceneRefresh'
 import type { ActionDef, Project } from '../lib/types'
 import { HoldButton } from './HoldButton'
 import { ProjectSelect } from './ProjectSelect'
@@ -42,12 +43,14 @@ export function AppsTab({
   projects: Project[]
   selectedId: string
   onSelect: (id: string) => void
-  onRefresh: () => void
-  onOpenShell: (sessionId?: string) => void
+  onRefresh: () => void | Promise<void>
+  onOpenShell: (sessionIds?: string | string[]) => void
 }) {
   const [busy, setBusy] = useState('')
   const [msg, setMsg] = useState('')
   const project = projects.find((p) => p.id === selectedId) || projects[0]
+
+  useSceneRefresh(onRefresh)
 
   const runActions = useMemo(() => {
     if (!project) return []
@@ -55,7 +58,11 @@ export function AppsTab({
       (a) =>
         (a.group === 'main' || !a.group) &&
         a.type !== 'stop' &&
-        (a.kind === 'run' || a.kind === 'expo' || a.type === 'script' || a.type === 'restart'),
+        (a.kind === 'run' ||
+          a.kind === 'expo' ||
+          a.type === 'compose' ||
+          a.type === 'script' ||
+          a.type === 'restart'),
     )
   }, [project])
 
@@ -83,7 +90,7 @@ export function AppsTab({
     try {
       await api.stop(project.id)
       setMsg('Stopped')
-      onRefresh()
+      await onRefresh()
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e))
     } finally {
@@ -97,13 +104,20 @@ export function AppsTab({
     setMsg('')
     try {
       const result = await api.action(project.id, action.id)
-      if (result?.session?.id) {
+      const multi = result?.sessions?.map((s) => s.id).filter(Boolean) || []
+      if (multi.length >= 2) {
+        setMsg(`${action.label} started (split)`)
+        onOpenShell(multi)
+      } else if (result?.session?.id) {
         setMsg(`${action.label} started`)
         onOpenShell(result.session.id)
+      } else if (multi.length === 1) {
+        setMsg(`${action.label} started`)
+        onOpenShell(multi[0])
       } else {
         setMsg(`${action.label} done`)
       }
-      onRefresh()
+      await onRefresh()
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e))
     } finally {
@@ -125,11 +139,10 @@ export function AppsTab({
           <h1 className="font-display text-2xl md:text-3xl font-extrabold tracking-tight">
             Home<span className="text-accent"> Base</span>
           </h1>
-          <p className="text-mute text-sm mt-2">No apps yet. Add one on the host, then refresh.</p>
+          <p className="text-mute text-sm mt-2">
+            No apps yet. Add one on the host, then pull down to refresh.
+          </p>
         </header>
-        <button type="button" onClick={onRefresh} className="hb-btn hb-btn-primary text-sm">
-          Refresh
-        </button>
       </div>
     )
   }
@@ -140,20 +153,11 @@ export function AppsTab({
 
   return (
     <div className="hb-page space-y-4 hb-enter">
-      <header className="flex items-center justify-between gap-2">
-        <div>
-          <div className="hb-brand-rule" />
-          <h1 className="font-display text-2xl md:text-3xl font-extrabold tracking-tight">
-            Home<span className="text-accent"> Base</span>
-          </h1>
-        </div>
-        <button
-          type="button"
-          onClick={onRefresh}
-          className="hb-btn hb-btn-ghost text-xs !min-h-9 !px-3"
-        >
-          Refresh
-        </button>
+      <header>
+        <div className="hb-brand-rule" />
+        <h1 className="font-display text-2xl md:text-3xl font-extrabold tracking-tight">
+          Home<span className="text-accent"> Base</span>
+        </h1>
       </header>
 
       <section className="hb-surface p-3.5 sm:p-4 space-y-3">

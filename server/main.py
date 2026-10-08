@@ -58,9 +58,17 @@ APP_VERSION = read_version()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from .cursor_env import ensure_cursor_bridge_env
+
     settings = get_settings()
     load_projects(force=True)
     jwt_secret()  # ensure signing key exists
+    bridge = ensure_cursor_bridge_env()
+    if settings.cursor_api_key and not bridge:
+        log.warning(
+            "CURSOR_API_KEY set but cursor-sdk-bridge missing — "
+            "run ./build.sh --service to install the bridge under /usr/share/homebased"
+        )
     if not password_is_set():
         log.warning("No password set — open the UI on localhost to create one")
     if not settings.cursor_api_key:

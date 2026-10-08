@@ -25,7 +25,9 @@
       "id": "run",
       "label": "Run",
       "script": "./build.sh",
-      "args": ["--run"],
+      "args": [
+        "--run"
+      ],
       "kind": "run",
       "variant": "primary",
       "group": "main"
@@ -33,9 +35,11 @@
     {
       "id": "run_all",
       "label": "Run + Expo",
-      "script": "./build.sh",
-      "args": ["--run", "--all"],
-      "kind": "run",
+      "type": "compose",
+      "compose": [
+        "run",
+        "expo"
+      ],
       "variant": "accent",
       "group": "main"
     },
@@ -43,7 +47,10 @@
       "id": "expo",
       "label": "Expo only",
       "script": "./build.sh",
-      "args": ["--run", "--expo"],
+      "args": [
+        "--run",
+        "--expo"
+      ],
       "kind": "expo",
       "group": "main"
     },
@@ -58,7 +65,10 @@
       "id": "ship_api",
       "label": "Ship API",
       "script": "./ship.sh",
-      "args": ["--api", "--yes"],
+      "args": [
+        "--api",
+        "--yes"
+      ],
       "kind": "ship",
       "group": "ship"
     },
@@ -66,7 +76,10 @@
       "id": "ship_web",
       "label": "Ship Web",
       "script": "./ship.sh",
-      "args": ["--web", "--yes"],
+      "args": [
+        "--web",
+        "--yes"
+      ],
       "kind": "ship",
       "group": "ship"
     },
@@ -74,7 +87,10 @@
       "id": "ship_all",
       "label": "Ship All",
       "script": "./ship.sh",
-      "args": ["--all", "--yes"],
+      "args": [
+        "--all",
+        "--yes"
+      ],
       "kind": "ship",
       "group": "ship"
     },
@@ -91,7 +107,10 @@
       "label": "w",
       "hint": "Web only",
       "script": "./build.sh",
-      "args": ["--run", "--web"],
+      "args": [
+        "--run",
+        "--web"
+      ],
       "kind": "run",
       "group": "hotkey"
     },
@@ -100,7 +119,10 @@
       "label": "q",
       "hint": "API only",
       "script": "./build.sh",
-      "args": ["--run", "--api"],
+      "args": [
+        "--run",
+        "--api"
+      ],
       "kind": "run",
       "group": "hotkey"
     }

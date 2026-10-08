@@ -617,11 +617,44 @@ select:focus {
   background: var(--hb-overlay);
 }
 
+.hb-refresh-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--hb-overlay);
+  backdrop-filter: blur(3px);
+  pointer-events: all;
+}
+
+.hb-spinner {
+  width: 2.5rem;
+  height: 2.5rem;
+  border: 2.5px solid color-mix(in srgb, var(--hb-accent) 22%, transparent);
+  border-top-color: var(--hb-accent);
+  border-radius: 50%;
+  animation: hb-spin 0.7s linear infinite;
+}
+
+@keyframes hb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .hb-enter,
   .hb-chat-thinking,
   button {
     animation: none !important;
     transition: none !important;
+  }
+
+  .hb-spinner {
+    animation: none;
+    border-top-color: var(--hb-accent);
+    opacity: 0.85;
   }
 }

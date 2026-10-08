@@ -19,12 +19,17 @@ ADD_ID=""
 ADD_NAME=""
 
 BIN_OUT_DIR="$ROOT/dist"
-BIN_NAME="homebased"
+# Binary + /usr/bin wrapper are homebase; systemd unit stays homebased.service.
+BIN_NAME="homebase"
 BIN_PATH="$BIN_OUT_DIR/$BIN_NAME"
 INSTALL_SHARE="/usr/share/homebased"
-INSTALL_BIN_REAL="$INSTALL_SHARE/homebased"
-INSTALL_BIN_BAK="$INSTALL_SHARE/homebased.bak"
-INSTALL_WRAPPER="/usr/bin/homebased"
+INSTALL_BIN_REAL="$INSTALL_SHARE/homebase"
+INSTALL_BIN_BAK="$INSTALL_SHARE/homebase.bak"
+# Older deploys used homebased as the share binary / wrapper name
+LEGACY_SHARE_BIN="$INSTALL_SHARE/homebased"
+LEGACY_SHARE_BAK="$INSTALL_SHARE/homebased.bak"
+LEGACY_WRAPPER="/usr/bin/homebased"
+INSTALL_WRAPPER="/usr/bin/homebase"
 WRAPPER_SRC="$ROOT/packaging/homebased-wrapper.sh"
 # Back-compat name used in messages
 INSTALL_BIN="$INSTALL_WRAPPER"
@@ -33,8 +38,7 @@ SERVICE_SRC="$ROOT/packaging/homebased.service"
 SERVICE_DST="/etc/systemd/system/$SERVICE_NAME"
 HOMEBASE_VAR="/var/lib/homebased"
 VERSION_FILE="$ROOT/VERSION"
-# Legacy names removed on deploy
-LEGACY_BIN="/usr/bin/homebase"
+# Pre-homebased unit name (removed on deploy)
 LEGACY_SERVICE="homebase.service"
 LEGACY_VAR="/var/lib/homebase"
 
@@ -52,7 +56,7 @@ USAGE
   ./build.sh --run                Dev: API (uvicorn --reload) + Vite, with hotkeys
   ./build.sh --add-project --preset NAME --path /abs/or/rel/path
   ./build.sh --add-project --path /abs/or/rel/path [--id ID] [--name NAME]
-  ./build.sh --bin                Nuitka one-file standalone → dist/homebased
+  ./build.sh --bin                Nuitka one-file standalone → dist/homebase
   ./build.sh --service            Install homebased.service, daemon-reload, enable, restart
   ./build.sh --deploy             --bin → safe install under /usr/share + wrapper → --service
   ./build.sh -h|--help
@@ -61,11 +65,12 @@ Projects live in config/projects.json (gitignored). Presets are templates
 (actions/ports only) — always pass --path for where the repo lives.
 
 Deployed layout:
-  /usr/share/homebased/homebased      active binary (root:root 755)
-  /usr/share/homebased/homebased.bak  last known-good
-  /usr/bin/homebased                  wrapper (self-test → exec, else backup)
+  /usr/share/homebased/homebase       active binary (root:root 755)
+  /usr/share/homebased/homebase.bak   last known-good
+  /usr/bin/homebase                   wrapper (self-test → exec, else backup)
+  homebased.service                   systemd unit → /usr/bin/homebase
   HOMEBASE_HOME=/var/lib/homebased    .env / config / runtime (root:root)
-  dist/homebased                      always reclaimed to the workspace user
+  dist/homebase                       always reclaimed to the workspace user
 Safe as you (sudo) or root — ownership is normalized each deploy.
 Production binds :8888.
 EOF
@@ -259,12 +264,17 @@ ensure_venv() {
 
 ensure_web_dist() {
   if [[ ! -f web/dist/index.html ]]; then
-    echo "==> Building web UI"
-    if [[ ! -d web/node_modules ]]; then
-      (cd web && npm install)
-    fi
-    (cd web && npm run build)
+    build_web_dist
   fi
+}
+
+# Always rebuild SPA (deploy / --bin must ship current UI, not a stale web/dist).
+build_web_dist() {
+  echo "==> Building web UI"
+  if [[ ! -d web/node_modules ]]; then
+    (cd web && npm install)
+  fi
+  (cd web && npm run build)
 }
 
 cmd_setup() {
@@ -659,7 +669,7 @@ cmd_run() {
 cmd_bin() {
   echo "==> Building Nuitka one-file binary → $BIN_PATH"
   ensure_venv
-  ensure_web_dist
+  build_web_dist
   pip install -q "nuitka>=2.4" ordered-set zstandard
 
   if ! command -v gcc >/dev/null 2>&1 && ! command -v cc >/dev/null 2>&1; then
@@ -761,14 +771,15 @@ migrate_legacy_var() {
 }
 
 remove_legacy_install() {
-  echo "==> Removing legacy homebase install"
+  echo "==> Removing legacy homebase.service (if present)"
   if systemctl list-unit-files "$LEGACY_SERVICE" &>/dev/null; then
     run_priv systemctl disable --now "$LEGACY_SERVICE" 2>/dev/null || true
   fi
   run_priv rm -f "/etc/systemd/system/$LEGACY_SERVICE"
-  run_priv rm -f "$LEGACY_BIN"
-  # Also drop any leftover binary named homebase under dist
-  rm -f "$BIN_OUT_DIR/homebase" 2>/dev/null || true
+  # Drop old share binary names after migrate (homebased → homebase)
+  if [[ -x "$INSTALL_BIN_REAL" ]]; then
+    run_priv rm -f "$LEGACY_SHARE_BIN" "$LEGACY_SHARE_BAK"
+  fi
 }
 
 free_prod_port() {
@@ -800,35 +811,120 @@ prepare_var_lib() {
     sync_env_key_from_repo "CURSOR_MODEL"
     sync_env_key_from_repo "HOMEBASE_JWT_SECRET"
   fi
-  if [[ -f config/projects.json ]] && [[ ! -f "$HOMEBASE_VAR/config/projects.json" ]]; then
+  # Deploy machine is source of truth for project registry
+  if [[ -f config/projects.json ]]; then
     run_priv cp config/projects.json "$HOMEBASE_VAR/config/projects.json"
-    echo "    copied config/projects.json"
+    echo "    synced config/projects.json → $HOMEBASE_VAR/config/"
   elif [[ ! -f "$HOMEBASE_VAR/config/projects.json" ]]; then
     run_priv cp config/projects.example.json "$HOMEBASE_VAR/config/projects.json"
+    echo "    seeded config/projects.json from example"
+  fi
+  # Keep Run + Expo as compose (two PTYs) even on older prod projects.json
+  if [[ -f "$HOMEBASE_VAR/config/projects.json" ]]; then
+    run_priv python3 - <<'PY' || echo "    warning: compose upgrade skipped" >&2
+import json
+from pathlib import Path
+path = Path("/var/lib/homebased/config/projects.json")
+data = json.loads(path.read_text())
+compose = {
+    "id": "run_all",
+    "label": "Run + Expo",
+    "type": "compose",
+    "compose": ["run", "expo"],
+    "variant": "accent",
+    "group": "main",
+}
+changed = False
+for p in data.get("projects") or []:
+    actions = p.get("actions") or []
+    for i, a in enumerate(actions):
+        if a.get("id") == "run_all" and (
+            a.get("type") != "compose" or a.get("compose") != ["run", "expo"]
+        ):
+            actions[i] = {**a, **compose}
+            changed = True
+    p["actions"] = actions
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    print("    upgraded run_all → compose (run + expo)")
+PY
   fi
   secure_var_ownership
 }
 
+# Set after we stop the unit so EXIT trap can bring it back if deploy aborts.
+HOMEBASED_UNIT_STOPPED=0
+INSTALL_USED_BACKUP=0
+
+ensure_homebased_running_on_exit() {
+  if [[ "${HOMEBASED_UNIT_STOPPED}" != "1" ]]; then
+    return 0
+  fi
+  echo "==> Deploy interrupted — starting $SERVICE_NAME again" >&2
+  run_priv systemctl start "$SERVICE_NAME" 2>/dev/null \
+    || run_priv systemctl restart "$SERVICE_NAME" 2>/dev/null \
+    || true
+}
+
 stop_homebased() {
-  # Must stop before replacing /usr/bin/homebased — Linux returns ETXTBSY ("Text file busy")
+  # Must stop before replacing binaries — Linux returns ETXTBSY ("Text file busy")
   # when cp overwrites an executable that is still mapped/running.
   if systemctl list-unit-files "$SERVICE_NAME" &>/dev/null; then
     run_priv systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+    HOMEBASED_UNIT_STOPPED=1
   fi
   if systemctl list-unit-files "$LEGACY_SERVICE" &>/dev/null; then
     run_priv systemctl stop "$LEGACY_SERVICE" 2>/dev/null || true
   fi
   # Ensure no leftover process holds the inode
   local waited=0
-  while pgrep -x homebased >/dev/null 2>&1 || pgrep -x homebase >/dev/null 2>&1; do
+  while pgrep -x homebase >/dev/null 2>&1 || pgrep -x homebased >/dev/null 2>&1; do
     if [[ "$waited" -ge 30 ]]; then
-      run_priv pkill -KILL -x homebased 2>/dev/null || true
       run_priv pkill -KILL -x homebase 2>/dev/null || true
+      run_priv pkill -KILL -x homebased 2>/dev/null || true
       break
     fi
     sleep 0.1
     waited=$((waited + 1))
   done
+}
+
+# Install unit file, enable, restart, and verify active + :8888.
+# Always the last step of --deploy / --service — never skip.
+restart_homebased_service() {
+  echo "==> Restarting $SERVICE_NAME"
+  run_priv cp "$SERVICE_SRC" "$SERVICE_DST"
+  run_priv systemctl daemon-reload
+  run_priv systemctl enable "$SERVICE_NAME"
+  run_priv systemctl reset-failed "$SERVICE_NAME" 2>/dev/null || true
+  if ! run_priv systemctl restart "$SERVICE_NAME"; then
+    echo "Error: systemctl restart $SERVICE_NAME failed" >&2
+    run_priv journalctl -u "$SERVICE_NAME" -n 40 --no-pager >&2 || true
+    return 1
+  fi
+  local i
+  for i in $(seq 1 40); do
+    if run_priv systemctl is-active --quiet "$SERVICE_NAME"; then
+      break
+    fi
+    sleep 0.25
+  done
+  if ! run_priv systemctl is-active --quiet "$SERVICE_NAME"; then
+    echo "Error: $SERVICE_NAME is not active after restart" >&2
+    run_priv systemctl --no-pager --full status "$SERVICE_NAME" >&2 || true
+    run_priv journalctl -u "$SERVICE_NAME" -n 40 --no-pager >&2 || true
+    return 1
+  fi
+  HOMEBASED_UNIT_STOPPED=0
+  run_priv systemctl --no-pager --full status "$SERVICE_NAME" || true
+  if wait_for_listen "$PROD_PORT"; then
+    echo "==> $SERVICE_NAME active — http://localhost:${PROD_PORT}/"
+  else
+    echo "Warning: $SERVICE_NAME is active but nothing on :$PROD_PORT yet — journalctl -u $SERVICE_NAME -n 50" >&2
+  fi
+  echo "==> Service $SERVICE_NAME enabled and restarted"
+  echo "    HOMEBASE_HOME=$HOMEBASE_VAR  binary=$INSTALL_BIN → $INSTALL_BIN_REAL  port=$PROD_PORT"
+  return 0
 }
 
 install_binary() {
@@ -843,40 +939,56 @@ install_binary() {
   # Root builds leave root-owned dist/; reclaim so cp source is readable and next
   # non-root build can overwrite. Install targets are always root:root below.
   claim_dist_to_workspace
-  echo "==> Safe install → $INSTALL_SHARE (+ wrapper $INSTALL_WRAPPER)"
+  echo "==> Safe install → $INSTALL_BIN_REAL (+ wrapper $INSTALL_WRAPPER / $SERVICE_NAME)"
   stop_homebased
   run_priv mkdir -p "$INSTALL_SHARE"
   run_priv chown root:root "$INSTALL_SHARE"
   run_priv chmod 755 "$INSTALL_SHARE"
 
-  # Migrate legacy fat binary at /usr/bin/homebased into the share layout once
-  if [[ ! -x "$INSTALL_BIN_REAL" ]] && [[ -x "$INSTALL_WRAPPER" ]]; then
-    if ! head -n1 "$INSTALL_WRAPPER" 2>/dev/null | grep -qE 'bash|sh'; then
-      echo "    migrating legacy /usr/bin/homebased → $INSTALL_BIN_REAL"
-      run_priv cp -f "$INSTALL_WRAPPER" "$INSTALL_BIN_REAL"
-      run_priv chmod 755 "$INSTALL_BIN_REAL"
-    fi
+  # Rename share binary homebased → homebase (keep .bak continuity)
+  if [[ ! -x "$INSTALL_BIN_REAL" ]] && [[ -x "$LEGACY_SHARE_BIN" ]]; then
+    echo "    migrating $LEGACY_SHARE_BIN → $INSTALL_BIN_REAL"
+    run_priv mv -f "$LEGACY_SHARE_BIN" "$INSTALL_BIN_REAL"
+  fi
+  if [[ ! -x "$INSTALL_BIN_BAK" ]] && [[ -x "$LEGACY_SHARE_BAK" ]]; then
+    echo "    migrating $LEGACY_SHARE_BAK → $INSTALL_BIN_BAK"
+    run_priv mv -f "$LEGACY_SHARE_BAK" "$INSTALL_BIN_BAK"
   fi
 
-  local ver="0.0.0"
+  # Migrate fat binary formerly at /usr/bin/homebase(d) into the share layout once
+  for candidate in "$LEGACY_WRAPPER" "$INSTALL_WRAPPER"; do
+    if [[ ! -x "$INSTALL_BIN_REAL" ]] && [[ -x "$candidate" ]]; then
+      if ! head -n1 "$candidate" 2>/dev/null | grep -qE 'bash|sh'; then
+        echo "    migrating fat $candidate → $INSTALL_BIN_REAL"
+        run_priv cp -f "$candidate" "$INSTALL_BIN_REAL"
+        run_priv chmod 755 "$INSTALL_BIN_REAL"
+        break
+      fi
+    fi
+  done
+
+  local ver="0.0.0" prev_ver=""
   if [[ -f "$VERSION_FILE" ]]; then
     ver="$(head -n1 "$VERSION_FILE" | tr -d '[:space:]')"
   fi
-
-  # Promote current → .bak only if it still passes self-test
-  if [[ -x "$INSTALL_BIN_REAL" ]]; then
-    if probe_bin "$INSTALL_BIN_REAL"; then
-      echo "    keeping known-good as .bak"
-      run_priv cp -f "$INSTALL_BIN_REAL" "$INSTALL_BIN_BAK"
-      run_priv chmod 755 "$INSTALL_BIN_BAK"
-    elif [[ -x "$INSTALL_BIN_BAK" ]]; then
-      echo "    current failed probe — leaving existing .bak untouched"
-    else
-      echo "    warning: current binary fails probe and no .bak yet (legacy build)"
-    fi
+  if [[ -f "$INSTALL_SHARE/VERSION" ]]; then
+    prev_ver="$(run_priv head -n1 "$INSTALL_SHARE/VERSION" 2>/dev/null | tr -d '[:space:]' || true)"
   fi
 
-  # Atomic install of new binary
+  # Always park the currently deployed primary as .bak, then put the new build in place.
+  # (Do not call this twice in one deploy — that would bak the new binary over the old.)
+  if [[ -x "$INSTALL_BIN_REAL" ]]; then
+    echo "    previous → .bak${prev_ver:+ (v${prev_ver})}"
+    run_priv cp -f "$INSTALL_BIN_REAL" "$INSTALL_BIN_BAK"
+    run_priv chmod 755 "$INSTALL_BIN_BAK"
+    if [[ -f "$INSTALL_SHARE/VERSION" ]]; then
+      run_priv cp -f "$INSTALL_SHARE/VERSION" "$INSTALL_SHARE/VERSION.bak"
+    fi
+  else
+    echo "    no previous binary — first install (no .bak yet)"
+  fi
+
+  # Atomic install of new binary as primary
   run_priv cp "$BIN_PATH" "${INSTALL_BIN_REAL}.new"
   run_priv chmod 755 "${INSTALL_BIN_REAL}.new"
   run_priv mv -f "${INSTALL_BIN_REAL}.new" "$INSTALL_BIN_REAL"
@@ -884,17 +996,22 @@ install_binary() {
     run_priv bash -c "printf '%s\n' $(printf %q "$ver") > $(printf %q "$INSTALL_SHARE/VERSION")"
   run_priv rm -f "$INSTALL_SHARE/.running-backup"
 
-  # Install / refresh wrapper at /usr/bin/homebased
+  # Install / refresh wrapper at /usr/bin/homebase; drop old /usr/bin/homebased name
   run_priv cp "$WRAPPER_SRC" "${INSTALL_WRAPPER}.new"
   run_priv chmod 755 "${INSTALL_WRAPPER}.new"
   run_priv mv -f "${INSTALL_WRAPPER}.new" "$INSTALL_WRAPPER"
+  if [[ -e "$LEGACY_WRAPPER" ]]; then
+    echo "    removing legacy wrapper $LEGACY_WRAPPER"
+    run_priv rm -f "$LEGACY_WRAPPER"
+  fi
 
   secure_install_ownership
 
-  # Probe new binary; if it fails, immediately restore .bak as active
+  # Probe new primary; if it fails, restore .bak so systemd can still start.
+  # Never exit here — caller must still restart homebased.service.
+  INSTALL_USED_BACKUP=0
   if ! probe_bin "$INSTALL_BIN_REAL"; then
     echo "    NEW binary failed self-test" >&2
-    # Show failure reason once for debugging
     tmp="$(mktemp -d /tmp/homebased-probe.XXXXXX)"
     TMPDIR="$tmp" HOMEBASE_SELF_TEST=1 HOMEBASE_HOME="$tmp" HOMEBASE_RUNTIME="$tmp/.runtime" \
       "$INSTALL_BIN_REAL" 2>&1 | tail -n 5 || \
@@ -904,14 +1021,18 @@ install_binary() {
     if [[ -x "$INSTALL_BIN_BAK" ]]; then
       echo "    restoring .bak as active binary" >&2
       run_priv cp -f "$INSTALL_BIN_BAK" "$INSTALL_BIN_REAL"
+      if [[ -f "$INSTALL_SHARE/VERSION.bak" ]]; then
+        run_priv cp -f "$INSTALL_SHARE/VERSION.bak" "$INSTALL_SHARE/VERSION"
+      fi
       run_priv bash -c "echo 1 > $(printf %q "$INSTALL_SHARE/.running-backup")"
       secure_install_ownership
+      INSTALL_USED_BACKUP=1
     else
-      echo "    no .bak available — deploy left a broken primary" >&2
-      exit 1
+      echo "    warning: no .bak — primary may be broken; will still try to start service" >&2
+      INSTALL_USED_BACKUP=1
     fi
   else
-    echo "    self-test ok (v${ver})"
+    echo "    primary v${ver} (previous${prev_ver:+ v${prev_ver}} kept as .bak)"
   fi
 }
 
@@ -940,46 +1061,89 @@ wait_for_listen() {
   return 1
 }
 
+# Nuitka omits cursor_sdk/_vendor/bridge (~180MB node tree). Copy it next to the
+# binary and point CURSOR_SDK_BRIDGE_BIN at the launcher for prod Cursor chat.
+# Never abort deploy — Cursor chat can fail soft; systemd must still restart.
+install_cursor_bridge() {
+  local src="" dest launcher env_file
+  dest="$INSTALL_SHARE/cursor-sdk-bridge"
+  launcher="$dest/bin/cursor-sdk-bridge"
+  if [[ -d .venv/lib ]]; then
+    src="$(find .venv/lib -path '*/cursor_sdk/_vendor/bridge' -type d 2>/dev/null | head -n1 || true)"
+  fi
+  if [[ -z "$src" || ! -f "$src/bin/cursor-sdk-bridge" ]]; then
+    echo "    warning: cursor-sdk bridge not in .venv — Cursor chat may fail until ./build.sh --setup" >&2
+    return 0
+  fi
+  echo "==> Installing cursor-sdk bridge → $dest"
+  set +e
+  run_priv rm -rf "$dest"
+  run_priv mkdir -p "$INSTALL_SHARE"
+  run_priv cp -a "$src" "$dest"
+  local rc=$?
+  run_priv chmod 755 "$dest/bin/cursor-sdk-bridge" 2>/dev/null
+  run_priv chmod 755 "$dest/bin/node" 2>/dev/null
+  set -e
+  if [[ "$rc" -ne 0 || ! -f "$launcher" ]]; then
+    echo "    warning: bridge install failed — continuing so $SERVICE_NAME still restarts" >&2
+    return 0
+  fi
+  env_file="$HOMEBASE_VAR/.env"
+  run_priv mkdir -p "$HOMEBASE_VAR"
+  if [[ ! -f "$env_file" ]]; then
+    run_priv touch "$env_file"
+    run_priv chmod 600 "$env_file"
+  fi
+  if run_priv grep -qE '^CURSOR_SDK_BRIDGE_BIN=' "$env_file" 2>/dev/null; then
+    run_priv sed -i "s|^CURSOR_SDK_BRIDGE_BIN=.*|CURSOR_SDK_BRIDGE_BIN=${launcher}|" "$env_file"
+  else
+    run_priv bash -c "printf 'CURSOR_SDK_BRIDGE_BIN=%s\n' $(printf %q "$launcher") >> $(printf %q "$env_file")"
+  fi
+  echo "    CURSOR_SDK_BRIDGE_BIN=$launcher"
+}
+
 cmd_service() {
   echo "==> Installing $SERVICE_NAME"
   if [[ ! -f "$SERVICE_SRC" ]]; then
     echo "Error: missing $SERVICE_SRC" >&2
     exit 1
   fi
+  trap ensure_homebased_running_on_exit EXIT
+
+  INSTALL_USED_BACKUP=0
   if [[ -x "$BIN_PATH" ]]; then
-    # Refresh /usr/bin from dist when available (covers failed mid-deploy ETXTBSY retries)
+    # Refresh share binary + wrapper from dist (once per deploy/service)
     install_binary
-  elif [[ ! -x "$INSTALL_BIN" ]]; then
-    echo "Error: $INSTALL_BIN not found — run ./build.sh --bin or ./build.sh --deploy" >&2
+  elif [[ ! -x "$INSTALL_BIN_REAL" ]] && [[ ! -x "$INSTALL_WRAPPER" ]]; then
+    echo "Error: no binary at $BIN_PATH or $INSTALL_BIN_REAL — run ./build.sh --bin or ./build.sh --deploy" >&2
     exit 1
+  else
+    echo "    using existing install at $INSTALL_BIN_REAL (no new dist/ binary)"
   fi
 
   remove_legacy_install
   free_prod_port
   prepare_var_lib
-  run_priv cp "$SERVICE_SRC" "$SERVICE_DST"
-  run_priv systemctl daemon-reload
-  run_priv systemctl enable "$SERVICE_NAME"
-  run_priv systemctl restart "$SERVICE_NAME"
-  run_priv systemctl --no-pager --full status "$SERVICE_NAME" || true
-  if wait_for_listen "$PROD_PORT"; then
-    echo "==> Listening on :$PROD_PORT — open http://localhost:${PROD_PORT}/"
-  else
-    echo "Warning: nothing listening on :$PROD_PORT yet — check: journalctl -u $SERVICE_NAME -n 50" >&2
+  install_cursor_bridge
+
+  if ! restart_homebased_service; then
+    exit 1
   fi
-  echo "==> Service $SERVICE_NAME enabled and restarted"
-  echo "    HOMEBASE_HOME=$HOMEBASE_VAR  binary=$INSTALL_BIN  port=$PROD_PORT"
+  trap - EXIT
+
+  if [[ "${INSTALL_USED_BACKUP:-0}" == "1" ]] || [[ -f "$INSTALL_SHARE/.running-backup" ]]; then
+    echo "    WARNING: running BACKUP binary — new build failed self-test; fix and redeploy" >&2
+    exit 1
+  fi
 }
 
 cmd_deploy() {
-  echo "==> Deploy: build → /usr/share/homebased (+ wrapper) → systemd"
+  echo "==> Deploy: build → install homebase binary → restart homebased.service"
   cmd_bin
-  install_binary
+  # install_binary runs once inside cmd_service (avoid double-install, which
+  # would copy the NEW primary over .bak and lose the real previous binary)
   cmd_service
-  echo "==> Deploy complete → http://0.0.0.0:${PROD_PORT} as root (see $HOMEBASE_VAR/.env)"
-  if [[ -f "$INSTALL_SHARE/.running-backup" ]]; then
-    echo "    WARNING: service may be on BACKUP binary — check journalctl -u homebased" >&2
-  fi
+  echo "==> Deploy complete → http://0.0.0.0:${PROD_PORT}/ ($SERVICE_NAME)"
 }
 
 if [[ "$DO_SETUP" == true ]]; then
@@ -995,7 +1159,6 @@ if [[ "$DO_DEPLOY" == true ]]; then
 elif [[ "$DO_BIN" == true ]]; then
   cmd_bin
   if [[ "$DO_SERVICE" == true ]]; then
-    install_binary
     cmd_service
   fi
 elif [[ "$DO_SERVICE" == true ]]; then

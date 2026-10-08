@@ -8,6 +8,7 @@ import { oneDark } from '@codemirror/theme-one-dark'
 import CodeMirror from '@uiw/react-codemirror'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../lib/api'
+import { useSceneRefresh } from '../lib/sceneRefresh'
 import type { FsEntry, Project } from '../lib/types'
 
 function langExt(language: string) {
@@ -247,6 +248,23 @@ export function FilesTab({
     },
     [project?.id, fetchDir],
   )
+
+  const refreshScene = useCallback(async () => {
+    if (!project) return
+    await loadDir(dir || projectRoot, { keepFile: true })
+    if (filePath && !dirty) {
+      try {
+        const data = await api.fsRead(project.id, filePath)
+        setContent(data.content)
+        setSavedContent(data.content)
+        setDirty(false)
+      } catch {
+        /* keep editor buffer if read fails */
+      }
+    }
+  }, [project, dir, filePath, dirty, loadDir, projectRoot])
+
+  useSceneRefresh(refreshScene)
 
   useEffect(() => {
     setFilePath(null)

@@ -11,6 +11,7 @@ import { ShellTab } from './components/ShellTab'
 import { api } from './lib/api'
 import { clearToken, isSessionValid } from './lib/auth'
 import { installClientLog } from './lib/clientLog'
+import { runSceneRefresh } from './lib/sceneRefresh'
 import { applyTheme, getStoredTheme } from './lib/theme'
 import { type Project, type Tab } from './lib/types'
 
@@ -90,15 +91,16 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('apps')
   const [projects, setProjects] = useState<Project[]>([])
   const [selectedId, setSelectedId] = useState('')
-  const [attachSessionId, setAttachSessionId] = useState<string | null>(null)
+  const [attachSessionIds, setAttachSessionIds] = useState<string[] | null>(null)
   const [loadError, setLoadError] = useState('')
   const [unread, setUnread] = useState(0)
   const [version, setVersion] = useState('')
   const [backup, setBackup] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
 
   const tabs = useMemo(() => TABS, [])
 
-  const refresh = useCallback(async () => {
+  const refreshProjects = useCallback(async () => {
     try {
       const data = await api.projects()
       setProjects(data.projects)
@@ -126,12 +128,21 @@ export default function App() {
     }
   }, [selectedId])
 
+  const refresh = useCallback(async () => {
+    setRefreshing(true)
+    try {
+      await Promise.all([refreshProjects(), runSceneRefresh()])
+    } finally {
+      setRefreshing(false)
+    }
+  }, [refreshProjects])
+
   useEffect(() => {
     if (!authed) return
-    refresh()
-    const t = setInterval(refresh, 10000)
+    void refreshProjects()
+    const t = setInterval(() => void refreshProjects(), 10000)
     return () => clearInterval(t)
-  }, [authed, refresh])
+  }, [authed, refreshProjects])
 
   if (!authed) {
     return <Login onAuthed={() => setAuthed(true)} />
@@ -146,9 +157,10 @@ export default function App() {
           projects={projects}
           selectedId={selectedId}
           onSelect={setSelectedId}
-          onRefresh={refresh}
-          onOpenShell={(sid) => {
-            if (sid) setAttachSessionId(sid)
+          onRefresh={refreshProjects}
+          onOpenShell={(ids) => {
+            const list = Array.isArray(ids) ? ids : ids ? [ids] : []
+            setAttachSessionIds(list.length ? list : null)
             setTab('shell')
           }}
         />
@@ -160,8 +172,8 @@ export default function App() {
         projects={projects}
         selectedId={selectedId}
         onSelect={setSelectedId}
-        attachSessionId={attachSessionId}
-        onClearAttach={() => setAttachSessionId(null)}
+        attachSessionIds={attachSessionIds}
+        onClearAttach={() => setAttachSessionIds(null)}
       />
     )
   } else if (tab === 'files') {
@@ -190,6 +202,11 @@ export default function App() {
   return (
     <div className="h-full flex flex-col">
       <PullToRefresh onRefresh={refresh} />
+      {refreshing && (
+        <div className="hb-refresh-overlay" role="status" aria-live="polite" aria-label="Refreshing">
+          <div className="hb-spinner" />
+        </div>
+      )}
       <main className="flex-1 min-h-0 overflow-hidden">{body}</main>
 
       {version && (

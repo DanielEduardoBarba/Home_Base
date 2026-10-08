@@ -30,7 +30,8 @@ Each project entry:
 - `ports[]` — `{ id, label, port, health? }`
 - `actions[]` — button → `./script.sh` + `args[]`
   - `group`: `main` | `ship` | `hotkey` | custom
-  - `type`: `script` (default) | `stop` | `restart`
+  - `type`: `script` (default) | `stop` | `restart` | `compose`
+  - `compose`: `[actionId, …]` when `type` is `compose` (e.g. Run + Expo → two PTYs)
   - `kind`: `run` | `expo` | `ship` | `action` (PTY session kind)
 
 Committed preset: `config/presets/example.json`. Personal presets under `config/presets/` are gitignored. Live registry: `config/projects.json` (ignored).
@@ -55,18 +56,18 @@ Committed preset: `config/presets/example.json`. Personal presets under `config/
 ## Deploy
 
 ```bash
-./build.sh --deploy # Nuitka → /usr/share/homebased + wrapper /usr/bin/homebased + systemd
+./build.sh --deploy # Nuitka → dist/homebase → /usr/share/homebased + wrapper + systemd
 ```
 
-- Active binary: `/usr/share/homebased/homebased` (previous known-good → `homebased.bak`)
-- Wrapper `/usr/bin/homebased` self-tests, then exec; on failure runs `.bak` with `HOMEBASE_RUNNING_BACKUP=1`
+- Active binary: `/usr/share/homebased/homebase` (previous known-good → `homebase.bak`)
+- Wrapper `/usr/bin/homebase` (unit `homebased.service`) self-tests, then exec; on failure runs `.bak` with `HOMEBASE_RUNNING_BACKUP=1`
 - Deploy syncs `CURSOR_API_KEY` from repo `.env` → `/var/lib/homebased/.env` (VPN/prod uses the latter)
 - Version: repo `VERSION` file; shown bottom-right in UI; also `/api/version`
 
-Writable state: `/var/lib/homebased` (`HOMEBASE_HOME`). Unit runs as **root** on **port 8888**.
+Writable state: `/var/lib/homebased` (`HOMEBASE_HOME`). Unit **homebased** runs as **root** on **port 8888**.
 
 ## Do not
 
-- Commit `.env`, `config/projects.json`, personal presets, or `dist/homebased`
+- Commit `.env`, `config/projects.json`, personal presets, or `dist/homebase`
 - Use cloud Cursor agents (local only)
 - Allow scripts outside the project directory

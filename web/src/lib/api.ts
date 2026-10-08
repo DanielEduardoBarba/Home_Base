@@ -194,10 +194,13 @@ export const api = {
   projects: () => request<{ projects: Project[] }>('/api/projects'),
   project: (id: string) => request<Project>(`/api/projects/${id}`),
   action: (id: string, actionId: string, extraArgs: string[] = []) =>
-    request<{ type?: string; session?: Session }>(`/api/projects/${id}/action`, {
-      method: 'POST',
-      body: JSON.stringify({ actionId, extraArgs }),
-    }),
+    request<{ type?: string; session?: Session; sessions?: Session[] }>(
+      `/api/projects/${id}/action`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ actionId, extraArgs }),
+      },
+    ),
   stop: (id: string) =>
     request<{ killedSessions: string[] }>(`/api/projects/${id}/stop`, { method: 'POST' }),
   logs: (id: string, lines = 200) =>

@@ -39,6 +39,7 @@ export interface ActionDef {
   group: string
   variant: string
   hint: string
+  compose?: string[]
 }
 
 export interface Session {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../lib/api'
+import { useSceneRefresh } from '../lib/sceneRefresh'
 import type { NotificationItem } from '../lib/types'
 import { HoldButton } from './HoldButton'
 
@@ -30,6 +31,8 @@ export function AlertsTab() {
       setError(e instanceof Error ? e.message : String(e))
     }
   }, [mode, offset])
+
+  useSceneRefresh(load)
 
   useEffect(() => {
     load()
@@ -106,9 +109,6 @@ export function AlertsTab() {
                 onConfirm={clearOld}
               />
             )}
-            <button type="button" onClick={load} className="ml-auto text-mute px-2 py-1">
-              Refresh
-            </button>
           </div>
           {flash && <p className="text-ok text-xs font-mono">{flash}</p>}
         </div>

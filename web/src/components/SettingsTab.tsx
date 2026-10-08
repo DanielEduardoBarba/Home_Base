@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../lib/api'
 import { clearToken, getExpiresAt } from '../lib/auth'
+import { useSceneRefresh } from '../lib/sceneRefresh'
 import { clearAppCache, getStoredTheme, listCacheKeys, setTheme, type ThemeMode } from '../lib/theme'
 import { isLocalHostPage } from '../lib/types'
 import { HoldButton } from './HoldButton'
@@ -31,6 +32,8 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
       /* ignore */
     }
   }, [])
+
+  useSceneRefresh(loadSystem)
 
   useEffect(() => {
     void loadSystem()

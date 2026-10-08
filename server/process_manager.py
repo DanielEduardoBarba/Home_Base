@@ -113,6 +113,21 @@ async def run_action_def(
         target = project.action(target_id)
         return await run_action_def(project_id, target)
 
+    if action.type == "compose":
+        # e.g. Run + Expo → two PTYs (./build.sh --run and --run --expo)
+        ids = list(action.compose)
+        if not ids:
+            raise ValueError(f"Action {action.id} type=compose needs compose: [actionId, …]")
+        sessions: list[dict[str, Any]] = []
+        for aid in ids:
+            target = project.action(aid)
+            if target.type == "compose":
+                raise ValueError("Nested compose actions are not supported")
+            result = await run_action_def(project_id, target)
+            if result.get("type") == "session" and result.get("session"):
+                sessions.append(result["session"])
+        return {"type": "sessions", "sessions": sessions}
+
     if action.type != "script" and action.type not in {"", "script"}:
         # treat unknown with script as script
         if not action.script:

@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
-# /usr/bin/homebased — probe the installed binary, fall back to .bak on failure.
+# /usr/bin/homebase — probe the installed binary, fall back to .bak on failure.
+# systemd unit: homebased.service → this wrapper → /usr/share/homebased/homebase
 set -euo pipefail
 
 SHARE="${HOMEBASE_SHARE:-/usr/share/homebased}"
-BIN="$SHARE/homebased"
-BAK="$SHARE/homebased.bak"
+BIN="$SHARE/homebase"
+BAK="$SHARE/homebase.bak"
+# Older deploys used homebased as the binary filename
+LEGACY_BIN="$SHARE/homebased"
+LEGACY_BAK="$SHARE/homebased.bak"
 MARKER="$SHARE/.running-backup"
+
+if [[ ! -x "$BIN" && -x "$LEGACY_BIN" ]]; then
+  BIN="$LEGACY_BIN"
+fi
+if [[ ! -x "$BAK" && -x "$LEGACY_BAK" ]]; then
+  BAK="$LEGACY_BAK"
+fi
 
 run_probe() {
   local target="$1"
@@ -21,7 +32,7 @@ run_probe() {
 }
 
 if [[ ! -x "$BIN" ]]; then
-  echo "homebased: missing $BIN" >&2
+  echo "homebase: missing $BIN" >&2
   exit 127
 fi
 
@@ -31,12 +42,12 @@ if run_probe "$BIN"; then
   exec "$BIN" "$@"
 fi
 
-echo "homebased: primary binary failed self-test — trying backup" >&2
+echo "homebase: primary binary failed self-test — trying backup" >&2
 if [[ -x "$BAK" ]] && run_probe "$BAK"; then
   echo "1" >"$MARKER" 2>/dev/null || true
   export HOMEBASE_RUNNING_BACKUP=1
   exec "$BAK" "$@"
 fi
 
-echo "homebased: primary and backup both failed self-test" >&2
+echo "homebase: primary and backup both failed self-test" >&2
 exit 1

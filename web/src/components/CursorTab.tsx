@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import ReactMarkdown from 'react-markdown'
 import { api, wsUrl } from '../lib/api'
 import { uid } from '../lib/id'
+import { useSceneRefresh } from '../lib/sceneRefresh'
 import type { CursorModel, FsEntry, Project } from '../lib/types'
 import { IconBtn } from './IconBtn'
 import { ProjectSelect } from './ProjectSelect'
@@ -214,33 +215,33 @@ export function CursorTab({
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [active?.messages, streaming])
 
-  useEffect(() => {
-    let cancelled = false
-    api
-      .cursorModels()
-      .then((data) => {
-        if (cancelled) return
-        setModels(data.models || [])
-        setDefaultModel(data.default)
-        setModel((prev) => {
-          const saved = prev || data.default
-          const ids = new Set((data.models || []).map((m) => m.id))
-          const next = ids.has(saved) ? saved : data.default
-          try {
-            localStorage.setItem(MODEL_STORAGE_KEY, next)
-          } catch {
-            /* ignore */
-          }
-          return next
-        })
+  const refreshModels = useCallback(async () => {
+    try {
+      const data = await api.cursorModels()
+      setModels(data.models || [])
+      setDefaultModel(data.default)
+      setModel((prev) => {
+        const saved = prev || data.default
+        const ids = new Set((data.models || []).map((m) => m.id))
+        const next = ids.has(saved) ? saved : data.default
+        try {
+          localStorage.setItem(MODEL_STORAGE_KEY, next)
+        } catch {
+          /* ignore */
+        }
+        return next
       })
-      .catch((e) => {
-        if (!cancelled) setError(String(e.message || e))
-      })
-    return () => {
-      cancelled = true
+      if (data.error) setError(data.error)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
     }
   }, [])
+
+  useSceneRefresh(refreshModels)
+
+  useEffect(() => {
+    void refreshModels()
+  }, [refreshModels])
 
   const patchTab = useCallback((chatId: string, fn: (t: ChatTab) => ChatTab) => {
     setTabs((prev) =>

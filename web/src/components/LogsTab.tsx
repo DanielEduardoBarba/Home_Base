@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../lib/api'
+import { useSceneRefresh } from '../lib/sceneRefresh'
 import type { TraceLine } from '../lib/types'
 
 const MAX = 300
@@ -46,6 +47,8 @@ export function LogsTab() {
       setError(e instanceof Error ? e.message : String(e))
     }
   }, [paused])
+
+  useSceneRefresh(load)
 
   useEffect(() => {
     load()
@@ -118,13 +121,6 @@ export function LogsTab() {
               title="Copy visible lines"
             >
               {copied || 'Copy'}
-            </button>
-            <button
-              type="button"
-              onClick={() => load()}
-              className="hb-btn hb-btn-ghost text-xs !min-h-9 px-3"
-            >
-              Refresh
             </button>
           </div>
           <p className="text-[11px] font-mono text-mute">

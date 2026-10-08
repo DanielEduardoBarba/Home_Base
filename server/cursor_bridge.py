@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 from .config import AGENTS_PATH, get_project, get_settings
+from .cursor_env import ensure_cursor_bridge_env
 
 log = logging.getLogger("homebase.cursor")
 
@@ -82,6 +83,8 @@ class CursorBridge:
                 "models": [{"id": default, "displayName": default, "description": ""}],
             }
 
+        ensure_cursor_bridge_env()
+
         def _fetch() -> list[dict[str, str]]:
             from cursor_sdk import Cursor
 
@@ -112,6 +115,7 @@ class CursorBridge:
         return {"configured": True, "default": default, "models": models}
 
     async def _ensure_client(self, workspace: Path):
+        ensure_cursor_bridge_env()
         from cursor_sdk import AsyncClient
 
         ws = str(workspace)

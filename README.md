@@ -82,12 +82,12 @@ Copy [`.env.example`](.env.example). Never commit `.env` or `config/projects.jso
 ## Binary + systemd
 
 ```bash
-./build.sh --bin                 # Nuitka one-file → dist/homebased (gitignored)
-./build.sh --service             # install homebased.service (needs /usr/bin/homebased)
-./build.sh --deploy              # --bin → cp /usr/bin/homebased → enable/restart service
+./build.sh --bin                 # Nuitka one-file → dist/homebase (gitignored)
+./build.sh --service             # install homebased.service + /usr/share/homebased/homebase
+./build.sh --deploy              # --bin → install binary/wrapper → enable/restart service
 ```
 
-Service **`homebased`** runs as **root**, binds **port 8888**, and uses `HOMEBASE_HOME=/var/lib/homebased` for `.env`, `config/projects.json`, and `.runtime/`.  
+Service **`homebased`** runs as **root**, binds **port 8888**, execs wrapper `/usr/bin/homebase` → binary `/usr/share/homebased/homebase`, and uses `HOMEBASE_HOME=/var/lib/homebased` for `.env`, `config/projects.json`, and `.runtime/`.  
 Unit file: [`packaging/homebased.service`](packaging/homebased.service).
 
 ## Dev

@@ -9,7 +9,7 @@ import tempfile
 
 def self_test() -> int:
     """
-    Smoke test used by /usr/bin/homebased wrapper before exec.
+    Smoke test used by /usr/bin/homebase (systemd homebased) before exec.
 
     Uses a throwaway HOMEBASE_HOME (and TMPDIR) so the probe never needs write
     access to /var/lib/homebased or /usr/share — works as the deploying user or root.
@@ -55,13 +55,15 @@ def self_test() -> int:
 def main() -> None:
     import uvicorn
     from server.config import get_settings
+    from server.cursor_env import ensure_cursor_bridge_env
     from server.main import app
     from server.version import read_version, running_as_backup
 
+    ensure_cursor_bridge_env()
     settings = get_settings()
     if running_as_backup():
         print(
-            f"homebased: RUNNING BACKUP binary (v{read_version()}) — last deploy failed self-test",
+            f"homebase: RUNNING BACKUP binary (v{read_version()}) — last deploy failed self-test",
             file=sys.stderr,
         )
     uvicorn.run(
