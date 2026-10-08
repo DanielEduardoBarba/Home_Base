@@ -13,12 +13,14 @@ Generic control plane: systemd **`homebased`**, binary **`homebase`**. Productio
 - Auth is **password → JWT (24h TTL)**. Password is scrypt-hashed in `.runtime/auth.json` (mode 0600). Only a **localhost-loaded** SPA may set/change the password.
 - Share QR issues a **one-time redeem id** (20s), never the password or a long-lived secret; redeem returns a normal 24h JWT.
 - Never commit `.env`, `config/projects.json`, `.runtime/`, or personal presets under `config/presets/` (only `example.json` is committed).
-- Cursor integration: **local** `cursor-sdk` agents only.
+- Cursor integration: **local** `cursor-sdk` agents only. Chat agents get Home Base identity context and in-process `homebase_*` custom tools (not a public HTTP MCP).
+- View (remote screen) is JWT-gated like PTY; capture must stop when no subscribers remain.
 - Actions are config-driven (button → script + args). Do not hardcode project names or paths into the server.
 - Scripts must resolve inside the project directory.
 - Notification history is capped; prefer pagination over loading all rows into memory.
 - Auth lockout: after 5 failures escalate delays to a full day; log failures daily under `.runtime/logs/`.
 - Client API/WS must stay same-origin relative paths (`/api`, `/ws`) — no hardcoded host/port in the SPA.
+- Always bump the repo `VERSION` file (semver patch by default; minor/major when the change warrants it) whenever you make code or behavior changes. Do this in the same turn as the change — before finishing.
 
 ## Entry points
 

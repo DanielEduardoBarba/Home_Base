@@ -65,7 +65,7 @@ export function listCacheKeys(): string[] {
         k.startsWith('hb-cursor-') ||
         k === 'hb-cursor-model' ||
         k.startsWith('hb-files-') ||
-        k.startsWith('hb-ui-')
+        (k.startsWith('hb-ui-') && k !== 'hb-ui-tab' && k !== 'hb-ui-project')
       ) {
         keys.push(k)
       }

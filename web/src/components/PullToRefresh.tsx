@@ -16,6 +16,21 @@ function overlaysBlocking(): boolean {
   )
 }
 
+/** View canvas (and similar) must own vertical gestures — skip pull-to-refresh. */
+function noPullTarget(target: EventTarget | null): boolean {
+  let el: HTMLElement | null =
+    target instanceof HTMLElement
+      ? target
+      : target instanceof Node
+        ? (target.parentElement as HTMLElement | null)
+        : null
+  while (el) {
+    if (el.dataset?.hbNoPtr === '1') return true
+    el = el.parentElement
+  }
+  return false
+}
+
 /** Walk from the event target — works better on iOS than elementFromPoint mid-gesture. */
 function atScrollTopFromTarget(target: EventTarget | null): boolean {
   if (window.scrollY > 2 || document.documentElement.scrollTop > 2 || document.body.scrollTop > 2) {
@@ -85,6 +100,7 @@ export function PullToRefresh({ onRefresh }: { onRefresh: () => void | Promise<v
     function begin(clientX: number, clientY: number, target: EventTarget | null, id: number | null) {
       if (busyRef.current) return false
       if (overlaysBlocking()) return false
+      if (noPullTarget(target)) return false
       if (!atScrollTopFromTarget(target)) return false
       startY.current = clientY
       startX.current = clientX

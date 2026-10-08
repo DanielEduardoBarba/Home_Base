@@ -10,6 +10,7 @@ import { TerminalView } from './Terminal'
 /**
  * Shell = interactive PTY + managed sessions.
  * Multiple attached shells use a clean tab strip (one terminal at a time).
+ * Leaving the terminal only detaches the WS — PTY stays alive until Exit/Kill.
  */
 export function ShellTab({
   projects,
@@ -37,6 +38,7 @@ export function ShellTab({
   // Honor startShellKey on first mount (Work chat "+ Shell" mounts us with key > 0)
   const [interactive, setInteractive] = useState(() => startShellKey > 0)
   const [nonce, setNonce] = useState(() => (startShellKey > 0 ? startShellKey : 0))
+  const [interactiveId, setInteractiveId] = useState('')
   const [error, setError] = useState('')
   const lastStartKey = useRef(startShellKey)
 
@@ -47,6 +49,7 @@ export function ShellTab({
     setAttach(ids)
     setActiveTab(0)
     setInteractive(false)
+    setInteractiveId('')
     setError('')
   }, [attachKey])
 
@@ -55,6 +58,7 @@ export function ShellTab({
     lastStartKey.current = startShellKey
     setAttach([])
     setInteractive(true)
+    setInteractiveId('')
     setNonce((n) => n + 1)
     setError('')
   }, [startShellKey])
@@ -81,9 +85,11 @@ export function ShellTab({
     return () => clearInterval(t)
   }, [refresh])
 
+  /** Detach UI only — does not kill or interrupt the PTY. */
   function leaveTerminal() {
     setAttach([])
     setInteractive(false)
+    setInteractiveId('')
     onClearAttach?.()
     void refresh()
   }
@@ -92,9 +98,9 @@ export function ShellTab({
     setError('')
     try {
       await api.killSession(id)
-      if (attach.includes(id)) {
+      if (attach.includes(id) || interactiveId === id) {
         const next = attach.filter((x) => x !== id)
-        if (!next.length) leaveTerminal()
+        if (!next.length || interactiveId === id) leaveTerminal()
         else {
           setAttach(next)
           setActiveTab(0)
@@ -103,6 +109,15 @@ export function ShellTab({
         onClearAttach?.()
         await refresh()
       }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function exitSession(id: string) {
+    setError('')
+    try {
+      await api.interruptSession(id)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -136,12 +151,50 @@ export function ShellTab({
   }
 
   const activeId = attach[activeTab] || attach[0]
+  const exitTargetId = interactive ? interactiveId : activeId
+
+  function renderExitKill(sessionId: string, opts?: { killAll?: boolean }) {
+    if (!sessionId && !opts?.killAll) return null
+    return (
+      <div className="flex items-center gap-1.5 shrink-0">
+        {opts?.killAll && attach.length > 1 && (
+          <HoldButton
+            label="Kill all"
+            holdLabel="…"
+            holdMs={2000}
+            className="hb-btn hb-btn-danger text-[11px] !min-h-8 !px-2.5"
+            onConfirm={() => void killAttached()}
+          />
+        )}
+        {sessionId && (
+          <HoldButton
+            label="Exit"
+            holdLabel="…"
+            holdMs={1000}
+            title="Hold 1s — send Ctrl+C twice"
+            className="hb-btn hb-btn-ghost text-[11px] !min-h-8 !px-2.5"
+            onConfirm={() => void exitSession(sessionId)}
+          />
+        )}
+        {sessionId && (
+          <HoldButton
+            label="Kill"
+            holdLabel="…"
+            holdMs={2000}
+            title="Hold 2s — kill process"
+            className="hb-btn hb-btn-danger text-[11px] !min-h-8 !px-2.5"
+            onConfirm={() => void killSession(sessionId)}
+          />
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className={`h-full flex flex-col min-h-0 ${embedded ? '' : 'hb-with-nav'}`}>
       <div className="hb-chrome shrink-0">
         <div className="hb-chrome-inner space-y-2">
-          <div className="flex gap-2 items-center">
+          <div className="flex gap-2 items-center min-w-0">
             {!embedded && (
               <ProjectSelect
                 projects={projects}
@@ -150,19 +203,32 @@ export function ShellTab({
                   onSelect(id)
                   setAttach([])
                   setInteractive(false)
+                  setInteractiveId('')
                   onClearAttach?.()
                 }}
-                className="flex-1"
+                className="min-w-0 flex-1"
               />
+            )}
+            {!inTerminal && !!ports.length && (
+              <div className="hb-shell-ports">
+                {ports.map((ps) => (
+                  <div key={ps.id} className="hb-port hb-port-inline" data-up={ps.up}>
+                    <span className={ps.up ? 'text-ok' : 'text-mute'}>{ps.up ? '●' : '○'}</span>
+                    <span className="truncate">{ps.label || ps.id}</span>
+                    <span className="opacity-80">:{ps.port}</span>
+                  </div>
+                ))}
+              </div>
             )}
             {!inTerminal ? (
               <IconBtn
                 label="New shell"
-                className={embedded ? 'ml-auto' : undefined}
+                className="shrink-0 ml-auto"
                 onClick={() => {
                   setAttach([])
                   onClearAttach?.()
                   setInteractive(true)
+                  setInteractiveId('')
                   setNonce((n) => n + 1)
                 }}
               />
@@ -170,7 +236,7 @@ export function ShellTab({
               <button
                 type="button"
                 onClick={leaveTerminal}
-                className={`hb-shell-back ${embedded ? 'ml-auto' : ''}`}
+                className="hb-shell-back shrink-0 ml-auto"
                 aria-label="Back to sessions"
               >
                 <svg viewBox="0 0 24 24" className="hb-shell-back-icon" aria-hidden>
@@ -187,34 +253,30 @@ export function ShellTab({
               </button>
             )}
           </div>
-          {!!ports.length && !inTerminal && (
-            <div
-              className={`grid gap-2 ${
-                ports.length === 1
-                  ? 'grid-cols-1 max-w-[12rem]'
-                  : ports.length === 2
-                    ? 'grid-cols-2'
-                    : 'grid-cols-3'
-              }`}
-            >
-              {ports.map((ps) => (
-                <div key={ps.id} className="hb-port !py-1.5" data-up={ps.up}>
-                  <span className={ps.up ? 'text-ok' : 'text-mute'}>{ps.up ? '●' : '○'}</span>{' '}
-                  {ps.label || ps.id} :{ps.port}
-                </div>
-              ))}
-            </div>
-          )}
           {error && <p className="text-danger text-xs">{error}</p>}
         </div>
       </div>
 
       {interactive ? (
-        <TerminalView
-          key={`${project.id}-${nonce}`}
-          path={`/ws/pty?project=${project.id}&cols=100&rows=36`}
-          className="flex-1 min-h-0"
-        />
+        <div className="flex-1 min-h-0 flex flex-col">
+          {interactiveId && (
+            <div className="hb-shell-pane-bar">
+              <span className="truncate font-mono text-[11px] text-mute">
+                shell · {interactiveId.slice(0, 8)}
+              </span>
+              {renderExitKill(interactiveId)}
+            </div>
+          )}
+          <TerminalView
+            key={`${project.id}-${nonce}`}
+            path={`/ws/pty?project=${project.id}&cols=100&rows=36`}
+            className="flex-1 min-h-0"
+            onSession={(id) => {
+              setInteractiveId(id)
+              void refresh()
+            }}
+          />
+        </div>
       ) : attach.length > 0 && activeId ? (
         <div className="flex-1 min-h-0 flex flex-col">
           {attach.length > 1 && (
@@ -239,31 +301,7 @@ export function ShellTab({
               {paneLabel(activeId)}
               {attach.length === 1 ? ` · ${activeId.slice(0, 8)}` : ''}
             </span>
-            <div className="flex items-center gap-1.5 shrink-0">
-              {attach.length > 1 && (
-                <HoldButton
-                  label="Kill all"
-                  holdLabel="…"
-                  holdMs={1000}
-                  className="hb-btn hb-btn-danger text-[11px] !min-h-8 !px-2.5"
-                  onConfirm={() => void killAttached()}
-                />
-              )}
-              <HoldButton
-                label="Kill"
-                holdLabel="…"
-                holdMs={1000}
-                className="hb-btn hb-btn-danger text-[11px] !min-h-8 !px-2.5"
-                onConfirm={() => void killSession(activeId)}
-              />
-              <button
-                type="button"
-                className="text-[11px] text-accent px-2 py-1"
-                onClick={leaveTerminal}
-              >
-                Detach
-              </button>
-            </div>
+            {renderExitKill(exitTargetId, { killAll: true })}
           </div>
           <TerminalView
             key={activeId}
@@ -278,6 +316,7 @@ export function ShellTab({
           {sessions.length === 0 && (
             <p className="text-mute text-sm leading-relaxed">
               No active PTY sessions. Start a stack from Apps, or tap + for an interactive shell.
+              Leaving a shell keeps it alive until you Exit or Kill it.
             </p>
           )}
           <ul className="space-y-2.5">
@@ -308,11 +347,21 @@ export function ShellTab({
                   Attach
                 </button>
                 <HoldButton
-                  label="Kill"
-                  holdLabel="hold…"
+                  label="Exit"
+                  holdLabel="…"
                   holdMs={1000}
+                  title="Hold 1s — send Ctrl+C twice"
+                  disabled={!s.alive}
+                  className="hb-btn hb-btn-ghost text-xs !min-h-9 px-3"
+                  onConfirm={() => void exitSession(s.id)}
+                />
+                <HoldButton
+                  label="Kill"
+                  holdLabel="…"
+                  holdMs={2000}
+                  title="Hold 2s — kill process"
                   className="hb-btn hb-btn-danger text-xs !min-h-9 px-3"
-                  onConfirm={() => killSession(s.id)}
+                  onConfirm={() => void killSession(s.id)}
                 />
               </li>
             ))}

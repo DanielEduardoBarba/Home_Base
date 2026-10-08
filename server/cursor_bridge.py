@@ -9,6 +9,7 @@ from typing import Any, AsyncIterator, Mapping, Optional
 
 from .config import AGENTS_PATH, get_project, get_settings
 from .cursor_env import ensure_cursor_bridge_env
+from .homebase_tools import build_homebase_tools, wrap_prompt
 from .notifications import push as notify
 
 log = logging.getLogger("homebase.cursor")
@@ -32,10 +33,17 @@ def _agent_id(agent: Any) -> Optional[str]:
     return getattr(agent, "agent_id", None) or getattr(agent, "agentId", None)
 
 
+def _model_label(model_id: str) -> str:
+    mid = (model_id or "").strip()
+    if mid.lower() == "auto":
+        return "Auto"
+    return mid
+
+
 def _resolve_model(model: Optional[str] = None) -> str:
     settings = get_settings()
     chosen = (model or "").strip()
-    return chosen or settings.cursor_model
+    return chosen or settings.cursor_model or "auto"
 
 
 def _session_key(project_id: str, chat_id: str) -> str:
@@ -69,6 +77,8 @@ class CursorBridge:
         self._active_run: dict[str, Any] = {}
         self._models: dict[str, str] = {}
         self._cwds: dict[str, str] = {}
+        # Full Home Base preamble once per session; short reminder after
+        self._context_primed: set[str] = set()
 
     @property
     def configured(self) -> bool:
@@ -76,13 +86,23 @@ class CursorBridge:
 
     async def list_models(self) -> dict[str, Any]:
         settings = get_settings()
-        default = settings.cursor_model
+        default = (settings.cursor_model or "auto").strip() or "auto"
+        auto_entry = {
+            "id": "auto",
+            "displayName": "Auto",
+            "description": "Cursor picks the best model for the task",
+        }
         if not settings.cursor_api_key:
-            return {
-                "configured": False,
-                "default": default,
-                "models": [{"id": default, "displayName": default, "description": ""}],
-            }
+            models = [auto_entry]
+            if default != "auto":
+                models.append(
+                    {
+                        "id": default,
+                        "displayName": _model_label(default),
+                        "description": "",
+                    }
+                )
+            return {"configured": False, "default": default, "models": models}
 
         ensure_cursor_bridge_env()
 
@@ -93,7 +113,9 @@ class CursorBridge:
             return [
                 {
                     "id": m.id,
-                    "displayName": m.display_name or m.id,
+                    "displayName": _model_label(m.id)
+                    if (m.id or "").lower() == "auto"
+                    else (m.display_name or m.id),
                     "description": m.description or "",
                 }
                 for m in models
@@ -103,15 +125,34 @@ class CursorBridge:
             models = await asyncio.to_thread(_fetch)
         except Exception as e:
             log.warning("list_models failed: %s", e)
+            models = [auto_entry]
+            if default != "auto":
+                models.append(
+                    {
+                        "id": default,
+                        "displayName": _model_label(default),
+                        "description": "",
+                    }
+                )
             return {
                 "configured": True,
                 "default": default,
-                "models": [{"id": default, "displayName": default, "description": ""}],
+                "models": models,
                 "error": str(e),
             }
 
-        if not any(m["id"] == default for m in models):
-            models.insert(0, {"id": default, "displayName": default, "description": ""})
+        # Always offer Auto first — SDK may or may not include it in list().
+        models = [m for m in models if (m.get("id") or "").lower() != "auto"]
+        models.insert(0, auto_entry)
+        if default != "auto" and not any(m["id"] == default for m in models):
+            models.insert(
+                1,
+                {
+                    "id": default,
+                    "displayName": _model_label(default),
+                    "description": "",
+                },
+            )
 
         return {"configured": True, "default": default, "models": models}
 
@@ -145,6 +186,7 @@ class CursorBridge:
         self._models.clear()
         self._cwds.clear()
         self._active_run.clear()
+        self._context_primed.clear()
         if self._client is not None:
             try:
                 if hasattr(self._client, "aclose"):
@@ -186,7 +228,12 @@ class CursorBridge:
         client = await self._ensure_client(project.path)
         stored = _load_agents()
         agent_id = stored.get(key) or stored.get(project_id)
-        local = LocalAgentOptions(cwd=str(work_cwd))
+        # Project rules/AGENTS.md + in-process Home Base control tools
+        local = LocalAgentOptions(
+            cwd=str(work_cwd),
+            setting_sources=["project"],
+            custom_tools=build_homebase_tools(project_id),
+        )
 
         if agent_id:
             try:
@@ -194,6 +241,7 @@ class CursorBridge:
                     "api_key": settings.cursor_api_key,
                     "model": model_id,
                     "local": local,
+                    "name": f"Home Base · {project.name}",
                 }
                 if hasattr(client, "resume_agent"):
                     agent = await client.resume_agent(agent_id, options)
@@ -211,6 +259,7 @@ class CursorBridge:
                 model=model_id,
                 api_key=settings.cursor_api_key,
                 local=local,
+                name=f"Home Base · {project.name}",
             )
         else:
             agent = await AsyncAgent.create(
@@ -218,6 +267,7 @@ class CursorBridge:
                 model=model_id,
                 api_key=settings.cursor_api_key,
                 local=local,
+                name=f"Home Base · {project.name}",
             )
 
         self._agents[key] = agent
@@ -236,6 +286,7 @@ class CursorBridge:
         self._models.pop(key, None)
         self._cwds.pop(key, None)
         self._active_run.pop(key, None)
+        self._context_primed.discard(key)
         if agent:
             try:
                 if hasattr(agent, "aclose"):
@@ -319,10 +370,22 @@ class CursorBridge:
                 "cwd": self._cwds.get(key),
             }
 
+        # Full Home Base identity once per session; tools stay on the agent.
+        if key not in self._context_primed:
+            send_text = wrap_prompt(
+                prompt,
+                project_id,
+                chat_id=chat_id,
+                cwd=self._cwds.get(key),
+            )
+            self._context_primed.add(key)
+        else:
+            send_text = prompt
+
         # on_delta enables enableDeltas on the wire — without it, thinking/text
         # arrive as complete messages only (feels like one dump at the end).
         run = await agent.send(
-            prompt,
+            send_text,
             SendOptions(model=model_id, on_delta=_noop_delta),
         )
         self._models[key] = model_id

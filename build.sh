@@ -704,6 +704,8 @@ cmd_bin() {
     --include-package=ptyprocess \
     --include-package=websockets \
     --include-package=cursor_sdk \
+    --include-package=mss \
+    --include-package=PIL \
     --include-data-dir=web/dist=web/dist \
     --include-data-dir=config/presets=config/presets \
     --include-data-files=config/projects.example.json=config/projects.example.json \
@@ -815,6 +817,8 @@ prepare_var_lib() {
     sync_env_key_from_repo "CURSOR_API_KEY"
     sync_env_key_from_repo "CURSOR_MODEL"
     sync_env_key_from_repo "HOMEBASE_JWT_SECRET"
+    sync_env_key_from_repo "HOMEBASE_DISPLAY"
+    sync_env_key_from_repo "HOMEBASE_XAUTHORITY"
   fi
   # Deploy machine is source of truth for project registry
   if [[ -f config/projects.json ]]; then

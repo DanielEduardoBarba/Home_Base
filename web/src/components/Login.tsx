@@ -171,7 +171,7 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
   }
 
   return (
-    <div className="hb-login-shell min-h-full flex flex-col justify-end sm:justify-center px-5 pb-14 pt-16 sm:px-8">
+    <div className="hb-login-shell flex flex-col justify-end sm:justify-center px-5 pb-14 pt-16 sm:px-8">
       <div className="w-full max-w-md mx-auto hb-enter">
         <div className="hb-brand-rule" />
         <h1 className="font-display text-[clamp(2.6rem,11vw,4.25rem)] font-extrabold leading-[0.92] tracking-tight">

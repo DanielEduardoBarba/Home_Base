@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -43,6 +44,7 @@ from .system_ctl import list_wireguard, restart_homebased, restart_wireguard
 from .trace_log import install_logging_handler, snapshot as trace_snapshot
 from .trace_log import append as trace_append
 from .version import read_version, running_as_backup, status_payload as version_status
+from .view import view_hub
 
 log = logging.getLogger("homebase")
 logging.basicConfig(level=logging.INFO)
@@ -91,6 +93,10 @@ async def lifespan(app: FastAPI):
             await pty_manager.kill(s["id"])
         except Exception:
             pass
+    try:
+        view_hub.shutdown()
+    except Exception:
+        pass
     trace_append("info", "shutdown", source="server")
 
 
@@ -454,6 +460,21 @@ async def api_kill_session(session_id: str, _: None = Depends(require_auth)):
     return {"ok": True}
 
 
+@app.post("/api/sessions/{session_id}/interrupt")
+async def api_interrupt_session(session_id: str, _: None = Depends(require_auth)):
+    """Send Ctrl+C twice (SIGINT) to the session PTY — does not kill the session."""
+    session = pty_manager.get(session_id)
+    if not session or not session.alive:
+        raise HTTPException(404, "Session not found")
+    try:
+        await pty_manager.write(session_id, "\x03")
+        await asyncio.sleep(0.05)
+        await pty_manager.write(session_id, "\x03")
+    except KeyError:
+        raise HTTPException(404, "Session not found") from None
+    return {"ok": True}
+
+
 @app.get("/api/cursor/models")
 async def api_cursor_models(_: None = Depends(require_auth)):
     return await cursor_bridge.list_models()
@@ -553,6 +574,46 @@ async def api_trace_client(request: Request, _: None = Depends(require_auth)):
     return {"ok": True, "accepted": accepted}
 
 
+@app.get("/api/view/status")
+def api_view_status(_: None = Depends(require_auth)):
+    """Probe whether screen capture/input is available (JWT)."""
+    return view_hub.status()
+
+
+@app.websocket("/ws/view")
+async def ws_view(websocket: WebSocket):
+    """Remote desktop stream + input. JWT required. Capture runs only while connected."""
+    if not await ws_authenticate(websocket):
+        return
+    await websocket.accept()
+    client = None
+    try:
+        client = await view_hub.connect(websocket)
+        while True:
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+            if "text" in message and message["text"] is not None:
+                try:
+                    msg = json.loads(message["text"])
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(msg, dict):
+                    await view_hub.handle_message(client, msg)
+            # Binary client→server unused (frames are server→client only)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        log.exception("view ws: %s", e)
+        try:
+            await websocket.send_json({"type": "error", "error": str(e)})
+        except Exception:
+            pass
+    finally:
+        if client is not None:
+            await view_hub.disconnect(websocket)
+
+
 @app.websocket("/ws/pty")
 async def ws_pty(websocket: WebSocket):
     if not await ws_authenticate(websocket):
@@ -628,8 +689,8 @@ async def ws_pty(websocket: WebSocket):
     except Exception as e:
         log.exception("pty ws error: %s", e)
     finally:
+        # Detach only — keep the PTY alive until Kill / process exit.
         pty_manager.unsubscribe(session.id, websocket)
-        await pty_manager.kill(session.id)
 
 
 @app.websocket("/ws/session/{session_id}")

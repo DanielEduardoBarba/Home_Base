@@ -88,6 +88,18 @@ export const api = {
       backup?: boolean
     }>('/api/health'),
   version: () => request<{ version: string; backup: boolean }>('/api/version'),
+  viewStatus: () =>
+    request<{
+      ok: boolean
+      display: string
+      xauthority: boolean
+      screenW: number
+      screenH: number
+      clients: number
+      error?: string
+      fps?: number
+      kbps?: number
+    }>('/api/view/status'),
   systemStatus: () =>
     request<{
       wireguard: { id: string; unit: string; conf: string }[]
@@ -220,6 +232,9 @@ export const api = {
     ),
   killSession: (sessionId: string) =>
     request<{ ok: boolean }>(`/api/sessions/${sessionId}`, { method: 'DELETE' }),
+  /** Ctrl+C twice — interrupt foreground process; session stays alive. */
+  interruptSession: (sessionId: string) =>
+    request<{ ok: boolean }>(`/api/sessions/${sessionId}/interrupt`, { method: 'POST' }),
   resetCursor: (id: string, chatId = 'default') =>
     request<{ ok: boolean }>(
       `/api/cursor/${id}/reset?chatId=${encodeURIComponent(chatId)}`,

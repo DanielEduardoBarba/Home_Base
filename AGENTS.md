@@ -20,11 +20,12 @@ SPA fetch/WebSocket paths are always relative (`/api/...`, `/ws/...` via `locati
 
 ## UI tabs
 
-Apps · **Work** · Chat · Shell · Files · Logs · **More/Settings**. Alerts live in the status bar (host/live).
+Apps · **Work** · Chat · Shell · Files · **View** · Logs · **More/Settings**. Alerts live in the status bar (host/live).
 
 - **Work** — switch Apps / Shell / Files in one workspace with a bottom-right chat dock (Cursor-like). Chat can present a shell or file into the scene.
 - **Chat** — full-page agent; same engine as the Work dock; can jump into Work to show Apps/Shell/Files.
 - **Shell** — standalone PTY + session attach (unchanged).
+- **View** — JWT-gated live laptop screen (`/ws/view`) with pointer/keyboard; X11 capture via mss in a forked helper that setuid()s to the seat owner (root systemd cannot open the user display directly). Explicit Connect/Disconnect; maximize mode; adaptive JPEG. Capture runs only while connected.
 - Alerts bell in the thin top status bar opens a top→bottom near-full inbox; History is a right drawer. Chat supports English speech→text; Cursor done pings toast/sound and optional browser notifications. Theme, notification prefs, cache clear, sign-out, and localhost Share/password live under More.
 
 ## Config model
@@ -70,15 +71,15 @@ Committed presets: `config/presets/example.json` and `config/presets/homebase.js
 - Active binary: `/usr/share/homebased/homebase` (previous known-good → `homebase.bak`)
 - Wrapper `/usr/bin/homebase` (unit `homebased.service`) self-tests, then exec; on failure runs `.bak` with `HOMEBASE_RUNNING_BACKUP=1`
 - Deploy syncs `CURSOR_API_KEY` from repo `.env` → `/var/lib/homebased/.env` (VPN/prod uses the latter)
-- Version: repo `VERSION` file; status bar + `/api/version`
+- Version: repo `VERSION` file; status bar + `/api/version`. **Always increment** on code/behavior changes (patch by default).
 - Deploy also syncs `CURSOR_MODEL` / `HOMEBASE_JWT_SECRET` and installs the cursor-sdk Node bridge (omitted from Nuitka onefile)
 
 Writable state: `/var/lib/homebased` (`HOMEBASE_HOME`). Unit **homebased** runs as **root** on **port 8888**.
 
 ## Capabilities vs non-goals
 
-- **Supports:** local Cursor agents, project actions/PTY, Files (project + absolute host with JWT), WireGuard/homebased restart
-- **Does not:** remote desktop/screen stream, Cursor IDE buffer sync, cloud agents, public internet exposure
+- **Supports:** local Cursor agents (Home Base context + `homebase_*` in-process tools), project actions/PTY, Files (project + absolute host with JWT), View (X11 screen + input over JWT WS), WireGuard/homebased restart
+- **Does not:** Cursor IDE buffer sync, cloud agents, public internet exposure, Wayland capture (X11 / XWayland only)
 
 ## Do not
 

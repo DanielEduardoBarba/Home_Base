@@ -180,7 +180,7 @@ class Settings:
     port: int = field(default_factory=lambda: int(os.environ.get("HOMEBASE_PORT", "8081")))
     cursor_api_key: str = field(default_factory=lambda: os.environ.get("CURSOR_API_KEY", "").strip())
     cursor_model: str = field(
-        default_factory=lambda: os.environ.get("CURSOR_MODEL", "composer-2.5").strip()
+        default_factory=lambda: os.environ.get("CURSOR_MODEL", "auto").strip() or "auto"
     )
 
 

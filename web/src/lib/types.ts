@@ -3,6 +3,7 @@ export type Tab =
   | 'work'
   | 'shell'
   | 'files'
+  | 'view'
   | 'cursor'
   | 'logs'
   | 'settings'

@@ -9,6 +9,7 @@ import { PullToRefresh } from './components/PullToRefresh'
 import { SettingsTab } from './components/SettingsTab'
 import { ShellTab } from './components/ShellTab'
 import { ToastStack } from './components/ToastStack'
+import { ViewTab } from './components/ViewTab'
 import { WorkTab } from './components/WorkTab'
 import { api } from './lib/api'
 import { clearSession, isSessionValid, watchSessionExpiry } from './lib/auth'
@@ -18,18 +19,25 @@ import { NotifyProvider, useNotify } from './lib/NotifyContext'
 import { runSceneRefresh } from './lib/sceneRefresh'
 import { applyMobileSafeTop, applyTheme, getStoredTheme } from './lib/theme'
 import { type Project, type Tab } from './lib/types'
+import {
+  readLastProjectId,
+  readLastTab,
+  writeLastProjectId,
+  writeLastTab,
+} from './lib/uiPrefs'
 
 installClientLog()
 applyTheme(getStoredTheme())
 applyMobileSafeTop()
 
-/** Mobile-first: Apps · Work · Chat · Shell · Files · Logs · More (Alerts live in status bar) */
+/** Mobile-first: Apps · Work · Chat · Shell · Files · View · Logs · More (Alerts = status-bar bell) */
 const TABS: { id: Tab; label: string }[] = [
   { id: 'apps', label: 'Apps' },
   { id: 'work', label: 'Work' },
   { id: 'cursor', label: 'Chat' },
   { id: 'shell', label: 'Shell' },
   { id: 'files', label: 'Files' },
+  { id: 'view', label: 'View' },
   { id: 'logs', label: 'Logs' },
   { id: 'settings', label: 'More' },
 ]
@@ -67,6 +75,14 @@ function TabIcon({ id }: { id: Tab }) {
           <path d="M4.5 6.5h5l2 2h8v10.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3.5 19V8a1.5 1.5 0 0 1 1-1.5z" />
         </svg>
       )
+    case 'view':
+      return (
+        <svg {...common}>
+          <rect x="3.5" y="5" width="17" height="12" rx="1.5" />
+          <circle cx="12" cy="11" r="2.75" />
+          <path d="M8 19.5h8" />
+        </svg>
+      )
     case 'cursor':
       return (
         <svg {...common}>
@@ -94,9 +110,9 @@ function TabIcon({ id }: { id: Tab }) {
 type HostLink = 'live' | 'reconnecting' | 'unreachable'
 
 function AuthedApp() {
-  const [tab, setTab] = useState<Tab>('apps')
+  const [tab, setTab] = useState<Tab>(() => readLastTab('apps'))
   const [projects, setProjects] = useState<Project[]>([])
-  const [selectedId, setSelectedId] = useState('')
+  const [selectedId, setSelectedId] = useState(() => readLastProjectId())
   const [attachSessionIds, setAttachSessionIds] = useState<string[] | null>(null)
   const [workPresent, setWorkPresent] = useState<PresentRequest | null>(null)
   /** Bumps so Work re-applies even if the same scene is requested twice. */
@@ -122,13 +138,23 @@ function AuthedApp() {
   const tabs = useMemo(() => TABS, [])
   const activeProject = projects.find((p) => p.id === selectedId) || projects[0]
 
+  const goTab = useCallback((id: Tab) => {
+    writeLastTab(id)
+    setTab(id)
+  }, [])
+
+  const selectProject = useCallback((id: string) => {
+    writeLastProjectId(id)
+    setSelectedId(id)
+  }, [])
+
   /** Chat → Work: show Apps / Shell / Files (and optionally a shell or file). */
   const presentInWork = useCallback((req: PresentRequest) => {
     workPresentSeq.current += 1
     setWorkPresent(req)
     setWorkPresentKey(workPresentSeq.current)
-    setTab('work')
-  }, [])
+    goTab('work')
+  }, [goTab])
 
   const refreshProjects = useCallback(async () => {
     try {
@@ -147,7 +173,9 @@ function AuthedApp() {
         if (typeof health.backup === 'boolean') setBackup(health.backup)
       }
       if (!data.projects.find((p) => p.id === selectedId)) {
-        setSelectedId(data.projects[0]?.id || '')
+        const next = data.projects[0]?.id || ''
+        setSelectedId(next)
+        if (next) writeLastProjectId(next)
       }
       if (!health) {
         try {
@@ -199,12 +227,12 @@ function AuthedApp() {
         <AppsTab
           projects={projects}
           selectedId={selectedId}
-          onSelect={setSelectedId}
+          onSelect={selectProject}
           onRefresh={refreshProjects}
           onOpenShell={(ids) => {
             const list = Array.isArray(ids) ? ids : ids ? [ids] : []
             setAttachSessionIds(list.length ? list : null)
-            setTab('shell')
+            goTab('shell')
           }}
         />
       </div>
@@ -214,7 +242,7 @@ function AuthedApp() {
       <WorkTab
         projects={projects}
         selectedId={selectedId}
-        onSelect={setSelectedId}
+        onSelect={selectProject}
         onRefresh={refreshProjects}
         present={workPresent}
         presentKey={workPresentKey}
@@ -225,21 +253,23 @@ function AuthedApp() {
       <ShellTab
         projects={projects}
         selectedId={selectedId}
-        onSelect={setSelectedId}
+        onSelect={selectProject}
         attachSessionIds={attachSessionIds}
         onClearAttach={() => setAttachSessionIds(null)}
       />
     )
   } else if (tab === 'files') {
     body = (
-      <FilesTab projects={projects} selectedId={selectedId} onSelect={setSelectedId} />
+      <FilesTab projects={projects} selectedId={selectedId} onSelect={selectProject} />
     )
+  } else if (tab === 'view') {
+    body = <ViewTab />
   } else if (tab === 'cursor') {
     body = (
       <CursorTab
         projects={projects}
         selectedId={selectedId}
-        onSelect={setSelectedId}
+        onSelect={selectProject}
         onPresent={presentInWork}
       />
     )
@@ -249,7 +279,7 @@ function AuthedApp() {
     body = (
       <SettingsTab
         onSignedOut={() => {
-          setTab('apps')
+          goTab('apps')
         }}
       />
     )
@@ -357,7 +387,7 @@ function AuthedApp() {
                 closeInbox()
                 // Drop stale present so revisiting Work via nav opens clean Apps scene
                 if (t.id !== 'work') setWorkPresent(null)
-                setTab(t.id)
+                goTab(t.id)
               }}
               className="hb-nav-item"
               data-active={tab === t.id}

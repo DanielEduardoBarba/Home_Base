@@ -53,6 +53,7 @@ Fetch and WebSocket clients always use relative `/api/...` and `/ws/...` against
 | Chat | Full-page local Cursor agent |
 | Shell | Interactive PTY + attach managed sessions |
 | Files | Host/project file browser + editor (**not** Cursor’s open buffers) |
+| View | Live laptop screen + mouse/keyboard (`/ws/view`, JWT; X11) |
 | Logs | Capped console ring (`/api/trace`) |
 | *(status bar)* Alerts | Bell in host/live bar; top→bottom inbox; History drawer |
 | More | Theme, notify prefs, Share/password (localhost), VPN/homebased restart, sign-out |
@@ -78,9 +79,10 @@ Action `type` values: `script` (default), `stop`, `restart` (with `restartAction
 | Project scripts / ports | Config-driven actions; Stop kills PTYs, pidfiles, and listeners |
 | Shell | JWT-gated PTY scoped to project cwd; phone Ctrl/Esc/Tab bar |
 | Files | REST read/write; relative paths under project; absolute `/…` = host browse (JWT) |
+| View | JWT WebSocket JPEG stream of the X11 desktop + XTest input; adaptive for LAN/VPN |
 | Laptop services | WireGuard / homebased restart from More (JWT) |
 
-**Not supported:** remote desktop / screen streaming, reading Cursor IDE open-buffer state, cloud Cursor agents, public internet exposure.
+**Not supported:** Wayland-native capture (needs X11/XWayland), reading Cursor IDE open-buffer state, cloud Cursor agents, public internet exposure.
 
 ## Authentication & sessions
 
@@ -100,7 +102,7 @@ Copy [`.env.example`](.env.example). Never commit `.env` or `config/projects.jso
 |-----|------|
 | `HOMEBASE_JWT_SECRET` | Optional JWT HMAC override (else `.runtime/jwt_secret`) |
 | `CURSOR_API_KEY` | Local Cursor agents |
-| `CURSOR_MODEL` | Default model |
+| `CURSOR_MODEL` | Default model (`auto` = Cursor picks) |
 | `HOMEBASE_HOST` / `HOMEBASE_PORT` | Bind (dev `--run` forces `:8081` + Vite `:3081`; systemd forces `:8888`) |
 
 Deploy also syncs those keys into `/var/lib/homebased/.env` and installs the Cursor SDK bridge beside the binary (Nuitka omits the Node bridge).
@@ -130,9 +132,9 @@ Deploy also syncs those keys into `/var/lib/homebased/.env` and installs the Cur
 
 ## Known limitations
 
-- Production runs as **root** on `:8888` — a stolen JWT can use shell, host Files, and systemctl helpers
+- Production runs as **root** on `:8888` — a stolen JWT can use shell, host Files, View (screen/input), and systemctl helpers
 - Absolute Files paths intentionally allow host-wide browse when authenticated
-- No remote desktop
+- View needs a reachable X11 display (`HOMEBASE_DISPLAY` / `HOMEBASE_XAUTHORITY` if auto-detect fails)
 - Client-only logout (no server token denylist); password change invalidates via `authEpoch`
 - PWA Add-to-Home-Screen icons only — **no service worker** (avoids stale “live” remote state)
 - Nested `compose` actions unsupported

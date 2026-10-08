@@ -19,6 +19,8 @@ import { IconBtn } from './IconBtn'
 import { ProjectSelect } from './ProjectSelect'
 
 const MODEL_STORAGE_KEY = 'hb-cursor-model'
+/** Previous system default — treat as unset so Auto becomes the new default. */
+const LEGACY_DEFAULT_MODELS = new Set(['composer-2.5', 'composer-2', 'composer-1.5'])
 /** Work chat dock: '1' = open, anything else / missing = minimized (default). */
 export const DOCK_OPEN_KEY = 'hb-chat-dock-open'
 
@@ -54,7 +56,11 @@ function MessageCard({
   }
   if (m.role === 'thinking') {
     return (
-      <div className="hb-chat-thinking rounded-xl px-3 py-2 text-xs font-mono text-amber mr-8">
+      <div
+        className={`hb-chat-thinking rounded-xl px-3 py-2 text-xs font-mono text-amber mr-8${
+          m.streaming ? ' hb-chat-thinking-live' : ''
+        }`}
+      >
         <span className="uppercase tracking-wider text-[10px] opacity-80">
           thinking{m.streaming ? '…' : ''}
         </span>
@@ -170,12 +176,14 @@ export function ChatPanel({
   const [models, setModels] = useState<CursorModel[]>([])
   const [model, setModel] = useState(() => {
     try {
-      return localStorage.getItem(MODEL_STORAGE_KEY) || ''
+      const saved = localStorage.getItem(MODEL_STORAGE_KEY) || ''
+      if (!saved || LEGACY_DEFAULT_MODELS.has(saved)) return ''
+      return saved
     } catch {
       return ''
     }
   })
-  const [defaultModel, setDefaultModel] = useState('composer-2.5')
+  const [defaultModel, setDefaultModel] = useState('auto')
   const [newOpen, setNewOpen] = useState(false)
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [pickerDir, setPickerDir] = useState('')
@@ -249,7 +257,7 @@ export function ChatPanel({
       const t = ev.target
       if (!(t instanceof Node)) return
       if (el?.contains(t)) return
-      if (t instanceof Element && t.closest('.hb-chat-fab, .hb-chat-dock-min')) return
+      if (t instanceof Element && t.closest('.hb-chat-fab')) return
       // Ignore while a dock modal is open
       if (newOpen || deleteId) return
       setDockOpen(false)
@@ -262,17 +270,13 @@ export function ChatPanel({
     try {
       const data = await api.cursorModels()
       setModels(data.models || [])
-      setDefaultModel(data.default)
+      const def = data.default || 'auto'
+      setDefaultModel(def)
       setModel((prev) => {
-        const saved = prev || data.default
         const ids = new Set((data.models || []).map((m) => m.id))
-        const next = ids.has(saved) ? saved : data.default
-        try {
-          localStorage.setItem(MODEL_STORAGE_KEY, next)
-        } catch {
-          /* ignore */
-        }
-        return next
+        // Keep an explicit user pick; otherwise fall through to server default (Auto).
+        if (prev && !LEGACY_DEFAULT_MODELS.has(prev) && ids.has(prev)) return prev
+        return ''
       })
       if (data.error) setError(data.error)
     } catch (e) {
@@ -730,7 +734,16 @@ export function ChatPanel({
   const modelOptions =
     models.length > 0
       ? models
-      : [{ id: model || defaultModel, displayName: model || defaultModel, description: '' }]
+      : [
+          {
+            id: model || defaultModel || 'auto',
+            displayName:
+              (model || defaultModel || 'auto').toLowerCase() === 'auto'
+                ? 'Auto'
+                : model || defaultModel || 'auto',
+            description: '',
+          },
+        ]
 
   const cwdLabel = active?.cwd
     ? active.cwd.split('/').filter(Boolean).slice(-2).join('/')
@@ -1165,23 +1178,6 @@ export function ChatPanel({
           onClick={() => setDockOpen(false)}
         />
         <aside ref={dockRef} className="hb-chat-dock" aria-label="Work chat">
-          <button
-            type="button"
-            className="hb-chat-dock-min"
-            onClick={() => setDockOpen(false)}
-            aria-label="Minimize chat"
-            title="Minimize"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden>
-              <path
-                d="M6 14h12"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.25"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
           {modals}
           {header}
           {messages}
