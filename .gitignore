@@ -1,0 +1,37 @@
+# Secrets & local config (never commit)
+.env
+config/projects.json
+# Personal presets (committed: example.json only)
+config/presets/*
+!config/presets/example.json
+
+# Runtime
+.runtime/
+*.log
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Frontend
+web/node_modules/
+web/dist/
+
+# Nuitka / packaged binary (copied to /usr/bin on --deploy)
+dist/
+*.bin
+homebase.build/
+homebase.dist/
+homebase.onefile-build/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+*.code-workspace

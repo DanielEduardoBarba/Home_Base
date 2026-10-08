@@ -1,0 +1,14 @@
+---
+description: Mobile-first SPA UI constraints for Home Base web
+globs: web/**/*.{tsx,ts,css}
+alwaysApply: false
+---
+
+# Home Base UI
+
+- Primary viewport is an iPhone Safari webview over VPN.
+- Bottom tab bar: Apps · Shell · Cursor · Monitor.
+- Large tap targets; avoid dense dashboard chrome on Apps.
+- Visual system: dark graphite + teal accent (`--color-accent`), Syne + IBM Plex Mono. Avoid purple gradients and cream/serif clichés.
+- Shell tab must remain usable with on-screen Ctrl/Esc helpers.
+- Cursor tab streams markdown; show project cwd and agent id.

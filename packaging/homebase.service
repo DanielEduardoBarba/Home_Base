@@ -1,0 +1,24 @@
+[Unit]
+Description=Home Base control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/homebase
+WorkingDirectory=/var/lib/homebase
+Environment=HOMEBASE_HOME=/var/lib/homebase
+Environment=HOMEBASE_HOST=0.0.0.0
+EnvironmentFile=-/var/lib/homebase/.env
+# Force privileged HTTP port after EnvironmentFile so .env cannot override it
+Environment=HOMEBASE_PORT=80
+Restart=on-failure
+RestartSec=3
+# Allow PTY shells and child process trees for managed projects
+KillMode=control-group
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

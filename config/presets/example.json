@@ -1,0 +1,108 @@
+{
+  "id": "example",
+  "name": "Example App",
+  "stateDir": ".example",
+  "ports": [
+    {
+      "id": "api",
+      "label": "API",
+      "port": 4000,
+      "health": "/health"
+    },
+    {
+      "id": "web",
+      "label": "Web",
+      "port": 3000
+    },
+    {
+      "id": "expo",
+      "label": "Expo",
+      "port": 8000
+    }
+  ],
+  "actions": [
+    {
+      "id": "run",
+      "label": "Run",
+      "script": "./build.sh",
+      "args": ["--run"],
+      "kind": "run",
+      "variant": "primary",
+      "group": "main"
+    },
+    {
+      "id": "run_all",
+      "label": "Run + Expo",
+      "script": "./build.sh",
+      "args": ["--run", "--all"],
+      "kind": "run",
+      "variant": "accent",
+      "group": "main"
+    },
+    {
+      "id": "expo",
+      "label": "Expo only",
+      "script": "./build.sh",
+      "args": ["--run", "--expo"],
+      "kind": "expo",
+      "group": "main"
+    },
+    {
+      "id": "stop",
+      "label": "Stop",
+      "type": "stop",
+      "variant": "danger",
+      "group": "main"
+    },
+    {
+      "id": "ship_api",
+      "label": "Ship API",
+      "script": "./ship.sh",
+      "args": ["--api", "--yes"],
+      "kind": "ship",
+      "group": "ship"
+    },
+    {
+      "id": "ship_web",
+      "label": "Ship Web",
+      "script": "./ship.sh",
+      "args": ["--web", "--yes"],
+      "kind": "ship",
+      "group": "ship"
+    },
+    {
+      "id": "ship_all",
+      "label": "Ship All",
+      "script": "./ship.sh",
+      "args": ["--all", "--yes"],
+      "kind": "ship",
+      "group": "ship"
+    },
+    {
+      "id": "hk_r",
+      "label": "r",
+      "hint": "Restart stack",
+      "type": "restart",
+      "restartAction": "run",
+      "group": "hotkey"
+    },
+    {
+      "id": "hk_w",
+      "label": "w",
+      "hint": "Web only",
+      "script": "./build.sh",
+      "args": ["--run", "--web"],
+      "kind": "run",
+      "group": "hotkey"
+    },
+    {
+      "id": "hk_q",
+      "label": "q",
+      "hint": "API only",
+      "script": "./build.sh",
+      "args": ["--run", "--api"],
+      "kind": "run",
+      "group": "hotkey"
+    }
+  ]
+}

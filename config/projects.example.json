@@ -1,0 +1,41 @@
+{
+  "projects": [
+    {
+      "id": "myapp",
+      "name": "My App",
+      "path": "/absolute/path/to/repo",
+      "stateDir": ".myapp",
+      "ports": [
+        {
+          "id": "api",
+          "label": "API",
+          "port": 4000,
+          "health": "/health"
+        },
+        {
+          "id": "web",
+          "label": "Web",
+          "port": 3000
+        }
+      ],
+      "actions": [
+        {
+          "id": "run",
+          "label": "Run",
+          "script": "./build.sh",
+          "args": ["--run"],
+          "kind": "run",
+          "variant": "primary",
+          "group": "main"
+        },
+        {
+          "id": "stop",
+          "label": "Stop",
+          "type": "stop",
+          "variant": "danger",
+          "group": "main"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+---
+description: Home Base architecture and operational constraints
+alwaysApply: true
+---
+
+# Home Base
+
+Generic control plane. Production **:80** (systemd as root). Dev API **:8080**, Vite **:3080** (proxies `/api` + `/ws`). Projects come from gitignored `config/projects.json`.
+
+## Hard rules
+
+- Never expose PTY/shell/process/file APIs without validating `HOMEBASE_TOKEN`.
+- Never commit `.env`, `config/projects.json`, or personal presets under `config/presets/` (only `example.json` is committed).
+- Cursor integration: **local** `cursor-sdk` agents only.
+- Actions are config-driven (button → script + args). Do not hardcode project names or paths into the server.
+- Scripts must resolve inside the project directory.
+- Notification history is capped; prefer pagination over loading all rows into memory.
+- Auth lockout: after 5 failures escalate delays to a full day; log failures daily under `.runtime/logs/`.
+- Client API/WS must stay same-origin relative paths (`/api`, `/ws`) — no hardcoded host/port in the SPA.
+
+## Entry points
+
+- `./build.sh --setup` / `--run` / `--add-project --preset …`
+- FastAPI `server/main.py` serves `web/dist`

@@ -1,0 +1,193 @@
+@import 'tailwindcss';
+@import 'xterm/css/xterm.css';
+
+@theme {
+  --font-display: 'Syne', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --color-ink: #080c12;
+  --color-panel: #101820;
+  --color-panel-2: #162030;
+  --color-line: #243246;
+  --color-mute: #8b9bb0;
+  --color-text: #e8eef7;
+  --color-accent: #2dd4bf;
+  --color-accent-dim: #14b8a6;
+  --color-danger: #f87171;
+  --color-warn: #fbbf24;
+  --color-ok: #34d399;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--color-text);
+  font-family: var(--font-display);
+  background:
+    radial-gradient(900px 520px at 8% -8%, rgba(45, 212, 191, 0.14), transparent 55%),
+    radial-gradient(700px 420px at 96% 4%, rgba(70, 130, 190, 0.12), transparent 48%),
+    radial-gradient(500px 300px at 50% 110%, rgba(45, 212, 191, 0.05), transparent 60%),
+    linear-gradient(165deg, #0a1018 0%, #070b10 55%, #090e14 100%);
+  -webkit-font-smoothing: antialiased;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.04;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  z-index: 0;
+}
+
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.02) 0%,
+    transparent 28%,
+    transparent 72%,
+    rgba(0, 0, 0, 0.18) 100%
+  );
+  z-index: 0;
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease,
+    transform 120ms ease,
+    opacity 140ms ease;
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+input,
+textarea,
+select {
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--color-accent) 70%, var(--color-line));
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.12);
+}
+
+.hb-surface {
+  border: 1px solid color-mix(in srgb, var(--color-line) 90%, transparent);
+  background: color-mix(in srgb, var(--color-panel) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-radius: 1rem;
+}
+
+.hb-select {
+  border-radius: 0.75rem;
+  background: var(--color-panel-2);
+  border: 1px solid var(--color-line);
+  color: var(--color-text);
+  padding: 0.625rem 0.75rem;
+  font-size: 0.875rem;
+}
+
+.hb-chip {
+  border-radius: 1rem;
+  border: 1px solid var(--color-line);
+  background: var(--color-panel);
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.hb-chip-active {
+  border-color: color-mix(in srgb, var(--color-accent) 65%, var(--color-line));
+  background: color-mix(in srgb, var(--color-accent) 12%, var(--color-panel));
+  box-shadow: inset 0 0 0 1px rgba(45, 212, 191, 0.08);
+}
+
+.hb-tab-active::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 0.35rem;
+  width: 1.1rem;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--color-accent);
+  transform: translateX(-50%);
+  box-shadow: 0 0 10px rgba(45, 212, 191, 0.55);
+}
+
+@keyframes hb-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.hb-enter {
+  animation: hb-fade-up 320ms ease both;
+}
+
+.xterm,
+.xterm-viewport {
+  background: transparent !important;
+}
+
+.markdown-body p {
+  margin: 0.4em 0;
+}
+
+.markdown-body pre {
+  overflow-x: auto;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  background: #0a1018;
+  border: 1px solid var(--color-line);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.markdown-body code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
