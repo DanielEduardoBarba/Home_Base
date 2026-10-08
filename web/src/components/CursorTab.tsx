@@ -20,35 +20,47 @@ type ChatTab = {
   cwd: string
   messages: ChatMsg[]
   agentId?: string | null
+  updatedAt: number
 }
 
 const MODEL_STORAGE_KEY = 'hb-cursor-model'
+const TABS_VERSION = 2
 
 function tabsKey(projectId: string) {
-  return `hb-cursor-tabs:${projectId}`
+  return `hb-cursor-tabs:v${TABS_VERSION}:${projectId}`
 }
 
 function activeKey(projectId: string) {
-  return `hb-cursor-active:${projectId}`
+  return `hb-cursor-active:v${TABS_VERSION}:${projectId}`
 }
 
 function newTab(cwd = '', title?: string): ChatTab {
   const leaf = cwd.split('/').filter(Boolean).pop()
   return {
     id: crypto.randomUUID().slice(0, 10),
-    title: title || (leaf ? leaf : 'Chat'),
+    title: title || (leaf ? `./${leaf}` : 'New chat'),
     cwd,
     messages: [],
     agentId: null,
+    updatedAt: Date.now(),
   }
 }
 
 function loadTabs(projectId: string): { tabs: ChatTab[]; activeId: string } {
   try {
     const raw = localStorage.getItem(tabsKey(projectId))
-    const tabs = raw ? (JSON.parse(raw) as ChatTab[]) : []
+    const tabs = (raw ? (JSON.parse(raw) as ChatTab[]) : []).map((t) => ({
+      ...t,
+      updatedAt: t.updatedAt || Date.now(),
+      messages: t.messages || [],
+    }))
     const activeId = localStorage.getItem(activeKey(projectId)) || tabs[0]?.id || ''
-    if (tabs.length) return { tabs, activeId: tabs.some((t) => t.id === activeId) ? activeId : tabs[0].id }
+    if (tabs.length) {
+      return {
+        tabs,
+        activeId: tabs.some((t) => t.id === activeId) ? activeId : tabs[0].id,
+      }
+    }
   } catch {
     /* ignore */
   }
@@ -58,12 +70,11 @@ function loadTabs(projectId: string): { tabs: ChatTab[]; activeId: string } {
 
 function persistTabs(projectId: string, tabs: ChatTab[], activeId: string) {
   try {
-    // Cap persisted message text to keep localStorage healthy
     const slim = tabs.map((t) => ({
       ...t,
-      messages: t.messages.slice(-80).map((m) => ({
+      messages: t.messages.slice(-120).map((m) => ({
         ...m,
-        text: m.text && m.text.length > 8000 ? m.text.slice(0, 8000) + '…' : m.text,
+        text: m.text && m.text.length > 12000 ? m.text.slice(0, 12000) + '…' : m.text,
       })),
     }))
     localStorage.setItem(tabsKey(projectId), JSON.stringify(slim))
@@ -123,14 +134,11 @@ function MessageCard({ m }: { m: ChatMsg }) {
           </span>
           <span className="text-text truncate">{m.file?.path}</span>
         </div>
-        {m.text && <p className="text-mute mt-1 text-[11px]">{m.text}</p>}
       </div>
     )
   }
   if (m.role === 'status' || m.role === 'system') {
-    return (
-      <div className="text-mute text-[11px] font-mono px-1">{m.text}</div>
-    )
+    return <div className="text-mute text-[11px] font-mono px-1">{m.text}</div>
   }
   return (
     <div className="hb-chat-assistant rounded-2xl px-3.5 py-3 text-sm leading-relaxed mr-4 shadow-sm">
@@ -166,21 +174,25 @@ export function CursorTab({
     }
   })
   const [defaultModel, setDefaultModel] = useState('composer-2.5')
-  const [pickerOpen, setPickerOpen] = useState(false)
+  const [newOpen, setNewOpen] = useState(false)
+  const [deleteId, setDeleteId] = useState<string | null>(null)
   const [pickerDir, setPickerDir] = useState('')
   const [pickerEntries, setPickerEntries] = useState<FsEntry[]>([])
+  const [pickingFolder, setPickingFolder] = useState(false)
+
   const wsRef = useRef<WebSocket | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const assistantBuf = useRef('')
-  const modelRef = useRef(model)
-  modelRef.current = model
+  const activeIdRef = useRef(activeId)
+  const tabsRef = useRef(tabs)
+  activeIdRef.current = activeId
+  tabsRef.current = tabs
 
   const active = useMemo(
     () => tabs.find((t) => t.id === activeId) || tabs[0],
     [tabs, activeId],
   )
 
-  // Load tabs when project changes
   useEffect(() => {
     if (!project) return
     const loaded = loadTabs(project.id)
@@ -191,7 +203,6 @@ export function CursorTab({
     setStreaming(false)
   }, [project?.id])
 
-  // Persist tabs
   useEffect(() => {
     if (!project || !tabs.length || !activeId) return
     persistTabs(project.id, tabs, activeId)
@@ -220,7 +231,6 @@ export function CursorTab({
           }
           return next
         })
-        if (data.error) setError(`Model list: ${data.error}`)
       })
       .catch((e) => {
         if (!cancelled) setError(String(e.message || e))
@@ -230,40 +240,53 @@ export function CursorTab({
     }
   }, [])
 
-  const patchActive = useCallback((fn: (t: ChatTab) => ChatTab) => {
-    setTabs((prev) => prev.map((t) => (t.id === activeId ? fn(t) : t)))
-  }, [activeId])
+  const patchTab = useCallback((chatId: string, fn: (t: ChatTab) => ChatTab) => {
+    setTabs((prev) =>
+      prev.map((t) => (t.id === chatId ? { ...fn(t), updatedAt: Date.now() } : t)),
+    )
+  }, [])
 
-  // WS per active chat tab
+  // Single WebSocket per project — bind on tab change (avoids Vite ECONNRESET storms)
   useEffect(() => {
-    if (!project || !active) return
-    setConnected(false)
-    assistantBuf.current = ''
-    const q = new URLSearchParams({
-      project: project.id,
-      chat: active.id,
-    })
-    if (active.cwd) q.set('cwd', active.cwd)
-    const ws = new WebSocket(wsUrl(`/ws/cursor?${q}`))
+    if (!project) return
+    let closed = false
+    const ws = new WebSocket(wsUrl(`/ws/cursor?project=${encodeURIComponent(project.id)}`))
     wsRef.current = ws
 
-    ws.onopen = () => setConnected(true)
-    ws.onclose = () => setConnected(false)
-    ws.onerror = () => setError('Cursor socket error')
+    ws.onopen = () => {
+      if (closed) return
+      setConnected(true)
+      const tab = tabsRef.current.find((t) => t.id === activeIdRef.current)
+      ws.send(
+        JSON.stringify({
+          type: 'bind',
+          chatId: activeIdRef.current || 'default',
+          cwd: tab?.cwd || '',
+        }),
+      )
+    }
+    ws.onclose = () => {
+      if (!closed) setConnected(false)
+    }
+    ws.onerror = () => {
+      if (!closed) setError('Cursor socket error')
+    }
 
     ws.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data)
+        const chatId = activeIdRef.current
         if (msg.type === 'ready') {
-          patchActive((t) => ({ ...t, agentId: msg.cursor?.agentId || null }))
+          if (msg.chatId && msg.chatId !== chatId) return
+          patchTab(chatId, (t) => ({ ...t, agentId: msg.cursor?.agentId || null }))
           if (!msg.cursor?.configured) setError('CURSOR_API_KEY not set on server')
         } else if (msg.type === 'agent') {
-          patchActive((t) => ({ ...t, agentId: msg.agentId }))
+          patchTab(chatId, (t) => ({ ...t, agentId: msg.agentId }))
         } else if (msg.type === 'text') {
           assistantBuf.current += msg.text || ''
-          pushAssistant(assistantBuf.current)
+          pushAssistant(chatId, assistantBuf.current)
         } else if (msg.type === 'message') {
-          handleSdkMessage(msg.message)
+          handleSdkMessage(chatId, msg.message)
         } else if (msg.type === 'done') {
           setStreaming(false)
           assistantBuf.current = ''
@@ -280,18 +303,33 @@ export function CursorTab({
     }
 
     return () => {
-      ws.close()
-      wsRef.current = null
+      closed = true
+      try {
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          ws.close(1000, 'project-switch')
+        }
+      } catch {
+        /* ignore */
+      }
+      if (wsRef.current === ws) wsRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project?.id, active?.id, active?.cwd])
+  }, [project?.id])
 
-  function pushMsg(m: ChatMsg) {
-    patchActive((t) => ({ ...t, messages: [...t.messages, m] }))
+  // Bind chat context when switching tabs (same socket)
+  useEffect(() => {
+    if (!active || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+    wsRef.current.send(
+      JSON.stringify({ type: 'bind', chatId: active.id, cwd: active.cwd || '' }),
+    )
+  }, [active?.id, active?.cwd])
+
+  function pushMsg(chatId: string, m: ChatMsg) {
+    patchTab(chatId, (t) => ({ ...t, messages: [...t.messages, m] }))
   }
 
-  function pushAssistant(text: string) {
-    patchActive((t) => {
+  function pushAssistant(chatId: string, text: string) {
+    patchTab(chatId, (t) => {
       const msgs = [...t.messages]
       const last = msgs[msgs.length - 1]
       if (last?.role === 'assistant') {
@@ -305,41 +343,38 @@ export function CursorTab({
     })
   }
 
-  function handleSdkMessage(message: {
-    type?: string
-    text?: string
-    name?: string
-    status?: string
-    args?: unknown
-    result?: unknown
-    file?: { path: string; action: string }
-    content?: { type: string; text?: string; name?: string; raw?: string }[]
-  }) {
+  function handleSdkMessage(
+    chatId: string,
+    message: {
+      type?: string
+      text?: string
+      name?: string
+      status?: string
+      args?: unknown
+      file?: { path: string; action: string }
+      content?: { type: string; text?: string }[]
+    },
+  ) {
     const mtype = message?.type
     if (mtype === 'thinking') {
-      pushMsg({
-        id: crypto.randomUUID(),
-        role: 'thinking',
-        text: message.text || '',
-      })
+      pushMsg(chatId, { id: crypto.randomUUID(), role: 'thinking', text: message.text || '' })
       return
     }
     if (mtype === 'tool_call') {
       if (message.file?.path) {
-        pushMsg({
+        pushMsg(chatId, {
           id: crypto.randomUUID(),
           role: 'file',
           file: message.file,
-          text: message.name,
         })
       }
       const detail =
         typeof message.args === 'string'
           ? message.args
           : message.args
-            ? JSON.stringify(message.args, null, 0).slice(0, 400)
+            ? JSON.stringify(message.args).slice(0, 400)
             : undefined
-      pushMsg({
+      pushMsg(chatId, {
         id: crypto.randomUUID(),
         role: 'tool',
         tool: {
@@ -351,23 +386,20 @@ export function CursorTab({
       return
     }
     if (mtype === 'status' || mtype === 'task') {
-      pushMsg({
+      pushMsg(chatId, {
         id: crypto.randomUUID(),
         role: 'status',
         text: message.text || message.status || mtype,
       })
       return
     }
-    const blocks = message?.content || []
-    const text = blocks
+    const text = (message?.content || [])
       .filter((b) => b.type === 'text')
       .map((b) => b.text || '')
       .join('')
-    if (mtype === 'assistant' || text) {
-      if (text) {
-        assistantBuf.current += text
-        pushAssistant(assistantBuf.current)
-      }
+    if ((mtype === 'assistant' || text) && text) {
+      assistantBuf.current += text
+      pushAssistant(chatId, assistantBuf.current)
     }
   }
 
@@ -380,32 +412,31 @@ export function CursorTab({
     }
   }
 
-  function addChat(cwd = '', title?: string) {
+  function createChat(cwd = '', title?: string) {
     const t = newTab(cwd, title)
     setTabs((prev) => [...prev, t])
     setActiveId(t.id)
-    setPickerOpen(false)
+    setNewOpen(false)
+    setPickingFolder(false)
   }
 
-  function closeTab(id: string) {
+  function confirmDelete() {
+    if (!deleteId) return
     setTabs((prev) => {
       if (prev.length <= 1) return prev
-      const next = prev.filter((t) => t.id !== id)
-      if (activeId === id) setActiveId(next[0].id)
+      const next = prev.filter((t) => t.id !== deleteId)
+      if (activeId === deleteId) setActiveId(next[0].id)
       return next
     })
+    setDeleteId(null)
   }
 
-  async function openPicker() {
+  async function openFolderPicker() {
     if (!project) return
-    setPickerOpen(true)
+    setPickingFolder(true)
     setPickerDir('')
-    try {
-      const data = await api.fsList(project.id, '')
-      setPickerEntries(data.entries.filter((e) => e.type === 'dir'))
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
+    const data = await api.fsList(project.id, '')
+    setPickerEntries(data.entries.filter((e) => e.type === 'dir'))
   }
 
   async function browsePicker(path: string) {
@@ -422,13 +453,10 @@ export function CursorTab({
     setError('')
     setStreaming(true)
     assistantBuf.current = ''
-    pushMsg({ id: crypto.randomUUID(), role: 'user', text: prompt })
-    // Auto-title first message
-    if (active.messages.length === 0 && active.title === 'Chat') {
-      patchActive((t) => ({
-        ...t,
-        title: prompt.slice(0, 28) + (prompt.length > 28 ? '…' : ''),
-      }))
+    pushMsg(active.id, { id: crypto.randomUUID(), role: 'user', text: prompt })
+    if (active.messages.length === 0 && (active.title === 'New chat' || active.title.startsWith('./'))) {
+      const titled = prompt.slice(0, 32) + (prompt.length > 32 ? '…' : '')
+      patchTab(active.id, (t) => ({ ...t, title: titled }))
     }
     setInput('')
     wsRef.current.send(
@@ -436,20 +464,22 @@ export function CursorTab({
         type: 'send',
         prompt,
         model: model || defaultModel,
+        chatId: active.id,
         cwd: active.cwd || undefined,
       }),
     )
   }
 
   function cancel() {
-    wsRef.current?.send(JSON.stringify({ type: 'cancel' }))
+    if (!active) return
+    wsRef.current?.send(JSON.stringify({ type: 'cancel', chatId: active.id }))
   }
 
-  async function reset() {
+  async function resetChat() {
     if (!project || !active) return
     await api.resetCursor(project.id, active.id)
-    wsRef.current?.send(JSON.stringify({ type: 'reset' }))
-    patchActive((t) => ({ ...t, messages: [], agentId: null }))
+    wsRef.current?.send(JSON.stringify({ type: 'reset', chatId: active.id }))
+    patchTab(active.id, (t) => ({ ...t, messages: [], agentId: null }))
   }
 
   if (!project) return null
@@ -459,147 +489,191 @@ export function CursorTab({
       ? models
       : [{ id: model || defaultModel, displayName: model || defaultModel, description: '' }]
 
-  const cwdLabel = active?.cwd ? `./${active.cwd}` : project.name
+  const cwdLabel = active?.cwd ? `./${active.cwd}` : 'project root'
+  const pendingDelete = tabs.find((t) => t.id === deleteId)
 
   return (
     <div className="h-full flex flex-col min-h-0 pb-16">
       <div className="shrink-0 border-b border-line bg-panel/80 backdrop-blur-md">
         <div className="px-3 pt-3 pb-2 space-y-2 max-w-5xl mx-auto w-full">
-          <div className="flex gap-2">
+          <div className="flex gap-2 items-center">
             <ProjectSelect
               projects={projects}
               selectedId={project.id}
               onSelect={onSelect}
               className="flex-1"
             />
-            <button type="button" onClick={reset} className="hb-btn hb-btn-ghost text-xs px-3 py-2">
-              Reset
-            </button>
+            <span
+              className={`text-[11px] font-mono shrink-0 ${connected ? 'text-ok' : 'text-danger'}`}
+            >
+              {connected ? 'live' : 'offline'}
+            </span>
           </div>
 
-          {/* Chat tabs */}
-          <div className="flex items-center gap-1 overflow-x-auto pb-0.5">
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
             {tabs.map((t) => (
               <div
                 key={t.id}
-                className={`flex items-center gap-1 rounded-lg border shrink-0 ${
+                className={`flex items-center rounded-lg border shrink-0 ${
                   t.id === activeId
-                    ? 'border-accent/50 bg-accent/12 text-text'
-                    : 'border-line bg-panel-2 text-mute'
+                    ? 'border-accent/50 bg-accent/12'
+                    : 'border-line bg-panel-2'
                 }`}
               >
                 <button
                   type="button"
                   onClick={() => setActiveId(t.id)}
-                  className="px-2.5 py-1.5 text-[11px] font-semibold max-w-[9rem] truncate"
+                  className="px-2.5 py-1.5 text-[11px] font-semibold max-w-[8.5rem] truncate"
                   title={t.cwd ? `./${t.cwd}` : 'project root'}
                 >
                   {t.title}
                 </button>
-                {tabs.length > 1 && (
-                  <button
-                    type="button"
-                    className="pr-2 text-mute hover:text-danger text-xs"
-                    onClick={() => closeTab(t.id)}
-                    aria-label="Close tab"
-                  >
-                    ×
-                  </button>
-                )}
+                <button
+                  type="button"
+                  className="pr-2 pl-0.5 text-mute hover:text-danger text-sm leading-none"
+                  onClick={() => setDeleteId(t.id)}
+                  aria-label={`Delete ${t.title}`}
+                  disabled={tabs.length <= 1}
+                >
+                  ×
+                </button>
               </div>
             ))}
             <button
               type="button"
-              onClick={() => addChat()}
+              onClick={() => {
+                setNewOpen(true)
+                setPickingFolder(false)
+              }}
               className="hb-btn hb-btn-ghost text-xs px-2.5 py-1.5 shrink-0"
-              title="New chat in project root"
             >
-              +
-            </button>
-            <button
-              type="button"
-              onClick={() => void openPicker()}
-              className="hb-btn hb-btn-ghost text-xs px-2.5 py-1.5 shrink-0"
-              title="New chat in a folder"
-            >
-              Folder+
+              New
             </button>
           </div>
 
-          <div className="flex items-center gap-2">
-            <select
-              value={model || defaultModel}
-              onChange={(e) => chooseModel(e.target.value)}
-              disabled={streaming}
-              className="hb-select flex-1 py-2 text-xs"
-              aria-label="Model"
-            >
-              {modelOptions.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.displayName}
-                </option>
-              ))}
-            </select>
-            <div className="text-[11px] font-mono text-mute shrink-0 max-w-[40%] truncate">
-              {connected ? <span className="text-ok">live</span> : <span className="text-danger">offline</span>}
-              {' · '}
-              <span className="text-sky">{cwdLabel}</span>
-            </div>
-          </div>
+          <p className="text-[11px] font-mono text-sky truncate">{cwdLabel}</p>
         </div>
       </div>
 
-      {pickerOpen && (
+      {/* New chat modal */}
+      {newOpen && (
         <div className="fixed inset-0 z-40 bg-ink/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
           <div className="w-full max-w-md hb-surface p-4 space-y-3 max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="font-semibold text-sm">Open folder chat</h2>
-              <button type="button" className="text-mute text-sm" onClick={() => setPickerOpen(false)}>
-                Close
-              </button>
-            </div>
-            <p className="text-[11px] font-mono text-mute truncate">
-              {pickerDir ? `./${pickerDir}` : './ (project root)'}
+            {!pickingFolder ? (
+              <>
+                <div className="flex items-center justify-between">
+                  <h2 className="font-semibold text-sm">New chat</h2>
+                  <button type="button" className="text-mute text-sm" onClick={() => setNewOpen(false)}>
+                    Close
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  className="hb-btn hb-btn-primary w-full py-3"
+                  onClick={() => createChat()}
+                >
+                  Chat in project root
+                </button>
+                <button
+                  type="button"
+                  className="hb-btn hb-btn-ghost w-full py-3"
+                  onClick={() => void openFolderPicker()}
+                >
+                  Chat in a folder…
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="font-semibold text-sm">Choose folder</h2>
+                  <button
+                    type="button"
+                    className="text-mute text-sm"
+                    onClick={() => setPickingFolder(false)}
+                  >
+                    Back
+                  </button>
+                </div>
+                <p className="text-[11px] font-mono text-mute truncate">
+                  {pickerDir ? `./${pickerDir}` : './'}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    className="hb-btn hb-btn-ghost text-xs flex-1"
+                    disabled={!pickerDir}
+                    onClick={() => {
+                      const parent = pickerDir.split('/').slice(0, -1).join('/')
+                      void browsePicker(parent)
+                    }}
+                  >
+                    Up
+                  </button>
+                  <button
+                    type="button"
+                    className="hb-btn hb-btn-primary text-xs flex-1"
+                    onClick={() =>
+                      createChat(
+                        pickerDir,
+                        pickerDir ? `./${pickerDir.split('/').pop()}` : 'New chat',
+                      )
+                    }
+                  >
+                    Start here
+                  </button>
+                </div>
+                <ul className="flex-1 overflow-y-auto space-y-1">
+                  {pickerEntries.map((e) => (
+                    <li key={e.path}>
+                      <button
+                        type="button"
+                        className="w-full text-left rounded-lg border border-line px-3 py-2.5 text-sm hover:border-sky/50 hover:bg-sky/10"
+                        onClick={() => void browsePicker(e.path)}
+                      >
+                        <span className="text-sky font-mono text-xs mr-2">▸</span>
+                        {e.name}
+                      </button>
+                    </li>
+                  ))}
+                  {pickerEntries.length === 0 && (
+                    <li className="text-mute text-xs py-4 text-center">No subfolders</li>
+                  )}
+                </ul>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirmation */}
+      {deleteId && pendingDelete && (
+        <div className="fixed inset-0 z-40 bg-ink/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
+          <div className="w-full max-w-sm hb-surface p-4 space-y-4">
+            <h2 className="font-semibold text-sm">Delete this chat?</h2>
+            <p className="text-sm text-mute leading-relaxed">
+              <span className="text-text font-medium">{pendingDelete.title}</span>
+              {pendingDelete.cwd ? (
+                <span className="font-mono text-sky"> · ./{pendingDelete.cwd}</span>
+              ) : null}
+              <br />
+              Messages for this tab will be removed from this device. This cannot be undone.
             </p>
             <div className="flex gap-2">
               <button
                 type="button"
-                className="hb-btn hb-btn-ghost text-xs flex-1"
-                disabled={!pickerDir}
-                onClick={() => {
-                  const parent = pickerDir.split('/').slice(0, -1).join('/')
-                  void browsePicker(parent)
-                }}
+                className="hb-btn hb-btn-ghost flex-1"
+                onClick={() => setDeleteId(null)}
               >
-                ↑ Up
+                Cancel
               </button>
               <button
                 type="button"
-                className="hb-btn hb-btn-primary text-xs flex-1"
-                onClick={() =>
-                  addChat(pickerDir, pickerDir.split('/').filter(Boolean).pop() || 'root')
-                }
+                className="hb-btn hb-btn-danger flex-1"
+                onClick={confirmDelete}
               >
-                Start chat here
+                Delete
               </button>
             </div>
-            <ul className="flex-1 overflow-y-auto space-y-1">
-              {pickerEntries.length === 0 && (
-                <li className="text-mute text-xs py-4 text-center">No subfolders</li>
-              )}
-              {pickerEntries.map((e) => (
-                <li key={e.path}>
-                  <button
-                    type="button"
-                    className="w-full text-left rounded-lg border border-line px-3 py-2.5 text-sm hover:border-sky/50 hover:bg-sky/10"
-                    onClick={() => void browsePicker(e.path)}
-                  >
-                    <span className="text-sky font-mono text-xs mr-2">▸</span>
-                    {e.name}
-                  </button>
-                </li>
-              ))}
-            </ul>
           </div>
         </div>
       )}
@@ -609,10 +683,9 @@ export function CursorTab({
           <div className="mt-6 max-w-md space-y-2">
             <p className="text-text font-semibold">Local Cursor agent</p>
             <p className="text-mute text-sm leading-relaxed">
-              Chat like the IDE — pick a model, open folder tabs with Folder+, and watch tool /
-              file cards stream in.
+              Chats are kept on this device until you delete a tab. Use New to start at the root or
+              in a folder.
             </p>
-            <p className="text-[11px] font-mono text-sky">cwd {cwdLabel}</p>
           </div>
         )}
         {active?.messages.map((m) => (
@@ -627,38 +700,64 @@ export function CursorTab({
 
       <form
         onSubmit={send}
-        className="shrink-0 border-t border-line bg-panel/90 p-3 flex gap-2"
+        className="shrink-0 border-t border-line bg-panel/95 p-3 space-y-2"
       >
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          rows={2}
-          placeholder={`Message in ${cwdLabel}…`}
-          className="flex-1 rounded-xl bg-panel-2 border border-line px-3 py-2.5 text-sm resize-none outline-none focus:border-accent"
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault()
-              send(e)
-            }
-          }}
-        />
-        <div className="flex flex-col gap-2">
-          <button
-            type="submit"
-            disabled={streaming || !connected}
-            className="rounded-xl bg-accent text-ink font-semibold px-4 py-2.5 text-sm disabled:opacity-40"
+        <div className="flex items-center gap-2">
+          <select
+            value={model || defaultModel}
+            onChange={(e) => chooseModel(e.target.value)}
+            disabled={streaming}
+            className="hb-select py-1.5 text-[11px] max-w-[55%] sm:max-w-xs"
+            aria-label="Model"
           >
-            Send
+            {modelOptions.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.displayName}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => void resetChat()}
+            disabled={streaming || !active?.messages.length}
+            className="text-[11px] text-mute hover:text-danger ml-auto px-2 py-1 disabled:opacity-30"
+            title="Clear messages and start a fresh agent for this tab"
+          >
+            Clear chat
           </button>
-          {streaming && (
+        </div>
+        <div className="flex gap-2">
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            rows={2}
+            placeholder={`Message (${cwdLabel})…`}
+            className="flex-1 rounded-xl bg-panel-2 border border-line px-3 py-2.5 text-sm resize-none outline-none focus:border-accent"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                send(e)
+              }
+            }}
+          />
+          <div className="flex flex-col gap-2">
             <button
-              type="button"
-              onClick={cancel}
-              className="rounded-xl border border-danger/50 text-danger text-xs py-2"
+              type="submit"
+              disabled={streaming || !connected}
+              className="rounded-xl bg-accent text-ink font-semibold px-4 py-2.5 text-sm disabled:opacity-40"
             >
-              Cancel
+              Send
             </button>
-          )}
+            {streaming && (
+              <button
+                type="button"
+                onClick={cancel}
+                className="rounded-xl border border-danger/50 text-danger text-xs py-2"
+              >
+                Cancel
+              </button>
+            )}
+          </div>
         </div>
       </form>
     </div>

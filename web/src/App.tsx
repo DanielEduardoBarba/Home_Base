@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertsTab } from './components/AlertsTab'
 import { AppsTab } from './components/AppsTab'
 import { CursorTab } from './components/CursorTab'
@@ -6,16 +6,16 @@ import { FilesTab } from './components/FilesTab'
 import { Login } from './components/Login'
 import { LogsTab } from './components/LogsTab'
 import { PullToRefresh } from './components/PullToRefresh'
+import { SharingTab } from './components/SharingTab'
 import { ShellTab } from './components/ShellTab'
 import { api } from './lib/api'
-import { clearToken, getToken } from './lib/auth'
+import { clearToken, isSessionValid } from './lib/auth'
 import { installClientLog } from './lib/clientLog'
-import type { Project, Tab } from './lib/types'
+import { isLocalHostPage, type Project, type Tab } from './lib/types'
 
 installClientLog()
 
-/** Apps · Shell · Files · Cursor · Logs · Alerts */
-const TABS: { id: Tab; label: string }[] = [
+const BASE_TABS: { id: Tab; label: string }[] = [
   { id: 'apps', label: 'Apps' },
   { id: 'shell', label: 'Shell' },
   { id: 'files', label: 'Files' },
@@ -25,13 +25,23 @@ const TABS: { id: Tab; label: string }[] = [
 ]
 
 export default function App() {
-  const [authed, setAuthed] = useState(!!getToken())
+  const [authed, setAuthed] = useState(() => isSessionValid())
   const [tab, setTab] = useState<Tab>('apps')
   const [projects, setProjects] = useState<Project[]>([])
   const [selectedId, setSelectedId] = useState('')
   const [attachSessionId, setAttachSessionId] = useState<string | null>(null)
   const [loadError, setLoadError] = useState('')
   const [unread, setUnread] = useState(0)
+  const localPage = isLocalHostPage()
+
+  const tabs = useMemo(() => {
+    if (!localPage) return BASE_TABS
+    return [...BASE_TABS, { id: 'sharing' as Tab, label: 'Share' }]
+  }, [localPage])
+
+  useEffect(() => {
+    if (!localPage && tab === 'sharing') setTab('apps')
+  }, [localPage, tab])
 
   const refresh = useCallback(async () => {
     try {
@@ -111,22 +121,26 @@ export default function App() {
         )}
         {tab === 'logs' && <LogsTab />}
         {tab === 'alerts' && <AlertsTab />}
+        {tab === 'sharing' && localPage && <SharingTab />}
       </main>
 
       <nav className="fixed bottom-0 inset-x-0 z-20 border-t border-line bg-ink/95 backdrop-blur-xl pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_32px_rgba(0,0,0,0.45)]">
-        <div className="max-w-5xl mx-auto grid grid-cols-6">
-          {TABS.map((t) => (
+        <div
+          className="max-w-5xl mx-auto grid"
+          style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}
+        >
+          {tabs.map((t) => (
             <button
               key={t.id}
               type="button"
               onClick={() => setTab(t.id)}
-              className={`py-3.5 text-[11px] sm:text-xs font-semibold tracking-wide relative ${
+              className={`py-3.5 text-[10px] sm:text-xs font-semibold tracking-wide relative ${
                 tab === t.id ? 'text-accent hb-tab-active' : 'text-mute hover:text-text'
               }`}
             >
               {t.label}
               {t.id === 'alerts' && unread > 0 && (
-                <span className="absolute top-1.5 right-[18%] min-w-[1rem] h-4 px-1 rounded-full bg-danger text-[9px] text-white leading-4">
+                <span className="absolute top-1.5 right-[12%] min-w-[1rem] h-4 px-1 rounded-full bg-danger text-[9px] text-white leading-4">
                   {unread > 9 ? '9+' : unread}
                 </span>
               )}

@@ -33,7 +33,9 @@ Committed preset: `config/presets/example.json`. Personal presets under `config/
 
 ## Security
 
-- `HOMEBASE_TOKEN` required; SPA stores it in `localStorage`
+- Password (set/changed only on localhost) → JWT session (24h TTL) in `localStorage`
+- Password stored as scrypt hash in `.runtime/auth.json`; JWT HMAC key in `.runtime/jwt_secret`
+- Share QR: one-time redeem id (20s) → 24h JWT (never embeds the password)
 - Progressive lockout after 5 failures (10s … 1 day)
 - Daily JSONL logs: `.runtime/logs/YYYY-MM-DD.log`
 - Notifications capped at 2000 rows on disk; UI paginates

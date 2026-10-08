@@ -9,8 +9,10 @@ Generic control plane (`homebased`). Production **:8888** (systemd as root). Dev
 
 ## Hard rules
 
-- Never expose PTY/shell/process/file APIs without validating `HOMEBASE_TOKEN`.
-- Never commit `.env`, `config/projects.json`, or personal presets under `config/presets/` (only `example.json` is committed).
+- Never expose PTY/shell/process/file APIs without a valid session JWT (`Authorization: Bearer` or `?token=`).
+- Auth is **password → JWT (24h TTL)**. Password is scrypt-hashed in `.runtime/auth.json` (mode 0600). Only a **localhost-loaded** SPA may set/change the password.
+- Share QR issues a **one-time redeem id** (20s), never the password or a long-lived secret; redeem returns a normal 24h JWT.
+- Never commit `.env`, `config/projects.json`, `.runtime/`, or personal presets under `config/presets/` (only `example.json` is committed).
 - Cursor integration: **local** `cursor-sdk` agents only.
 - Actions are config-driven (button → script + args). Do not hardcode project names or paths into the server.
 - Scripts must resolve inside the project directory.

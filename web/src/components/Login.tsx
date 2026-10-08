@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { api } from '../lib/api'
-import { setToken } from '../lib/auth'
+import { setSession } from '../lib/auth'
+import { isLocalHostPage } from '../lib/types'
 
 function formatWait(sec: number): string {
   if (sec >= 86400) return `${Math.ceil(sec / 86400)}d`
@@ -9,11 +10,37 @@ function formatWait(sec: number): string {
   return `${sec}s`
 }
 
+function scrubShareParamsFromUrl() {
+  try {
+    const url = new URL(location.href)
+    if (!url.searchParams.has('hb_share') && !url.searchParams.has('hb_token')) return
+    url.searchParams.delete('hb_share')
+    url.searchParams.delete('hb_token')
+    const clean =
+      url.pathname + (url.searchParams.toString() ? `?${url.searchParams}` : '') + url.hash
+    history.replaceState(null, '', clean || '/')
+  } catch {
+    /* ignore */
+  }
+}
+
+function readShareId(): string {
+  try {
+    return (new URLSearchParams(location.search).get('hb_share') || '').trim()
+  } catch {
+    return ''
+  }
+}
+
 export function Login({ onAuthed }: { onAuthed: () => void }) {
-  const [token, setLocal] = useState('')
-  const [showToken, setShowToken] = useState(false)
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [show, setShow] = useState(false)
   const [error, setError] = useState('')
   const [retryAfter, setRetryAfter] = useState(0)
+  const [autoStatus, setAutoStatus] = useState('')
+  const [passwordSet, setPasswordSet] = useState<boolean | null>(null)
+  const local = isLocalHostPage()
 
   useEffect(() => {
     if (retryAfter <= 0) return
@@ -22,24 +49,79 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
   }, [retryAfter])
 
   useEffect(() => {
-    api.lockout()
-      .then((l) => {
-        if (l.locked) setRetryAfter(l.retryAfter)
+    api
+      .authStatus()
+      .then((s) => {
+        setPasswordSet(s.passwordSet)
+        if (s.lockout?.locked) setRetryAfter(s.lockout.retryAfter)
       })
-      .catch(() => undefined)
+      .catch(() => setPasswordSet(true))
+  }, [])
+
+  // QR share: redeem one-time id → 24h JWT, scrub URL
+  useEffect(() => {
+    const shareId = readShareId()
+    if (!shareId) return
+    let cancelled = false
+    setAutoStatus('Redeeming share link…')
+    ;(async () => {
+      try {
+        scrubShareParamsFromUrl()
+        const session = await api.shareRedeem(shareId)
+        if (cancelled) return
+        setSession(session.token, session.expiresAt)
+        setAutoStatus('')
+        onAuthed()
+      } catch (err) {
+        if (cancelled) return
+        scrubShareParamsFromUrl()
+        setAutoStatus('')
+        const detail = (err as { detail?: unknown }).detail
+        setError(
+          typeof detail === 'string'
+            ? detail
+            : 'Share link expired or already used — ask the host to reveal again',
+        )
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   async function submit(e: FormEvent) {
     e.preventDefault()
     if (retryAfter > 0) return
     setError('')
+
+    // Localhost first-run: create password
+    if (local && passwordSet === false) {
+      if (password.length < 8) {
+        setError('Password must be at least 8 characters')
+        return
+      }
+      if (password !== confirm) {
+        setError('Passwords do not match')
+        return
+      }
+      try {
+        const session = await api.setPassword(password)
+        setSession(session.token, session.expiresAt)
+        onAuthed()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+      }
+      return
+    }
+
     try {
-      await api.login(token.trim())
-      setToken(token.trim())
+      const session = await api.login(password)
+      setSession(session.token, session.expiresAt)
       onAuthed()
     } catch (err) {
       const detail = (err as { detail?: unknown }).detail
-      let message = 'Token rejected'
+      let message = 'Invalid password'
       let wait = 0
       if (typeof detail === 'object' && detail) {
         const d = detail as { message?: string; retryAfter?: number }
@@ -59,6 +141,8 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
     }
   }
 
+  const setupMode = local && passwordSet === false
+
   return (
     <div className="min-h-full flex flex-col justify-end sm:justify-center px-5 pb-12 pt-20">
       <div className="max-w-md w-full mx-auto hb-enter">
@@ -68,57 +152,69 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
           <span className="text-accent"> Base</span>
         </p>
         <p className="mt-5 text-mute text-base max-w-sm leading-relaxed">
-          Remote control for your configured workspaces — actions, shells, files, and Cursor.
+          {setupMode
+            ? 'Create a password on this machine. Only localhost can set or change it.'
+            : 'Sign in with your password. Sessions last 24 hours.'}
         </p>
+        {autoStatus && (
+          <p className="mt-4 text-sm font-mono text-sky animate-pulse">{autoStatus}</p>
+        )}
         <form onSubmit={submit} className="mt-10 space-y-4">
           <label className="block">
-            <span className="text-[11px] uppercase tracking-[0.2em] text-mute">Access token</span>
+            <span className="text-[11px] uppercase tracking-[0.2em] text-mute">
+              {setupMode ? 'New password' : 'Password'}
+            </span>
             <div className="relative mt-2">
               <input
-                type={showToken ? 'text' : 'password'}
-                autoComplete="current-password"
-                value={token}
-                onChange={(e) => setLocal(e.target.value)}
-                placeholder="HOMEBASE_TOKEN"
-                disabled={retryAfter > 0}
+                type={show ? 'text' : 'password'}
+                autoComplete={setupMode ? 'new-password' : 'current-password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={setupMode ? 'At least 8 characters' : 'Password'}
+                disabled={retryAfter > 0 || !!autoStatus}
                 className="w-full rounded-xl bg-panel/90 border border-line pl-4 pr-12 py-3.5 text-text disabled:opacity-50"
               />
               <button
                 type="button"
-                onClick={() => setShowToken((v) => !v)}
+                onClick={() => setShow((v) => !v)}
                 disabled={retryAfter > 0}
-                aria-label={showToken ? 'Hide token' : 'Show token'}
-                aria-pressed={showToken}
+                aria-label={show ? 'Hide password' : 'Show password'}
                 className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-2 text-mute hover:text-text disabled:opacity-40"
               >
-                {showToken ? (
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
-                    <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
-                    <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
-                    <line x1="1" y1="1" x2="23" y2="23" />
-                  </svg>
-                ) : (
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                    <circle cx="12" cy="12" r="3" />
-                  </svg>
-                )}
+                {show ? 'Hide' : 'Show'}
               </button>
             </div>
           </label>
+          {setupMode && (
+            <label className="block">
+              <span className="text-[11px] uppercase tracking-[0.2em] text-mute">Confirm</span>
+              <input
+                type={show ? 'text' : 'password'}
+                autoComplete="new-password"
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+                placeholder="Repeat password"
+                className="mt-2 w-full rounded-xl bg-panel/90 border border-line px-4 py-3.5 text-text"
+              />
+            </label>
+          )}
           {error && <p className="text-danger text-sm">{error}</p>}
           {retryAfter > 0 && (
             <p className="text-warn text-sm font-mono">
               Locked — try again in {formatWait(retryAfter)}
             </p>
           )}
+          {!local && passwordSet === false && (
+            <p className="text-warn text-sm">
+              Password has not been set yet. Open Home Base on the host via localhost first.
+            </p>
+          )}
           <button
             type="submit"
-            disabled={retryAfter > 0}
-            className="w-full rounded-xl bg-accent text-ink font-semibold py-3.5 shadow-[0_8px_28px_rgba(45,212,191,0.18)] disabled:opacity-40 disabled:shadow-none"
+            disabled={retryAfter > 0 || !!autoStatus || passwordSet === null}
+            className="w-full rounded-xl bg-accent text-ink font-semibold py-3.5 shadow-[0_8px_28px_rgba(46,230,200,0.22)] disabled:opacity-40 disabled:shadow-none"
           >
-            Enter
+            {setupMode ? 'Create password' : 'Enter'}
           </button>
         </form>
       </div>

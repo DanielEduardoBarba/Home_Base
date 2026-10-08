@@ -174,7 +174,6 @@ class Project:
 class Settings:
     host: str = field(default_factory=lambda: os.environ.get("HOMEBASE_HOST", "0.0.0.0"))
     port: int = field(default_factory=lambda: int(os.environ.get("HOMEBASE_PORT", "8080")))
-    token: str = field(default_factory=lambda: os.environ.get("HOMEBASE_TOKEN", "").strip())
     cursor_api_key: str = field(default_factory=lambda: os.environ.get("CURSOR_API_KEY", "").strip())
     cursor_model: str = field(
         default_factory=lambda: os.environ.get("CURSOR_MODEL", "composer-2.5").strip()

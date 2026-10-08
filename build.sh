@@ -41,7 +41,7 @@ usage() {
 Home Base · build.sh
 
 USAGE
-  ./build.sh --setup              Install deps, build UI, create .env + token
+  ./build.sh --setup              Install deps, build UI, create .env + JWT secret
   ./build.sh --run                Dev: API (uvicorn --reload) + Vite, with hotkeys
   ./build.sh --add-project --preset NAME --path /abs/or/rel/path
   ./build.sh --add-project --path /abs/or/rel/path [--id ID] [--name NAME]
@@ -158,40 +158,24 @@ cmd_setup() {
     cp .env.example .env
   fi
 
-  local current
-  current="$(grep -E '^HOMEBASE_TOKEN=' .env | head -1 | cut -d= -f2- || true)"
-  if [[ -z "$current" || "$current" == "change-me-to-a-long-random-string" ]]; then
-    local token
-    token="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-    if grep -qE '^HOMEBASE_TOKEN=' .env; then
-      python3 - <<PY
+  # Ensure JWT signing material exists (password is set later via localhost UI)
+  .venv/bin/python -c "from server.auth import jwt_secret; jwt_secret(); print('JWT secret ready')"
+
+  # Drop legacy HOMEBASE_TOKEN from .env if present (auth is password → JWT now)
+  if grep -qE '^HOMEBASE_TOKEN=' .env 2>/dev/null; then
+    python3 - <<'PY'
 from pathlib import Path
 p = Path(".env")
-text = p.read_text()
-lines = []
-for line in text.splitlines():
-    if line.startswith("HOMEBASE_TOKEN="):
-        lines.append("HOMEBASE_TOKEN=${token}")
-    else:
-        lines.append(line)
-p.write_text("\\n".join(lines) + "\\n")
+lines = [ln for ln in p.read_text().splitlines() if not ln.startswith("HOMEBASE_TOKEN=")]
+p.write_text("\n".join(lines) + ("\n" if lines else ""))
+print("Removed legacy HOMEBASE_TOKEN from .env")
 PY
-    else
-      echo "HOMEBASE_TOKEN=$token" >> .env
-    fi
-    echo ""
-    echo "=============================================="
-    echo "  HOMEBASE_TOKEN generated — save this:"
-    echo "  $token"
-    echo "=============================================="
-    echo "  Paste it once in the web app (remembered)."
-    echo ""
-  else
-    echo "==> HOMEBASE_TOKEN already set in .env"
   fi
 
   echo ""
   echo "Setup complete."
+  echo "  Open UI on localhost → create a password (only localhost can set/change it)."
+  echo "  Sessions are JWT with 24h TTL. Share QR issues a one-time redeem code."
   echo "  Add projects:  ./build.sh --add-project --preset example --path /path/to/your-repo"
   echo "  Dev console:   ./build.sh --run   (api + vite, hotkeys r/a/w/q/h)"
   echo "  Deploy:        ./build.sh --deploy"
@@ -504,10 +488,6 @@ cmd_run() {
   # shellcheck disable=SC1091
   source .env
   set +a
-  if [[ -z "${HOMEBASE_TOKEN:-}" || "${HOMEBASE_TOKEN}" == "change-me-to-a-long-random-string" ]]; then
-    echo "HOMEBASE_TOKEN not set — run ./build.sh --setup" >&2
-    exit 1
-  fi
   if [[ ! -d web/node_modules ]]; then
     (cd web && npm install)
   fi

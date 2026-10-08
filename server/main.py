@@ -10,7 +10,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from starlette.middleware.gzip import GZipMiddleware
 
-from .auth import lockout_status, require_auth, verify_token, ws_authenticate
+from .auth import (
+    _client_ip,
+    auth_public_status,
+    jwt_secret,
+    lockout_status,
+    login_with_password,
+    password_is_set,
+    require_auth,
+    set_password,
+    verify_password,
+    ws_authenticate,
+)
 from .config import BUNDLE_ROOT, ROOT, get_project, get_settings, list_projects, load_projects
 from .cursor_bridge import cursor_bridge
 from .files import list_dir, read_file, write_file
@@ -19,6 +30,14 @@ from .logging_util import append_daily, read_daily
 from .notifications import clear_read, list_notifications, mark_read, push as notify
 from .process_manager import list_projects_meta, stop_project, tail_logs, trigger_action
 from .pty_manager import pty_manager
+from .share import (
+    hide as share_hide,
+    mdns_hostname,
+    redeem as share_redeem,
+    require_localhost_browser,
+    reveal as share_reveal,
+    status as share_status,
+)
 from .static_compress import compressed_file_response
 from .trace_log import install_logging_handler, snapshot as trace_snapshot
 from .trace_log import append as trace_append
@@ -37,8 +56,9 @@ if not WEB_DIST.is_dir():
 async def lifespan(app: FastAPI):
     settings = get_settings()
     load_projects(force=True)
-    if not settings.token:
-        log.warning("HOMEBASE_TOKEN is empty — all requests will fail auth")
+    jwt_secret()  # ensure signing key exists
+    if not password_is_set():
+        log.warning("No password set — open the UI on localhost to create one")
     if not settings.cursor_api_key:
         log.warning("CURSOR_API_KEY is empty — Cursor chat disabled")
     n = len(list_projects())
@@ -54,7 +74,7 @@ async def lifespan(app: FastAPI):
     trace_append("info", "shutdown", source="server")
 
 
-app = FastAPI(title="Home Base", version="1.1.0", lifespan=lifespan)
+app = FastAPI(title="Home Base", version="1.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -77,7 +97,21 @@ class WriteBody(BaseModel):
 
 
 class LoginBody(BaseModel):
-    token: str
+    password: str = ""
+
+
+class PasswordBody(BaseModel):
+    password: str
+    currentPassword: Optional[str] = None
+
+
+class ShareRevealBody(BaseModel):
+    port: int = 3080
+    protocol: str = "http"
+
+
+class ShareRedeemBody(BaseModel):
+    shareId: str
 
 
 class MarkReadBody(BaseModel):
@@ -88,27 +122,84 @@ class MarkReadBody(BaseModel):
 @app.get("/api/health")
 async def api_health():
     settings = get_settings()
-    # Public: no lockout fail counts / project inventory (use /api/lockout + auth'd APIs).
+    status = auth_public_status()
     return {
         "ok": True,
-        "tokenConfigured": bool(settings.token),
+        "passwordSet": status["passwordSet"],
+        "tokenConfigured": status["passwordSet"],  # compat
         "cursorConfigured": bool(settings.cursor_api_key),
         "model": settings.cursor_model,
+        "jwtTtlSec": status["jwtTtlSec"],
     }
+
+
+@app.get("/api/auth/status")
+async def api_auth_status():
+    return auth_public_status()
 
 
 @app.post("/api/login")
 async def api_login(body: LoginBody, request: Request):
-    """Authenticate and reset lockout on success. Used by SPA login."""
-    from .auth import _client_ip
+    """Password → 24h JWT session."""
+    issued = login_with_password(
+        body.password.strip(), ip=_client_ip(request=request)
+    )
+    return {"ok": True, "lockout": lockout_status(), **issued}
 
-    verify_token(body.token.strip(), ip=_client_ip(request=request))
-    return {"ok": True, "lockout": lockout_status()}
+
+@app.post("/api/auth/password")
+async def api_set_password(body: PasswordBody, request: Request):
+    """
+    Create or change the password. Only from a localhost-loaded SPA.
+    First set: no current password. Later changes: require current password.
+    """
+    require_localhost_browser(request)
+    if password_is_set():
+        if not body.currentPassword or not verify_password(body.currentPassword):
+            raise HTTPException(401, "Current password is incorrect")
+    set_password(body.password)
+    # Issue a fresh session so the localhost operator stays signed in
+    issued = login_with_password(
+        body.password.strip(), ip=_client_ip(request=request)
+    )
+    return {"ok": True, "passwordSet": True, **issued}
 
 
 @app.get("/api/lockout")
 async def api_lockout():
     return lockout_status()
+
+
+@app.get("/api/share/status")
+async def api_share_status(request: Request, _: None = Depends(require_auth)):
+    require_localhost_browser(request)
+    return share_status()
+
+
+@app.post("/api/share/reveal")
+async def api_share_reveal(
+    body: ShareRevealBody, request: Request, _: None = Depends(require_auth)
+):
+    require_localhost_browser(request)
+    return share_reveal(port=body.port, protocol=body.protocol)
+
+
+@app.post("/api/share/hide")
+async def api_share_hide(request: Request, _: None = Depends(require_auth)):
+    require_localhost_browser(request)
+    return share_hide()
+
+
+@app.post("/api/share/redeem")
+async def api_share_redeem(body: ShareRedeemBody):
+    """Public: exchange a one-time share id for a 24h session JWT."""
+    return {"ok": True, **share_redeem(body.shareId)}
+
+
+@app.get("/api/share/hostname")
+async def api_share_hostname(request: Request, _: None = Depends(require_auth)):
+    require_localhost_browser(request)
+    return {"hostname": mdns_hostname()}
 
 
 @app.get("/api/projects")
@@ -481,6 +572,7 @@ async def ws_session(websocket: WebSocket, session_id: str):
 
 @app.websocket("/ws/cursor")
 async def ws_cursor(websocket: WebSocket):
+    """One connection per project; client sends bind/send with chatId (no reconnect per tab)."""
     if not await ws_authenticate(websocket):
         return
     await websocket.accept()
@@ -489,13 +581,13 @@ async def ws_cursor(websocket: WebSocket):
     cwd = (websocket.query_params.get("cwd") or "").strip()
     if not project_id:
         await websocket.send_json({"type": "error", "error": "project required"})
-        await websocket.close()
+        await websocket.close(code=1008)
         return
     try:
         get_project(project_id)
     except KeyError:
         await websocket.send_json({"type": "error", "error": "Unknown project"})
-        await websocket.close()
+        await websocket.close(code=1008)
         return
 
     await websocket.send_json(
@@ -511,25 +603,9 @@ async def ws_cursor(websocket: WebSocket):
         while True:
             msg = await websocket.receive_json()
             mtype = msg.get("type")
-            if mtype == "send":
-                prompt = (msg.get("prompt") or "").strip()
-                if not prompt:
-                    continue
-                model = (msg.get("model") or "").strip() or None
-                send_cwd = (msg.get("cwd") or cwd or "").strip() or None
-                async for event in cursor_bridge.send_stream(
-                    project_id,
-                    prompt,
-                    model=model,
-                    chat_id=chat_id,
-                    cwd=send_cwd,
-                ):
-                    await websocket.send_json(event)
-            elif mtype == "cancel":
-                ok = await cursor_bridge.cancel(project_id, chat_id=chat_id)
-                await websocket.send_json({"type": "cancelled", "ok": ok})
-            elif mtype == "reset":
-                await cursor_bridge.reset_agent(project_id, chat_id=chat_id)
+            if mtype == "bind":
+                chat_id = (msg.get("chatId") or msg.get("chat") or "default").strip() or "default"
+                cwd = (msg.get("cwd") or "").strip()
                 await websocket.send_json(
                     {
                         "type": "ready",
@@ -537,6 +613,50 @@ async def ws_cursor(websocket: WebSocket):
                             project_id, chat_id=chat_id
                         ),
                         "chatId": chat_id,
+                        "cwd": cwd,
+                    }
+                )
+            elif mtype == "send":
+                prompt = (msg.get("prompt") or "").strip()
+                if not prompt:
+                    continue
+                model = (msg.get("model") or "").strip() or None
+                send_chat = (
+                    (msg.get("chatId") or msg.get("chat") or chat_id).strip()
+                    or "default"
+                )
+                send_cwd = (msg.get("cwd") or cwd or "").strip() or None
+                chat_id = send_chat
+                if send_cwd is not None:
+                    cwd = send_cwd
+                async for event in cursor_bridge.send_stream(
+                    project_id,
+                    prompt,
+                    model=model,
+                    chat_id=send_chat,
+                    cwd=send_cwd,
+                ):
+                    await websocket.send_json(event)
+            elif mtype == "cancel":
+                cancel_chat = (
+                    (msg.get("chatId") or msg.get("chat") or chat_id).strip()
+                    or "default"
+                )
+                ok = await cursor_bridge.cancel(project_id, chat_id=cancel_chat)
+                await websocket.send_json({"type": "cancelled", "ok": ok})
+            elif mtype == "reset":
+                reset_chat = (
+                    (msg.get("chatId") or msg.get("chat") or chat_id).strip()
+                    or "default"
+                )
+                await cursor_bridge.reset_agent(project_id, chat_id=reset_chat)
+                await websocket.send_json(
+                    {
+                        "type": "ready",
+                        "cursor": cursor_bridge.agent_info(
+                            project_id, chat_id=reset_chat
+                        ),
+                        "chatId": reset_chat,
                     }
                 )
             elif mtype == "ping":

@@ -8,13 +8,13 @@ Generic mobile-first control plane for any local projects — run scripts, shell
 ## Quick start
 
 ```bash
-./build.sh --setup          # deps, UI build, autogenerate HOMEBASE_TOKEN
+./build.sh --setup          # deps, UI build, JWT signing key
 # Presets are templates only — always pass --path for where the repo lives
 ./build.sh --add-project --preset example --path /path/to/your-repo
 ./build.sh --run
 ```
 
-Open `http://localhost:3080` in development (or `http://<host>:8888/` in production). Paste the token once — it is **remembered** in the browser (`localStorage`).
+Open `http://localhost:3080` in development (or `http://localhost:8888/` in production) and **create a password** (localhost only). Later sign-ins get a **24h JWT** stored in `localStorage`.
 
 ## Same-origin API
 
@@ -64,7 +64,8 @@ Special `type` values: `stop`, `restart` (with `restartAction`).
 
 ## Security
 
-- Bearer `HOMEBASE_TOKEN` on all API/WS calls
+- Password (scrypt hash in `.runtime/auth.json`) → Bearer JWT (24h TTL) on all API/WS calls
+- Password set/change only from a localhost-loaded UI; Share QR is a 20s one-time redeem id
 - After **5** failed logins: progressive lockout `10s → 30s → 1m → 3m → 5m → 10m → 30m → 1h → 1d`
 - Failures and errors append to `.runtime/logs/YYYY-MM-DD.log` and the Alerts inbox
 
@@ -74,7 +75,7 @@ Copy [`.env.example`](.env.example). Never commit `.env` or `config/projects.jso
 
 | Var | Role |
 |-----|------|
-| `HOMEBASE_TOKEN` | Access token |
+| `HOMEBASE_JWT_SECRET` | Optional JWT HMAC override (else `.runtime/jwt_secret`) |
 | `CURSOR_API_KEY` | Local Cursor agents |
 | `HOMEBASE_HOST` / `HOMEBASE_PORT` | Bind (dev default `0.0.0.0:8080`; systemd forces `:8888`) |
 

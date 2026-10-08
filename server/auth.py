@@ -1,23 +1,169 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import os
 import secrets
 import time
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
+import jwt
 from fastapi import Header, HTTPException, Query, Request, WebSocket, status
 
 from .config import LOCKOUT_PATH, RUNTIME_DIR, get_settings
 from .logging_util import append_daily
 from .notifications import push as notify
 
-# After 5 failures: 10s, 30s, 1m, 3m, 5m, 10m, 30m, 1h, 1d
+# After 5 failures: 10s … 1 day
 LOCKOUT_SCHEDULE = [10, 30, 60, 180, 300, 600, 1800, 3600, 86400]
 FAIL_THRESHOLD = 5
 
+JWT_TTL_SEC = 24 * 60 * 60
+JWT_ALG = "HS256"
+AUTH_PATH = RUNTIME_DIR / "auth.json"
+JWT_SECRET_PATH = RUNTIME_DIR / "jwt_secret"
 
-def _expected() -> str:
-    return get_settings().token
+# scrypt params (interactive login)
+_SCRYPT_N = 2**14
+_SCRYPT_R = 8
+_SCRYPT_P = 1
+_SCRYPT_DKLEN = 64
+
+
+def _client_ip(request: Optional[Request] = None, websocket: Optional[WebSocket] = None) -> str:
+    if request is not None:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+        if request.client:
+            return request.client.host
+    if websocket is not None and websocket.client:
+        return websocket.client.host
+    return "unknown"
+
+
+def _chmod_private(path: Path) -> None:
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def jwt_secret() -> bytes:
+    """Persistent HMAC key for session JWTs (created once, mode 0600)."""
+    env = os.environ.get("HOMEBASE_JWT_SECRET", "").strip()
+    if env:
+        return env.encode("utf-8")
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    if JWT_SECRET_PATH.is_file():
+        raw = JWT_SECRET_PATH.read_bytes().strip()
+        if len(raw) >= 32:
+            return raw
+    secret = secrets.token_bytes(48)
+    JWT_SECRET_PATH.write_bytes(secret)
+    _chmod_private(JWT_SECRET_PATH)
+    return secret
+
+
+def _b64e(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("ascii")
+
+
+def _b64d(data: str) -> bytes:
+    return base64.urlsafe_b64decode(data.encode("ascii"))
+
+
+def _hash_password(password: str, salt: bytes) -> bytes:
+    return hashlib.scrypt(
+        password.encode("utf-8"),
+        salt=salt,
+        n=_SCRYPT_N,
+        r=_SCRYPT_R,
+        p=_SCRYPT_P,
+        dklen=_SCRYPT_DKLEN,
+    )
+
+
+def _load_auth() -> dict[str, Any]:
+    if not AUTH_PATH.is_file():
+        return {}
+    try:
+        return json.loads(AUTH_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_auth(data: dict[str, Any]) -> None:
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = AUTH_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    _chmod_private(tmp)
+    tmp.replace(AUTH_PATH)
+    _chmod_private(AUTH_PATH)
+
+
+def password_is_set() -> bool:
+    data = _load_auth()
+    return bool(data.get("passwordHash") and data.get("salt"))
+
+
+def set_password(password: str) -> None:
+    pw = (password or "").strip()
+    if len(pw) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+    salt = secrets.token_bytes(16)
+    digest = _hash_password(pw, salt)
+    _save_auth(
+        {
+            "algo": "scrypt",
+            "n": _SCRYPT_N,
+            "r": _SCRYPT_R,
+            "p": _SCRYPT_P,
+            "salt": _b64e(salt),
+            "passwordHash": _b64e(digest),
+            "updatedAt": int(time.time()),
+        }
+    )
+
+
+def verify_password(password: str) -> bool:
+    data = _load_auth()
+    if not data.get("passwordHash") or not data.get("salt"):
+        return False
+    try:
+        salt = _b64d(str(data["salt"]))
+        expected = _b64d(str(data["passwordHash"]))
+        got = _hash_password(password, salt)
+        return secrets.compare_digest(got, expected)
+    except Exception:
+        return False
+
+
+def issue_jwt(*, subject: str = "homebase", kind: str = "session", ttl: int = JWT_TTL_SEC) -> dict[str, Any]:
+    now = int(time.time())
+    exp = now + max(30, int(ttl))
+    payload = {
+        "sub": subject,
+        "iat": now,
+        "exp": exp,
+        "kind": kind,
+        "jti": secrets.token_hex(8),
+    }
+    token = jwt.encode(payload, jwt_secret(), algorithm=JWT_ALG)
+    if isinstance(token, bytes):
+        token = token.decode("ascii")
+    return {"token": token, "expiresAt": exp, "expiresIn": exp - now, "kind": kind}
+
+
+def decode_jwt(token: str) -> dict[str, Any]:
+    return jwt.decode(
+        token,
+        jwt_secret(),
+        algorithms=[JWT_ALG],
+        options={"require": ["exp", "iat", "sub"]},
+    )
 
 
 def _load_lockout() -> dict:
@@ -46,24 +192,11 @@ def lockout_status() -> dict:
     }
 
 
-def _client_ip(request: Optional[Request] = None, websocket: Optional[WebSocket] = None) -> str:
-    if request is not None:
-        forwarded = request.headers.get("x-forwarded-for")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-        if request.client:
-            return request.client.host
-    if websocket is not None:
-        if websocket.client:
-            return websocket.client.host
-    return "unknown"
-
-
 def record_success() -> None:
     _save_lockout({"failCount": 0, "lockedUntil": 0.0})
 
 
-def record_failure(ip: str = "unknown", reason: str = "invalid_token") -> dict:
+def record_failure(ip: str = "unknown", reason: str = "invalid_password") -> dict:
     data = _load_lockout()
     fail_count = int(data.get("failCount", 0)) + 1
     locked_until = float(data.get("lockedUntil", 0))
@@ -118,29 +251,64 @@ def assert_not_locked() -> None:
         )
 
 
-def verify_token(token: Optional[str], *, ip: str = "unknown") -> None:
+def login_with_password(password: str, *, ip: str = "unknown") -> dict[str, Any]:
     assert_not_locked()
-    expected = _expected()
-    if not expected:
+    if not password_is_set():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="HOMEBASE_TOKEN is not configured",
+            detail="Password not set — open Home Base on localhost to create one",
         )
-    try:
-        ok = bool(token) and secrets.compare_digest(token, expected)
-    except (TypeError, ValueError):
-        ok = False
-    if not ok:
-        info = record_failure(ip=ip)
+    if not verify_password(password):
+        info = record_failure(ip=ip, reason="invalid_password")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={
-                "message": "Invalid or missing token",
+                "message": "Invalid password",
                 "retryAfter": info.get("retryAfter", 0),
                 "failCount": info.get("failCount", 0),
             },
         )
     record_success()
+    return issue_jwt(kind="session", ttl=JWT_TTL_SEC)
+
+
+def verify_access_token(token: Optional[str], *, ip: str = "unknown") -> dict[str, Any]:
+    """Validate a Bearer/session JWT. Does not count toward password lockout on expiry."""
+    if not password_is_set():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Password not set — open Home Base on localhost to create one",
+        )
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"message": "Missing session token", "code": "missing_token"},
+        )
+    try:
+        claims = decode_jwt(token)
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"message": "Session expired — sign in again", "code": "expired"},
+        ) from None
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"message": "Invalid session token", "code": "invalid_token"},
+        ) from None
+    if claims.get("kind") not in {"session", "share"}:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"message": "Invalid session token", "code": "invalid_kind"},
+        )
+    # Share JWTs are only for the brief redeem window if we ever embed them;
+    # API access requires a session token.
+    if claims.get("kind") == "share":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"message": "Share token cannot access the API", "code": "share_token"},
+        )
+    return claims
 
 
 def bearer_from_header(authorization: Optional[str]) -> Optional[str]:
@@ -156,8 +324,8 @@ async def require_auth(
     request: Request,
     authorization: Optional[str] = Header(default=None),
     token: Optional[str] = Query(default=None),
-) -> None:
-    verify_token(
+) -> dict[str, Any]:
+    return verify_access_token(
         bearer_from_header(authorization) or token,
         ip=_client_ip(request=request),
     )
@@ -168,19 +336,32 @@ async def ws_authenticate(websocket: WebSocket) -> bool:
     if not token:
         auth = websocket.headers.get("authorization")
         token = bearer_from_header(auth)
-    ip = _client_ip(websocket=websocket)
     try:
-        assert_not_locked()
+        verify_access_token(token, ip=_client_ip(websocket=websocket))
+        return True
     except HTTPException as e:
-        await websocket.close(code=4429, reason=str(e.detail)[:120])
+        code = 4401
+        if e.status_code == 429:
+            code = 4429
+        elif e.status_code == 503:
+            code = 4403
+        detail = e.detail
+        reason = detail if isinstance(detail, str) else str(
+            (detail or {}).get("message", "Unauthorized")  # type: ignore[union-attr]
+        )
+        await websocket.close(code=code, reason=reason[:120])
         return False
-    expected = _expected()
-    if not expected:
-        await websocket.close(code=4403, reason="HOMEBASE_TOKEN not configured")
-        return False
-    if not token or not secrets.compare_digest(token, expected):
-        record_failure(ip=ip)
-        await websocket.close(code=4401, reason="Unauthorized")
-        return False
-    record_success()
-    return True
+
+
+def auth_public_status() -> dict[str, Any]:
+    return {
+        "passwordSet": password_is_set(),
+        "jwtTtlSec": JWT_TTL_SEC,
+        "lockout": lockout_status(),
+        # Legacy field for older clients during transition
+        "tokenConfigured": password_is_set(),
+    }
+
+
+# Ensure signing key exists at import / first use
+jwt_secret()

@@ -1,4 +1,10 @@
-export type Tab = 'apps' | 'shell' | 'files' | 'cursor' | 'logs' | 'alerts'
+export type Tab = 'apps' | 'shell' | 'files' | 'cursor' | 'logs' | 'alerts' | 'sharing'
+
+/** True only when the page itself is loaded from loopback (not .local / LAN). */
+export function isLocalHostPage(): boolean {
+  const h = location.hostname.toLowerCase()
+  return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1'
+}
 
 export interface TraceLine {
   id: number

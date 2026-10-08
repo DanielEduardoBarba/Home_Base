@@ -38,7 +38,21 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       '/api': API_ORIGIN,
-      '/ws': { target: API_ORIGIN, ws: true },
+      '/ws': {
+        target: API_ORIGIN,
+        ws: true,
+        // Avoid noisy proxy errors when the client closes a WS cleanly (tab/project switch)
+        configure: (proxy) => {
+          proxy.on('error', () => {
+            /* ignore upstream reset after intentional client close */
+          })
+          proxy.on('proxyReqWs', (_proxyReq, _req, socket) => {
+            socket.on('error', () => {
+              /* ignore */
+            })
+          })
+        },
+      },
     },
   },
   preview: {
