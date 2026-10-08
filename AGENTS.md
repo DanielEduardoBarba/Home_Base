@@ -55,10 +55,15 @@ Committed preset: `config/presets/example.json`. Personal presets under `config/
 ## Deploy
 
 ```bash
-./build.sh --deploy # Nuitka onefile → /usr/bin/homebased + homebased.service
+./build.sh --deploy # Nuitka → /usr/share/homebased + wrapper /usr/bin/homebased + systemd
 ```
 
-Writable state for the service: `/var/lib/homebased` (`HOMEBASE_HOME`). Binary build artifacts under `dist/` are gitignored. Unit runs as **root** on **port 8888**.
+- Active binary: `/usr/share/homebased/homebased` (previous known-good → `homebased.bak`)
+- Wrapper `/usr/bin/homebased` self-tests, then exec; on failure runs `.bak` with `HOMEBASE_RUNNING_BACKUP=1`
+- Deploy syncs `CURSOR_API_KEY` from repo `.env` → `/var/lib/homebased/.env` (VPN/prod uses the latter)
+- Version: repo `VERSION` file; shown bottom-right in UI; also `/api/version`
+
+Writable state: `/var/lib/homebased` (`HOMEBASE_HOME`). Unit runs as **root** on **port 8888**.
 
 ## Do not
 

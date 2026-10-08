@@ -1,27 +1,50 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { api } from '../lib/api'
 import { clearToken, getExpiresAt } from '../lib/auth'
 import { clearAppCache, getStoredTheme, listCacheKeys, setTheme, type ThemeMode } from '../lib/theme'
 import { isLocalHostPage } from '../lib/types'
+import { HoldButton } from './HoldButton'
 import { SharingTab } from './SharingTab'
 
 export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
   const [theme, setThemeState] = useState<ThemeMode>(() => getStoredTheme())
   const [cacheMsg, setCacheMsg] = useState('')
+  const [sysMsg, setSysMsg] = useState('')
   const [confirmCache, setConfirmCache] = useState(false)
   const [confirmSignOut, setConfirmSignOut] = useState(false)
+  const [wgList, setWgList] = useState<{ id: string; unit: string }[]>([])
+  const [wgId, setWgId] = useState('')
+  const [version, setVersion] = useState('')
+  const [backup, setBackup] = useState(false)
+  const [busy, setBusy] = useState('')
   const local = isLocalHostPage()
   const cacheCount = useMemo(() => listCacheKeys().length, [cacheMsg])
 
+  const loadSystem = useCallback(async () => {
+    try {
+      const s = await api.systemStatus()
+      setWgList(s.wireguard || [])
+      setWgId((prev) => prev || s.wireguard?.[0]?.id || '')
+      setVersion(s.version || '')
+      setBackup(!!s.backup)
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadSystem()
+  }, [loadSystem])
+
   const sessionHint = useMemo(() => {
     const exp = getExpiresAt()
-    if (exp == null) return 'Session active'
+    if (exp == null) return ''
     const ms = exp * 1000 - Date.now()
     if (ms <= 0) return 'Session expired'
     const h = Math.floor(ms / 3_600_000)
-    const m = Math.floor((ms % 3_600_000) / 60_000)
-    if (h >= 24) return `Session · ~${Math.ceil(h / 24)}d left`
-    if (h > 0) return `Session · ~${h}h ${m}m left`
-    return `Session · ~${m}m left`
+    if (h >= 24) return `~${Math.ceil(h / 24)}d left`
+    if (h > 0) return `~${h}h left`
+    return `~${Math.max(1, Math.floor(ms / 60_000))}m left`
   }, [])
 
   function chooseTheme(mode: ThemeMode) {
@@ -32,11 +55,7 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
   function doClearCache() {
     const { removed } = clearAppCache()
     setConfirmCache(false)
-    setCacheMsg(
-      removed
-        ? `Cleared ${removed} cached item${removed === 1 ? '' : 's'} (chats, UI prefs). Theme & login kept.`
-        : 'Nothing cached to clear.',
-    )
+    setCacheMsg(removed ? `Cleared ${removed} item${removed === 1 ? '' : 's'}` : 'Nothing to clear')
   }
 
   function doSignOut() {
@@ -45,29 +64,60 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
     onSignedOut()
   }
 
+  async function restartHb() {
+    setBusy('homebased')
+    setSysMsg('')
+    try {
+      const r = await api.restartHomebased()
+      setSysMsg(r.ok ? 'Home Base restarting…' : 'Restart may have failed — check host')
+    } catch (e) {
+      setSysMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy('')
+    }
+  }
+
+  async function restartWg() {
+    setBusy('vpn')
+    setSysMsg('')
+    try {
+      const r = await api.restartWireguard(wgId || undefined)
+      setSysMsg(r.ok ? 'VPN restarted' : 'VPN restart failed')
+      void loadSystem()
+    } catch (e) {
+      setSysMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy('')
+    }
+  }
+
   return (
     <div className="h-full overflow-y-auto">
-      <div className="hb-page space-y-5 hb-enter !max-w-lg">
+      <div className="hb-page space-y-4 hb-enter !max-w-lg">
         <header>
           <div className="hb-brand-rule" />
-          <h1 className="font-display text-3xl md:text-[2.5rem] font-extrabold tracking-tight">
+          <h1 className="font-display text-2xl md:text-3xl font-extrabold tracking-tight">
             Settings
           </h1>
-          <p className="text-mute text-sm mt-2 leading-relaxed">
-            Appearance, device cache, and session. {sessionHint}.
+          <p className="text-mute text-sm mt-1.5">
+            {version ? `v${version}` : 'Home Base'}
+            {backup ? ' · backup build' : ''}
+            {sessionHint ? ` · ${sessionHint}` : ''}
           </p>
         </header>
 
-        <section className="hb-surface p-4 sm:p-5 space-y-3">
-          <h2 className="hb-label">Appearance</h2>
-          <p className="text-xs text-mute leading-relaxed">
-            Night is the default control-plane look. Day uses a light surface with stronger contrast
-            for bright rooms.
-          </p>
+        {backup && (
+          <div className="rounded-xl border border-warn/40 bg-warn/10 px-3 py-2.5 text-sm text-warn">
+            Running last known-good build after a failed deploy. Redeploy when ready.
+          </div>
+        )}
+
+        <section className="hb-surface p-3.5 space-y-2.5">
+          <h2 className="hb-label">Theme</h2>
           <div className="hb-seg">
             <button
               type="button"
-              className="hb-seg-btn"
+              className="hb-seg-btn !py-2 text-sm"
               data-active={theme === 'night'}
               onClick={() => chooseTheme('night')}
             >
@@ -75,7 +125,7 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
             </button>
             <button
               type="button"
-              className="hb-seg-btn"
+              className="hb-seg-btn !py-2 text-sm"
               data-active={theme === 'day'}
               onClick={() => chooseTheme('day')}
             >
@@ -84,36 +134,68 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
           </div>
         </section>
 
-        <section className="hb-surface p-4 sm:p-5 space-y-3">
+        <section className="hb-surface p-3.5 space-y-2.5">
+          <h2 className="hb-label">Services</h2>
+          <p className="text-xs text-mute">Restart host services from your phone (needs root install).</p>
+
+          <div className="space-y-2">
+            <div className="flex gap-2 items-center">
+              {wgList.length > 1 && (
+                <select
+                  value={wgId}
+                  onChange={(e) => setWgId(e.target.value)}
+                  className="hb-select flex-1 !min-h-10 !py-2 text-sm"
+                >
+                  {wgList.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.id}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <HoldButton
+                label={busy === 'vpn' ? '…' : 'Restart VPN'}
+                holdLabel="Hold…"
+                disabled={!!busy || wgList.length === 0}
+                className="hb-btn hb-btn-ghost !min-h-10 text-sm flex-1"
+                onConfirm={() => void restartWg()}
+              />
+            </div>
+            {wgList.length === 0 && (
+              <p className="text-[11px] text-mute">No WireGuard configs found in /etc/wireguard</p>
+            )}
+
+            <HoldButton
+              label={busy === 'homebased' ? '…' : 'Restart Home Base'}
+              holdLabel="Hold…"
+              disabled={!!busy}
+              className="hb-btn hb-btn-ghost !min-h-10 text-sm w-full"
+              onConfirm={() => void restartHb()}
+            />
+          </div>
+          {sysMsg && <p className="text-xs text-sky">{sysMsg}</p>}
+        </section>
+
+        <section className="hb-surface p-3.5 space-y-2.5">
           <h2 className="hb-label">Storage</h2>
-          <p className="text-xs text-mute leading-relaxed">
-            Clears Cursor chat tabs and other device prefs stored in this browser. Does not delete
-            files on disk or end your login.
-          </p>
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              className="hb-btn hb-btn-ghost text-sm"
+              className="hb-btn hb-btn-ghost text-sm !min-h-10"
               onClick={() => setConfirmCache(true)}
             >
               Clear cache
             </button>
-            <span className="text-[11px] font-mono text-mute">
-              {cacheCount} key{cacheCount === 1 ? '' : 's'}
-            </span>
+            <span className="text-[11px] text-mute">{cacheCount} items</span>
           </div>
-          {cacheMsg && <p className="text-xs font-mono text-sky">{cacheMsg}</p>}
+          {cacheMsg && <p className="text-xs text-sky">{cacheMsg}</p>}
         </section>
 
-        <section className="hb-surface p-4 sm:p-5 space-y-3">
+        <section className="hb-surface p-3.5 space-y-2.5">
           <h2 className="hb-label">Session</h2>
-          <p className="text-xs text-mute leading-relaxed">
-            Sign out removes the JWT from this device. You will need the password (or a new share QR)
-            to enter again.
-          </p>
           <button
             type="button"
-            className="hb-btn hb-btn-danger text-sm"
+            className="hb-btn hb-btn-danger text-sm !min-h-10"
             onClick={() => setConfirmSignOut(true)}
           >
             Sign out
@@ -121,44 +203,23 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
         </section>
 
         {local && (
-          <section className="space-y-3">
-            <div className="px-1">
-              <h2 className="hb-label">Share & password</h2>
-              <p className="text-xs text-mute mt-1.5 leading-relaxed">
-                Localhost only — QR share and password change.
-              </p>
-            </div>
+          <section className="space-y-2">
+            <h2 className="hb-label px-1">Share & password</h2>
             <SharingTab embedded />
-          </section>
-        )}
-
-        {!local && (
-          <section className="hb-surface p-4 sm:p-5">
-            <h2 className="hb-label">Share & password</h2>
-            <p className="text-xs text-mute mt-2 leading-relaxed">
-              Sharing and password changes are only available when Home Base is opened on the host
-              via <span className="font-mono text-accent">localhost</span>.
-            </p>
           </section>
         )}
       </div>
 
       {confirmCache && (
         <div className="fixed inset-0 z-40 hb-overlay backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
-          <div className="w-full max-w-sm hb-surface p-4 sm:p-5 space-y-4 hb-enter">
-            <h2 className="font-semibold text-sm">Clear device cache?</h2>
-            <p className="text-sm text-mute leading-relaxed">
-              Removes local Cursor chats and UI prefs from this browser. Your session and theme stay.
-            </p>
+          <div className="w-full max-w-sm hb-surface p-4 space-y-3">
+            <h2 className="font-semibold text-sm">Clear cache?</h2>
+            <p className="text-sm text-mute">Removes local chats and prefs. Login stays.</p>
             <div className="flex gap-2">
-              <button
-                type="button"
-                className="hb-btn hb-btn-ghost flex-1"
-                onClick={() => setConfirmCache(false)}
-              >
+              <button type="button" className="hb-btn hb-btn-ghost flex-1 !min-h-10" onClick={() => setConfirmCache(false)}>
                 Cancel
               </button>
-              <button type="button" className="hb-btn hb-btn-danger flex-1" onClick={doClearCache}>
+              <button type="button" className="hb-btn hb-btn-danger flex-1 !min-h-10" onClick={doClearCache}>
                 Clear
               </button>
             </div>
@@ -168,20 +229,13 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
 
       {confirmSignOut && (
         <div className="fixed inset-0 z-40 hb-overlay backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
-          <div className="w-full max-w-sm hb-surface p-4 sm:p-5 space-y-4 hb-enter">
+          <div className="w-full max-w-sm hb-surface p-4 space-y-3">
             <h2 className="font-semibold text-sm">Sign out?</h2>
-            <p className="text-sm text-mute leading-relaxed">
-              This device will forget the session token. Open files with unsaved edits are lost.
-            </p>
             <div className="flex gap-2">
-              <button
-                type="button"
-                className="hb-btn hb-btn-ghost flex-1"
-                onClick={() => setConfirmSignOut(false)}
-              >
+              <button type="button" className="hb-btn hb-btn-ghost flex-1 !min-h-10" onClick={() => setConfirmSignOut(false)}>
                 Cancel
               </button>
-              <button type="button" className="hb-btn hb-btn-danger flex-1" onClick={doSignOut}>
+              <button type="button" className="hb-btn hb-btn-danger flex-1 !min-h-10" onClick={doSignOut}>
                 Sign out
               </button>
             </div>

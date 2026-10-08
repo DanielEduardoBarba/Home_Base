@@ -10,6 +10,7 @@ Group=root
 ExecStart=/usr/bin/homebased
 WorkingDirectory=/var/lib/homebased
 Environment=HOMEBASE_HOME=/var/lib/homebased
+Environment=HOMEBASE_SHARE=/usr/share/homebased
 Environment=HOMEBASE_HOST=0.0.0.0
 EnvironmentFile=-/var/lib/homebased/.env
 # Force production port after EnvironmentFile so a copied dev .env cannot override it

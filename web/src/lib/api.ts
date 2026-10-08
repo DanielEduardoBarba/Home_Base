@@ -77,7 +77,27 @@ export const api = {
       tokenConfigured: boolean
       model: string
       jwtTtlSec: number
+      version?: string
+      backup?: boolean
     }>('/api/health'),
+  version: () => request<{ version: string; backup: boolean }>('/api/version'),
+  systemStatus: () =>
+    request<{
+      wireguard: { id: string; unit: string; conf: string }[]
+      homebasedUnit: string
+      version: string
+      backup: boolean
+    }>('/api/system/status'),
+  restartHomebased: () =>
+    request<{ ok: boolean; unit: string; active: boolean }>('/api/system/restart/homebased', {
+      method: 'POST',
+      body: '{}',
+    }),
+  restartWireguard: (iface?: string) =>
+    request<{ ok: boolean; results: { ok: boolean; unit: string }[] }>(
+      '/api/system/restart/wireguard',
+      { method: 'POST', body: JSON.stringify({ iface: iface || null }) },
+    ),
   authStatus: () =>
     request<{
       passwordSet: boolean

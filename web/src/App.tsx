@@ -17,14 +17,15 @@ import { type Project, type Tab } from './lib/types'
 installClientLog()
 applyTheme(getStoredTheme())
 
+/** Mobile-first order: control → chat → terminal → files → inbox → logs → settings */
 const TABS: { id: Tab; label: string }[] = [
   { id: 'apps', label: 'Apps' },
+  { id: 'cursor', label: 'Chat' },
   { id: 'shell', label: 'Shell' },
   { id: 'files', label: 'Files' },
-  { id: 'cursor', label: 'Cursor' },
-  { id: 'logs', label: 'Logs' },
   { id: 'alerts', label: 'Alerts' },
-  { id: 'settings', label: 'Settings' },
+  { id: 'logs', label: 'Logs' },
+  { id: 'settings', label: 'More' },
 ]
 
 function TabIcon({ id }: { id: Tab }) {
@@ -92,6 +93,8 @@ export default function App() {
   const [attachSessionId, setAttachSessionId] = useState<string | null>(null)
   const [loadError, setLoadError] = useState('')
   const [unread, setUnread] = useState(0)
+  const [version, setVersion] = useState('')
+  const [backup, setBackup] = useState(false)
 
   const tabs = useMemo(() => TABS, [])
 
@@ -105,6 +108,13 @@ export default function App() {
       }
       const n = await api.notifications({ limit: 1, history: true })
       setUnread(n.unread)
+      try {
+        const v = await api.version()
+        setVersion(v.version || '')
+        setBackup(!!v.backup)
+      } catch {
+        /* ignore */
+      }
     } catch (e) {
       const err = e as Error & { status?: number }
       const msg = err.message || String(e)
@@ -182,6 +192,13 @@ export default function App() {
       <PullToRefresh onRefresh={refresh} />
       <main className="flex-1 min-h-0 overflow-hidden">{body}</main>
 
+      {version && (
+        <div className="hb-version" aria-hidden>
+          v{version}
+          {backup ? ' · bak' : ''}
+        </div>
+      )}
+
       <nav className="hb-nav" aria-label="Primary">
         <div
           className="hb-nav-dock"
@@ -197,10 +214,7 @@ export default function App() {
               aria-current={tab === t.id ? 'page' : undefined}
             >
               <TabIcon id={t.id} />
-              <span className="truncate max-w-full px-0.5">
-                <span className="sm:hidden">{t.id === 'settings' ? 'Set' : t.label}</span>
-                <span className="hidden sm:inline">{t.label}</span>
-              </span>
+              <span className="truncate max-w-full px-0.5">{t.label}</span>
               {t.id === 'alerts' && unread > 0 && (
                 <span className="hb-badge">{unread > 9 ? '9+' : unread}</span>
               )}

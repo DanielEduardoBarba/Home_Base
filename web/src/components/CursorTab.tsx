@@ -281,7 +281,11 @@ export function CursorTab({
         if (msg.type === 'ready') {
           if (msg.chatId && msg.chatId !== chatId) return
           patchTab(chatId, (t) => ({ ...t, agentId: msg.cursor?.agentId || null }))
-          if (!msg.cursor?.configured) setError('CURSOR_API_KEY not set on server')
+          if (!msg.cursor?.configured) {
+            setError(
+              'Cursor key missing on this server. On the host, put CURSOR_API_KEY in .env then run ./build.sh --deploy (or restart homebased after syncing /var/lib/homebased/.env).',
+            )
+          }
         } else if (msg.type === 'agent') {
           patchTab(chatId, (t) => ({ ...t, agentId: msg.agentId }))
         } else if (msg.type === 'text') {
@@ -499,7 +503,9 @@ export function CursorTab({
       ? models
       : [{ id: model || defaultModel, displayName: model || defaultModel, description: '' }]
 
-  const cwdLabel = active?.cwd ? `./${active.cwd}` : 'project root'
+  const cwdLabel = active?.cwd
+    ? active.cwd.split('/').filter(Boolean).slice(-2).join('/')
+    : project.name
   const pendingDelete = tabs.find((t) => t.id === deleteId)
 
   return (
@@ -511,51 +517,53 @@ export function CursorTab({
               projects={projects}
               selectedId={project.id}
               onSelect={onSelect}
-              className="flex-1"
+              className="flex-1 !min-h-10 !py-2 text-sm"
             />
             <span
-              className={`text-[11px] font-mono shrink-0 px-2 py-1 rounded-md border ${
+              className={`text-[10px] shrink-0 px-2 py-1 rounded-md border font-semibold ${
                 connected
                   ? 'text-ok border-ok/30 bg-ok/10'
                   : 'text-danger border-danger/30 bg-danger/10'
               }`}
             >
-              {connected ? 'live' : 'offline'}
+              {connected ? 'On' : 'Off'}
             </span>
           </div>
 
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
-            {tabs.map((t) => (
-              <div
-                key={t.id}
-                className={`flex items-center rounded-lg border shrink-0 ${
-                  t.id === activeId
-                    ? 'border-accent/50 bg-accent/12'
-                    : 'border-line bg-panel-2'
-                }`}
-              >
-                <button
-                  type="button"
-                  onClick={() => setActiveId(t.id)}
-                  className="px-2.5 py-1.5 text-[11px] font-semibold max-w-[8.5rem] truncate"
-                  title={t.cwd ? `./${t.cwd}` : 'project root'}
+          <div className="flex items-center gap-1.5">
+            <div className="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto pb-0.5">
+              {tabs.map((t) => (
+                <div
+                  key={t.id}
+                  className={`flex items-center rounded-lg border shrink-0 ${
+                    t.id === activeId
+                      ? 'border-accent/50 bg-accent/12'
+                      : 'border-line bg-panel-2'
+                  }`}
                 >
-                  {t.title}
-                </button>
-                <button
-                  type="button"
-                  className="pr-2 pl-0.5 text-mute hover:text-danger text-sm leading-none"
-                  onClick={() => setDeleteId(t.id)}
-                  aria-label={`Delete ${t.title}`}
-                  disabled={tabs.length <= 1}
-                >
-                  ×
-                </button>
-              </div>
-            ))}
+                  <button
+                    type="button"
+                    onClick={() => setActiveId(t.id)}
+                    className="px-2.5 py-1.5 text-[11px] font-semibold max-w-[7.5rem] truncate"
+                    title={t.cwd ? `Folder: ${t.cwd}` : `App: ${project.name}`}
+                  >
+                    {t.title}
+                  </button>
+                  <button
+                    type="button"
+                    className="pr-2 pl-0.5 text-mute hover:text-danger text-sm leading-none"
+                    onClick={() => setDeleteId(t.id)}
+                    aria-label={`Delete ${t.title}`}
+                    disabled={tabs.length <= 1}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
             <IconBtn
               label="New chat"
-              variant="ghost"
+              variant="primary"
               className="!w-9 !h-9 !min-w-9"
               onClick={() => {
                 setNewOpen(true)
@@ -564,7 +572,21 @@ export function CursorTab({
             />
           </div>
 
-          <p className="text-[11px] font-mono text-sky truncate">{cwdLabel}</p>
+          <div className="flex items-center justify-between gap-2 text-[11px]">
+            <span className="text-mute truncate">
+              Folder <span className="text-sky font-medium">{cwdLabel}</span>
+            </span>
+            <button
+              type="button"
+              className="text-accent font-semibold shrink-0"
+              onClick={() => {
+                setNewOpen(true)
+                setPickingFolder(false)
+              }}
+            >
+              Change…
+            </button>
+          </div>
         </div>
       </div>
 
@@ -582,17 +604,17 @@ export function CursorTab({
                 </div>
                 <button
                   type="button"
-                  className="hb-btn hb-btn-primary w-full py-3"
+                  className="hb-btn hb-btn-primary w-full !min-h-11"
                   onClick={() => createChat()}
                 >
-                  Chat in project root
+                  Whole app ({project.name})
                 </button>
                 <button
                   type="button"
-                  className="hb-btn hb-btn-ghost w-full py-3"
+                  className="hb-btn hb-btn-ghost w-full !min-h-11"
                   onClick={() => void openFolderPicker()}
                 >
-                  Chat in a folder…
+                  Pick a folder…
                 </button>
               </>
             ) : (

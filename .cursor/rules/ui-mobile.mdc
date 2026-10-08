@@ -7,13 +7,13 @@ alwaysApply: false
 # Home Base UI
 
 - Primary viewport is still iPhone Safari over VPN; also keep desktop readable (wider max widths, clear contrast).
-- Bottom tabs: Apps · Shell · Files · Cursor · Logs · Alerts · Settings.
-- Share / password live under **Settings** (localhost only), not a separate tab.
-- Shell = interactive PTY + session attach (former Mon). Logs = capped console ring (300).
-- Workspace pickers and Run stacks use native `<select>` dropdowns (`hb-select`).
-- Ship actions are hold-to-confirm; Run/Stop is a toggle from port/session state.
+- Bottom tabs (mobile order): Apps · Chat · Shell · Files · Alerts · Logs · More.
+- Share / password + VPN/homebased restart live under **More/Settings** (localhost for share).
+- Shell = interactive PTY + session attach. Logs = capped console ring (300).
+- App pickers and Run/Ship use native `<select>` + compact action button (`hb-select`).
+- Ship: dropdown + hold-to-confirm Ship (same pattern as Run/Start).
 - Pull-to-refresh is global (top-of-scroll drag).
-- Theme: night (default) + day via `data-theme` / Settings; Syne + IBM Plex Mono; teal accent. Avoid purple gradients and cream/serif clichés.
+- Theme: night black+blue / day white+blue via `data-theme`; Syne + IBM Plex Mono. Avoid purple/cream clichés.
 - New/Add actions use compact `IconBtn` (`+`), not text labels.
 - Layout tokens: `.hb-page`, `.hb-chrome`, `.hb-surface`, floating `.hb-nav` dock with icons + labels; safe-area padding for iPhone.
 - Breakpoints: phone-first; iPad (`md`) wider chrome; desktop (`lg`) two-column Apps where useful.

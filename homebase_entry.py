@@ -3,14 +3,43 @@
 from __future__ import annotations
 
 import os
+import sys
+
+
+def self_test() -> int:
+    """Smoke test used by /usr/bin/homebased wrapper before exec."""
+    try:
+        from server.config import BUNDLE_ROOT, get_settings
+        from server.main import app  # noqa: F401
+        from server.version import read_version
+
+        settings = get_settings()
+        _ = settings.host, settings.port
+        web = BUNDLE_ROOT / "web" / "dist"
+        if not web.is_dir():
+            # Dev source tree may not have dist; allow if index exists under web/
+            if not (BUNDLE_ROOT / "web" / "index.html").is_file():
+                print("self-test: web assets missing", file=sys.stderr)
+                return 1
+        print(f"self-test ok version={read_version()}")
+        return 0
+    except Exception as e:
+        print(f"self-test failed: {e}", file=sys.stderr)
+        return 1
 
 
 def main() -> None:
     import uvicorn
     from server.config import get_settings
     from server.main import app
+    from server.version import read_version, running_as_backup
 
     settings = get_settings()
+    if running_as_backup():
+        print(
+            f"homebased: RUNNING BACKUP binary (v{read_version()}) — last deploy failed self-test",
+            file=sys.stderr,
+        )
     uvicorn.run(
         app,
         host=settings.host,
@@ -20,5 +49,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if os.environ.get("HOMEBASE_SELF_TEST", "").strip() in ("1", "true", "yes") or "--self-test" in sys.argv:
+        raise SystemExit(self_test())
     os.environ.setdefault("HOMEBASE_HOST", os.environ.get("HOMEBASE_HOST", "0.0.0.0"))
     main()

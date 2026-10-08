@@ -18,7 +18,7 @@ export function applyTheme(mode: ThemeMode): void {
   root.style.colorScheme = mode === 'day' ? 'light' : 'dark'
   const meta = document.querySelector('meta[name="theme-color"]')
   if (meta) {
-    meta.setAttribute('content', mode === 'day' ? '#eef2f6' : '#070a0f')
+    meta.setAttribute('content', mode === 'day' ? '#f5f7fb' : '#05070c')
   }
 }
 

@@ -22,73 +22,73 @@
   --radius-control: 0.75rem;
 }
 
-/* Night (default) */
+/* Night — deep black + blue accent */
 :root,
 [data-theme='night'] {
-  --hb-ink: #070a0f;
-  --hb-panel: #0e141c;
-  --hb-panel-2: #151c28;
-  --hb-line: #2a3648;
-  --hb-mute: #8b9cb3;
-  --hb-text: #eef3f9;
-  --hb-accent: #2dd4bf;
-  --hb-accent-dim: #14b8a6;
-  --hb-sky: #38bdf8;
+  --hb-ink: #05070c;
+  --hb-panel: #0c111a;
+  --hb-panel-2: #121925;
+  --hb-line: #243044;
+  --hb-mute: #8fa0b8;
+  --hb-text: #f2f5fa;
+  --hb-accent: #4da3ff;
+  --hb-accent-dim: #2b7fd9;
+  --hb-sky: #7ec8ff;
   --hb-violet: #64748b;
-  --hb-amber: #fbbf24;
-  --hb-danger: #fb7185;
-  --hb-warn: #fbbf24;
-  --hb-ok: #4ade80;
-  --hb-bg-0: #0a1018;
-  --hb-bg-1: #070a0f;
-  --hb-bg-2: #080c12;
-  --hb-glow-teal: rgba(45, 212, 191, 0.14);
-  --hb-glow-sky: rgba(56, 189, 248, 0.08);
-  --hb-noise: 0.035;
-  --hb-primary-fg: #070a0f;
-  --hb-primary-top: #3de0c9;
-  --hb-primary-shadow: rgba(45, 212, 191, 0.22);
+  --hb-amber: #f0b429;
+  --hb-danger: #f07178;
+  --hb-warn: #f0b429;
+  --hb-ok: #5fd68a;
+  --hb-bg-0: #080c14;
+  --hb-bg-1: #05070c;
+  --hb-bg-2: #060910;
+  --hb-glow-teal: rgba(77, 163, 255, 0.12);
+  --hb-glow-sky: rgba(126, 200, 255, 0.06);
+  --hb-noise: 0.03;
+  --hb-primary-fg: #041018;
+  --hb-primary-top: #6bb4ff;
+  --hb-primary-shadow: rgba(77, 163, 255, 0.28);
   --hb-danger-fg: #fecdd3;
-  --hb-surface-tint: #182230;
-  --hb-nav-bg: color-mix(in srgb, var(--hb-ink) 78%, var(--hb-panel));
-  --hb-focus-ring: rgba(45, 212, 191, 0.16);
-  --hb-overlay: rgba(7, 10, 15, 0.7);
-  --hb-chat-code: #7dd3fc;
-  --hb-pre-bg: #071018;
+  --hb-surface-tint: #151d2c;
+  --hb-nav-bg: color-mix(in srgb, var(--hb-ink) 82%, var(--hb-panel));
+  --hb-focus-ring: rgba(77, 163, 255, 0.2);
+  --hb-overlay: rgba(5, 7, 12, 0.72);
+  --hb-chat-code: #9fd4ff;
+  --hb-pre-bg: #0a1018;
 }
 
-/* Day — clean light surfaces + teal; ink stays dark for overlays / on-accent text */
+/* Day — clean white + blue */
 [data-theme='day'] {
-  --hb-ink: #101820;
+  --hb-ink: #0b1220;
   --hb-panel: #ffffff;
-  --hb-panel-2: #f1f4f8;
-  --hb-line: #c5ceda;
-  --hb-mute: #4a5a6d;
-  --hb-text: #101820;
-  --hb-accent: #0b8f7c;
-  --hb-accent-dim: #097a6a;
-  --hb-sky: #0369a1;
+  --hb-panel-2: #f3f6fb;
+  --hb-line: #d3dbe8;
+  --hb-mute: #516178;
+  --hb-text: #0b1220;
+  --hb-accent: #1b6ef3;
+  --hb-accent-dim: #1558c4;
+  --hb-sky: #0b6bcb;
   --hb-violet: #64748b;
   --hb-amber: #b45309;
   --hb-danger: #dc2626;
   --hb-warn: #b45309;
   --hb-ok: #15803d;
-  --hb-bg-0: #eef2f6;
-  --hb-bg-1: #e8eef4;
-  --hb-bg-2: #e0e7ef;
-  --hb-glow-teal: rgba(11, 143, 124, 0.1);
-  --hb-glow-sky: rgba(3, 105, 161, 0.06);
-  --hb-noise: 0.02;
+  --hb-bg-0: #f5f7fb;
+  --hb-bg-1: #eef2f8;
+  --hb-bg-2: #e7edf6;
+  --hb-glow-teal: rgba(27, 110, 243, 0.08);
+  --hb-glow-sky: rgba(11, 107, 203, 0.05);
+  --hb-noise: 0.015;
   --hb-primary-fg: #ffffff;
-  --hb-primary-top: #12a892;
-  --hb-primary-shadow: rgba(11, 143, 124, 0.22);
+  --hb-primary-top: #3b82f6;
+  --hb-primary-shadow: rgba(27, 110, 243, 0.22);
   --hb-danger-fg: #991b1b;
   --hb-surface-tint: #ffffff;
-  --hb-nav-bg: color-mix(in srgb, #ffffff 90%, var(--hb-panel-2));
-  --hb-focus-ring: rgba(11, 143, 124, 0.2);
-  --hb-overlay: rgba(16, 24, 32, 0.45);
-  --hb-chat-code: #0369a1;
-  --hb-pre-bg: #f1f4f8;
+  --hb-nav-bg: color-mix(in srgb, #ffffff 92%, var(--hb-panel-2));
+  --hb-focus-ring: rgba(27, 110, 243, 0.2);
+  --hb-overlay: rgba(11, 18, 32, 0.42);
+  --hb-chat-code: #1558c4;
+  --hb-pre-bg: #f3f6fb;
 }
 
 * {
@@ -238,14 +238,34 @@ select:focus {
 }
 
 .hb-select {
-  border-radius: var(--radius-control);
+  border-radius: 0.65rem;
   background: var(--hb-panel-2);
   border: 1px solid var(--hb-line);
   color: var(--hb-text);
-  padding: 0.7rem 0.85rem;
+  padding: 0.5rem 0.75rem;
   font-size: 0.875rem;
   font-weight: 500;
-  min-height: 2.75rem;
+  min-height: 2.5rem;
+}
+
+.hb-version {
+  position: fixed;
+  right: 0.65rem;
+  bottom: calc(4.6rem + env(safe-area-inset-bottom));
+  z-index: 25;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.02em;
+  color: color-mix(in srgb, var(--hb-mute) 85%, transparent);
+  pointer-events: none;
+  user-select: none;
+}
+
+@media (min-width: 768px) {
+  .hb-version {
+    bottom: calc(5rem + env(safe-area-inset-bottom));
+    right: 1rem;
+  }
 }
 
 .hb-label {
@@ -258,11 +278,11 @@ select:focus {
 }
 
 .hb-btn {
-  border-radius: var(--radius-control);
+  border-radius: 0.65rem;
   font-weight: 600;
-  padding: 0.7rem 1rem;
+  padding: 0.5rem 0.85rem;
   border: 1px solid transparent;
-  min-height: 2.75rem;
+  min-height: 2.5rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;

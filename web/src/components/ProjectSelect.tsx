@@ -18,7 +18,7 @@ export function ProjectSelect({
       value={value}
       onChange={(e) => onSelect(e.target.value)}
       className={`hb-select ${className}`}
-      aria-label="Workspace"
+      aria-label="App"
     >
       {projects.map((p) => (
         <option key={p.id} value={p.id}>

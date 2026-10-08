@@ -1,9 +1,10 @@
 # Secrets & local config (never commit)
 .env
 config/projects.json
-# Personal presets (committed: example.json only)
+# Personal presets (committed: example.json + homebase.json)
 config/presets/*
 !config/presets/example.json
+!config/presets/homebase.json
 
 # Runtime
 .runtime/

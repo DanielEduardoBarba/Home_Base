@@ -21,11 +21,18 @@ ADD_NAME=""
 BIN_OUT_DIR="$ROOT/dist"
 BIN_NAME="homebased"
 BIN_PATH="$BIN_OUT_DIR/$BIN_NAME"
-INSTALL_BIN="/usr/bin/homebased"
+INSTALL_SHARE="/usr/share/homebased"
+INSTALL_BIN_REAL="$INSTALL_SHARE/homebased"
+INSTALL_BIN_BAK="$INSTALL_SHARE/homebased.bak"
+INSTALL_WRAPPER="/usr/bin/homebased"
+WRAPPER_SRC="$ROOT/packaging/homebased-wrapper.sh"
+# Back-compat name used in messages
+INSTALL_BIN="$INSTALL_WRAPPER"
 SERVICE_NAME="homebased.service"
 SERVICE_SRC="$ROOT/packaging/homebased.service"
 SERVICE_DST="/etc/systemd/system/$SERVICE_NAME"
 HOMEBASE_VAR="/var/lib/homebased"
+VERSION_FILE="$ROOT/VERSION"
 # Legacy names removed on deploy
 LEGACY_BIN="/usr/bin/homebase"
 LEGACY_SERVICE="homebase.service"
@@ -47,13 +54,17 @@ USAGE
   ./build.sh --add-project --path /abs/or/rel/path [--id ID] [--name NAME]
   ./build.sh --bin                Nuitka one-file standalone → dist/homebased
   ./build.sh --service            Install homebased.service, daemon-reload, enable, restart
-  ./build.sh --deploy             --bin → cp to /usr/bin/homebased → --service
+  ./build.sh --deploy             --bin → safe install under /usr/share + wrapper → --service
   ./build.sh -h|--help
 
 Projects live in config/projects.json (gitignored). Presets are templates
 (actions/ports only) — always pass --path for where the repo lives.
 
-Deployed binary uses HOMEBASE_HOME=/var/lib/homebased for .env / config / runtime.
+Deployed layout:
+  /usr/share/homebased/homebased      active binary
+  /usr/share/homebased/homebased.bak  last known-good
+  /usr/bin/homebased                  wrapper (self-test → exec, else backup)
+  HOMEBASE_HOME=/var/lib/homebased    .env / config / runtime
 Production binds :8888.
 EOF
 }
@@ -560,6 +571,7 @@ cmd_bin() {
     --include-data-dir=web/dist=web/dist \
     --include-data-dir=config/presets=config/presets \
     --include-data-files=config/projects.example.json=config/projects.example.json \
+    --include-data-files=VERSION=VERSION \
     --follow-imports \
     --nofollow-import-to=nuitka \
     --nofollow-import-to=tkinter \
@@ -594,6 +606,26 @@ force_prod_port_in_env() {
   else
     run_priv bash -c "echo 'HOMEBASE_PORT=${PROD_PORT}' >> $(printf %q "$env_file")"
   fi
+}
+
+# Merge selected keys from repo .env → /var/lib/homebased/.env so VPN/prod
+# picks up CURSOR_API_KEY and friends that only lived in the dev tree.
+sync_env_key_from_repo() {
+  local key="$1"
+  local src=".env"
+  local dest="$HOMEBASE_VAR/.env"
+  [[ -f "$src" ]] || return 0
+  [[ -f "$dest" ]] || return 0
+  local val
+  val="$(grep -E "^${key}=" "$src" 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
+  [[ -n "$val" ]] || return 0
+  # Always push non-empty repo values into prod (fixes VPN Cursor when key only lived in dev .env)
+  if run_priv grep -qE "^${key}=" "$dest" 2>/dev/null; then
+    run_priv sed -i "s|^${key}=.*|${key}=${val}|" "$dest"
+  else
+    run_priv bash -c "printf '%s=%s\n' $(printf %q "$key") $(printf %q "$val") >> $(printf %q "$dest")"
+  fi
+  echo "    synced $key → $dest"
 }
 
 migrate_legacy_var() {
@@ -641,6 +673,10 @@ prepare_var_lib() {
   if [[ -f "$HOMEBASE_VAR/.env" ]]; then
     force_prod_port_in_env "$HOMEBASE_VAR/.env"
     echo "    set HOMEBASE_PORT=$PROD_PORT in $HOMEBASE_VAR/.env"
+    # VPN/prod uses this file — keep Cursor key in sync from the repo .env
+    sync_env_key_from_repo "CURSOR_API_KEY"
+    sync_env_key_from_repo "CURSOR_MODEL"
+    sync_env_key_from_repo "HOMEBASE_JWT_SECRET"
   fi
   if [[ -f config/projects.json ]] && [[ ! -f "$HOMEBASE_VAR/config/projects.json" ]]; then
     run_priv cp config/projects.json "$HOMEBASE_VAR/config/projects.json"
@@ -677,12 +713,68 @@ install_binary() {
     echo "Error: missing binary $BIN_PATH — run ./build.sh --bin first" >&2
     exit 1
   fi
-  echo "==> Installing binary → $INSTALL_BIN"
+  if [[ ! -f "$WRAPPER_SRC" ]]; then
+    echo "Error: missing wrapper $WRAPPER_SRC" >&2
+    exit 1
+  fi
+  echo "==> Safe install → $INSTALL_SHARE (+ wrapper $INSTALL_WRAPPER)"
   stop_homebased
-  # Atomic replace: write beside target then mv (avoids ETXTBSY even if something races)
-  run_priv cp "$BIN_PATH" "${INSTALL_BIN}.new"
-  run_priv chmod 755 "${INSTALL_BIN}.new"
-  run_priv mv -f "${INSTALL_BIN}.new" "$INSTALL_BIN"
+  run_priv mkdir -p "$INSTALL_SHARE"
+
+  # Migrate legacy fat binary at /usr/bin/homebased into the share layout once
+  if [[ ! -x "$INSTALL_BIN_REAL" ]] && [[ -x "$INSTALL_WRAPPER" ]]; then
+    if ! head -n1 "$INSTALL_WRAPPER" 2>/dev/null | grep -qE 'bash|sh'; then
+      echo "    migrating legacy /usr/bin/homebased → $INSTALL_BIN_REAL"
+      run_priv cp -f "$INSTALL_WRAPPER" "$INSTALL_BIN_REAL"
+      run_priv chmod 755 "$INSTALL_BIN_REAL"
+    fi
+  fi
+
+  local ver="0.0.0"
+  if [[ -f "$VERSION_FILE" ]]; then
+    ver="$(head -n1 "$VERSION_FILE" | tr -d '[:space:]')"
+  fi
+
+  # Promote current → .bak only if it still passes self-test
+  if [[ -x "$INSTALL_BIN_REAL" ]]; then
+    if HOMEBASE_SELF_TEST=1 "$INSTALL_BIN_REAL" >/dev/null 2>&1; then
+      echo "    keeping known-good as .bak"
+      run_priv cp -f "$INSTALL_BIN_REAL" "$INSTALL_BIN_BAK"
+      run_priv chmod 755 "$INSTALL_BIN_BAK"
+    elif [[ -x "$INSTALL_BIN_BAK" ]]; then
+      echo "    current failed probe — leaving existing .bak untouched"
+    else
+      echo "    warning: current binary fails probe and no .bak yet"
+    fi
+  fi
+
+  # Atomic install of new binary
+  run_priv cp "$BIN_PATH" "${INSTALL_BIN_REAL}.new"
+  run_priv chmod 755 "${INSTALL_BIN_REAL}.new"
+  run_priv mv -f "${INSTALL_BIN_REAL}.new" "$INSTALL_BIN_REAL"
+  run_priv cp "$VERSION_FILE" "$INSTALL_SHARE/VERSION" 2>/dev/null || \
+    run_priv bash -c "printf '%s\n' $(printf %q "$ver") > $(printf %q "$INSTALL_SHARE/VERSION")"
+  run_priv rm -f "$INSTALL_SHARE/.running-backup"
+
+  # Install / refresh wrapper at /usr/bin/homebased
+  run_priv cp "$WRAPPER_SRC" "${INSTALL_WRAPPER}.new"
+  run_priv chmod 755 "${INSTALL_WRAPPER}.new"
+  run_priv mv -f "${INSTALL_WRAPPER}.new" "$INSTALL_WRAPPER"
+
+  # Probe new binary; if it fails, immediately restore .bak as active
+  if ! HOMEBASE_SELF_TEST=1 "$INSTALL_BIN_REAL" >/dev/null 2>&1; then
+    echo "    NEW binary failed self-test" >&2
+    if [[ -x "$INSTALL_BIN_BAK" ]]; then
+      echo "    restoring .bak as active binary" >&2
+      run_priv cp -f "$INSTALL_BIN_BAK" "$INSTALL_BIN_REAL"
+      run_priv bash -c "echo 1 > $(printf %q "$INSTALL_SHARE/.running-backup")"
+    else
+      echo "    no .bak available — deploy left a broken primary" >&2
+      exit 1
+    fi
+  else
+    echo "    self-test ok (v${ver})"
+  fi
 }
 
 port_is_listening() {
@@ -742,11 +834,14 @@ cmd_service() {
 }
 
 cmd_deploy() {
-  echo "==> Deploy: build binary → install /usr/bin → systemd"
+  echo "==> Deploy: build → /usr/share/homebased (+ wrapper) → systemd"
   cmd_bin
   install_binary
   cmd_service
   echo "==> Deploy complete → http://0.0.0.0:${PROD_PORT} as root (see $HOMEBASE_VAR/.env)"
+  if [[ -f "$INSTALL_SHARE/.running-backup" ]]; then
+    echo "    WARNING: service may be on BACKUP binary — check journalctl -u homebased" >&2
+  fi
 }
 
 if [[ "$DO_SETUP" == true ]]; then

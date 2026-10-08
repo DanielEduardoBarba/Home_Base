@@ -39,8 +39,10 @@ from .share import (
     status as share_status,
 )
 from .static_compress import compressed_file_response
+from .system_ctl import list_wireguard, restart_homebased, restart_wireguard
 from .trace_log import install_logging_handler, snapshot as trace_snapshot
 from .trace_log import append as trace_append
+from .version import read_version, running_as_backup, status_payload as version_status
 
 log = logging.getLogger("homebase")
 logging.basicConfig(level=logging.INFO)
@@ -50,6 +52,8 @@ install_logging_handler()
 WEB_DIST = BUNDLE_ROOT / "web" / "dist"
 if not WEB_DIST.is_dir():
     WEB_DIST = ROOT / "web" / "dist"
+
+APP_VERSION = read_version()
 
 
 @asynccontextmanager
@@ -61,9 +65,17 @@ async def lifespan(app: FastAPI):
         log.warning("No password set — open the UI on localhost to create one")
     if not settings.cursor_api_key:
         log.warning("CURSOR_API_KEY is empty — Cursor chat disabled")
+    if running_as_backup():
+        log.error("Running BACKUP binary after failed deploy — check last --deploy")
+        notify(
+            "Running backup build",
+            f"v{APP_VERSION} — last deploy failed self-test; fix and redeploy",
+            level="warn",
+            category="system",
+        )
     n = len(list_projects())
-    log.info("Loaded %d project(s) from config", n)
-    trace_append("info", f"startup: {n} project(s)", source="server")
+    log.info("Loaded %d project(s) from config (v%s)", n, APP_VERSION)
+    trace_append("info", f"startup: {n} project(s) v{APP_VERSION}", source="server")
     yield
     await cursor_bridge.close()
     for s in list(pty_manager.list_sessions()):
@@ -74,7 +86,7 @@ async def lifespan(app: FastAPI):
     trace_append("info", "shutdown", source="server")
 
 
-app = FastAPI(title="Home Base", version="1.2.0", lifespan=lifespan)
+app = FastAPI(title="Home Base", version=APP_VERSION, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -123,6 +135,7 @@ class MarkReadBody(BaseModel):
 async def api_health():
     settings = get_settings()
     status = auth_public_status()
+    ver = version_status()
     return {
         "ok": True,
         "passwordSet": status["passwordSet"],
@@ -130,7 +143,66 @@ async def api_health():
         "cursorConfigured": bool(settings.cursor_api_key),
         "model": settings.cursor_model,
         "jwtTtlSec": status["jwtTtlSec"],
+        "version": ver["version"],
+        "backup": ver["backup"],
     }
+
+
+@app.get("/api/version")
+async def api_version():
+    return version_status()
+
+
+@app.get("/api/system/status")
+async def api_system_status(_: None = Depends(require_auth)):
+    wg = list_wireguard()
+    return {
+        "wireguard": wg,
+        "homebasedUnit": "homebased.service",
+        **version_status(),
+    }
+
+
+@app.post("/api/system/restart/homebased")
+async def api_restart_homebased(_: None = Depends(require_auth)):
+    try:
+        result = await restart_homebased()
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
+    append_daily("system_restart", target="homebased", ok=result.get("ok"))
+    notify(
+        "Home Base restart",
+        "Service restart requested",
+        level="info" if result.get("ok") else "warn",
+        category="system",
+    )
+    return result
+
+
+class WgRestartBody(BaseModel):
+    iface: Optional[str] = None
+
+
+@app.post("/api/system/restart/wireguard")
+async def api_restart_wireguard(
+    body: WgRestartBody = WgRestartBody(), _: None = Depends(require_auth)
+):
+    try:
+        result = await restart_wireguard(body.iface)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e)) from e
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
+    append_daily("system_restart", target="wireguard", ok=result.get("ok"), iface=body.iface)
+    notify(
+        "VPN restart",
+        f"WireGuard restart ({body.iface or 'all'})",
+        level="info" if result.get("ok") else "warn",
+        category="system",
+    )
+    return result
 
 
 @app.get("/api/auth/status")

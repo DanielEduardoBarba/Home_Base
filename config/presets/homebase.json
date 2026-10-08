@@ -1,0 +1,49 @@
+{
+  "id": "homebase",
+  "name": "Home Base",
+  "stateDir": ".runtime",
+  "ports": [
+    {
+      "id": "api",
+      "label": "API",
+      "port": 8888,
+      "health": "/api/health"
+    }
+  ],
+  "actions": [
+    {
+      "id": "deploy",
+      "label": "Deploy self",
+      "script": "./build.sh",
+      "args": ["--deploy"],
+      "kind": "ship",
+      "group": "ship",
+      "hint": "Build + safe install + restart service"
+    },
+    {
+      "id": "bin_only",
+      "label": "Build binary",
+      "script": "./build.sh",
+      "args": ["--bin"],
+      "kind": "ship",
+      "group": "ship",
+      "hint": "Nuitka only — no install"
+    },
+    {
+      "id": "run_dev",
+      "label": "Dev server",
+      "script": "./build.sh",
+      "args": ["--run"],
+      "kind": "run",
+      "group": "main",
+      "variant": "primary"
+    },
+    {
+      "id": "stop",
+      "label": "Stop",
+      "type": "stop",
+      "variant": "danger",
+      "group": "main"
+    }
+  ]
+}
