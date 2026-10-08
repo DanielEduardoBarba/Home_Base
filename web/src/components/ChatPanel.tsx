@@ -19,7 +19,24 @@ import { IconBtn } from './IconBtn'
 import { ProjectSelect } from './ProjectSelect'
 
 const MODEL_STORAGE_KEY = 'hb-cursor-model'
-const DOCK_OPEN_KEY = 'hb-chat-dock-open'
+/** Work chat dock: '1' = open, anything else / missing = minimized (default). */
+export const DOCK_OPEN_KEY = 'hb-chat-dock-open'
+
+export function readDockOpen(): boolean {
+  try {
+    return localStorage.getItem(DOCK_OPEN_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function writeDockOpen(open: boolean): void {
+  try {
+    localStorage.setItem(DOCK_OPEN_KEY, open ? '1' : '0')
+  } catch {
+    /* ignore */
+  }
+}
 
 function MessageCard({
   m,
@@ -165,32 +182,21 @@ export function ChatPanel({
   const [pickerEntries, setPickerEntries] = useState<FsEntry[]>([])
   const [pickingFolder, setPickingFolder] = useState(false)
   const [listening, setListening] = useState(false)
-  const [dockOpenLocal, setDockOpenLocal] = useState(() => {
-    try {
-      return localStorage.getItem(DOCK_OPEN_KEY) !== '0'
-    } catch {
-      return true
-    }
-  })
+  const [dockOpenLocal, setDockOpenLocal] = useState(() => readDockOpen())
   const canSpeak = useMemo(() => speechSupported(), [])
 
   const dockOpen = dockOpenProp ?? dockOpenLocal
   function setDockOpen(open: boolean) {
+    writeDockOpen(open)
     if (onDockOpenChange) onDockOpenChange(open)
-    else {
-      setDockOpenLocal(open)
-      try {
-        localStorage.setItem(DOCK_OPEN_KEY, open ? '1' : '0')
-      } catch {
-        /* ignore */
-      }
-    }
+    else setDockOpenLocal(open)
   }
 
   const notify = useNotifyOptional()
   const wsRef = useRef<WebSocket | null>(null)
   const wsHandleRef = useRef<WsReconnectHandle | null>(null)
   const dockRef = useRef<HTMLElement | null>(null)
+  const dockOpenedAt = useRef(0)
   const bottomRef = useRef<HTMLDivElement>(null)
   const assistantBuf = useRef('')
   const activeIdRef = useRef(activeId)
@@ -233,19 +239,21 @@ export function ChatPanel({
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [active?.messages, streaming])
 
-  // Work dock: click outside the chat panel → minimize
+  // Work dock: click outside → minimize (debounce so open-click / near-miss don't bounce)
   useEffect(() => {
     if (!isDock || !dockOpen) return
+    dockOpenedAt.current = Date.now()
     const onPointer = (ev: PointerEvent) => {
+      if (Date.now() - dockOpenedAt.current < 350) return
       const el = dockRef.current
       const t = ev.target
       if (!(t instanceof Node)) return
       if (el?.contains(t)) return
-      // Ignore while a dock modal is open (still inside panel, but be safe)
+      if (t instanceof Element && t.closest('.hb-chat-fab, .hb-chat-dock-min')) return
+      // Ignore while a dock modal is open
       if (newOpen || deleteId) return
       setDockOpen(false)
     }
-    // Capture so we run before scene controls swallow the event
     document.addEventListener('pointerdown', onPointer, true)
     return () => document.removeEventListener('pointerdown', onPointer, true)
   }, [isDock, dockOpen, newOpen, deleteId])
@@ -880,18 +888,7 @@ export function ChatPanel({
           </div>
         )}
 
-        <div className="flex items-center gap-1.5">
-          {isDock && (
-            <button
-              type="button"
-              className="text-mute hover:text-text text-sm px-1 shrink-0"
-              onClick={() => setDockOpen(false)}
-              aria-label="Minimize chat"
-              title="Minimize"
-            >
-              ▾
-            </button>
-          )}
+        <div className="flex items-center gap-1.5 relative">
           <div className="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto pb-0.5">
             {tabs.map((t) => (
               <div
@@ -1137,18 +1134,6 @@ export function ChatPanel({
           )}
         </div>
       </div>
-      {isDock && (
-        <div className="flex justify-end">
-          <button
-            type="button"
-            onClick={() => void resetChat()}
-            disabled={streaming || !active?.messages.length}
-            className="text-[11px] text-mute hover:text-danger px-1 disabled:opacity-30"
-          >
-            Clear
-          </button>
-        </div>
-      )}
     </form>
   )
 
@@ -1180,6 +1165,23 @@ export function ChatPanel({
           onClick={() => setDockOpen(false)}
         />
         <aside ref={dockRef} className="hb-chat-dock" aria-label="Work chat">
+          <button
+            type="button"
+            className="hb-chat-dock-min"
+            onClick={() => setDockOpen(false)}
+            aria-label="Minimize chat"
+            title="Minimize"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden>
+              <path
+                d="M6 14h12"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.25"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
           {modals}
           {header}
           {messages}

@@ -23,14 +23,13 @@ installClientLog()
 applyTheme(getStoredTheme())
 applyMobileSafeTop()
 
-/** Mobile-first: Apps · Work · Chat · Shell · Files · Alerts · Logs · More */
+/** Mobile-first: Apps · Work · Chat · Shell · Files · Logs · More (Alerts live in status bar) */
 const TABS: { id: Tab; label: string }[] = [
   { id: 'apps', label: 'Apps' },
   { id: 'work', label: 'Work' },
   { id: 'cursor', label: 'Chat' },
   { id: 'shell', label: 'Shell' },
   { id: 'files', label: 'Files' },
-  { id: 'alerts', label: 'Alerts' },
   { id: 'logs', label: 'Logs' },
   { id: 'settings', label: 'More' },
 ]
@@ -78,13 +77,6 @@ function TabIcon({ id }: { id: Tab }) {
       return (
         <svg {...common}>
           <path d="M5 7h14M5 12h10M5 17h12" />
-        </svg>
-      )
-    case 'alerts':
-      return (
-        <svg {...common}>
-          <path d="M15 17.5H5.5a1.5 1.5 0 0 1-1.3-2.25C5.3 13.4 6 11.8 6 10a6 6 0 1 1 12 0c0 1.8.7 3.4 1.8 5.25A1.5 1.5 0 0 1 18.5 17.5H15z" />
-          <path d="M10 17.5v.75a2 2 0 0 0 4 0v-.75" />
         </svg>
       )
     case 'settings':
@@ -276,49 +268,71 @@ function AuthedApp() {
           <div className="hb-spinner" />
         </div>
       )}
-      <div className="hb-status-bar" role="status" aria-live="polite">
-        <span
-          className={`hb-status-dot ${
-            hostLink === 'live'
-              ? 'hb-status-dot--ok'
-              : hostLink === 'reconnecting'
-                ? 'hb-status-dot--warn'
-                : 'hb-status-dot--err'
-          }`}
-        />
-        <span className="hb-status-host truncate" title={hostLabel}>
-          {hostLabel}
-        </span>
-        <span className="hb-status-sep">·</span>
-        <span
-          className={
-            hostLink === 'live'
-              ? 'text-ok'
-              : hostLink === 'reconnecting'
-                ? 'text-amber'
-                : 'text-danger'
-          }
+      <div className="hb-status-bar">
+        <div className="hb-status-meta min-w-0" role="status" aria-live="polite">
+          <span
+            className={`hb-status-dot ${
+              hostLink === 'live'
+                ? 'hb-status-dot--ok'
+                : hostLink === 'reconnecting'
+                  ? 'hb-status-dot--warn'
+                  : 'hb-status-dot--err'
+            }`}
+          />
+          <span className="hb-status-host truncate" title={hostLabel}>
+            {hostLabel}
+          </span>
+          <span className="hb-status-sep">·</span>
+          <span
+            className={
+              hostLink === 'live'
+                ? 'text-ok'
+                : hostLink === 'reconnecting'
+                  ? 'text-amber'
+                  : 'text-danger'
+            }
+          >
+            {linkLabel}
+          </span>
+          {activeProject && (
+            <>
+              <span className="hb-status-sep">·</span>
+              <span className="truncate min-w-0" title={activeProject.path}>
+                {activeProject.name}
+              </span>
+            </>
+          )}
+          {cursorConfigured && (
+            <>
+              <span className="hb-status-sep">·</span>
+              <span className={cursorRunning ? 'text-sky' : 'text-mute'} title="Local Cursor agent">
+                Cursor{cursorRunning ? ' run' : ''}
+              </span>
+            </>
+          )}
+        </div>
+        <button
+          type="button"
+          className="hb-status-alerts shrink-0"
+          onClick={() => {
+            unlockAudio()
+            toggleInbox()
+          }}
+          aria-label={unread > 0 ? `Alerts, ${unread} unread` : 'Alerts'}
+          aria-expanded={inboxOpen}
+          data-active={inboxOpen}
+          title="Alerts"
         >
-          {linkLabel}
-        </span>
-        {activeProject && (
-          <>
-            <span className="hb-status-sep">·</span>
-            <span className="truncate min-w-0" title={activeProject.path}>
-              {activeProject.name}
-            </span>
-          </>
-        )}
-        {cursorConfigured && (
-          <>
-            <span className="hb-status-sep">·</span>
-            <span className={cursorRunning ? 'text-sky' : 'text-mute'} title="Local Cursor agent">
-              Cursor{cursorRunning ? ' run' : ''}
-            </span>
-          </>
-        )}
+          <svg className="hb-status-alerts-icon" viewBox="0 0 24 24" aria-hidden>
+            <path d="M15 17.5H5.5a1.5 1.5 0 0 1-1.3-2.25C5.3 13.4 6 11.8 6 10a6 6 0 1 1 12 0c0 1.8.7 3.4 1.8 5.25A1.5 1.5 0 0 1 18.5 17.5H15z" />
+            <path d="M10 17.5v.75a2 2 0 0 0 4 0v-.75" />
+          </svg>
+          {unread > 0 && (
+            <span className="hb-status-badge">{unread > 9 ? '9+' : unread}</span>
+          )}
+        </button>
         {version && (
-          <span className="hb-status-ver ml-auto shrink-0">
+          <span className="hb-status-ver shrink-0">
             v{version}
             {backup ? ' · bak' : ''}
           </span>
@@ -340,25 +354,17 @@ function AuthedApp() {
               type="button"
               onClick={() => {
                 unlockAudio()
-                if (t.id === 'alerts') {
-                  toggleInbox()
-                  return
-                }
                 closeInbox()
                 // Drop stale present so revisiting Work via nav opens clean Apps scene
                 if (t.id !== 'work') setWorkPresent(null)
                 setTab(t.id)
               }}
               className="hb-nav-item"
-              data-active={t.id === 'alerts' ? inboxOpen : tab === t.id}
-              aria-current={t.id !== 'alerts' && tab === t.id ? 'page' : undefined}
-              aria-expanded={t.id === 'alerts' ? inboxOpen : undefined}
+              data-active={tab === t.id}
+              aria-current={tab === t.id ? 'page' : undefined}
             >
               <TabIcon id={t.id} />
               <span className="truncate max-w-full px-0.5">{t.label}</span>
-              {t.id === 'alerts' && unread > 0 && (
-                <span className="hb-badge">{unread > 9 ? '9+' : unread}</span>
-              )}
             </button>
           ))}
         </div>

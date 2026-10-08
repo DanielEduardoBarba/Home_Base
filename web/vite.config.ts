@@ -4,8 +4,11 @@ import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 import { compression, defineAlgorithm } from 'vite-plugin-compression2'
 
-/** Dev API (uvicorn). Same relative /api + /ws paths work in prod on :8888. */
-const API_ORIGIN = 'http://127.0.0.1:8080'
+/** Dev API (uvicorn). Overridden by HOMEBASE_PORT when started via ./build.sh --run. */
+const API_PORT = process.env.HOMEBASE_PORT || '8081'
+const WEB_PORT = Number(process.env.DEV_WEB_PORT || 3081)
+/** Same relative /api + /ws paths work in prod on :8888. */
+const API_ORIGIN = `http://127.0.0.1:${API_PORT}`
 
 export default defineConfig({
   plugins: [
@@ -30,9 +33,9 @@ export default defineConfig({
     chunkSizeWarningLimit: 600,
   },
   server: {
-    // Bind all interfaces so phones / LAN clients can open http://<lan-ip>:3080
+    // Bind all interfaces so phones / LAN clients can open http://<lan-ip>:3081
     host: '0.0.0.0',
-    port: 3080,
+    port: WEB_PORT,
     strictPort: true,
     // Allow LAN IPs and custom hostnames (Vite 6+ blocks unknown hosts by default)
     allowedHosts: true,
@@ -57,7 +60,7 @@ export default defineConfig({
   },
   preview: {
     host: '0.0.0.0',
-    port: 3080,
+    port: WEB_PORT,
     allowedHosts: true,
   },
 })

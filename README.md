@@ -5,7 +5,7 @@ Mobile-first control plane for projects on your laptop — run scripts, shells, 
 | Mode | URL | Process |
 |------|-----|---------|
 | **Production** | `http://<laptop>:8888/` | systemd `homebased` as **root** |
-| **Development** | Vite `http://localhost:3080` → API `:8080` | `./build.sh --run` |
+| **Development** | Vite `http://localhost:3081` → API `:8081` | `./build.sh --run` (beside prod) |
 
 ## Prerequisites
 
@@ -24,7 +24,7 @@ Mobile-first control plane for projects on your laptop — run scripts, shells, 
 ./build.sh --run
 ```
 
-Open `http://localhost:3080` and **create a password** (localhost-loaded UI only). Later sign-ins get a **24h JWT** in `localStorage`.
+Open `http://localhost:3081` and **create a password** (localhost-loaded UI only). Later sign-ins get a **24h JWT** in `localStorage`. Dev ports (`:8081` / `:3081`) sit beside production `:8888` so both can run at once.
 
 Hotkeys while `--run`: `r` restart both · `a`/`q` API · `w` Vite · `h` help · Ctrl+C quit.
 
@@ -53,8 +53,8 @@ Fetch and WebSocket clients always use relative `/api/...` and `/ws/...` against
 | Chat | Full-page local Cursor agent |
 | Shell | Interactive PTY + attach managed sessions |
 | Files | Host/project file browser + editor (**not** Cursor’s open buffers) |
-| Alerts | Notification inbox (overlay; History drawer) |
 | Logs | Capped console ring (`/api/trace`) |
+| *(status bar)* Alerts | Bell in host/live bar; top→bottom inbox; History drawer |
 | More | Theme, notify prefs, Share/password (localhost), VPN/homebased restart, sign-out |
 
 ## Projects
@@ -101,7 +101,7 @@ Copy [`.env.example`](.env.example). Never commit `.env` or `config/projects.jso
 | `HOMEBASE_JWT_SECRET` | Optional JWT HMAC override (else `.runtime/jwt_secret`) |
 | `CURSOR_API_KEY` | Local Cursor agents |
 | `CURSOR_MODEL` | Default model |
-| `HOMEBASE_HOST` / `HOMEBASE_PORT` | Bind (dev default `0.0.0.0:8080`; systemd forces `:8888`) |
+| `HOMEBASE_HOST` / `HOMEBASE_PORT` | Bind (dev `--run` forces `:8081` + Vite `:3081`; systemd forces `:8888`) |
 
 Deploy also syncs those keys into `/var/lib/homebased/.env` and installs the Cursor SDK bridge beside the binary (Nuitka omits the Node bridge).
 

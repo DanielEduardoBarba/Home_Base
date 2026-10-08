@@ -51,7 +51,7 @@ def is_localhost_browser(request: Request) -> bool:
 
     Vite proxies rewrite Host to 127.0.0.1 for every client, so Host/IP alone
     must never authorize. When Origin (or Referer) is present it is authoritative:
-    a LAN Origin like http://deltabravo.local:3080 is rejected even if Host is loopback.
+    a LAN Origin like http://deltabravo.local:3081 is rejected even if Host is loopback.
     """
     origin = (request.headers.get("origin") or "").strip().lower()
     referer = (request.headers.get("referer") or "").strip().lower()

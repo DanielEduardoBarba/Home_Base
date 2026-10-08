@@ -1,6 +1,6 @@
 # Home Base — agent guide
 
-Generic control plane. **Production `:8888`** (systemd as root). **Dev API `:8080`**, **Vite `:3080`** (proxies `/api` + `/ws`). Projects are configured in **gitignored** `config/projects.json` — nothing is hardcoded until added via CLI.
+Generic control plane. **Production `:8888`** (systemd as root). **Dev API `:8081`**, **Vite `:3081`** (proxies `/api` + `/ws`) — one off the usual defaults so `./build.sh --run` can sit beside prod. Projects are configured in **gitignored** `config/projects.json` — nothing is hardcoded until added via CLI.
 
 ## Setup
 
@@ -12,7 +12,7 @@ Generic control plane. **Production `:8888`** (systemd as root). **Dev API `:808
 
 Presets never embed a default filesystem path — always pass `--path`.
 
-Open the UI at `http://localhost:3080` in dev (Vite). Production is `http://<host>:8888/`.
+Open the UI at `http://localhost:3081` in dev (Vite). Production is `http://<host>:8888/`.
 
 ## Same-origin client API
 
@@ -20,12 +20,12 @@ SPA fetch/WebSocket paths are always relative (`/api/...`, `/ws/...` via `locati
 
 ## UI tabs
 
-Apps · **Work** · Chat · Shell · Files · Alerts · Logs · **More/Settings**.
+Apps · **Work** · Chat · Shell · Files · Logs · **More/Settings**. Alerts live in the status bar (host/live).
 
 - **Work** — switch Apps / Shell / Files in one workspace with a bottom-right chat dock (Cursor-like). Chat can present a shell or file into the scene.
 - **Chat** — full-page agent; same engine as the Work dock; can jump into Work to show Apps/Shell/Files.
 - **Shell** — standalone PTY + session attach (unchanged).
-- Alerts opens a bell inbox (toasts + dropdown); History is a right drawer. Chat supports English speech→text; Cursor done pings toast/sound and optional browser notifications. Theme, notification prefs, cache clear, sign-out, and localhost Share/password live under More.
+- Alerts bell in the thin top status bar opens a top→bottom near-full inbox; History is a right drawer. Chat supports English speech→text; Cursor done pings toast/sound and optional browser notifications. Theme, notification prefs, cache clear, sign-out, and localhost Share/password live under More.
 
 ## Config model
 

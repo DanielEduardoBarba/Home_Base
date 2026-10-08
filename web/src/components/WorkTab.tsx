@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { PresentRequest, WorkScene } from '../lib/chatTypes'
 import type { Project } from '../lib/types'
 import { AppsTab } from './AppsTab'
-import { ChatPanel } from './ChatPanel'
+import { ChatPanel, readDockOpen, writeDockOpen } from './ChatPanel'
 import { FilesTab } from './FilesTab'
 import { ProjectSelect } from './ProjectSelect'
 import { ShellTab } from './ShellTab'
@@ -15,7 +15,7 @@ const SCENES: { id: WorkScene; label: string }[] = [
 
 /**
  * Work = workspace like Cursor IDE:
- * switch Apps / Shell / Files on the left, chat dock bottom-right.
+ * project + scene dropdowns, chat dock bottom-right.
  */
 export function WorkTab({
   projects,
@@ -44,8 +44,13 @@ export function WorkTab({
   const [focusPath, setFocusPath] = useState<string | null>(() =>
     present?.scene === 'files' ? present.path || null : null,
   )
-  const [dockOpen, setDockOpen] = useState(true)
+  const [dockOpen, setDockOpenState] = useState(() => readDockOpen())
   const [lastPresentKey, setLastPresentKey] = useState(presentKey)
+
+  function setDockOpen(open: boolean) {
+    writeDockOpen(open)
+    setDockOpenState(open)
+  }
 
   function applyShellPresent(req: PresentRequest, key: number) {
     if (req.sessionIds?.length) {
@@ -65,6 +70,7 @@ export function WorkTab({
     setScene(present.scene)
     if (present.scene === 'shell') applyShellPresent(present, presentKey)
     if (present.scene === 'files') setFocusPath(present.path || null)
+    // Present from Chat opens the dock once; preference is still persisted
     setDockOpen(true)
   }, [present, presentKey, lastPresentKey])
 
@@ -80,29 +86,26 @@ export function WorkTab({
   return (
     <div className="hb-work h-full flex flex-col min-h-0 hb-with-nav">
       <div className="hb-chrome shrink-0">
-        <div className="hb-chrome-inner space-y-2">
-          <div className="flex gap-2 items-center">
+        <div className="hb-chrome-inner">
+          <div className="hb-work-chrome-row">
             <ProjectSelect
               projects={projects}
               selectedId={selectedId}
               onSelect={onSelect}
-              className="flex-1 !min-h-10 !py-2 text-sm"
+              className="hb-work-project-select"
             />
-          </div>
-          <div className="hb-work-scenes" role="tablist" aria-label="Workspace scene">
-            {SCENES.map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                role="tab"
-                aria-selected={scene === s.id}
-                data-active={scene === s.id}
-                className="hb-work-scene"
-                onClick={() => setScene(s.id)}
-              >
-                {s.label}
-              </button>
-            ))}
+            <select
+              value={scene}
+              onChange={(e) => setScene(e.target.value as WorkScene)}
+              className="hb-select hb-work-scene-select"
+              aria-label="Workspace view"
+            >
+              {SCENES.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
       </div>

@@ -7,10 +7,10 @@ alwaysApply: false
 # Home Base UI
 
 - Primary viewport is still iPhone Safari over VPN; also keep desktop readable (wider max widths, clear contrast).
-- Bottom tabs (mobile order): Apps · Work · Chat · Shell · Files · Alerts · Logs · More.
+- Bottom tabs (mobile order): Apps · Work · Chat · Shell · Files · Logs · More.
 - Work = Apps/Shell/Files scene switcher + bottom-right ChatPanel dock (present shell/files from chat).
 - Chat tab = full-page ChatPanel; can present into Work (+ Shell / Apps / Files).
-- Alerts = notification bell: toast stack + inbox dropdown/sheet; History is a right-side drawer (not a full tab page).
+- Alerts = bell in the thin status bar (host/live); inbox slides top→bottom as a near-full modal; History is a right-side drawer.
 - Chat composer supports English speech→text (Web Speech API mic). Cursor done → toast + ping + optional browser Notification.
 - Share / password + VPN/homebased restart live under **More/Settings** (localhost for share).
 - Shell = interactive PTY + session attach. Logs = capped console ring (300).

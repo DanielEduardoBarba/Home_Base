@@ -5,7 +5,6 @@ export type Tab =
   | 'files'
   | 'cursor'
   | 'logs'
-  | 'alerts'
   | 'settings'
 
 /** True only when the page itself is loaded from loopback (not .local / LAN). */

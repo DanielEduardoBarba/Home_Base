@@ -51,6 +51,7 @@ export function AppsTab({
 }) {
   const [busy, setBusy] = useState('')
   const [msg, setMsg] = useState('')
+  const [hotkeysOpen, setHotkeysOpen] = useState(false)
   const project = projects.find((p) => p.id === selectedId) || projects[0]
 
   useSceneRefresh(onRefresh)
@@ -269,22 +270,64 @@ export function AppsTab({
 
       {hotkeys.length > 0 && (
         <section className="hb-surface p-3.5 space-y-2">
-          <h2 className="hb-label">Quick</h2>
-          <div className="flex flex-wrap gap-1.5">
-            {hotkeys.map((a) => (
-              <button
-                key={a.id}
-                type="button"
-                disabled={!!busy}
-                onClick={() => void (a.type === 'stop' ? doStop() : doRun(a))}
-                className="hb-btn hb-btn-ghost !min-h-9 !px-3 text-xs"
-                title={a.hint || a.label}
-              >
-                {a.label}
-              </button>
-            ))}
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="hb-label mb-0">Shortcuts</h2>
+            <button
+              type="button"
+              disabled={!!busy}
+              onClick={() => setHotkeysOpen(true)}
+              className="hb-btn hb-btn-ghost !min-h-9 !px-3 text-xs"
+            >
+              Actions
+            </button>
           </div>
+          <p className="text-[11px] text-mute leading-relaxed">
+            Deploy, restart, and other one-tap commands — open Actions to run them.
+          </p>
         </section>
+      )}
+
+      {hotkeysOpen && (
+        <div
+          className="fixed inset-0 z-50 hb-overlay backdrop-blur-sm flex items-end sm:items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="App shortcuts"
+          onClick={() => setHotkeysOpen(false)}
+        >
+          <div
+            className="hb-surface w-full max-w-sm p-4 space-y-3 shadow-xl max-h-[80vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="font-semibold text-sm">Shortcuts</h2>
+              <button
+                type="button"
+                className="text-mute text-sm px-2 py-1"
+                onClick={() => setHotkeysOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {hotkeys.map((a) => (
+                <button
+                  key={a.id}
+                  type="button"
+                  disabled={!!busy}
+                  title={a.hint || a.label}
+                  onClick={() => {
+                    setHotkeysOpen(false)
+                    void (a.type === 'stop' ? doStop() : doRun(a))
+                  }}
+                  className="hb-btn hb-btn-ghost !min-h-11 text-sm"
+                >
+                  {a.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
       )}
 
       {[...groupBy(other)].map(([name, actions]) => (

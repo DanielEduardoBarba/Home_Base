@@ -184,6 +184,8 @@ export function TerminalView({ path, sessionId, onSession, className }: Props) {
     }
   }, [path, sessionId])
 
+  const [actionsOpen, setActionsOpen] = useState(false)
+
   function sendCtrl(letter: string) {
     const code = String.fromCharCode(letter.toUpperCase().charCodeAt(0) - 64)
     const sock = handleRef.current?.getSocket()
@@ -201,45 +203,45 @@ export function TerminalView({ path, sessionId, onSession, className }: Props) {
     termRef.current?.focus()
   }
 
+  function runAction(fn: () => void) {
+    fn()
+    setActionsOpen(false)
+  }
+
   const live = connState === 'live'
 
   return (
     <div className={`flex flex-col min-h-0 ${className || ''}`}>
-      <div className="flex gap-2 px-2 py-2 border-b border-line bg-panel/80 overflow-x-auto shrink-0 items-center">
-        {(['C', 'D', 'Z', 'L']).map((k) => (
-          <button
-            key={k}
-            type="button"
-            onClick={() => sendCtrl(k)}
-            disabled={!live}
-            className="px-3 py-1.5 rounded-lg bg-panel-2 border border-line text-xs font-mono text-mute active:border-accent disabled:opacity-40"
-          >
-            Ctrl+{k}
-          </button>
-        ))}
+      <div className="hb-term-bar">
         <button
           type="button"
-          onClick={() => sendRaw('\x1b')}
+          onClick={() => setActionsOpen(true)}
           disabled={!live}
-          className="px-3 py-1.5 rounded-lg bg-panel-2 border border-line text-xs font-mono text-mute disabled:opacity-40"
+          className="hb-term-actions-btn"
         >
-          Esc
+          Keys
         </button>
-        <button
-          type="button"
-          onClick={() => sendRaw('\t')}
-          disabled={!live}
-          className="px-3 py-1.5 rounded-lg bg-panel-2 border border-line text-xs font-mono text-mute disabled:opacity-40"
-        >
-          Tab
-        </button>
+        <div className="hb-term-quick">
+          {(['C', 'D']).map((k) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => sendCtrl(k)}
+              disabled={!live}
+              className="hb-term-key"
+              title={`Ctrl+${k}`}
+            >
+              ^{k}
+            </button>
+          ))}
+        </div>
         <button
           type="button"
           title={live ? 'Shell socket live' : 'Tap to reconnect'}
           onClick={() => {
             if (!live && !endedRef.current) handleRef.current?.reconnect()
           }}
-          className={`ml-auto text-[10px] shrink-0 px-2 py-1 rounded-md border font-semibold ${
+          className={`ml-auto text-[10px] shrink-0 px-2 py-0.5 rounded-md border font-semibold ${
             live
               ? 'text-ok border-ok/30 bg-ok/10'
               : connState === 'reconnecting' || connState === 'connecting'
@@ -250,6 +252,62 @@ export function TerminalView({ path, sessionId, onSession, className }: Props) {
           {connStateLabel(connState)}
         </button>
       </div>
+
+      {actionsOpen && (
+        <div
+          className="fixed inset-0 z-50 hb-overlay backdrop-blur-sm flex items-end sm:items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Terminal keys"
+          onClick={() => setActionsOpen(false)}
+        >
+          <div
+            className="hb-surface w-full max-w-sm p-4 space-y-3 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="font-semibold text-sm">Terminal keys</h2>
+              <button
+                type="button"
+                className="text-mute text-sm px-2 py-1"
+                onClick={() => setActionsOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {(['C', 'D', 'Z', 'L']).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  disabled={!live}
+                  onClick={() => runAction(() => sendCtrl(k))}
+                  className="hb-btn hb-btn-ghost !min-h-11 text-sm font-mono"
+                >
+                  Ctrl+{k}
+                </button>
+              ))}
+              <button
+                type="button"
+                disabled={!live}
+                onClick={() => runAction(() => sendRaw('\x1b'))}
+                className="hb-btn hb-btn-ghost !min-h-11 text-sm font-mono"
+              >
+                Esc
+              </button>
+              <button
+                type="button"
+                disabled={!live}
+                onClick={() => runAction(() => sendRaw('\t'))}
+                className="hb-btn hb-btn-ghost !min-h-11 text-sm font-mono"
+              >
+                Tab
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div ref={hostRef} className="flex-1 min-h-0 p-2" onClick={() => termRef.current?.focus()} />
     </div>
   )

@@ -121,7 +121,7 @@ class PasswordBody(BaseModel):
 
 
 class ShareRevealBody(BaseModel):
-    port: int = 3080
+    port: int = 3081
     protocol: str = "http"
 
 

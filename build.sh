@@ -42,9 +42,9 @@ VERSION_FILE="$ROOT/VERSION"
 LEGACY_SERVICE="homebase.service"
 LEGACY_VAR="/var/lib/homebase"
 
-# Ports: prod :8888 (systemd/root); dev API :8080; Vite :3080 (proxies /api + /ws)
-DEV_API_PORT=8080
-DEV_WEB_PORT=3080
+# Ports: prod :8888 (systemd/root). Dev sits one off the usual defaults so --run can run beside prod.
+DEV_API_PORT=8081
+DEV_WEB_PORT=3081
 PROD_PORT=8888
 
 usage() {
@@ -634,7 +634,12 @@ cmd_run() {
   fi
 
   export HOMEBASE_HOST="${HOMEBASE_HOST:-0.0.0.0}"
-  export HOMEBASE_PORT="${HOMEBASE_PORT:-$DEV_API_PORT}"
+  # Always use the dedicated dev pair — never bind :8888 even if .env was copied from prod.
+  if [[ "${HOMEBASE_PORT:-}" == "$PROD_PORT" ]]; then
+    echo "${C_DIM}Note: .env had HOMEBASE_PORT=${PROD_PORT} (prod) — using dev :${DEV_API_PORT} instead${C_RESET}"
+  fi
+  export HOMEBASE_PORT="$DEV_API_PORT"
+  export DEV_WEB_PORT
 
   local lan_ips=""
   if command -v hostname >/dev/null 2>&1; then
@@ -642,7 +647,7 @@ cmd_run() {
   fi
 
   echo ""
-  echo "${C_BOLD}Home Base · dev${C_RESET}"
+  echo "${C_BOLD}Home Base · dev${C_RESET}  ${C_DIM}(beside prod :${PROD_PORT})${C_RESET}"
   echo "  ${C_CYAN}API${C_RESET}   http://localhost:${HOMEBASE_PORT}  (uvicorn --host ${HOMEBASE_HOST})"
   echo "  ${C_GREEN}Vite${C_RESET}  http://localhost:${DEV_WEB_PORT}  (proxies /api + /ws → :${HOMEBASE_PORT})"
   if [[ -n "${lan_ips// }" ]]; then
@@ -650,7 +655,7 @@ cmd_run() {
       echo "  ${C_GREEN}LAN${C_RESET}   http://${ip}:${DEV_WEB_PORT}  ${C_DIM}(phone / iPad — use Vite, not :${HOMEBASE_PORT})${C_RESET}"
     done
   fi
-  echo "  ${C_DIM}UI + API use same-origin /api and /ws (production :${PROD_PORT} also binds 0.0.0.0)${C_RESET}"
+  echo "  ${C_DIM}UI + API use same-origin /api and /ws · production remains :${PROD_PORT}${C_RESET}"
   echo ""
 
   install_session_traps
@@ -732,7 +737,7 @@ cmd_bin() {
 force_prod_port_in_env() {
   local env_file="$1"
   [[ -f "$env_file" ]] || return 0
-  # Production always binds :8888 — rewrite any copied dev HOMEBASE_PORT=8080.
+  # Production always binds :8888 — rewrite any copied dev HOMEBASE_PORT.
   if run_priv grep -qE '^HOMEBASE_PORT=' "$env_file" 2>/dev/null; then
     run_priv sed -i "s/^HOMEBASE_PORT=.*/HOMEBASE_PORT=${PROD_PORT}/" "$env_file"
   else
