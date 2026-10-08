@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from '../lib/api'
 import type { Project, Session } from '../lib/types'
 import { HoldButton } from './HoldButton'
+import { IconBtn } from './IconBtn'
 import { ProjectSelect } from './ProjectSelect'
 import { TerminalView } from './Terminal'
 
@@ -75,7 +76,7 @@ export function ShellTab({
   }
 
   if (!projects.length) {
-    return <p className="p-6 text-mute text-sm">Add a workspace to open a shell.</p>
+    return <p className="hb-page text-mute text-sm">Add a workspace to open a shell.</p>
   }
   if (!project) return null
 
@@ -83,68 +84,70 @@ export function ShellTab({
   const inTerminal = interactive || !!attach
 
   return (
-    <div className="h-full flex flex-col min-h-0 pb-16">
-      <div className="shrink-0 px-3 pt-3 pb-2 border-b border-line bg-panel/80 backdrop-blur-md space-y-2">
-        <div className="flex gap-2 items-center max-w-5xl mx-auto w-full">
-          <ProjectSelect
-            projects={projects}
-            selectedId={project.id}
-            onSelect={(id) => {
-              onSelect(id)
-              setAttach(null)
-              setInteractive(false)
-              onClearAttach?.()
-            }}
-            className="flex-1"
-          />
-          {!inTerminal ? (
-            <>
+    <div className="h-full flex flex-col min-h-0 pb-[5.5rem]">
+      <div className="hb-chrome shrink-0">
+        <div className="hb-chrome-inner space-y-2">
+          <div className="flex gap-2 items-center">
+            <ProjectSelect
+              projects={projects}
+              selectedId={project.id}
+              onSelect={(id) => {
+                onSelect(id)
+                setAttach(null)
+                setInteractive(false)
+                onClearAttach?.()
+              }}
+              className="flex-1"
+            />
+            {!inTerminal ? (
+              <>
+                <IconBtn
+                  label="New shell"
+                  onClick={() => {
+                    setAttach(null)
+                    onClearAttach?.()
+                    setInteractive(true)
+                    setNonce((n) => n + 1)
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => refresh()}
+                  className="hb-btn hb-btn-ghost text-xs !min-h-10 px-3"
+                >
+                  Refresh
+                </button>
+              </>
+            ) : (
               <button
                 type="button"
-                onClick={() => {
-                  setAttach(null)
-                  onClearAttach?.()
-                  setInteractive(true)
-                  setNonce((n) => n + 1)
-                }}
-                className="hb-btn hb-btn-primary text-sm px-3 py-2.5"
+                onClick={leaveTerminal}
+                className="hb-btn hb-btn-ghost text-sm !min-h-10 px-3"
               >
-                New
+                Back
               </button>
-              <button
-                type="button"
-                onClick={() => refresh()}
-                className="hb-btn hb-btn-ghost text-xs px-3 py-2.5"
-              >
-                Refresh
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              onClick={leaveTerminal}
-              className="hb-btn hb-btn-ghost text-sm px-3 py-2.5"
-            >
-              Back
-            </button>
-          )}
-        </div>
-        {!!ports.length && !inTerminal && (
-          <div className="grid grid-cols-3 gap-2 text-[11px] font-mono max-w-5xl mx-auto w-full">
-            {ports.map((ps) => (
-              <div
-                key={ps.id}
-                className={`rounded-lg border px-2 py-1.5 text-center ${
-                  ps.up ? 'border-ok/45 bg-ok/10' : 'border-line bg-panel-2 text-mute'
-                }`}
-              >
-                <span className={ps.up ? 'text-ok' : 'text-mute'}>{ps.up ? '●' : '○'}</span>{' '}
-                {ps.label || ps.id} :{ps.port}
-              </div>
-            ))}
+            )}
           </div>
-        )}
-        {error && <p className="text-danger text-xs max-w-5xl mx-auto w-full">{error}</p>}
+          {!!ports.length && !inTerminal && (
+            <div
+              className={`grid gap-2 ${
+                ports.length === 1
+                  ? 'grid-cols-1 max-w-[12rem]'
+                  : ports.length === 2
+                    ? 'grid-cols-2'
+                    : 'grid-cols-3'
+              }`}
+            >
+              {ports.map((ps) => (
+                <div key={ps.id} className="hb-port !py-1.5" data-up={ps.up}>
+                  <span className={ps.up ? 'text-ok' : 'text-mute'}>{ps.up ? '●' : '○'}</span>{' '}
+                  {ps.label || ps.id} :{ps.port}
+                </div>
+              ))}
+            </div>
+          )}
+          {error && <p className="text-danger text-xs">{error}</p>}
+        </div>
       </div>
 
       {interactive ? (
@@ -173,19 +176,22 @@ export function ShellTab({
           <TerminalView sessionId={attach} path="" className="flex-1 min-h-0" />
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3 max-w-5xl mx-auto w-full">
-          <h2 className="text-sm font-semibold text-text">Sessions</h2>
+        <div className="flex-1 overflow-y-auto px-3 py-4 sm:px-5 space-y-3 max-w-[56rem] mx-auto w-full">
+          <h2 className="hb-label">Sessions</h2>
           {sessions.length === 0 && (
-            <p className="text-mute text-sm">
-              No active PTY sessions. Start a stack from Apps, or tap New for an interactive shell.
+            <p className="text-mute text-sm leading-relaxed">
+              No active PTY sessions. Start a stack from Apps, or tap + for an interactive shell.
             </p>
           )}
-          <ul className="space-y-2">
+          <ul className="space-y-2.5">
             {sessions.map((s) => (
-              <li key={s.id} className="hb-surface p-3 flex items-center gap-3">
+              <li
+                key={s.id}
+                className="hb-surface p-3.5 flex flex-wrap sm:flex-nowrap items-center gap-2.5"
+              >
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium truncate">{s.label}</div>
-                  <div className="text-[11px] font-mono text-mute">
+                  <div className="text-[11px] font-mono text-mute mt-0.5">
                     {s.kind} · pid {s.pid ?? '—'} ·{' '}
                     <span className={s.alive ? 'text-ok' : 'text-danger'}>
                       {s.alive ? 'alive' : 'dead'}
@@ -199,7 +205,7 @@ export function ShellTab({
                     setAttach(s.id)
                   }}
                   disabled={!s.alive}
-                  className="hb-btn hb-btn-ghost text-xs px-2.5 py-1.5 disabled:opacity-40"
+                  className="hb-btn hb-btn-ghost text-xs !min-h-9 px-3 disabled:opacity-40"
                 >
                   Attach
                 </button>
@@ -207,7 +213,7 @@ export function ShellTab({
                   label="Kill"
                   holdLabel="hold…"
                   holdMs={1000}
-                  className="hb-btn hb-btn-danger text-xs px-2.5 py-1.5"
+                  className="hb-btn hb-btn-danger text-xs !min-h-9 px-3"
                   onConfirm={() => killSession(s.id)}
                 />
               </li>

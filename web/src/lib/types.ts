@@ -1,4 +1,4 @@
-export type Tab = 'apps' | 'shell' | 'files' | 'cursor' | 'logs' | 'alerts' | 'sharing'
+export type Tab = 'apps' | 'shell' | 'files' | 'cursor' | 'logs' | 'alerts' | 'settings'
 
 /** True only when the page itself is loaded from loopback (not .local / LAN). */
 export function isLocalHostPage(): boolean {
@@ -97,4 +97,5 @@ export interface FsEntry {
   path: string
   type: 'file' | 'dir'
   size?: number
+  ignored?: boolean
 }

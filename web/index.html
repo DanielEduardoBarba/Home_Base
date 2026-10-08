@@ -6,7 +6,8 @@
       name="viewport"
       content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1"
     />
-    <meta name="theme-color" content="#080c12" />
+    <meta name="theme-color" content="#070a0f" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <title>Home Base</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -15,6 +16,14 @@
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@500;600;700;800&display=swap"
       rel="stylesheet"
     />
+    <script>
+      try {
+        var t = localStorage.getItem('hb-theme')
+        if (t !== 'day' && t !== 'night') t = 'night'
+        document.documentElement.dataset.theme = t
+        document.documentElement.style.colorScheme = t === 'day' ? 'light' : 'dark'
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

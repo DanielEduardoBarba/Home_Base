@@ -90,47 +90,53 @@ export function LogsTab() {
   }
 
   return (
-    <div className="h-full flex flex-col min-h-0 pb-16">
-      <div className="shrink-0 px-3 pt-3 pb-2 border-b border-line bg-panel/80 backdrop-blur-md space-y-2 max-w-5xl mx-auto w-full">
-        <div className="flex flex-wrap gap-2 items-center">
-          <h1 className="font-semibold text-sm mr-auto">Logs</h1>
-          <select
-            value={filter}
-            onChange={(e) => setFilter(e.target.value as typeof filter)}
-            className="hb-select py-2 text-xs"
-          >
-            <option value="all">All</option>
-            <option value="server">Server</option>
-            <option value="web">Web</option>
-          </select>
-          <button
-            type="button"
-            onClick={() => setPaused((p) => !p)}
-            className={`hb-btn text-xs px-3 py-2 ${paused ? 'hb-btn-primary' : 'hb-btn-ghost'}`}
-          >
-            {paused ? 'Resume' : 'Pause'}
-          </button>
-          <button
-            type="button"
-            onClick={() => void copyVisible()}
-            className="hb-btn hb-btn-ghost text-xs px-3 py-2"
-            title="Copy visible lines"
-          >
-            {copied || 'Copy'}
-          </button>
-          <button type="button" onClick={() => load()} className="hb-btn hb-btn-ghost text-xs px-3 py-2">
-            Refresh
-          </button>
+    <div className="h-full flex flex-col min-h-0 pb-[5.5rem]">
+      <div className="hb-chrome shrink-0">
+        <div className="hb-chrome-inner space-y-2">
+          <div className="flex flex-wrap gap-2 items-center">
+            <h1 className="font-display font-bold text-base mr-auto tracking-tight">Logs</h1>
+            <select
+              value={filter}
+              onChange={(e) => setFilter(e.target.value as typeof filter)}
+              className="hb-select !min-h-9 py-1.5 text-xs"
+            >
+              <option value="all">All</option>
+              <option value="server">Server</option>
+              <option value="web">Web</option>
+            </select>
+            <button
+              type="button"
+              onClick={() => setPaused((p) => !p)}
+              className={`hb-btn text-xs !min-h-9 px-3 ${paused ? 'hb-btn-primary' : 'hb-btn-ghost'}`}
+            >
+              {paused ? 'Resume' : 'Pause'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void copyVisible()}
+              className="hb-btn hb-btn-ghost text-xs !min-h-9 px-3"
+              title="Copy visible lines"
+            >
+              {copied || 'Copy'}
+            </button>
+            <button
+              type="button"
+              onClick={() => load()}
+              className="hb-btn hb-btn-ghost text-xs !min-h-9 px-3"
+            >
+              Refresh
+            </button>
+          </div>
+          <p className="text-[11px] font-mono text-mute">
+            Shared ring · max {MAX} · python + browser console · tap a line to copy
+          </p>
+          {error && <p className="text-danger text-xs">{error}</p>}
         </div>
-        <p className="text-[11px] font-mono text-mute">
-          Shared ring · max {MAX} · python + browser console · tap a line to copy
-        </p>
-        {error && <p className="text-danger text-xs">{error}</p>}
       </div>
 
       <div
         ref={listRef}
-        className="flex-1 min-h-0 overflow-y-auto px-3 py-2 max-w-5xl mx-auto w-full"
+        className="flex-1 min-h-0 overflow-y-auto px-3 py-2 sm:px-5 max-w-[56rem] mx-auto w-full"
         onScroll={(e) => {
           const el = e.currentTarget
           stickBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
@@ -145,7 +151,7 @@ export function LogsTab() {
               <button
                 type="button"
                 onClick={() => void copyOne(l)}
-                className="w-full flex gap-2 border-b border-line/40 py-1 text-left hover:bg-panel-2/80 rounded-sm"
+                className="w-full flex gap-2 border-b border-line/35 py-1.5 text-left hover:bg-panel-2/80 rounded-md px-1"
                 title="Copy line"
               >
                 <span className="text-mute shrink-0 w-[4.5rem]">{formatTs(l.ts)}</span>

@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { api } from '../lib/api'
 import { setSession } from '../lib/auth'
 import { isLocalHostPage } from '../lib/types'
@@ -32,6 +32,16 @@ function readShareId(): string {
   }
 }
 
+function strengthIssues(pw: string): string[] {
+  const issues: string[] = []
+  if (pw.length < 10) issues.push('10+ characters')
+  if (!/[a-z]/.test(pw)) issues.push('lowercase')
+  if (!/[A-Z]/.test(pw)) issues.push('uppercase')
+  if (!/[0-9]/.test(pw)) issues.push('digit')
+  if (!/[^A-Za-z0-9]/.test(pw)) issues.push('special character')
+  return issues
+}
+
 export function Login({ onAuthed }: { onAuthed: () => void }) {
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
@@ -39,7 +49,7 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
   const [error, setError] = useState('')
   const [retryAfter, setRetryAfter] = useState(0)
   const [autoStatus, setAutoStatus] = useState('')
-  const [passwordSet, setPasswordSet] = useState<boolean | null>(null)
+  const [canBootstrap, setCanBootstrap] = useState<boolean | null>(null)
   const local = isLocalHostPage()
 
   useEffect(() => {
@@ -52,13 +62,12 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
     api
       .authStatus()
       .then((s) => {
-        setPasswordSet(s.passwordSet)
+        setCanBootstrap(!!s.canBootstrap)
         if (s.lockout?.locked) setRetryAfter(s.lockout.retryAfter)
       })
-      .catch(() => setPasswordSet(true))
+      .catch(() => setCanBootstrap(false))
   }, [])
 
-  // QR share: redeem one-time id → 24h JWT, scrub URL
   useEffect(() => {
     const shareId = readShareId()
     if (!shareId) return
@@ -72,16 +81,11 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
         setSession(session.token, session.expiresAt)
         setAutoStatus('')
         onAuthed()
-      } catch (err) {
+      } catch {
         if (cancelled) return
         scrubShareParamsFromUrl()
         setAutoStatus('')
-        const detail = (err as { detail?: unknown }).detail
-        setError(
-          typeof detail === 'string'
-            ? detail
-            : 'Share link expired or already used — ask the host to reveal again',
-        )
+        setError('Share link expired or already used — ask the host to reveal again')
       }
     })()
     return () => {
@@ -90,15 +94,20 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const setupMode = local && canBootstrap === true
+  const issues = useMemo(
+    () => (setupMode ? strengthIssues(password) : []),
+    [setupMode, password],
+  )
+
   async function submit(e: FormEvent) {
     e.preventDefault()
     if (retryAfter > 0) return
     setError('')
 
-    // Localhost first-run: create password
-    if (local && passwordSet === false) {
-      if (password.length < 8) {
-        setError('Password must be at least 8 characters')
+    if (setupMode) {
+      if (issues.length) {
+        setError(`Password needs: ${issues.join(', ')}`)
         return
       }
       if (password !== confirm) {
@@ -106,11 +115,18 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
         return
       }
       try {
-        const session = await api.setPassword(password)
+        const session = await api.bootstrapPassword(password)
         setSession(session.token, session.expiresAt)
         onAuthed()
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
+        const detail = (err as { detail?: unknown }).detail
+        setError(
+          typeof detail === 'string'
+            ? detail
+            : err instanceof Error
+              ? err.message
+              : String(err),
+        )
       }
       return
     }
@@ -141,78 +157,101 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
     }
   }
 
-  const setupMode = local && passwordSet === false
-
   return (
-    <div className="min-h-full flex flex-col justify-end sm:justify-center px-5 pb-12 pt-20">
-      <div className="max-w-md w-full mx-auto hb-enter">
-        <div className="mb-6 h-px w-14 bg-gradient-to-r from-accent to-transparent" />
-        <p className="font-display text-[clamp(2.75rem,12vw,4.5rem)] font-extrabold leading-[0.9] tracking-tight text-text">
+    <div className="min-h-full flex flex-col justify-end sm:justify-center px-5 pb-14 pt-16 sm:px-8">
+      <div className="w-full max-w-md mx-auto hb-enter">
+        <div className="hb-brand-rule" />
+        <h1 className="font-display text-[clamp(2.6rem,11vw,4.25rem)] font-extrabold leading-[0.92] tracking-tight">
           Home
           <span className="text-accent"> Base</span>
-        </p>
-        <p className="mt-5 text-mute text-base max-w-sm leading-relaxed">
+        </h1>
+        <p className="mt-3 text-mute text-sm leading-relaxed max-w-sm">
           {setupMode
-            ? 'Create a password on this machine. Only localhost can set or change it.'
-            : 'Sign in with your password. Sessions last 24 hours.'}
+            ? 'Create a strong password for this machine. This can only be done once from localhost.'
+            : 'Control plane for your workspaces.'}
         </p>
+
         {autoStatus && (
-          <p className="mt-4 text-sm font-mono text-sky animate-pulse">{autoStatus}</p>
+          <p className="mt-5 text-sm font-mono text-sky animate-pulse">{autoStatus}</p>
         )}
-        <form onSubmit={submit} className="mt-10 space-y-4">
-          <label className="block">
-            <span className="text-[11px] uppercase tracking-[0.2em] text-mute">
-              {setupMode ? 'New password' : 'Password'}
-            </span>
-            <div className="relative mt-2">
+
+        <form onSubmit={submit} className="mt-8 hb-surface p-5 sm:p-6 space-y-4">
+          <label className="block space-y-1.5">
+            <span className="hb-label">{setupMode ? 'New password' : 'Password'}</span>
+            <div className="relative">
               <input
                 type={show ? 'text' : 'password'}
                 autoComplete={setupMode ? 'new-password' : 'current-password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder={setupMode ? 'At least 8 characters' : 'Password'}
+                placeholder={setupMode ? 'Upper, lower, digit, special…' : 'Password'}
                 disabled={retryAfter > 0 || !!autoStatus}
-                className="w-full rounded-xl bg-panel/90 border border-line pl-4 pr-12 py-3.5 text-text disabled:opacity-50"
+                className="w-full rounded-[var(--radius-control)] bg-panel-2 border border-line pl-4 pr-16 py-3.5 text-text disabled:opacity-50"
               />
               <button
                 type="button"
                 onClick={() => setShow((v) => !v)}
                 disabled={retryAfter > 0}
                 aria-label={show ? 'Hide password' : 'Show password'}
-                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-2 text-mute hover:text-text disabled:opacity-40"
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-mute hover:text-text disabled:opacity-40"
               >
                 {show ? 'Hide' : 'Show'}
               </button>
             </div>
           </label>
+
           {setupMode && (
-            <label className="block">
-              <span className="text-[11px] uppercase tracking-[0.2em] text-mute">Confirm</span>
-              <input
-                type={show ? 'text' : 'password'}
-                autoComplete="new-password"
-                value={confirm}
-                onChange={(e) => setConfirm(e.target.value)}
-                placeholder="Repeat password"
-                className="mt-2 w-full rounded-xl bg-panel/90 border border-line px-4 py-3.5 text-text"
-              />
-            </label>
+            <>
+              <label className="block space-y-1.5">
+                <span className="hb-label">Confirm</span>
+                <input
+                  type={show ? 'text' : 'password'}
+                  autoComplete="new-password"
+                  value={confirm}
+                  onChange={(e) => setConfirm(e.target.value)}
+                  placeholder="Repeat password"
+                  className="w-full rounded-[var(--radius-control)] bg-panel-2 border border-line px-4 py-3.5 text-text"
+                />
+              </label>
+              {password.length > 0 && (
+                <ul className="text-[11px] font-mono space-y-0.5 pt-0.5">
+                  {['10+ characters', 'lowercase', 'uppercase', 'digit', 'special character'].map(
+                    (label) => {
+                      const key =
+                        label === '10+ characters'
+                          ? '10+ characters'
+                          : label === 'special character'
+                            ? 'special character'
+                            : label
+                      const ok = !issues.includes(key)
+                      return (
+                        <li key={label} className={ok ? 'text-ok' : 'text-mute'}>
+                          {ok ? '✓' : '·'} {label}
+                        </li>
+                      )
+                    },
+                  )}
+                </ul>
+              )}
+            </>
           )}
+
           {error && <p className="text-danger text-sm">{error}</p>}
           {retryAfter > 0 && (
             <p className="text-warn text-sm font-mono">
               Locked — try again in {formatWait(retryAfter)}
             </p>
           )}
-          {!local && passwordSet === false && (
-            <p className="text-warn text-sm">
+          {!local && canBootstrap === true && (
+            <p className="text-warn text-sm leading-relaxed">
               Password has not been set yet. Open Home Base on the host via localhost first.
             </p>
           )}
+
           <button
             type="submit"
-            disabled={retryAfter > 0 || !!autoStatus || passwordSet === null}
-            className="w-full rounded-xl bg-accent text-ink font-semibold py-3.5 shadow-[0_8px_28px_rgba(46,230,200,0.22)] disabled:opacity-40 disabled:shadow-none"
+            disabled={retryAfter > 0 || !!autoStatus || canBootstrap === null}
+            className="hb-btn hb-btn-primary w-full py-3.5 disabled:shadow-none"
           >
             {setupMode ? 'Create password' : 'Enter'}
           </button>

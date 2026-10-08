@@ -81,6 +81,8 @@ export const api = {
   authStatus: () =>
     request<{
       passwordSet: boolean
+      initialized: boolean
+      canBootstrap: boolean
       jwtTtlSec: number
       lockout: { locked: boolean; retryAfter: number; failCount: number }
     }>('/api/auth/status'),
@@ -102,13 +104,31 @@ export const api = {
     }
     return body as SessionResponse
   },
-  setPassword: (password: string, currentPassword?: string) =>
+  /** First-time setup only (login page). Fails once initialized. */
+  bootstrapPassword: async (password: string) => {
+    const res = await fetch('/api/auth/bootstrap', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      const err = new Error(
+        typeof body.detail === 'string'
+          ? body.detail
+          : JSON.stringify(body.detail || body),
+      ) as Error & { status?: number; detail?: unknown }
+      err.status = res.status
+      err.detail = body.detail || body
+      throw err
+    }
+    return body as SessionResponse
+  },
+  /** Localhost Share tab — requires current password + session. */
+  changePassword: (password: string, currentPassword: string) =>
     request<SessionResponse>('/api/auth/password', {
       method: 'POST',
-      body: JSON.stringify({
-        password,
-        ...(currentPassword ? { currentPassword } : {}),
-      }),
+      body: JSON.stringify({ password, currentPassword }),
     }),
   shareRedeem: async (shareId: string) => {
     const res = await fetch('/api/share/redeem', {
@@ -182,10 +202,16 @@ export const api = {
       models: { id: string; displayName: string; description: string }[]
       error?: string
     }>('/api/cursor/models'),
-  fsList: (id: string, path = '') =>
-    request<{ path: string; entries: FsEntry[] }>(
-      `/api/projects/${id}/fs?path=${encodeURIComponent(path)}`,
-    ),
+  fsList: (id: string, path = '', opts: { all?: boolean } = {}) => {
+    const q = new URLSearchParams()
+    // Allow "" (project-relative) and "/" (Linux root)
+    if (path !== '') q.set('path', path)
+    if (opts.all) q.set('all', '1')
+    const qs = q.toString()
+    return request<{ path: string; entries: FsEntry[]; includeIgnored?: boolean }>(
+      `/api/projects/${id}/fs${qs ? `?${qs}` : ''}`,
+    )
+  },
   fsRead: (id: string, path: string) =>
     request<{ path: string; content: string; language: string; size: number }>(
       `/api/projects/${id}/fs/read?path=${encodeURIComponent(path)}`,

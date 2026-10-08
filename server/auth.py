@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import time
 from pathlib import Path
@@ -12,7 +13,7 @@ from typing import Any, Optional
 import jwt
 from fastapi import Header, HTTPException, Query, Request, WebSocket, status
 
-from .config import LOCKOUT_PATH, RUNTIME_DIR, get_settings
+from .config import LOCKOUT_PATH, RUNTIME_DIR
 from .logging_util import append_daily
 from .notifications import push as notify
 
@@ -109,23 +110,87 @@ def password_is_set() -> bool:
     return bool(data.get("passwordHash") and data.get("salt"))
 
 
-def set_password(password: str) -> None:
-    pw = (password or "").strip()
-    if len(pw) < 8:
-        raise HTTPException(400, "Password must be at least 8 characters")
+def is_initialized() -> bool:
+    """True once a password has been bootstrapped; blocks login-route setup forever."""
+    data = _load_auth()
+    if data.get("initialized"):
+        return True
+    # Migrate installs that already have a hash but no flag yet
+    if data.get("passwordHash") and data.get("salt"):
+        data["initialized"] = True
+        _save_auth(data)
+        return True
+    return False
+
+
+def can_bootstrap_password() -> bool:
+    """Login-page create-password is allowed only before first init and with no stored hash."""
+    return not is_initialized() and not password_is_set()
+
+
+def validate_password_strength(password: str) -> str:
+    pw = password or ""
+    errors: list[str] = []
+    if len(pw) < 10:
+        errors.append("at least 10 characters")
+    if not re.search(r"[a-z]", pw):
+        errors.append("a lowercase letter")
+    if not re.search(r"[A-Z]", pw):
+        errors.append("an uppercase letter")
+    if not re.search(r"[0-9]", pw):
+        errors.append("a digit")
+    if not re.search(r"[^A-Za-z0-9]", pw):
+        errors.append("a special character")
+    if errors:
+        raise HTTPException(
+            400,
+            "Password must include " + ", ".join(errors),
+        )
+    return pw
+
+
+def _write_password_hash(password: str, *, initialized: bool) -> None:
+    pw = validate_password_strength(password)
     salt = secrets.token_bytes(16)
     digest = _hash_password(pw, salt)
+    prev = _load_auth()
     _save_auth(
         {
+            **{k: v for k, v in prev.items() if k not in {"salt", "passwordHash"}},
             "algo": "scrypt",
             "n": _SCRYPT_N,
             "r": _SCRYPT_R,
             "p": _SCRYPT_P,
             "salt": _b64e(salt),
             "passwordHash": _b64e(digest),
+            "initialized": bool(initialized),
             "updatedAt": int(time.time()),
         }
     )
+
+
+def bootstrap_password(password: str) -> None:
+    """First-time setup only (login route). Sets initialized flag permanently."""
+    if not can_bootstrap_password():
+        raise HTTPException(
+            403,
+            "Password already initialized — use Share → Change password on localhost",
+        )
+    _write_password_hash(password, initialized=True)
+
+
+def change_password(new_password: str, current_password: str) -> None:
+    """Change an existing password (Share tab). Requires current password."""
+    if not password_is_set() or not is_initialized():
+        raise HTTPException(400, "No password to change — complete first-time setup")
+    if not current_password or not verify_password(current_password):
+        raise HTTPException(401, "Current password is incorrect")
+    _write_password_hash(new_password, initialized=True)
+
+
+def set_password(password: str) -> None:
+    """Internal/test helper: write hash and mark initialized."""
+    _write_password_hash(password, initialized=True)
 
 
 def verify_password(password: str) -> bool:
@@ -354,12 +419,16 @@ async def ws_authenticate(websocket: WebSocket) -> bool:
 
 
 def auth_public_status() -> dict[str, Any]:
+    boot = can_bootstrap_password()
+    set_ = password_is_set()
     return {
-        "passwordSet": password_is_set(),
+        "passwordSet": set_ or is_initialized(),
+        "initialized": is_initialized(),
+        "canBootstrap": boot,
         "jwtTtlSec": JWT_TTL_SEC,
         "lockout": lockout_status(),
         # Legacy field for older clients during transition
-        "tokenConfigured": password_is_set(),
+        "tokenConfigured": set_ or is_initialized(),
     }
 
 

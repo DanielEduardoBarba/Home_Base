@@ -18,6 +18,10 @@ Open the UI at `http://localhost:3080` in dev (Vite). Production is `http://<hos
 
 SPA fetch/WebSocket paths are always relative (`/api/...`, `/ws/...` via `location.host`). Dev and prod use the same client code — Vite proxies those paths to uvicorn in development; FastAPI serves SPA + API together in production.
 
+## UI tabs
+
+Apps · Shell · Files · Cursor · Logs · Alerts · **Settings**. Theme (night/day), cache clear, sign-out, and localhost Share/password live under Settings.
+
 ## Config model
 
 Each project entry:
@@ -44,7 +48,9 @@ Committed preset: `config/presets/example.json`. Personal presets under `config/
 
 ## Files API
 
-Paths are resolved under the project root only. Skip `node_modules`, `.git`, etc.
+- Absolute paths (`/…`) may browse the host filesystem from Linux `/` (JWT required).
+- Empty / relative paths stay scoped under the project root (Cursor cwd picker).
+- Skip `node_modules`, `.git`, etc. unless `?all=1`.
 
 ## Deploy
 

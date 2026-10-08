@@ -7,11 +7,15 @@ alwaysApply: false
 # Home Base UI
 
 - Primary viewport is still iPhone Safari over VPN; also keep desktop readable (wider max widths, clear contrast).
-- Bottom tabs: Apps · Shell · Files · Cursor · Logs · Alerts.
+- Bottom tabs: Apps · Shell · Files · Cursor · Logs · Alerts · Settings.
+- Share / password live under **Settings** (localhost only), not a separate tab.
 - Shell = interactive PTY + session attach (former Mon). Logs = capped console ring (300).
 - Workspace pickers and Run stacks use native `<select>` dropdowns (`hb-select`).
 - Ship actions are hold-to-confirm; Run/Stop is a toggle from port/session state.
 - Pull-to-refresh is global (top-of-scroll drag).
-- Visual system: dark graphite + teal accent (`--color-accent`), Syne + IBM Plex Mono. Avoid purple gradients and cream/serif clichés.
+- Theme: night (default) + day via `data-theme` / Settings; Syne + IBM Plex Mono; teal accent. Avoid purple gradients and cream/serif clichés.
+- New/Add actions use compact `IconBtn` (`+`), not text labels.
+- Layout tokens: `.hb-page`, `.hb-chrome`, `.hb-surface`, floating `.hb-nav` dock with icons + labels; safe-area padding for iPhone.
+- Breakpoints: phone-first; iPad (`md`) wider chrome; desktop (`lg`) two-column Apps where useful.
 - Shell tab must remain usable with on-screen Ctrl/Esc helpers.
 - Cursor tab streams markdown; show project cwd and agent id.

@@ -8,7 +8,7 @@ import { isLocalHostPage } from '../lib/types'
  * Localhost-only: reveal a timed QR with a one-time share id (not the password).
  * Phone redeems it for a 24h JWT. Also: change password here.
  */
-export function SharingTab() {
+export function SharingTab({ embedded = false }: { embedded?: boolean } = {}) {
   const [hostname, setHostname] = useState('')
   const [active, setActive] = useState(false)
   const [expiresIn, setExpiresIn] = useState(0)
@@ -112,7 +112,7 @@ export function SharingTab() {
       return
     }
     try {
-      const session = await api.setPassword(newPw, currentPw)
+      const session = await api.changePassword(newPw, currentPw)
       setSession(session.token, session.expiresAt)
       setCurrentPw('')
       setNewPw('')
@@ -124,35 +124,50 @@ export function SharingTab() {
   }
 
   if (!isLocalHostPage()) {
+    if (embedded) return null
     return (
-      <div className="p-6 max-w-md mx-auto text-sm text-mute pb-20">
+      <div className="hb-page text-sm text-mute">
         Sharing and password changes are only available on{' '}
         <span className="text-accent font-mono">localhost</span>.
       </div>
     )
   }
 
-  return (
-    <div className="h-full overflow-y-auto px-4 pt-5 pb-28 max-w-lg mx-auto space-y-4 hb-enter">
-      <header>
-        <div className="mb-3 h-px w-12 bg-gradient-to-r from-accent to-transparent" />
-        <h1 className="font-display text-3xl font-extrabold tracking-tight">
-          Share<span className="text-accent"> access</span>
-        </h1>
-        <p className="text-mute text-sm mt-2 leading-relaxed">
-          QR hands out a one-time redeem code for{' '}
-          <span className="font-mono text-sky">{hostname || '…'}</span> — never your password.
-        </p>
-      </header>
+  const body = (
+    <>
+      {!embedded && (
+        <header>
+          <div className="hb-brand-rule" />
+          <h1 className="font-display text-3xl md:text-[2.5rem] font-extrabold tracking-tight">
+            Share<span className="text-accent"> access</span>
+          </h1>
+          <p className="text-mute text-sm mt-2 leading-relaxed">
+            QR hands out a one-time redeem code for{' '}
+            <span className="font-mono text-sky">{hostname || '…'}</span> — never your password.
+          </p>
+        </header>
+      )}
 
-      <section className="hb-surface p-4 space-y-4">
+      <section className="hb-surface p-4 sm:p-5 space-y-4">
+        {embedded && (
+          <p className="text-xs text-mute leading-relaxed">
+            One-time QR for{' '}
+            <span className="font-mono text-sky">{hostname || '…'}</span> — never your password.
+          </p>
+        )}
         {!active || !qrDataUrl ? (
           <>
-            <p className="text-xs text-mute leading-relaxed">
-              Phone scans → redeems a temporary id → receives a 24h JWT. Auto-clears after 20s or
-              when someone joins.
-            </p>
-            <button type="button" onClick={() => void reveal()} className="hb-btn hb-btn-primary w-full">
+            {!embedded && (
+              <p className="text-xs text-mute leading-relaxed">
+                Phone scans → redeems a temporary id → receives a 24h JWT. Auto-clears after 20s or
+                when someone joins.
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={() => void reveal()}
+              className="hb-btn hb-btn-primary w-full"
+            >
               Reveal QR
             </button>
           </>
@@ -164,8 +179,12 @@ export function SharingTab() {
                 {expiresIn}s left
               </span>
             </div>
-            <div className="rounded-2xl bg-text p-3 flex justify-center">
-              <img src={qrDataUrl} alt="Login QR code" className="w-64 h-64" />
+            <div className="rounded-2xl bg-text p-3 sm:p-4 flex justify-center">
+              <img
+                src={qrDataUrl}
+                alt="Login QR code"
+                className="w-56 h-56 sm:w-64 sm:h-64"
+              />
             </div>
             <p className="text-[11px] font-mono text-mute break-all text-center">
               {hostname}:{location.port || '80'}
@@ -183,24 +202,24 @@ export function SharingTab() {
         {error && <p className="text-sm text-danger">{error}</p>}
       </section>
 
-      <section className="hb-surface p-4 space-y-3">
+      <section className="hb-surface p-4 sm:p-5 space-y-3">
         <h2 className="hb-label">Change password</h2>
-        <form onSubmit={changePassword} className="space-y-2">
+        <form onSubmit={changePassword} className="space-y-2.5">
           <input
             type="password"
             autoComplete="current-password"
             value={currentPw}
             onChange={(e) => setCurrentPw(e.target.value)}
             placeholder="Current password"
-            className="w-full rounded-xl bg-panel-2 border border-line px-3 py-2.5 text-sm"
+            className="w-full rounded-[var(--radius-control)] bg-panel-2 border border-line px-3 py-2.5 text-sm"
           />
           <input
             type="password"
             autoComplete="new-password"
             value={newPw}
             onChange={(e) => setNewPw(e.target.value)}
-            placeholder="New password (8+)"
-            className="w-full rounded-xl bg-panel-2 border border-line px-3 py-2.5 text-sm"
+            placeholder="New password (10+, upper/lower/digit/special)"
+            className="w-full rounded-[var(--radius-control)] bg-panel-2 border border-line px-3 py-2.5 text-sm"
           />
           <input
             type="password"
@@ -208,7 +227,7 @@ export function SharingTab() {
             value={confirmPw}
             onChange={(e) => setConfirmPw(e.target.value)}
             placeholder="Confirm new password"
-            className="w-full rounded-xl bg-panel-2 border border-line px-3 py-2.5 text-sm"
+            className="w-full rounded-[var(--radius-control)] bg-panel-2 border border-line px-3 py-2.5 text-sm"
           />
           <button type="submit" className="hb-btn hb-btn-ghost w-full">
             Update password
@@ -220,6 +239,16 @@ export function SharingTab() {
           )}
         </form>
       </section>
+    </>
+  )
+
+  if (embedded) {
+    return <div className="space-y-4">{body}</div>
+  }
+
+  return (
+    <div className="h-full overflow-y-auto">
+      <div className="hb-page space-y-4 hb-enter !max-w-lg">{body}</div>
     </div>
   )
 }

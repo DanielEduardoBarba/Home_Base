@@ -13,13 +13,13 @@ from starlette.middleware.gzip import GZipMiddleware
 from .auth import (
     _client_ip,
     auth_public_status,
+    bootstrap_password,
+    change_password,
     jwt_secret,
     lockout_status,
     login_with_password,
     password_is_set,
     require_auth,
-    set_password,
-    verify_password,
     ws_authenticate,
 )
 from .config import BUNDLE_ROOT, ROOT, get_project, get_settings, list_projects, load_projects
@@ -147,18 +147,30 @@ async def api_login(body: LoginBody, request: Request):
     return {"ok": True, "lockout": lockout_status(), **issued}
 
 
-@app.post("/api/auth/password")
-async def api_set_password(body: PasswordBody, request: Request):
+@app.post("/api/auth/bootstrap")
+async def api_bootstrap_password(body: PasswordBody, request: Request):
     """
-    Create or change the password. Only from a localhost-loaded SPA.
-    First set: no current password. Later changes: require current password.
+    First-time password create from the login page (localhost only).
+    Refuses once `initialized` is set — even if the hash file is wiped without
+    clearing the flag; both flag and hash must be gone to bootstrap again.
     """
     require_localhost_browser(request)
-    if password_is_set():
-        if not body.currentPassword or not verify_password(body.currentPassword):
-            raise HTTPException(401, "Current password is incorrect")
-    set_password(body.password)
-    # Issue a fresh session so the localhost operator stays signed in
+    bootstrap_password(body.password)
+    issued = login_with_password(
+        body.password.strip(), ip=_client_ip(request=request)
+    )
+    return {"ok": True, "passwordSet": True, "initialized": True, **issued}
+
+
+@app.post("/api/auth/password")
+async def api_change_password(
+    body: PasswordBody, request: Request, _: None = Depends(require_auth)
+):
+    """Change password from Share tab (localhost + current password). Not the login route."""
+    require_localhost_browser(request)
+    if not body.currentPassword:
+        raise HTTPException(400, "Current password is required")
+    change_password(body.password, body.currentPassword)
     issued = login_with_password(
         body.password.strip(), ip=_client_ip(request=request)
     )
@@ -290,6 +302,7 @@ async def api_logs(
 async def api_fs_list(
     project_id: str,
     path: str = "",
+    all: bool = Query(False, description="Include skipped dirs (node_modules, .git, …)"),
     _: None = Depends(require_auth),
 ):
     try:
@@ -297,7 +310,7 @@ async def api_fs_list(
     except KeyError:
         raise HTTPException(404, "Unknown project")
     try:
-        return list_dir(project, path)
+        return list_dir(project, path, include_ignored=bool(all))
     except FileNotFoundError:
         raise HTTPException(404, "Not found")
     except PermissionError as e:

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { api, wsUrl } from '../lib/api'
+import { uid } from '../lib/id'
 import type { CursorModel, FsEntry, Project } from '../lib/types'
+import { IconBtn } from './IconBtn'
 import { ProjectSelect } from './ProjectSelect'
 
 type ChatRole = 'user' | 'assistant' | 'thinking' | 'tool' | 'file' | 'status' | 'system'
@@ -37,7 +39,7 @@ function activeKey(projectId: string) {
 function newTab(cwd = '', title?: string): ChatTab {
   const leaf = cwd.split('/').filter(Boolean).pop()
   return {
-    id: crypto.randomUUID().slice(0, 10),
+    id: uid(10),
     title: title || (leaf ? `./${leaf}` : 'New chat'),
     cwd,
     messages: [],
@@ -338,7 +340,7 @@ export function CursorTab({
       }
       return {
         ...t,
-        messages: [...msgs, { id: crypto.randomUUID(), role: 'assistant', text }],
+        messages: [...msgs, { id: uid(), role: 'assistant', text }],
       }
     })
   }
@@ -357,13 +359,13 @@ export function CursorTab({
   ) {
     const mtype = message?.type
     if (mtype === 'thinking') {
-      pushMsg(chatId, { id: crypto.randomUUID(), role: 'thinking', text: message.text || '' })
+      pushMsg(chatId, { id: uid(), role: 'thinking', text: message.text || '' })
       return
     }
     if (mtype === 'tool_call') {
       if (message.file?.path) {
         pushMsg(chatId, {
-          id: crypto.randomUUID(),
+          id: uid(),
           role: 'file',
           file: message.file,
         })
@@ -375,7 +377,7 @@ export function CursorTab({
             ? JSON.stringify(message.args).slice(0, 400)
             : undefined
       pushMsg(chatId, {
-        id: crypto.randomUUID(),
+        id: uid(),
         role: 'tool',
         tool: {
           name: message.name || 'tool',
@@ -387,7 +389,7 @@ export function CursorTab({
     }
     if (mtype === 'status' || mtype === 'task') {
       pushMsg(chatId, {
-        id: crypto.randomUUID(),
+        id: uid(),
         role: 'status',
         text: message.text || message.status || mtype,
       })
@@ -453,7 +455,7 @@ export function CursorTab({
     setError('')
     setStreaming(true)
     assistantBuf.current = ''
-    pushMsg(active.id, { id: crypto.randomUUID(), role: 'user', text: prompt })
+    pushMsg(active.id, { id: uid(), role: 'user', text: prompt })
     if (active.messages.length === 0 && (active.title === 'New chat' || active.title.startsWith('./'))) {
       const titled = prompt.slice(0, 32) + (prompt.length > 32 ? '…' : '')
       patchTab(active.id, (t) => ({ ...t, title: titled }))
@@ -482,7 +484,15 @@ export function CursorTab({
     patchTab(active.id, (t) => ({ ...t, messages: [], agentId: null }))
   }
 
-  if (!project) return null
+  if (!project) {
+    return (
+      <div className="h-full flex flex-col min-h-0 pb-[5.5rem]">
+        <p className="hb-page text-mute text-sm">
+          {projects.length === 0 ? 'No projects loaded yet.' : 'Select a project.'}
+        </p>
+      </div>
+    )
+  }
 
   const modelOptions =
     models.length > 0
@@ -493,9 +503,9 @@ export function CursorTab({
   const pendingDelete = tabs.find((t) => t.id === deleteId)
 
   return (
-    <div className="h-full flex flex-col min-h-0 pb-16">
-      <div className="shrink-0 border-b border-line bg-panel/80 backdrop-blur-md">
-        <div className="px-3 pt-3 pb-2 space-y-2 max-w-5xl mx-auto w-full">
+    <div className="h-full flex flex-col min-h-0 pb-[5.5rem]">
+      <div className="hb-chrome shrink-0">
+        <div className="hb-chrome-inner space-y-2">
           <div className="flex gap-2 items-center">
             <ProjectSelect
               projects={projects}
@@ -504,7 +514,11 @@ export function CursorTab({
               className="flex-1"
             />
             <span
-              className={`text-[11px] font-mono shrink-0 ${connected ? 'text-ok' : 'text-danger'}`}
+              className={`text-[11px] font-mono shrink-0 px-2 py-1 rounded-md border ${
+                connected
+                  ? 'text-ok border-ok/30 bg-ok/10'
+                  : 'text-danger border-danger/30 bg-danger/10'
+              }`}
             >
               {connected ? 'live' : 'offline'}
             </span>
@@ -539,16 +553,15 @@ export function CursorTab({
                 </button>
               </div>
             ))}
-            <button
-              type="button"
+            <IconBtn
+              label="New chat"
+              variant="ghost"
+              className="!w-9 !h-9 !min-w-9"
               onClick={() => {
                 setNewOpen(true)
                 setPickingFolder(false)
               }}
-              className="hb-btn hb-btn-ghost text-xs px-2.5 py-1.5 shrink-0"
-            >
-              New
-            </button>
+            />
           </div>
 
           <p className="text-[11px] font-mono text-sky truncate">{cwdLabel}</p>
@@ -557,7 +570,7 @@ export function CursorTab({
 
       {/* New chat modal */}
       {newOpen && (
-        <div className="fixed inset-0 z-40 bg-ink/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
+        <div className="fixed inset-0 z-40 hb-overlay backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
           <div className="w-full max-w-md hb-surface p-4 space-y-3 max-h-[80vh] flex flex-col">
             {!pickingFolder ? (
               <>
@@ -647,7 +660,7 @@ export function CursorTab({
 
       {/* Delete confirmation */}
       {deleteId && pendingDelete && (
-        <div className="fixed inset-0 z-40 bg-ink/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
+        <div className="fixed inset-0 z-40 hb-overlay backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
           <div className="w-full max-w-sm hb-surface p-4 space-y-4">
             <h2 className="font-semibold text-sm">Delete this chat?</h2>
             <p className="text-sm text-mute leading-relaxed">
@@ -678,13 +691,13 @@ export function CursorTab({
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 py-3 space-y-3">
         {(!active || active.messages.length === 0) && (
           <div className="mt-6 max-w-md space-y-2">
             <p className="text-text font-semibold">Local Cursor agent</p>
             <p className="text-mute text-sm leading-relaxed">
-              Chats are kept on this device until you delete a tab. Use New to start at the root or
-              in a folder.
+              Chats are kept on this device until you delete a tab. Use + to start at the root or in
+              a folder.
             </p>
           </div>
         )}
@@ -744,7 +757,7 @@ export function CursorTab({
             <button
               type="submit"
               disabled={streaming || !connected}
-              className="rounded-xl bg-accent text-ink font-semibold px-4 py-2.5 text-sm disabled:opacity-40"
+              className="rounded-xl hb-btn-primary font-semibold px-4 py-2.5 text-sm disabled:opacity-40 border-0"
             >
               Send
             </button>
