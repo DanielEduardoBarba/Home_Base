@@ -72,13 +72,13 @@ export interface Project {
     model?: string
     defaultModel?: string
   }
+  logs?: { path: string; exists: boolean; text: string }
+}
 
 export interface CursorModel {
   id: string
   displayName: string
   description: string
-}
-  logs?: { path: string; exists: boolean; text: string }
 }
 
 export interface NotificationItem {

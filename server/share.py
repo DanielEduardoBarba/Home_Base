@@ -48,29 +48,39 @@ def mdns_hostname() -> str:
 def is_localhost_browser(request: Request) -> bool:
     """
     True only when the SPA itself is loaded from localhost/127.0.0.1.
-    Vite proxies make request.client.host look like 127.0.0.1 for LAN clients too,
-    so Origin / Referer / Host must be checked — never trust client IP alone.
-    """
-    origin = (request.headers.get("origin") or "").lower()
-    referer = (request.headers.get("referer") or "").lower()
-    host = (request.headers.get("host") or "").split(":")[0].lower()
 
-    def _ok(url: str) -> bool:
+    Vite proxies rewrite Host to 127.0.0.1 for every client, so Host/IP alone
+    must never authorize. When Origin (or Referer) is present it is authoritative:
+    a LAN Origin like http://deltabravo.local:3080 is rejected even if Host is loopback.
+    """
+    origin = (request.headers.get("origin") or "").strip().lower()
+    referer = (request.headers.get("referer") or "").strip().lower()
+    # Prefer original host if a reverse proxy forwarded it
+    fwd_host = (request.headers.get("x-forwarded-host") or "").split(",")[0].strip().lower()
+    host = (fwd_host or (request.headers.get("host") or "")).split(":")[0].lower()
+
+    def _url_is_loopback(url: str) -> bool:
         if not url:
             return False
-        return (
-            "://localhost" in url
-            or "://127.0.0.1" in url
-            or "://[::1]" in url
-            or url.startswith("http://localhost")
-            or url.startswith("https://localhost")
-            or url.startswith("http://127.0.0.1")
-            or url.startswith("https://127.0.0.1")
-        )
+        # Parse loosely — browsers send absolute Origin/Referer
+        for needle in (
+            "://localhost",
+            "://127.0.0.1",
+            "://[::1]",
+        ):
+            if needle in url:
+                return True
+        return False
 
-    if _ok(origin) or _ok(referer):
-        return True
-    return host in {"localhost", "127.0.0.1", "[::1]", "::1"}
+    def _host_is_loopback(h: str) -> bool:
+        return h in {"localhost", "127.0.0.1", "[::1]", "::1"}
+
+    if origin:
+        return _url_is_loopback(origin)
+    if referer:
+        return _url_is_loopback(referer)
+    # Non-browser / same-origin tooling with no Origin: allow loopback Host only
+    return _host_is_loopback(host)
 
 
 def require_localhost_browser(request: Request) -> None:
