@@ -53,18 +53,11 @@ function parentDir(path: string): string {
   return parts.length ? '/' + parts.join('/') : '/'
 }
 
-/** Ancestors from `/` down to `path` (inclusive), for tree expansion. */
-function ancestorDirs(path: string): string[] {
+/** Leaf name for a path (`/` → `/`). */
+function leafName(path: string): string {
   const abs = toAbs(path)
-  if (abs === '/') return ['/']
-  const parts = abs.split('/').filter(Boolean)
-  const out = ['/']
-  let acc = ''
-  for (const p of parts) {
-    acc += '/' + p
-    out.push(acc)
-  }
-  return out
+  if (abs === '/') return '/'
+  return abs.split('/').filter(Boolean).pop() || abs
 }
 
 /** Full explorer trail from Linux `/` through folders (and optional file leaf). */
@@ -96,78 +89,6 @@ function filterEntries(entries: FsEntry[], q: string): FsEntry[] {
   return entries.filter((e) => e.name.toLowerCase().includes(needle))
 }
 
-function TreeRows({
-  dirPath,
-  depth,
-  childrenByDir,
-  expanded,
-  filter,
-  filePath,
-  onToggleDir,
-  onOpenFile,
-}: {
-  dirPath: string
-  depth: number
-  childrenByDir: Record<string, FsEntry[]>
-  expanded: Set<string>
-  filter: string
-  filePath: string | null
-  onToggleDir: (path: string) => void
-  onOpenFile: (path: string) => void
-}) {
-  const entries = filterEntries(childrenByDir[dirPath] || [], filter)
-  return (
-    <>
-      {entries.map((e) => {
-        const open = expanded.has(e.path)
-        const active = filePath === e.path
-        return (
-          <li key={e.path}>
-            <button
-              type="button"
-              className={`w-full text-left flex items-center gap-1 pr-2 py-1.5 border-b border-line/40 ${
-                active
-                  ? 'bg-accent/12 text-accent border-l-2 border-l-accent'
-                  : 'hover:bg-panel-2 border-l-2 border-l-transparent'
-              }`}
-              style={{ paddingLeft: `${0.5 + depth * 0.75}rem` }}
-              onClick={() => (e.type === 'dir' ? onToggleDir(e.path) : onOpenFile(e.path))}
-              title={e.path}
-            >
-              <span
-                className={`inline-flex w-4 shrink-0 text-[10px] font-mono ${
-                  e.type === 'dir' ? 'text-sky' : 'text-mute'
-                }`}
-              >
-                {e.type === 'dir' ? (open ? '▾' : '▸') : '·'}
-              </span>
-              <span
-                className={`truncate text-[13px] font-medium ${e.ignored ? 'text-mute italic' : ''}`}
-              >
-                {e.name}
-              </span>
-            </button>
-            {e.type === 'dir' && open && (
-              <ul>
-                <TreeRows
-                  dirPath={e.path}
-                  depth={depth + 1}
-                  childrenByDir={childrenByDir}
-                  expanded={expanded}
-                  filter={filter}
-                  filePath={filePath}
-                  onToggleDir={onToggleDir}
-                  onOpenFile={onOpenFile}
-                />
-              </ul>
-            )}
-          </li>
-        )
-      })}
-    </>
-  )
-}
-
 type ConfirmKind =
   | { type: 'save' }
   | { type: 'revert' }
@@ -178,17 +99,23 @@ export function FilesTab({
   projects,
   selectedId,
   onSelect,
+  embedded = false,
+  focusPath = null,
+  onFocusPathConsumed,
 }: {
   projects: Project[]
   selectedId: string
   onSelect: (id: string) => void
+  /** When true (Work tab), hide mobile project picker. */
+  embedded?: boolean
+  /** Open this path (file or folder) once, then call onFocusPathConsumed. */
+  focusPath?: string | null
+  onFocusPathConsumed?: () => void
 }) {
   const project = projects.find((p) => p.id === selectedId) || projects[0]
   const projectRoot = project ? toAbs(project.path) : '/'
   const [dir, setDir] = useState('/')
   const [entries, setEntries] = useState<FsEntry[]>([])
-  const [childrenByDir, setChildrenByDir] = useState<Record<string, FsEntry[]>>({})
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['/']))
   const [filePath, setFilePath] = useState<string | null>(null)
   const [content, setContent] = useState('')
   const [savedContent, setSavedContent] = useState('')
@@ -202,27 +129,15 @@ export function FilesTab({
   const [confirm, setConfirm] = useState<ConfirmKind>(null)
   const [busy, setBusy] = useState(false)
 
-  const fetchDir = useCallback(
-    async (path: string) => {
-      if (!project) return [] as FsEntry[]
-      const abs = toAbs(path)
-      const data = await api.fsList(project.id, abs, { all: showAll })
-      const list = data.entries
-      setChildrenByDir((prev) => ({ ...prev, [abs]: list }))
-      return list
-    },
-    [project?.id, showAll],
-  )
-
   const loadDir = useCallback(
     async (path: string, opts?: { keepFile?: boolean }) => {
       if (!project) return
       const abs = toAbs(path)
       setError('')
       try {
-        const list = await fetchDir(abs)
+        const data = await api.fsList(project.id, abs, { all: showAll })
         setDir(abs)
-        setEntries(list)
+        setEntries(data.entries)
         setFilter('')
         if (!opts?.keepFile) {
           setFilePath(null)
@@ -231,22 +146,12 @@ export function FilesTab({
           setDirty(false)
           setStatus(abs)
         }
-        const chain = ancestorDirs(abs)
-        setExpanded((prev) => {
-          const next = new Set(prev)
-          for (const p of chain) next.add(p)
-          return next
-        })
-        // Prefetch ancestors so the tree can expand from Linux `/`
-        for (const p of chain) {
-          void fetchDir(p)
-        }
         setNavOpen(true)
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
       }
     },
-    [project?.id, fetchDir],
+    [project?.id, showAll],
   )
 
   const refreshScene = useCallback(async () => {
@@ -273,36 +178,52 @@ export function FilesTab({
     setDirty(false)
     setDir(projectRoot)
     setEntries([])
-    setChildrenByDir({})
-    setExpanded(new Set(['/']))
     setNavOpen(true)
     setConfirm(null)
     setStatus(projectRoot)
-    // Open at the project path; path bar can walk up to `/`
     void loadDir(projectRoot)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.id, showAll])
 
-  async function toggleDir(path: string) {
-    const abs = toAbs(path)
-    setExpanded((prev) => {
-      const next = new Set(prev)
-      if (next.has(abs)) next.delete(abs)
-      else next.add(abs)
-      return next
-    })
-    setDir(abs)
-    try {
-      if (!childrenByDir[abs]) {
-        const list = await fetchDir(abs)
-        setEntries(list)
-      } else {
-        setEntries(childrenByDir[abs])
+  // Chat / Work can ask us to open a path
+  useEffect(() => {
+    if (!focusPath || !project) return
+    const raw = focusPath.trim()
+    const abs = raw.startsWith('/') ? toAbs(raw) : toAbs(`${project.path}/${raw}`)
+    let cancelled = false
+    ;(async () => {
+      try {
+        // Prefer file open; if that fails, open as directory
+        const data = await api.fsRead(project.id, abs)
+        if (cancelled) return
+        const opened = toAbs(data.path)
+        setFilePath(opened)
+        setContent(data.content)
+        setSavedContent(data.content)
+        setLanguage(data.language)
+        setDirty(false)
+        setStatus(`${opened} · ${data.size}b`)
+        const parent = parentDir(opened)
+        setDir(parent)
+        const listed = await api.fsList(project.id, parent, { all: showAll })
+        if (!cancelled) setEntries(listed.entries)
+        if (window.innerWidth < 768) setNavOpen(false)
+      } catch {
+        if (cancelled) return
+        try {
+          await loadDir(abs)
+        } catch {
+          /* ignore */
+        }
+      } finally {
+        if (!cancelled) onFocusPathConsumed?.()
       }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    })()
+    return () => {
+      cancelled = true
     }
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusPath, project?.id])
 
   async function openFile(path: string) {
     if (!project) return
@@ -319,12 +240,11 @@ export function FilesTab({
       setStatus(`${opened} · ${data.size}b`)
       const parent = parentDir(opened)
       setDir(parent)
-      setExpanded((prev) => {
-        const next = new Set(prev)
-        for (const p of ancestorDirs(parent)) next.add(p)
-        return next
-      })
-      for (const p of ancestorDirs(parent)) void fetchDir(p)
+      // Keep listing the folder that contains this file (path-bar perspective)
+      if (toAbs(dir) !== parent) {
+        const listed = await api.fsList(project.id, parent, { all: showAll })
+        setEntries(listed.entries)
+      }
       if (window.innerWidth < 768) setNavOpen(false)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -358,7 +278,6 @@ export function FilesTab({
 
   function goToFolder(path: string) {
     const abs = toAbs(path)
-    // Already at this folder with no file open — nothing to do
     if (!filePath && toAbs(dir) === abs) return
     if (dirty) {
       setConfirm({ type: 'navigate', path: abs })
@@ -372,9 +291,9 @@ export function FilesTab({
   }
 
   const trail = useMemo(() => explorerTrail(dir, filePath), [dir, filePath])
-  const mobileFiltered = useMemo(() => filterEntries(entries, filter), [entries, filter])
+  const folderEntries = useMemo(() => filterEntries(entries, filter), [entries, filter])
   const editing = !!filePath && !navOpen
-  const fileName = filePath?.split('/').filter(Boolean).pop() || filePath || ''
+  const hereLabel = leafName(dir)
 
   if (!project) {
     return <p className="hb-page text-mute text-sm">Add a workspace to browse files.</p>
@@ -528,27 +447,61 @@ export function FilesTab({
     </div>
   )
 
+  const folderList = (
+    <ul className="flex-1 overflow-y-auto text-sm min-h-0">
+      {folderEntries.length === 0 && (
+        <li className="px-3 py-6 text-mute text-xs text-center">Empty folder</li>
+      )}
+      {folderEntries.map((e) => (
+        <li key={e.path}>
+          <button
+            type="button"
+            className={`w-full text-left px-3 py-2.5 md:py-2 border-b border-line/40 flex items-center gap-2 ${
+              filePath === e.path
+                ? 'bg-accent/12 text-accent border-l-2 border-l-accent'
+                : 'hover:bg-panel-2 active:bg-accent/10 border-l-2 border-l-transparent'
+            }`}
+            onClick={() => (e.type === 'dir' ? goToFolder(e.path) : void openFile(e.path))}
+            title={e.path}
+          >
+            <span
+              className={`inline-flex w-5 shrink-0 justify-center text-[11px] font-mono ${
+                e.type === 'dir' ? 'text-sky' : 'text-mute'
+              }`}
+            >
+              {e.type === 'dir' ? '▸' : '·'}
+            </span>
+            <span className={`truncate font-medium ${e.ignored ? 'text-mute italic' : ''}`}>
+              {e.name}
+            </span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  )
+
   return (
-    <div className="h-full flex flex-col min-h-0 pb-[5.5rem]">
-      {/* Always-visible explorer chrome */}
+    <div className={`h-full flex flex-col min-h-0 ${embedded ? '' : 'hb-with-nav'}`}>
       <div className="hb-chrome shrink-0">
         <div className="px-3 pt-3 pb-2 space-y-2 max-w-6xl mx-auto w-full md:max-w-none md:mx-0">
           <div className="flex flex-wrap gap-2 items-center md:hidden">
-            <select
-              value={project.id}
-              onChange={(e) => onSelect(e.target.value)}
-              className="hb-select flex-1 min-w-0 !min-h-10 py-2 text-sm"
-              aria-label="Project shortcut"
-            >
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
+            {!embedded && (
+              <select
+                value={project.id}
+                onChange={(e) => onSelect(e.target.value)}
+                className="hb-select flex-1 min-w-0 !min-h-10 py-2 text-sm"
+                aria-label="Project shortcut"
+              >
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            )}
             <button
               type="button"
-              className="hb-btn hb-btn-ghost !min-h-10 px-3 text-xs"
+              className={`hb-btn hb-btn-ghost !min-h-10 px-3 text-xs ${embedded ? 'ml-auto' : ''}`}
               onClick={() => setNavOpen((v) => !v)}
             >
               {navOpen ? (filePath ? 'Open editor' : 'Browse') : '← Files'}
@@ -579,18 +532,24 @@ export function FilesTab({
           <div className="px-2 py-2 flex gap-2 border-b border-line items-center shrink-0">
             <button
               type="button"
-              className="md:hidden hb-btn hb-btn-ghost text-xs px-2.5 py-1.5 shrink-0 disabled:opacity-30"
+              className="hb-btn hb-btn-ghost text-xs px-2.5 py-1.5 shrink-0 disabled:opacity-30"
               onClick={() => goToFolder(parentDir(dir))}
               disabled={toAbs(dir) === '/'}
               title="Up one folder"
             >
               ↑ Up
             </button>
+            <div
+              className="min-w-0 flex-1 truncate font-mono text-[11px] text-sky font-semibold px-1"
+              title={dir}
+            >
+              {hereLabel}
+            </div>
             <input
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
               placeholder="Filter…"
-              className="flex-1 min-w-0 rounded-lg bg-panel-2 border border-line px-2.5 py-1.5 text-xs outline-none focus:border-accent"
+              className="w-[5.5rem] sm:w-24 shrink-0 rounded-lg bg-panel-2 border border-line px-2 py-1.5 text-xs outline-none focus:border-accent"
             />
             <label
               className="shrink-0 flex items-center gap-1 text-[10px] font-mono text-mute cursor-pointer select-none"
@@ -606,53 +565,7 @@ export function FilesTab({
             </label>
           </div>
 
-          <ul className="hidden md:block flex-1 overflow-y-auto text-sm min-h-0">
-            {(childrenByDir['/'] || []).length === 0 && (
-              <li className="px-3 py-6 text-mute text-xs text-center">Empty folder</li>
-            )}
-            <TreeRows
-              dirPath="/"
-              depth={0}
-              childrenByDir={childrenByDir}
-              expanded={expanded}
-              filter={filter}
-              filePath={filePath}
-              onToggleDir={(p) => void toggleDir(p)}
-              onOpenFile={(p) => void openFile(p)}
-            />
-          </ul>
-
-          <ul className="md:hidden flex-1 overflow-y-auto text-sm min-h-0">
-            {mobileFiltered.length === 0 && (
-              <li className="px-3 py-6 text-mute text-xs text-center">Empty folder</li>
-            )}
-            {mobileFiltered.map((e) => (
-              <li key={e.path}>
-                <button
-                  type="button"
-                  className={`w-full text-left px-3 py-3.5 border-b border-line/40 active:bg-accent/10 ${
-                    filePath === e.path
-                      ? 'bg-accent/12 text-accent border-l-2 border-l-accent'
-                      : 'hover:bg-panel-2'
-                  }`}
-                  onClick={() =>
-                    e.type === 'dir' ? void loadDir(e.path) : void openFile(e.path)
-                  }
-                >
-                  <span
-                    className={`inline-flex items-center justify-center w-6 mr-2 text-[11px] font-mono ${
-                      e.type === 'dir' ? 'text-sky' : 'text-mute'
-                    }`}
-                  >
-                    {e.type === 'dir' ? '▸' : '·'}
-                  </span>
-                  <span className={`font-medium ${e.ignored ? 'text-mute italic' : ''}`}>
-                    {e.name}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
+          {folderList}
         </aside>
 
         <div
@@ -680,8 +593,7 @@ export function FilesTab({
               <div>
                 <p className="text-text font-semibold mb-1">Select a file</p>
                 <p className="text-xs max-w-xs mx-auto leading-relaxed">
-                  Path bar walks the host from Linux <span className="font-mono">/</span>. Shortcuts
-                  jump back to a workspace.
+                  Left nav lists only this folder. Use the path bar or ↑ Up to move around.
                 </p>
               </div>
             </div>
@@ -697,35 +609,19 @@ export function FilesTab({
                 ? 'Save this file?'
                 : confirm.type === 'revert'
                   ? 'Revert changes?'
-                  : 'Leave without saving?'}
+                  : 'Discard unsaved changes?'}
             </h2>
-            <p className="text-sm text-mute leading-relaxed">
-              {confirm.type === 'save' && (
-                <>
-                  Write unsaved changes to{' '}
-                  <span className="font-mono text-text break-all">{fileName}</span>?
-                </>
-              )}
-              {confirm.type === 'revert' && (
-                <>
-                  Discard unsaved edits in{' '}
-                  <span className="font-mono text-text break-all">{fileName}</span> and restore the
-                  last saved version?
-                </>
-              )}
-              {confirm.type === 'navigate' && (
-                <>
-                  You have unsaved changes in{' '}
-                  <span className="font-mono text-text break-all">{fileName}</span>. Leave this
-                  folder and discard them?
-                </>
-              )}
+            <p className="text-xs text-mute leading-relaxed">
+              {confirm.type === 'save'
+                ? filePath
+                : confirm.type === 'revert'
+                  ? 'Unsaved edits will be lost.'
+                  : 'You have unsaved edits. Continue without saving?'}
             </p>
-            <div className="flex gap-2">
+            <div className="flex gap-2 justify-end">
               <button
                 type="button"
-                className="hb-btn hb-btn-ghost flex-1"
-                disabled={busy}
+                className="hb-btn hb-btn-ghost text-sm"
                 onClick={() => setConfirm(null)}
               >
                 Cancel
@@ -733,29 +629,24 @@ export function FilesTab({
               {confirm.type === 'save' ? (
                 <button
                   type="button"
-                  className="hb-btn hb-btn-primary flex-1"
+                  className="hb-btn hb-btn-primary text-sm"
                   disabled={busy}
                   onClick={() => void doSave()}
                 >
-                  {busy ? 'Saving…' : 'Save'}
+                  Save
                 </button>
               ) : confirm.type === 'revert' ? (
-                <button
-                  type="button"
-                  className="hb-btn hb-btn-danger flex-1"
-                  disabled={busy}
-                  onClick={doRevert}
-                >
+                <button type="button" className="hb-btn hb-btn-danger text-sm" onClick={doRevert}>
                   Revert
                 </button>
               ) : (
                 <button
                   type="button"
-                  className="hb-btn hb-btn-danger flex-1"
-                  disabled={busy}
+                  className="hb-btn hb-btn-danger text-sm"
                   onClick={() => {
                     const path = confirm.path
                     setConfirm(null)
+                    setDirty(false)
                     void loadDir(path)
                   }}
                 >

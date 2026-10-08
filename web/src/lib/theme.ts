@@ -1,6 +1,8 @@
 export type ThemeMode = 'night' | 'day'
 
 const STORAGE_KEY = 'hb-theme'
+/** Manual top inset for iPhone island / notch — phone & tablet only (CSS gated). */
+const SAFE_TOP_KEY = 'hb-safe-top'
 
 export function getStoredTheme(): ThemeMode {
   try {
@@ -29,6 +31,27 @@ export function setTheme(mode: ThemeMode): void {
     /* ignore */
   }
   applyTheme(mode)
+}
+
+export function getMobileSafeTop(): boolean {
+  try {
+    return localStorage.getItem(SAFE_TOP_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function applyMobileSafeTop(on: boolean = getMobileSafeTop()): void {
+  document.documentElement.dataset.safeTop = on ? '1' : '0'
+}
+
+export function setMobileSafeTop(on: boolean): void {
+  try {
+    localStorage.setItem(SAFE_TOP_KEY, on ? '1' : '0')
+  } catch {
+    /* ignore */
+  }
+  applyMobileSafeTop(on)
 }
 
 /** Keys that are safe to wipe as client cache (keeps session + theme). */

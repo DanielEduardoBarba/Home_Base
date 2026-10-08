@@ -20,7 +20,12 @@ SPA fetch/WebSocket paths are always relative (`/api/...`, `/ws/...` via `locati
 
 ## UI tabs
 
-Apps · Shell · Files · Cursor · Logs · Alerts · **Settings**. Theme (night/day), cache clear, sign-out, and localhost Share/password live under Settings.
+Apps · **Work** · Chat · Shell · Files · Alerts · Logs · **More/Settings**.
+
+- **Work** — switch Apps / Shell / Files in one workspace with a bottom-right chat dock (Cursor-like). Chat can present a shell or file into the scene.
+- **Chat** — full-page agent; same engine as the Work dock; can jump into Work to show Apps/Shell/Files.
+- **Shell** — standalone PTY + session attach (unchanged).
+- Alerts opens a bell inbox (toasts + dropdown); History is a right drawer. Chat supports English speech→text; Cursor done pings toast/sound and optional browser notifications. Theme, notification prefs, cache clear, sign-out, and localhost Share/password live under More.
 
 ## Config model
 

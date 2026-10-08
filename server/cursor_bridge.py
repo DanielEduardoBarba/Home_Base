@@ -9,6 +9,7 @@ from typing import Any, AsyncIterator, Optional
 
 from .config import AGENTS_PATH, get_project, get_settings
 from .cursor_env import ensure_cursor_bridge_env
+from .notifications import push as notify
 
 log = logging.getLogger("homebase.cursor")
 
@@ -337,14 +338,43 @@ class CursorBridge:
                         yield {"type": "text", "text": text}
 
             result = await run.wait()
+            status = getattr(result, "status", "finished")
+            try:
+                pname = get_project(project_id).name
+            except Exception:
+                pname = project_id
+            err = str(status).lower() in {"error", "failed"}
+            notify(
+                "Cursor finished with error" if err else "Cursor finished",
+                f"{pname} · chat ready to check",
+                level="error" if err else "success",
+                category="cursor",
+                meta={
+                    "projectId": project_id,
+                    "chatId": chat_id,
+                    "status": str(status),
+                    "runId": run_id,
+                },
+            )
             yield {
                 "type": "done",
-                "status": getattr(result, "status", "finished"),
+                "status": status,
                 "runId": run_id,
                 "result": _safe_result(result),
             }
         except Exception as e:
             log.exception("send_stream failed")
+            try:
+                pname = get_project(project_id).name
+            except Exception:
+                pname = project_id
+            notify(
+                "Cursor error",
+                f"{pname}: {str(e)[:180]}",
+                level="error",
+                category="cursor",
+                meta={"projectId": project_id, "chatId": chat_id},
+            )
             yield {"type": "error", "error": str(e)}
         finally:
             self._active_run.pop(key, None)

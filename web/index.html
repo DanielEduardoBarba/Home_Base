@@ -9,6 +9,8 @@
     <meta name="theme-color" content="#070a0f" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <title>Home Base</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -22,6 +24,8 @@
         if (t !== 'day' && t !== 'night') t = 'night'
         document.documentElement.dataset.theme = t
         document.documentElement.style.colorScheme = t === 'day' ? 'light' : 'dark'
+        document.documentElement.dataset.safeTop =
+          localStorage.getItem('hb-safe-top') === '1' ? '1' : '0'
       } catch (e) {}
     </script>
   </head>

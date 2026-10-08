@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../lib/api'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 import type { Project, Session } from '../lib/types'
@@ -17,19 +17,27 @@ export function ShellTab({
   onSelect,
   attachSessionIds,
   onClearAttach,
+  /** Increment to open a fresh interactive PTY once. */
+  startShellKey = 0,
+  embedded = false,
 }: {
   projects: Project[]
   selectedId: string
   onSelect: (id: string) => void
   attachSessionIds?: string[] | null
   onClearAttach?: () => void
+  startShellKey?: number
+  /** When true (Work tab), skip project picker — Work chrome owns it. */
+  embedded?: boolean
 }) {
   const project = projects.find((p) => p.id === selectedId) || projects[0]
   const [sessions, setSessions] = useState<Session[]>([])
   const [attach, setAttach] = useState<string[]>(attachSessionIds || [])
-  const [interactive, setInteractive] = useState(false)
-  const [nonce, setNonce] = useState(0)
+  // Honor startShellKey on first mount (Work chat "+ Shell" mounts us with key > 0)
+  const [interactive, setInteractive] = useState(() => startShellKey > 0)
+  const [nonce, setNonce] = useState(() => (startShellKey > 0 ? startShellKey : 0))
   const [error, setError] = useState('')
+  const lastStartKey = useRef(startShellKey)
 
   useEffect(() => {
     if (attachSessionIds?.length) {
@@ -38,6 +46,15 @@ export function ShellTab({
       setError('')
     }
   }, [attachSessionIds])
+
+  useEffect(() => {
+    if (!startShellKey || startShellKey === lastStartKey.current) return
+    lastStartKey.current = startShellKey
+    setAttach([])
+    setInteractive(true)
+    setNonce((n) => n + 1)
+    setError('')
+  }, [startShellKey])
 
   const refresh = useCallback(async () => {
     if (!project) return
@@ -110,24 +127,27 @@ export function ShellTab({
   }
 
   return (
-    <div className="h-full flex flex-col min-h-0 pb-[5.5rem]">
+    <div className={`h-full flex flex-col min-h-0 ${embedded ? '' : 'hb-with-nav'}`}>
       <div className="hb-chrome shrink-0">
         <div className="hb-chrome-inner space-y-2">
           <div className="flex gap-2 items-center">
-            <ProjectSelect
-              projects={projects}
-              selectedId={project.id}
-              onSelect={(id) => {
-                onSelect(id)
-                setAttach([])
-                setInteractive(false)
-                onClearAttach?.()
-              }}
-              className="flex-1"
-            />
+            {!embedded && (
+              <ProjectSelect
+                projects={projects}
+                selectedId={project.id}
+                onSelect={(id) => {
+                  onSelect(id)
+                  setAttach([])
+                  setInteractive(false)
+                  onClearAttach?.()
+                }}
+                className="flex-1"
+              />
+            )}
             {!inTerminal ? (
               <IconBtn
                 label="New shell"
+                className={embedded ? 'ml-auto' : undefined}
                 onClick={() => {
                   setAttach([])
                   onClearAttach?.()
@@ -139,7 +159,7 @@ export function ShellTab({
               <button
                 type="button"
                 onClick={leaveTerminal}
-                className="hb-btn hb-btn-ghost text-sm !min-h-10 px-3"
+                className={`hb-btn hb-btn-ghost text-sm !min-h-10 px-3 ${embedded ? 'ml-auto' : ''}`}
               >
                 Back
               </button>

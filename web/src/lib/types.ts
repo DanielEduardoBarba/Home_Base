@@ -1,4 +1,12 @@
-export type Tab = 'apps' | 'shell' | 'files' | 'cursor' | 'logs' | 'alerts' | 'settings'
+export type Tab =
+  | 'apps'
+  | 'work'
+  | 'shell'
+  | 'files'
+  | 'cursor'
+  | 'logs'
+  | 'alerts'
+  | 'settings'
 
 /** True only when the page itself is loaded from loopback (not .local / LAN). */
 export function isLocalHostPage(): boolean {

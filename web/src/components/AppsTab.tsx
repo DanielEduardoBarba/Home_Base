@@ -39,12 +39,15 @@ export function AppsTab({
   onSelect,
   onRefresh,
   onOpenShell,
+  embedded = false,
 }: {
   projects: Project[]
   selectedId: string
   onSelect: (id: string) => void
   onRefresh: () => void | Promise<void>
   onOpenShell: (sessionIds?: string | string[]) => void
+  /** When true (Work tab), skip brand header — Work chrome owns project. */
+  embedded?: boolean
 }) {
   const [busy, setBusy] = useState('')
   const [msg, setMsg] = useState('')
@@ -152,24 +155,28 @@ export function AppsTab({
   const portCount = project.ports.length
 
   return (
-    <div className="hb-page space-y-4 hb-enter">
-      <header>
-        <div className="hb-brand-rule" />
-        <h1 className="font-display text-2xl md:text-3xl font-extrabold tracking-tight">
-          Home<span className="text-accent"> Base</span>
-        </h1>
-      </header>
+    <div className={`hb-page space-y-4 hb-enter ${embedded ? '!pt-3' : ''}`}>
+      {!embedded && (
+        <header>
+          <div className="hb-brand-rule" />
+          <h1 className="font-display text-2xl md:text-3xl font-extrabold tracking-tight">
+            Home<span className="text-accent"> Base</span>
+          </h1>
+        </header>
+      )}
 
       <section className="hb-surface p-3.5 sm:p-4 space-y-3">
-        <label className="block space-y-1">
-          <span className="hb-label">App</span>
-          <ProjectSelect
-            projects={projects}
-            selectedId={project.id}
-            onSelect={onSelect}
-            className="w-full !min-h-10 !py-2 text-sm"
-          />
-        </label>
+        {!embedded && (
+          <label className="block space-y-1">
+            <span className="hb-label">App</span>
+            <ProjectSelect
+              projects={projects}
+              selectedId={project.id}
+              onSelect={onSelect}
+              className="w-full !min-h-10 !py-2 text-sm"
+            />
+          </label>
+        )}
 
         {!!portCount && (
           <div

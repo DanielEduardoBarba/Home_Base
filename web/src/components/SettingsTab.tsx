@@ -1,16 +1,27 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../lib/api'
 import { clearToken, getExpiresAt } from '../lib/auth'
+import { useNotify } from '../lib/NotifyContext'
 import { useSceneRefresh } from '../lib/sceneRefresh'
-import { clearAppCache, getStoredTheme, listCacheKeys, setTheme, type ThemeMode } from '../lib/theme'
+import {
+  clearAppCache,
+  getMobileSafeTop,
+  getStoredTheme,
+  listCacheKeys,
+  setMobileSafeTop,
+  setTheme,
+  type ThemeMode,
+} from '../lib/theme'
 import { isLocalHostPage } from '../lib/types'
 import { HoldButton } from './HoldButton'
 import { SharingTab } from './SharingTab'
 
 export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
   const [theme, setThemeState] = useState<ThemeMode>(() => getStoredTheme())
+  const [safeTop, setSafeTopState] = useState(() => getMobileSafeTop())
   const [cacheMsg, setCacheMsg] = useState('')
   const [sysMsg, setSysMsg] = useState('')
+  const [notifyMsg, setNotifyMsg] = useState('')
   const [confirmCache, setConfirmCache] = useState(false)
   const [confirmSignOut, setConfirmSignOut] = useState(false)
   const [wgList, setWgList] = useState<{ id: string; unit: string }[]>([])
@@ -20,6 +31,15 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
   const [busy, setBusy] = useState('')
   const local = isLocalHostPage()
   const cacheCount = useMemo(() => listCacheKeys().length, [cacheMsg])
+  const {
+    prefs,
+    permission,
+    setSound,
+    setOs,
+    enableOsNotifications,
+    ping,
+    unlockAudio,
+  } = useNotify()
 
   const loadSystem = useCallback(async () => {
     try {
@@ -53,6 +73,12 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
   function chooseTheme(mode: ThemeMode) {
     setTheme(mode)
     setThemeState(mode)
+  }
+
+  function toggleSafeTop() {
+    const next = !safeTop
+    setMobileSafeTop(next)
+    setSafeTopState(next)
   }
 
   function doClearCache() {
@@ -135,6 +161,142 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
               Day
             </button>
           </div>
+        </section>
+
+        <section className="hb-surface p-3.5 space-y-2.5">
+          <h2 className="hb-label">Notifications</h2>
+          <p className="text-xs text-mute leading-relaxed">
+            Toasts + ping sound in-app. Chrome / iPhone: enable browser alerts below. On iPhone,
+            Add to Home Screen gives the best chance of lock-screen banners while you leave Chat
+            working.
+          </p>
+
+          <button
+            type="button"
+            role="switch"
+            aria-checked={prefs.sound}
+            onClick={() => {
+              unlockAudio()
+              setSound(!prefs.sound)
+              if (!prefs.sound) {
+                ping({ title: 'Sound on', body: 'You will hear a ping for new alerts', level: 'success' })
+              }
+            }}
+            className="w-full flex items-center justify-between gap-3 text-left rounded-xl border border-line bg-panel-2/60 px-3 py-3"
+          >
+            <span className="min-w-0">
+              <span className="block text-sm font-semibold">Ping sound</span>
+              <span className="block text-[11px] text-mute mt-0.5 leading-snug">
+                Short beep when Cursor finishes or an alert arrives
+              </span>
+            </span>
+            <span
+              className={`shrink-0 relative w-11 h-6 rounded-full transition-colors ${
+                prefs.sound ? 'bg-accent' : 'bg-line'
+              }`}
+              aria-hidden
+            >
+              <span
+                className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
+                  prefs.sound ? 'translate-x-5' : 'translate-x-0'
+                }`}
+              />
+            </span>
+          </button>
+
+          <button
+            type="button"
+            role="switch"
+            aria-checked={prefs.os && permission === 'granted'}
+            onClick={() => {
+              void (async () => {
+                unlockAudio()
+                if (permission !== 'granted') {
+                  const perm = await enableOsNotifications()
+                  if (perm === 'granted') {
+                    setNotifyMsg('Browser notifications enabled')
+                    ping({
+                      title: 'Alerts ready',
+                      body: 'You will get a system notification when Cursor finishes',
+                      level: 'success',
+                    })
+                  } else if (perm === 'denied') {
+                    setNotifyMsg('Permission blocked — check site settings in Chrome')
+                  } else if (perm === 'unsupported') {
+                    setNotifyMsg(
+                      'This browser has no Notification API. Toasts + sound still work; try Add to Home Screen on iPhone.',
+                    )
+                  } else {
+                    setNotifyMsg('Permission not granted yet')
+                  }
+                  return
+                }
+                setOs(!prefs.os)
+                setNotifyMsg(prefs.os ? 'System banners off' : 'System banners on')
+              })()
+            }}
+            className="w-full flex items-center justify-between gap-3 text-left rounded-xl border border-line bg-panel-2/60 px-3 py-3"
+          >
+            <span className="min-w-0">
+              <span className="block text-sm font-semibold">Browser / lock screen</span>
+              <span className="block text-[11px] text-mute mt-0.5 leading-snug">
+                Status:{' '}
+                {permission === 'granted'
+                  ? prefs.os
+                    ? 'allowed'
+                    : 'allowed (off)'
+                  : permission === 'denied'
+                    ? 'blocked'
+                    : permission === 'unsupported'
+                      ? 'unsupported'
+                      : 'not asked'}
+              </span>
+            </span>
+            <span
+              className={`shrink-0 relative w-11 h-6 rounded-full transition-colors ${
+                prefs.os && permission === 'granted' ? 'bg-accent' : 'bg-line'
+              }`}
+              aria-hidden
+            >
+              <span
+                className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
+                  prefs.os && permission === 'granted' ? 'translate-x-5' : 'translate-x-0'
+                }`}
+              />
+            </span>
+          </button>
+          {notifyMsg && <p className="text-xs text-sky">{notifyMsg}</p>}
+        </section>
+
+        {/* Phone / tablet only — desktop never shows or applies this */}
+        <section className="hb-surface p-3.5 space-y-2.5 md:hidden">
+          <h2 className="hb-label">Display</h2>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={safeTop}
+            onClick={toggleSafeTop}
+            className="w-full flex items-center justify-between gap-3 text-left rounded-xl border border-line bg-panel-2/60 px-3 py-3"
+          >
+            <span className="min-w-0">
+              <span className="block text-sm font-semibold">Top safe area</span>
+              <span className="block text-[11px] text-mute mt-0.5 leading-snug">
+                Extra top padding for iPhone island / notch. Turn off if you don’t need it.
+              </span>
+            </span>
+            <span
+              className={`shrink-0 relative w-11 h-6 rounded-full transition-colors ${
+                safeTop ? 'bg-accent' : 'bg-line'
+              }`}
+              aria-hidden
+            >
+              <span
+                className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
+                  safeTop ? 'translate-x-5' : 'translate-x-0'
+                }`}
+              />
+            </span>
+          </button>
         </section>
 
         <section className="hb-surface p-3.5 space-y-2.5">

@@ -93,7 +93,7 @@ export function LogsTab() {
   }
 
   return (
-    <div className="h-full flex flex-col min-h-0 pb-[5.5rem]">
+    <div className="h-full flex flex-col min-h-0 hb-with-nav">
       <div className="hb-chrome shrink-0">
         <div className="hb-chrome-inner space-y-2">
           <div className="flex flex-wrap gap-2 items-center">

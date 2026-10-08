@@ -1,26 +1,32 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { AlertsTab } from './components/AlertsTab'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { AppsTab } from './components/AppsTab'
 import { CursorTab } from './components/CursorTab'
 import { FilesTab } from './components/FilesTab'
 import { Login } from './components/Login'
 import { LogsTab } from './components/LogsTab'
+import { NotificationCenter } from './components/NotificationCenter'
 import { PullToRefresh } from './components/PullToRefresh'
 import { SettingsTab } from './components/SettingsTab'
 import { ShellTab } from './components/ShellTab'
+import { ToastStack } from './components/ToastStack'
+import { WorkTab } from './components/WorkTab'
 import { api } from './lib/api'
 import { clearToken, isSessionValid } from './lib/auth'
+import type { PresentRequest } from './lib/chatTypes'
 import { installClientLog } from './lib/clientLog'
+import { NotifyProvider, useNotify } from './lib/NotifyContext'
 import { runSceneRefresh } from './lib/sceneRefresh'
-import { applyTheme, getStoredTheme } from './lib/theme'
+import { applyMobileSafeTop, applyTheme, getStoredTheme } from './lib/theme'
 import { type Project, type Tab } from './lib/types'
 
 installClientLog()
 applyTheme(getStoredTheme())
+applyMobileSafeTop()
 
-/** Mobile-first order: control → chat → terminal → files → inbox → logs → settings */
+/** Mobile-first: Apps · Work · Chat · Shell · Files · Alerts · Logs · More */
 const TABS: { id: Tab; label: string }[] = [
   { id: 'apps', label: 'Apps' },
+  { id: 'work', label: 'Work' },
   { id: 'cursor', label: 'Chat' },
   { id: 'shell', label: 'Shell' },
   { id: 'files', label: 'Files' },
@@ -39,6 +45,14 @@ function TabIcon({ id }: { id: Tab }) {
           <rect x="13.5" y="3.5" width="7" height="7" rx="1.5" />
           <rect x="3.5" y="13.5" width="7" height="7" rx="1.5" />
           <rect x="13.5" y="13.5" width="7" height="7" rx="1.5" />
+        </svg>
+      )
+    case 'work':
+      return (
+        <svg {...common}>
+          <rect x="3.5" y="5" width="17" height="14" rx="1.5" />
+          <path d="M3.5 9.5h17" />
+          <path d="M14 9.5v9.5" />
         </svg>
       )
     case 'shell':
@@ -69,9 +83,8 @@ function TabIcon({ id }: { id: Tab }) {
     case 'alerts':
       return (
         <svg {...common}>
-          <path d="M12 4.5 20 18.5H4L12 4.5z" />
-          <path d="M12 10v4" />
-          <circle cx="12" cy="16.5" r="0.6" fill="currentColor" stroke="none" />
+          <path d="M15 17.5H5.5a1.5 1.5 0 0 1-1.3-2.25C5.3 13.4 6 11.8 6 10a6 6 0 1 1 12 0c0 1.8.7 3.4 1.8 5.25A1.5 1.5 0 0 1 18.5 17.5H15z" />
+          <path d="M10 17.5v.75a2 2 0 0 0 4 0v-.75" />
         </svg>
       )
     case 'settings':
@@ -86,19 +99,37 @@ function TabIcon({ id }: { id: Tab }) {
   }
 }
 
-export default function App() {
-  const [authed, setAuthed] = useState(() => isSessionValid())
+function AuthedApp() {
   const [tab, setTab] = useState<Tab>('apps')
   const [projects, setProjects] = useState<Project[]>([])
   const [selectedId, setSelectedId] = useState('')
   const [attachSessionIds, setAttachSessionIds] = useState<string[] | null>(null)
+  const [workPresent, setWorkPresent] = useState<PresentRequest | null>(null)
+  /** Bumps so Work re-applies even if the same scene is requested twice. */
+  const [workPresentKey, setWorkPresentKey] = useState(0)
+  const workPresentSeq = useRef(0)
   const [loadError, setLoadError] = useState('')
-  const [unread, setUnread] = useState(0)
   const [version, setVersion] = useState('')
   const [backup, setBackup] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const {
+    unread,
+    inboxOpen,
+    toggleInbox,
+    closeInbox,
+    unlockAudio,
+    refresh: refreshNotify,
+  } = useNotify()
 
   const tabs = useMemo(() => TABS, [])
+
+  /** Chat → Work: show Apps / Shell / Files (and optionally a shell or file). */
+  const presentInWork = useCallback((req: PresentRequest) => {
+    workPresentSeq.current += 1
+    setWorkPresent(req)
+    setWorkPresentKey(workPresentSeq.current)
+    setTab('work')
+  }, [])
 
   const refreshProjects = useCallback(async () => {
     try {
@@ -108,8 +139,6 @@ export default function App() {
       if (!data.projects.find((p) => p.id === selectedId)) {
         setSelectedId(data.projects[0]?.id || '')
       }
-      const n = await api.notifications({ limit: 1, history: true })
-      setUnread(n.unread)
       try {
         const v = await api.version()
         setVersion(v.version || '')
@@ -117,16 +146,17 @@ export default function App() {
       } catch {
         /* ignore */
       }
+      void refreshNotify()
     } catch (e) {
       const err = e as Error & { status?: number }
       const msg = err.message || String(e)
       setLoadError(msg)
       if (err.status === 401 || err.status === 429 || /unauthorized|401/i.test(msg)) {
         clearToken()
-        setAuthed(false)
+        window.dispatchEvent(new Event('hb-auth-lost'))
       }
     }
-  }, [selectedId])
+  }, [selectedId, refreshNotify])
 
   const refresh = useCallback(async () => {
     setRefreshing(true)
@@ -138,15 +168,10 @@ export default function App() {
   }, [refreshProjects])
 
   useEffect(() => {
-    if (!authed) return
     void refreshProjects()
     const t = setInterval(() => void refreshProjects(), 10000)
     return () => clearInterval(t)
-  }, [authed, refreshProjects])
-
-  if (!authed) {
-    return <Login onAuthed={() => setAuthed(true)} />
-  }
+  }, [refreshProjects])
 
   let body: ReactNode = null
   if (tab === 'apps') {
@@ -166,6 +191,17 @@ export default function App() {
         />
       </div>
     )
+  } else if (tab === 'work') {
+    body = (
+      <WorkTab
+        projects={projects}
+        selectedId={selectedId}
+        onSelect={setSelectedId}
+        onRefresh={refreshProjects}
+        present={workPresent}
+        presentKey={workPresentKey}
+      />
+    )
   } else if (tab === 'shell') {
     body = (
       <ShellTab
@@ -182,17 +218,20 @@ export default function App() {
     )
   } else if (tab === 'cursor') {
     body = (
-      <CursorTab projects={projects} selectedId={selectedId} onSelect={setSelectedId} />
+      <CursorTab
+        projects={projects}
+        selectedId={selectedId}
+        onSelect={setSelectedId}
+        onPresent={presentInWork}
+      />
     )
   } else if (tab === 'logs') {
     body = <LogsTab />
-  } else if (tab === 'alerts') {
-    body = <AlertsTab />
   } else if (tab === 'settings') {
     body = (
       <SettingsTab
         onSignedOut={() => {
-          setAuthed(false)
+          window.dispatchEvent(new Event('hb-auth-lost'))
           setTab('apps')
         }}
       />
@@ -200,7 +239,7 @@ export default function App() {
   }
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="hb-app-shell h-full flex flex-col">
       <PullToRefresh onRefresh={refresh} />
       {refreshing && (
         <div className="hb-refresh-overlay" role="status" aria-live="polite" aria-label="Refreshing">
@@ -208,6 +247,9 @@ export default function App() {
         </div>
       )}
       <main className="flex-1 min-h-0 overflow-hidden">{body}</main>
+
+      <ToastStack />
+      <NotificationCenter />
 
       {version && (
         <div className="hb-version" aria-hidden>
@@ -225,10 +267,21 @@ export default function App() {
             <button
               key={t.id}
               type="button"
-              onClick={() => setTab(t.id)}
+              onClick={() => {
+                unlockAudio()
+                if (t.id === 'alerts') {
+                  toggleInbox()
+                  return
+                }
+                closeInbox()
+                // Drop stale present so revisiting Work via nav opens clean Apps scene
+                if (t.id !== 'work') setWorkPresent(null)
+                setTab(t.id)
+              }}
               className="hb-nav-item"
-              data-active={tab === t.id}
-              aria-current={tab === t.id ? 'page' : undefined}
+              data-active={t.id === 'alerts' ? inboxOpen : tab === t.id}
+              aria-current={t.id !== 'alerts' && tab === t.id ? 'page' : undefined}
+              aria-expanded={t.id === 'alerts' ? inboxOpen : undefined}
             >
               <TabIcon id={t.id} />
               <span className="truncate max-w-full px-0.5">{t.label}</span>
@@ -240,5 +293,25 @@ export default function App() {
         </div>
       </nav>
     </div>
+  )
+}
+
+export default function App() {
+  const [authed, setAuthed] = useState(() => isSessionValid())
+
+  useEffect(() => {
+    const onLost = () => setAuthed(false)
+    window.addEventListener('hb-auth-lost', onLost)
+    return () => window.removeEventListener('hb-auth-lost', onLost)
+  }, [])
+
+  if (!authed) {
+    return <Login onAuthed={() => setAuthed(true)} />
+  }
+
+  return (
+    <NotifyProvider>
+      <AuthedApp />
+    </NotifyProvider>
   )
 }
