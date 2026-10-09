@@ -10,7 +10,7 @@ from typing import Any, Callable, Optional
 
 from ptyprocess import PtyProcessUnicode
 
-from .shell_env import enrich_shell_env
+from .shell_env import enrich_shell_env, resolve_seat_user, seat_cmdline
 
 # Late attach (Apps → Shell) needs recent output; keep a ring of chunks.
 OUTPUT_BUFFER_MAX = 256_000
@@ -99,13 +99,9 @@ class PtyManager:
     ) -> PtySession:
         session_id = uuid.uuid4().hex[:12]
         cwd_s = str(cwd)
-        # Start from process env, merge caller overrides, then ensure pnpm/node
-        # (nvm / PNPM_HOME) are on PATH — critical for Expo/run under systemd root.
-        merged = os.environ.copy()
-        if env:
-            merged.update(env)
-        full_env = enrich_shell_env(merged)
-        # Sudo askpass for interactive shells / actions (Chat can vault a password).
+        # Native seat-user env (login+interactive profile) + caller overrides.
+        # Under systemd root, wrap with setpriv so Expo/run match a laptop shell.
+        full_env = enrich_shell_env(env)
         try:
             from .sudo_auth import askpass_env
 
@@ -116,8 +112,9 @@ class PtyManager:
         full_env.setdefault("TERM", "xterm-256color")
         full_env.setdefault("COLORTERM", "truecolor")
 
+        spawn_argv = seat_cmdline(list(cmdline))
         proc = PtyProcessUnicode.spawn(
-            cmdline,
+            spawn_argv,
             cwd=cwd_s,
             env=full_env,
             dimensions=(rows, cols),
@@ -146,7 +143,9 @@ class PtyManager:
         rows: int = 40,
     ) -> PtySession:
         # Interactive non-login shell so cwd= sticks (login shells often jump to $HOME).
-        shell = os.environ.get("SHELL", "/bin/bash")
+        # Env already includes the seat user's login+interactive profile.
+        seat = resolve_seat_user()
+        shell = (seat.shell if seat else None) or os.environ.get("SHELL", "/bin/bash")
         argv = [shell, "-i"] if "zsh" in shell or "bash" in shell else [shell]
         return await self.spawn(
             argv,

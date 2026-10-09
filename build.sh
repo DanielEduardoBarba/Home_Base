@@ -1213,6 +1213,10 @@ cmd_service() {
     echo "==> Installing approval hook → $INSTALL_SHARE/hb-hook-approve"
     run_priv install -m 0755 "$ROOT/scripts/hb-hook-approve" "$INSTALL_SHARE/hb-hook-approve"
   fi
+  if [[ -f "$ROOT/scripts/hb-vpn-access.sh" ]]; then
+    echo "==> Installing VPN access helper → $INSTALL_SHARE/hb-vpn-access.sh"
+    run_priv install -m 0755 "$ROOT/scripts/hb-vpn-access.sh" "$INSTALL_SHARE/hb-vpn-access.sh"
+  fi
 
   if ! restart_homebased_service; then
     exit 1

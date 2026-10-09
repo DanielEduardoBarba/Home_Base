@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=root
 Group=root
+ExecStartPre=/usr/share/homebased/hb-vpn-access.sh --apply
 ExecStart=/usr/bin/homebase
 WorkingDirectory=/var/lib/homebased
 Environment=HOMEBASE_HOME=/var/lib/homebased
