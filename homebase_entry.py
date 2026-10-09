@@ -76,6 +76,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     # View X11 helper — must run before self-test/uvicorn (setpriv drops to seat user).
+    # Do not import server.config here: production HOMEBASE_HOME/.env is root-only.
     if (
         "--view-worker" in sys.argv
         or os.environ.get("HOMEBASE_VIEW_WORKER", "").strip() in ("1", "true", "yes")

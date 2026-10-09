@@ -125,7 +125,18 @@ function MessageCard({
     )
   }
   if (m.role === 'status' || m.role === 'system') {
-    return <div className="text-mute text-[11px] font-mono px-1">{m.text}</div>
+    const err =
+      m.role === 'system' &&
+      /^(error|⚠|connection lost|agent run)/i.test((m.text || '').trim())
+    return (
+      <div
+        className={`text-[11px] font-mono px-1 whitespace-pre-wrap break-words ${
+          err ? 'text-danger' : 'text-mute'
+        }`}
+      >
+        {m.text}
+      </div>
+    )
   }
   return (
     <div className="hb-chat-assistant rounded-2xl px-3.5 py-3 text-sm leading-relaxed mr-4 shadow-sm">
@@ -170,6 +181,7 @@ export function ChatPanel({
   const [activeId, setActiveId] = useState('')
   const [input, setInput] = useState('')
   const [connState, setConnState] = useState<WsConnState>('connecting')
+  const connStateRef = useRef<WsConnState>('connecting')
   const connected = connState === 'live'
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState('')
@@ -217,6 +229,7 @@ export function ChatPanel({
   activeIdRef.current = activeId
   tabsRef.current = tabs
   streamingRef.current = streaming
+  connStateRef.current = connState
   notifyRef.current = notify
   onPresentRef.current = onPresent
 
@@ -302,12 +315,26 @@ export function ChatPanel({
     const handle = connectWithReconnect({
       url: () => wsUrl(`/ws/cursor?project=${encodeURIComponent(projectId)}`),
       onState: (s) => {
+        const prev = connStateRef.current
+        connStateRef.current = s
         setConnState(s)
-        if (s === 'reconnecting' || s === 'offline') {
+        if (
+          (s === 'reconnecting' || s === 'offline') &&
+          prev === 'live' &&
+          streamingRef.current
+        ) {
           setStreaming(false)
-        }
-        if (s === 'reconnecting') {
-          setError('')
+          const chatId = activeIdRef.current
+          if (chatId) {
+            finalizeStreamingBubbles(chatId)
+            pushMsg(chatId, {
+              id: uid(),
+              role: 'system',
+              text: 'Connection lost mid-run — socket will reconnect; you can continue this chat.',
+            })
+          }
+          setError('Connection lost mid-run — reconnecting…')
+          console.error('[cursor]', 'connection lost mid-run')
         }
       },
       onOpen: (ws) => {
@@ -359,8 +386,17 @@ export function ChatPanel({
             setStreaming(false)
             finalizeStreamingBubbles(chatId)
             assistantBuf.current = ''
-            const err = msg.status === 'error'
-            if (err) setError('Agent run ended with error')
+            const err =
+              String(msg.status || '').toLowerCase() === 'error' ||
+              String(msg.status || '').toLowerCase() === 'failed'
+            if (err) {
+              const detail = `Agent run ended with error (${msg.status}) — you can continue this chat.`
+              setError(detail)
+              pushMsg(chatId, { id: uid(), role: 'system', text: detail })
+              console.error('[cursor]', detail, msg)
+            } else {
+              setError('')
+            }
             if (wasStreaming && notifyRef.current) {
               const tab = tabsRef.current.find((t) => t.id === activeIdRef.current)
               const label = tab?.title || 'Chat'
@@ -372,14 +408,20 @@ export function ChatPanel({
               })
             }
           } else if (msg.type === 'error') {
-            const wasStreaming = streamingRef.current
             setStreaming(false)
             finalizeStreamingBubbles(chatId)
-            setError(msg.error || 'Agent error')
-            if (wasStreaming && notifyRef.current) {
+            assistantBuf.current = ''
+            const detail = String(msg.error || 'Agent error')
+            const tip = msg.busy
+              ? detail
+              : `${detail} — chat is still open; cancel if stuck, then send again.`
+            setError(tip)
+            pushMsg(chatId, { id: uid(), role: 'system', text: `⚠ ${tip}` })
+            console.error('[cursor]', tip, msg)
+            if (notifyRef.current) {
               notifyRef.current.ping({
                 title: 'Cursor error',
-                body: String(msg.error || 'Agent error').slice(0, 160),
+                body: tip.slice(0, 160),
                 level: 'error',
                 category: 'cursor',
               })
@@ -387,6 +429,12 @@ export function ChatPanel({
           } else if (msg.type === 'cancelled') {
             setStreaming(false)
             finalizeStreamingBubbles(chatId)
+            assistantBuf.current = ''
+            pushMsg(chatId, {
+              id: uid(),
+              role: 'system',
+              text: 'Run cancelled — you can continue this chat.',
+            })
           }
         } catch {
           /* ignore */
@@ -1061,7 +1109,7 @@ export function ChatPanel({
   const composer = (
     <form
       onSubmit={send}
-      className={`shrink-0 border-t border-line bg-panel/95 p-3 space-y-2 ${
+      className={`hb-chat-composer shrink-0 border-t border-line px-3 pt-3 space-y-2 ${
         isDock ? 'rounded-b-2xl' : ''
       }`}
     >
@@ -1088,6 +1136,13 @@ export function ChatPanel({
             className={`w-full rounded-xl bg-panel-2 border px-3 py-2.5 pr-12 text-sm resize-none outline-none focus:border-accent ${
               listening ? 'border-accent/60' : 'border-line'
             }`}
+            enterKeyHint="send"
+            autoComplete="off"
+            onFocus={() => {
+              // Keep the fixed shell aligned with the visual viewport above the keyboard.
+              window.scrollTo(0, 0)
+              requestAnimationFrame(() => window.scrollTo(0, 0))
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()

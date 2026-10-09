@@ -17,6 +17,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -531,9 +532,11 @@ def _resolve_worker_inner_cmd() -> list[str]:
     """Command that enters --view-worker (no setpriv yet)."""
     here = Path(__file__).resolve()
     entry = here.parents[1] / "homebase_entry.py"
-    # Source checkout (has build.sh) → always use this tree so we never spawn a stale /usr binary.
+    # Source checkout (has build.sh) → use this tree + venv so deps (mss) resolve.
     if entry.is_file() and (entry.parent / "build.sh").is_file():
-        return [sys.executable, str(entry), "--view-worker"]
+        venv_py = entry.parent / ".venv" / "bin" / "python"
+        py = str(venv_py) if venv_py.is_file() else sys.executable
+        return [py, str(entry), "--view-worker"]
 
     share = os.environ.get("HOMEBASE_SHARE", "/usr/share/homebased").rstrip("/")
     argv0 = os.path.realpath(sys.argv[0]) if sys.argv else ""
@@ -550,6 +553,25 @@ def _resolve_worker_inner_cmd() -> list[str]:
     ]
 
 
+def _seat_scratch_home(uid: int, gid: int) -> str:
+    """Writable HOMEBASE_HOME for the seat-user view worker (avoids root-only /var/lib)."""
+    path = Path(f"/tmp/homebase-view-{uid}")
+    try:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if os.geteuid() == 0:
+            os.chown(path, uid, gid)
+            os.chmod(path, 0o700)
+    except OSError:
+        path = Path(tempfile.gettempdir()) / f"homebase-view-{uid}"
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            if os.geteuid() == 0:
+                os.chown(path, uid, gid)
+        except OSError:
+            pass
+    return str(path)
+
+
 def _build_worker_cmd(uid: int, gid: int) -> tuple[list[str], dict[str, str]]:
     import pwd
 
@@ -563,6 +585,12 @@ def _build_worker_cmd(uid: int, gid: int) -> tuple[list[str], dict[str, str]]:
     env["LOGNAME"] = pw.pw_name
     env.pop("HOMEBASE_SELF_TEST", None)
     env["HOMEBASE_VIEW_WORKER"] = "1"
+    # systemd sets HOMEBASE_HOME=/var/lib/homebased (.env mode 0600 root). The worker
+    # drops to the seat UID and must not inherit that path or config import dies.
+    scratch = _seat_scratch_home(uid, gid)
+    env["HOMEBASE_HOME"] = scratch
+    env["HOMEBASE_RUNTIME"] = str(Path(scratch) / ".runtime")
+    env["TMPDIR"] = scratch
 
     inner = _resolve_worker_inner_cmd()
     if os.geteuid() == 0 and uid != 0:
@@ -598,15 +626,35 @@ class _X11Bridge:
         self.screen_h = 0
         self.uid = -1
         self.last_error = ""
+        self._stderr_tail: list[str] = []
 
     @property
     def alive(self) -> bool:
         return bool(self._proc and self._proc.poll() is None and self._proc.stdin and self._proc.stdout)
 
+    def _note_stderr(self, text: str) -> None:
+        line = text.strip()
+        if not line:
+            return
+        self._stderr_tail.append(line)
+        if len(self._stderr_tail) > 12:
+            self._stderr_tail = self._stderr_tail[-12:]
+
+    def _stderr_hint(self) -> str:
+        if not self._stderr_tail:
+            return ""
+        # Prefer the last non-ready line (ready is normal).
+        for line in reversed(self._stderr_tail):
+            if "view-worker ready" in line:
+                continue
+            return line[:240]
+        return self._stderr_tail[-1][:240]
+
     def start(self) -> None:
         if self.alive:
             return
         self.stop()
+        self._stderr_tail = []
         display, xauth = discover_x11_env()
         uid, gid = display_owner_ids(display)
         cmd, env = _build_worker_cmd(uid, gid)
@@ -627,6 +675,7 @@ class _X11Bridge:
                 for line in iter(proc.stderr.readline, b""):
                     text = line.decode("utf-8", errors="replace").rstrip()
                     if text:
+                        self._note_stderr(text)
                         log.info("view-worker: %s", text)
             except Exception:
                 pass
@@ -639,10 +688,13 @@ class _X11Bridge:
             uid,
             xauth,
         )
-        # Warm ping
+        # Warm ping — if the child dies immediately, surface stderr (e.g. .env perms).
         resp = self._call({"cmd": "ping"}, timeout=6.0, _restarting=True)
         if not resp.get("ok"):
             err = str(resp.get("error") or self.last_error or "worker ping failed")
+            hint = self._stderr_hint()
+            if hint and hint not in err:
+                err = f"{err} ({hint})"
             self.last_error = err
             log.warning("view worker ping failed: %s", err)
 
@@ -696,7 +748,9 @@ class _X11Bridge:
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 if proc.poll() is not None:
-                    self.last_error = f"X11 worker exited (code {proc.returncode})"
+                    hint = self._stderr_hint()
+                    base = f"X11 worker exited (code {proc.returncode})"
+                    self.last_error = f"{base}: {hint}" if hint else base
                     self.stop()
                     return {"ok": False, "error": self.last_error}
                 # stdout is unbuffered binary; use short select

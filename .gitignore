@@ -25,6 +25,7 @@ web/dist/
 
 # Nuitka / packaged binary (copied to /usr/bin on --deploy)
 dist/
+dist.oldroot/
 *.bin
 homebase.build/
 homebase.dist/

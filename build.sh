@@ -274,6 +274,17 @@ build_web_dist() {
   if [[ ! -d web/node_modules ]]; then
     (cd web && npm install)
   fi
+  # Prior sudo builds can leave root-owned web/dist; move it aside so vite can emptyOutDir.
+  if [[ -d web/dist ]] && [[ ! -w web/dist || ! -w web/dist/assets ]]; then
+    local stamped="web/dist.unwritable.$(date +%s)"
+    echo "    web/dist not writable — moving aside → $stamped"
+    mv web/dist "$stamped" 2>/dev/null \
+      || run_priv mv web/dist "$stamped" \
+      || {
+        echo "Error: cannot replace root-owned web/dist (try: sudo chown -R \"\$USER:\$USER\" web/dist)" >&2
+        exit 1
+      }
+  fi
   (cd web && npm run build)
 }
 
@@ -870,17 +881,33 @@ ensure_homebased_running_on_exit() {
     return 0
   fi
   echo "==> Deploy interrupted — starting $SERVICE_NAME again" >&2
-  run_priv systemctl start "$SERVICE_NAME" 2>/dev/null \
-    || run_priv systemctl restart "$SERVICE_NAME" 2>/dev/null \
-    || true
+  # Prefer systemd; if sudo/askpass fails, still try a direct start so :8888 is not left dead.
+  if run_priv systemctl start "$SERVICE_NAME" 2>/dev/null \
+    || run_priv systemctl restart "$SERVICE_NAME" 2>/dev/null; then
+    return 0
+  fi
+  if systemctl start "$SERVICE_NAME" 2>/dev/null \
+    || systemctl restart "$SERVICE_NAME" 2>/dev/null; then
+    return 0
+  fi
+  if [[ -x "$INSTALL_BIN" || -x "$INSTALL_BIN_REAL" ]]; then
+    echo "    warning: systemctl failed — attempting direct $INSTALL_BIN start" >&2
+    nohup "$INSTALL_BIN" >/tmp/homebased-fallback.log 2>&1 &
+  fi
 }
 
 stop_homebased() {
   # Must stop before replacing binaries — Linux returns ETXTBSY ("Text file busy")
   # when cp overwrites an executable that is still mapped/running.
   if systemctl list-unit-files "$SERVICE_NAME" &>/dev/null; then
-    run_priv systemctl stop "$SERVICE_NAME" 2>/dev/null || true
-    HOMEBASED_UNIT_STOPPED=1
+    if run_priv systemctl stop "$SERVICE_NAME" 2>/dev/null; then
+      HOMEBASED_UNIT_STOPPED=1
+    elif systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+      echo "Error: could not stop $SERVICE_NAME (need sudo/root) — aborting install" >&2
+      exit 1
+    else
+      HOMEBASED_UNIT_STOPPED=1
+    fi
   fi
   if systemctl list-unit-files "$LEGACY_SERVICE" &>/dev/null; then
     run_priv systemctl stop "$LEGACY_SERVICE" 2>/dev/null || true

@@ -37,16 +37,30 @@ def _home_root() -> Path:
 
 BUNDLE_ROOT = _bundle_root()
 ROOT = _home_root()
-ROOT.mkdir(parents=True, exist_ok=True)
-# Never override vars already set by systemd / the shell (e.g. HOMEBASE_PORT=8888)
-load_dotenv(ROOT / ".env", override=False)
+try:
+    ROOT.mkdir(parents=True, exist_ok=True)
+except OSError:
+    # View worker runs as the seat user and must not die on root-owned HOMEBASE_HOME.
+    pass
+# Never override vars already set by systemd / the shell (e.g. HOMEBASE_PORT=8888).
+# Production .env is mode 0600 root — seat-user helpers must tolerate that.
+try:
+    load_dotenv(ROOT / ".env", override=False)
+except OSError:
+    pass
 
 RUNTIME_DIR = Path(os.environ.get("HOMEBASE_RUNTIME", str(ROOT / ".runtime")))
-RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-(RUNTIME_DIR / "logs").mkdir(parents=True, exist_ok=True)
+try:
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    (RUNTIME_DIR / "logs").mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass
 
 CONFIG_DIR = ROOT / "config"
-CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass
 PROJECTS_PATH = Path(os.environ.get("HOMEBASE_PROJECTS", str(CONFIG_DIR / "projects.json")))
 # Bundled templates ship with the binary / repo; live config is under HOME.
 PROJECTS_EXAMPLE = BUNDLE_ROOT / "config" / "projects.example.json"

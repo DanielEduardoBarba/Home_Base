@@ -741,7 +741,11 @@ async def ws_session(websocket: WebSocket, session_id: str):
 
 @app.websocket("/ws/cursor")
 async def ws_cursor(websocket: WebSocket):
-    """One connection per project; client sends bind/send with chatId (no reconnect per tab)."""
+    """One connection per project; client sends bind/send with chatId (no reconnect per tab).
+
+    Send streams run as tasks so cancel/ping can interleave. Mid-run errors are
+    emitted as recoverable WS events — the socket stays open for continue/retry.
+    """
     if not await ws_authenticate(websocket):
         return
     await websocket.accept()
@@ -768,12 +772,61 @@ async def ws_cursor(websocket: WebSocket):
         }
     )
 
+    stream_tasks: dict[str, asyncio.Task[None]] = {}
+
+    async def _pump_send(
+        send_chat: str,
+        prompt: str,
+        model: Optional[str],
+        send_cwd: Optional[str],
+    ) -> None:
+        try:
+            async for event in cursor_bridge.send_stream(
+                project_id,
+                prompt,
+                model=model,
+                chat_id=send_chat,
+                cwd=send_cwd,
+            ):
+                await websocket.send_json(event)
+        except Exception as e:
+            log.exception("cursor ws send: %s", e)
+            append_daily(
+                "cursor_error",
+                projectId=project_id,
+                chatId=send_chat,
+                error=str(e),
+            )
+            trace_append(
+                "error",
+                f"cursor ws send: {e}",
+                source="cursor",
+                projectId=project_id,
+                chatId=send_chat,
+            )
+            try:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "error": str(e),
+                        "chatId": send_chat,
+                        "recoverable": True,
+                    }
+                )
+            except Exception:
+                pass
+        finally:
+            stream_tasks.pop(send_chat, None)
+
     try:
         while True:
             msg = await websocket.receive_json()
             mtype = msg.get("type")
             if mtype == "bind":
-                chat_id = (msg.get("chatId") or msg.get("chat") or "default").strip() or "default"
+                chat_id = (
+                    (msg.get("chatId") or msg.get("chat") or "default").strip()
+                    or "default"
+                )
                 cwd = (msg.get("cwd") or "").strip()
                 await websocket.send_json(
                     {
@@ -798,28 +851,45 @@ async def ws_cursor(websocket: WebSocket):
                 chat_id = send_chat
                 if send_cwd is not None:
                     cwd = send_cwd
-                async for event in cursor_bridge.send_stream(
-                    project_id,
-                    prompt,
-                    model=model,
-                    chat_id=send_chat,
-                    cwd=send_cwd,
-                ):
-                    await websocket.send_json(event)
-                    # Yield so other WS traffic (cancel/ping) can interleave mid-stream
-                    await asyncio.sleep(0)
+                existing = stream_tasks.get(send_chat)
+                if existing and not existing.done():
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "error": (
+                                "Agent is already working on this chat — "
+                                "wait or press Cancel, then retry."
+                            ),
+                            "chatId": send_chat,
+                            "recoverable": True,
+                            "busy": True,
+                        }
+                    )
+                    continue
+                stream_tasks[send_chat] = asyncio.create_task(
+                    _pump_send(send_chat, prompt, model, send_cwd)
+                )
             elif mtype == "cancel":
                 cancel_chat = (
                     (msg.get("chatId") or msg.get("chat") or chat_id).strip()
                     or "default"
                 )
                 ok = await cursor_bridge.cancel(project_id, chat_id=cancel_chat)
-                await websocket.send_json({"type": "cancelled", "ok": ok})
+                await websocket.send_json(
+                    {"type": "cancelled", "ok": ok, "chatId": cancel_chat}
+                )
             elif mtype == "reset":
                 reset_chat = (
                     (msg.get("chatId") or msg.get("chat") or chat_id).strip()
                     or "default"
                 )
+                task = stream_tasks.pop(reset_chat, None)
+                if task and not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):
+                        pass
                 await cursor_bridge.reset_agent(project_id, chat_id=reset_chat)
                 await websocket.send_json(
                     {
@@ -837,10 +907,24 @@ async def ws_cursor(websocket: WebSocket):
     except Exception as e:
         log.exception("cursor ws: %s", e)
         append_daily("cursor_error", projectId=project_id, error=str(e))
+        trace_append(
+            "error",
+            f"cursor ws: {e}",
+            source="cursor",
+            projectId=project_id,
+        )
         try:
-            await websocket.send_json({"type": "error", "error": str(e)})
+            await websocket.send_json(
+                {"type": "error", "error": str(e), "recoverable": True}
+            )
         except Exception:
             pass
+    finally:
+        for task in list(stream_tasks.values()):
+            if not task.done():
+                task.cancel()
+        if stream_tasks:
+            await asyncio.gather(*stream_tasks.values(), return_exceptions=True)
 
 
 @app.get("/assets/{asset_path:path}")

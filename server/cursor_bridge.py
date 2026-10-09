@@ -11,8 +11,14 @@ from .config import AGENTS_PATH, get_project, get_settings
 from .cursor_env import ensure_cursor_bridge_env
 from .homebase_tools import build_homebase_tools, wrap_prompt
 from .notifications import push as notify
+from .trace_log import append as trace_append
 
 log = logging.getLogger("homebase.cursor")
+
+
+def _is_active_run_conflict(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "already has active run" in msg or "active run" in msg
 
 
 def _load_agents() -> dict[str, str]:
@@ -75,10 +81,18 @@ class CursorBridge:
         self._client_workspace: Optional[str] = None
         self._agents: dict[str, Any] = {}
         self._active_run: dict[str, Any] = {}
+        self._send_locks: dict[str, asyncio.Lock] = {}
         self._models: dict[str, str] = {}
         self._cwds: dict[str, str] = {}
         # Full Home Base preamble once per session; short reminder after
         self._context_primed: set[str] = set()
+
+    def _lock_for(self, key: str) -> asyncio.Lock:
+        lock = self._send_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._send_locks[key] = lock
+        return lock
 
     @property
     def configured(self) -> bool:
@@ -186,6 +200,7 @@ class CursorBridge:
         self._models.clear()
         self._cwds.clear()
         self._active_run.clear()
+        self._send_locks.clear()
         self._context_primed.clear()
         if self._client is not None:
             try:
@@ -324,14 +339,21 @@ class CursorBridge:
     async def cancel(self, project_id: str, chat_id: str = "default") -> bool:
         key = _session_key(project_id, chat_id)
         run = self._active_run.get(key)
-        if not run:
+        ok = False
+        if run:
+            ok = await self._cancel_run_obj(run)
+        agent = self._agents.get(key)
+        if agent is not None:
+            cleared = await self._cancel_agent_active_runs(agent)
+            ok = ok or cleared
+        if not run and not ok:
             return False
+        return ok
+
+    async def _cancel_run_obj(self, run: Any) -> bool:
         try:
-            if hasattr(run, "supports") and run.supports("cancel"):
-                result = run.cancel()
-                if hasattr(result, "__await__"):
-                    await result
-                return True
+            if hasattr(run, "supports") and not run.supports("cancel"):
+                return False
             if hasattr(run, "cancel"):
                 result = run.cancel()
                 if hasattr(result, "__await__"):
@@ -340,6 +362,104 @@ class CursorBridge:
         except Exception as e:
             log.warning("cancel failed: %s", e)
         return False
+
+    async def _cancel_agent_active_runs(self, agent: Any) -> bool:
+        """Best-effort: cancel any SDK-side running runs for this agent."""
+        aid = _agent_id(agent)
+        client = getattr(agent, "client", None) or self._client
+        if not aid or client is None or not hasattr(client, "list_runs"):
+            return False
+        cleared = False
+        try:
+            listed = await client.list_runs(aid, limit=20)
+            items = getattr(listed, "items", None) or []
+            for run in items:
+                status = str(getattr(run, "status", "") or "").lower()
+                if status not in {"running", "pending"}:
+                    continue
+                run_id = getattr(run, "id", None) or getattr(run, "run_id", None)
+                if not run_id:
+                    continue
+                try:
+                    await client.cancel_run(run_id, agent_id=aid)
+                    cleared = True
+                    log.info("cancelled stale run %s on agent %s", run_id, aid)
+                except Exception as e:
+                    log.warning("cancel_run %s failed: %s", run_id, e)
+        except Exception as e:
+            log.warning("list_runs for cancel failed: %s", e)
+        return cleared
+
+    async def _begin_run(
+        self, agent: Any, send_text: str, model_id: str, *, key: str
+    ) -> Any:
+        from cursor_sdk import SendOptions
+
+        options = SendOptions(model=model_id, on_delta=_noop_delta)
+        # Local tracked run still active (e.g. prior WS aborted mid-stream).
+        prior = self._active_run.pop(key, None)
+        if prior is not None:
+            await self._cancel_run_obj(prior)
+            await asyncio.sleep(0.2)
+
+        try:
+            return await agent.send(send_text, options)
+        except Exception as e:
+            if not _is_active_run_conflict(e):
+                raise
+            log.warning(
+                "active-run conflict on %s — clearing stale runs then retry: %s",
+                key,
+                e,
+            )
+            trace_append(
+                "warn",
+                f"cursor active-run conflict — recovering ({key})",
+                source="cursor",
+                projectId=key.split(":", 1)[0],
+            )
+            await self._cancel_agent_active_runs(agent)
+            await asyncio.sleep(0.4)
+            return await agent.send(send_text, options)
+
+    def _emit_error_event(
+        self,
+        project_id: str,
+        chat_id: str,
+        err: BaseException | str,
+        *,
+        key: str,
+    ) -> dict[str, Any]:
+        msg = str(err)
+        if isinstance(err, BaseException):
+            log.error("send_stream failed: %s", msg, exc_info=err)
+        else:
+            log.error("send_stream failed: %s", msg)
+        try:
+            pname = get_project(project_id).name
+        except Exception:
+            pname = project_id
+        notify(
+            "Cursor error",
+            f"{pname}: {msg[:180]}",
+            level="error",
+            category="cursor",
+            meta={"projectId": project_id, "chatId": chat_id},
+        )
+        trace_append(
+            "error",
+            f"cursor: {msg[:500]}",
+            source="cursor",
+            projectId=project_id,
+            chatId=chat_id,
+        )
+        return {
+            "type": "error",
+            "error": msg,
+            "chatId": chat_id,
+            "recoverable": True,
+            "running": key in self._active_run,
+        }
 
     async def send_stream(
         self,
@@ -350,120 +470,146 @@ class CursorBridge:
         chat_id: str = "default",
         cwd: Optional[str] = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        from cursor_sdk import SendOptions
-
         key = _session_key(project_id, chat_id)
         model_id = _resolve_model(model)
-        agent = await self.get_or_create_agent(
-            project_id, chat_id=chat_id, cwd=cwd, model=model_id
-        )
-        aid = _agent_id(agent)
-        if aid:
-            data = _load_agents()
-            data[key] = aid
-            _save_agents(data)
+        lock = self._lock_for(key)
+
+        if lock.locked():
             yield {
-                "type": "agent",
-                "agentId": aid,
+                "type": "error",
+                "error": "Agent is already working on this chat — wait or press Cancel, then retry.",
+                "chatId": chat_id,
+                "recoverable": True,
+                "busy": True,
+            }
+            return
+
+        async with lock:
+            try:
+                agent = await self.get_or_create_agent(
+                    project_id, chat_id=chat_id, cwd=cwd, model=model_id
+                )
+            except Exception as e:
+                yield self._emit_error_event(project_id, chat_id, e, key=key)
+                return
+
+            aid = _agent_id(agent)
+            if aid:
+                data = _load_agents()
+                data[key] = aid
+                _save_agents(data)
+                yield {
+                    "type": "agent",
+                    "agentId": aid,
+                    "model": model_id,
+                    "chatId": chat_id,
+                    "cwd": self._cwds.get(key),
+                }
+
+            # Full Home Base identity once per session; tools stay on the agent.
+            if key not in self._context_primed:
+                send_text = wrap_prompt(
+                    prompt,
+                    project_id,
+                    chat_id=chat_id,
+                    cwd=self._cwds.get(key),
+                )
+                self._context_primed.add(key)
+            else:
+                send_text = prompt
+
+            try:
+                # on_delta enables enableDeltas on the wire — without it, thinking/text
+                # arrive as complete messages only (feels like one dump at the end).
+                run = await self._begin_run(agent, send_text, model_id, key=key)
+            except Exception as e:
+                yield self._emit_error_event(project_id, chat_id, e, key=key)
+                return
+
+            self._models[key] = model_id
+            self._active_run[key] = run
+            run_id = getattr(run, "id", None) or getattr(run, "run_id", None)
+            yield {
+                "type": "run",
+                "runId": run_id,
                 "model": model_id,
                 "chatId": chat_id,
-                "cwd": self._cwds.get(key),
             }
 
-        # Full Home Base identity once per session; tools stay on the agent.
-        if key not in self._context_primed:
-            send_text = wrap_prompt(
-                prompt,
-                project_id,
-                chat_id=chat_id,
-                cwd=self._cwds.get(key),
-            )
-            self._context_primed.add(key)
-        else:
-            send_text = prompt
-
-        # on_delta enables enableDeltas on the wire — without it, thinking/text
-        # arrive as complete messages only (feels like one dump at the end).
-        run = await agent.send(
-            send_text,
-            SendOptions(model=model_id, on_delta=_noop_delta),
-        )
-        self._models[key] = model_id
-        self._active_run[key] = run
-        run_id = getattr(run, "id", None) or getattr(run, "run_id", None)
-        yield {"type": "run", "runId": run_id, "model": model_id, "chatId": chat_id}
-
-        try:
-            # Prefer events(): yields interaction_update deltas + sdk_message.
-            # stream()/messages() only forward sdk_message (no live deltas).
-            if hasattr(run, "events"):
-                async for event in run.events():
-                    update = getattr(event, "interaction_update", None)
-                    if update is not None:
-                        payload = _serialize_delta(update)
-                        if payload:
-                            payload["chatId"] = chat_id
-                            yield payload
-                    message = getattr(event, "sdk_message", None)
-                    if message is not None:
+            try:
+                # Prefer events(): yields interaction_update deltas + sdk_message.
+                # stream()/messages() only forward sdk_message (no live deltas).
+                if hasattr(run, "events"):
+                    async for event in run.events():
+                        update = getattr(event, "interaction_update", None)
+                        if update is not None:
+                            payload = _serialize_delta(update)
+                            if payload:
+                                payload["chatId"] = chat_id
+                                yield payload
+                        message = getattr(event, "sdk_message", None)
+                        if message is not None:
+                            yield {
+                                "type": "message",
+                                "chatId": chat_id,
+                                "message": _serialize_message(message),
+                            }
+                elif hasattr(run, "stream"):
+                    async for message in run.stream():
                         yield {
                             "type": "message",
                             "chatId": chat_id,
                             "message": _serialize_message(message),
                         }
-            elif hasattr(run, "stream"):
-                async for message in run.stream():
-                    yield {
-                        "type": "message",
-                        "chatId": chat_id,
-                        "message": _serialize_message(message),
-                    }
-            elif hasattr(run, "iter_text"):
-                async for text in run.iter_text():
-                    if text:
-                        yield {"type": "text-delta", "text": text, "chatId": chat_id}
+                elif hasattr(run, "iter_text"):
+                    async for text in run.iter_text():
+                        if text:
+                            yield {
+                                "type": "text-delta",
+                                "text": text,
+                                "chatId": chat_id,
+                            }
 
-            result = await run.wait()
-            status = getattr(result, "status", "finished")
-            try:
-                pname = get_project(project_id).name
-            except Exception:
-                pname = project_id
-            err = str(status).lower() in {"error", "failed"}
-            notify(
-                "Cursor finished with error" if err else "Cursor finished",
-                f"{pname} · chat ready to check",
-                level="error" if err else "success",
-                category="cursor",
-                meta={
-                    "projectId": project_id,
-                    "chatId": chat_id,
-                    "status": str(status),
+                result = await run.wait()
+                status = getattr(result, "status", "finished")
+                try:
+                    pname = get_project(project_id).name
+                except Exception:
+                    pname = project_id
+                err = str(status).lower() in {"error", "failed"}
+                notify(
+                    "Cursor finished with error" if err else "Cursor finished",
+                    f"{pname} · chat ready to check",
+                    level="error" if err else "success",
+                    category="cursor",
+                    meta={
+                        "projectId": project_id,
+                        "chatId": chat_id,
+                        "status": str(status),
+                        "runId": run_id,
+                    },
+                )
+                if err:
+                    trace_append(
+                        "error",
+                        f"cursor run ended with status={status}",
+                        source="cursor",
+                        projectId=project_id,
+                        chatId=chat_id,
+                        runId=run_id,
+                    )
+                yield {
+                    "type": "done",
+                    "status": status,
                     "runId": run_id,
-                },
-            )
-            yield {
-                "type": "done",
-                "status": status,
-                "runId": run_id,
-                "result": _safe_result(result),
-            }
-        except Exception as e:
-            log.exception("send_stream failed")
-            try:
-                pname = get_project(project_id).name
-            except Exception:
-                pname = project_id
-            notify(
-                "Cursor error",
-                f"{pname}: {str(e)[:180]}",
-                level="error",
-                category="cursor",
-                meta={"projectId": project_id, "chatId": chat_id},
-            )
-            yield {"type": "error", "error": str(e)}
-        finally:
-            self._active_run.pop(key, None)
+                    "chatId": chat_id,
+                    "result": _safe_result(result),
+                    "recoverable": True,
+                }
+            except Exception as e:
+                yield self._emit_error_event(project_id, chat_id, e, key=key)
+            finally:
+                self._active_run.pop(key, None)
 
 
 def _noop_delta(_update: Any) -> None:

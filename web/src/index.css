@@ -155,7 +155,10 @@ body::before {
 #root {
   /* Pin to the visible window so mobile chrome can’t leave a bottom gap */
   position: fixed;
-  inset: 0;
+  left: 0;
+  right: 0;
+  top: var(--hb-vv-top, 0px);
+  bottom: auto;
   width: 100%;
   max-width: 100%;
   height: var(--hb-app-height, 100dvh);
@@ -610,10 +613,30 @@ html[data-safe-top='1'] {
 /* Clearance for fixed bottom nav + home indicator (tabs use .hb-with-nav) */
 :root {
   --hb-nav-clearance: calc(5.25rem + env(safe-area-inset-bottom, 0px));
+  --hb-vv-top: 0px;
 }
 
 .hb-with-nav {
   padding-bottom: var(--hb-nav-clearance);
+}
+
+/* Soft keyboard open: drop nav so composers sit flush above the keyboard */
+html[data-hb-keyboard] {
+  --hb-nav-clearance: 0px;
+}
+
+html[data-hb-keyboard] .hb-nav {
+  display: none !important;
+}
+
+html[data-hb-keyboard] .hb-chat-dock {
+  top: 0;
+  bottom: 0;
+  border-radius: 0;
+}
+
+html[data-hb-keyboard] .hb-work-body:has(.hb-chat-dock) .hb-work-main {
+  padding-bottom: 0;
 }
 
 .hb-nav {
@@ -1229,6 +1252,21 @@ html[data-safe-top='1'] {
   width: 1.15rem;
   height: 1.15rem;
   display: block;
+}
+
+.hb-chat-composer {
+  position: relative;
+  z-index: 2;
+  /* Keep composer painted above message scroll while keyboard is open */
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
+  background: color-mix(in srgb, var(--hb-panel) 96%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+html[data-hb-keyboard] .hb-chat-composer {
+  /* Keyboard already clears the home indicator — don't double-pad */
+  padding-bottom: 0.65rem;
 }
 
 .hb-chat-present-btn {
