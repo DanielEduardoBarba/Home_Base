@@ -10,6 +10,7 @@ from typing import Any, Callable, Optional
 
 from ptyprocess import PtyProcessUnicode
 
+from .shell_env import enrich_shell_env
 
 # Late attach (Apps → Shell) needs recent output; keep a ring of chunks.
 OUTPUT_BUFFER_MAX = 256_000
@@ -98,9 +99,12 @@ class PtyManager:
     ) -> PtySession:
         session_id = uuid.uuid4().hex[:12]
         cwd_s = str(cwd)
-        full_env = os.environ.copy()
+        # Start from process env, merge caller overrides, then ensure pnpm/node
+        # (nvm / PNPM_HOME) are on PATH — critical for Expo/run under systemd root.
+        merged = os.environ.copy()
         if env:
-            full_env.update(env)
+            merged.update(env)
+        full_env = enrich_shell_env(merged)
         full_env.setdefault("TERM", "xterm-256color")
         full_env.setdefault("COLORTERM", "truecolor")
 

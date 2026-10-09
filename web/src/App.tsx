@@ -263,7 +263,8 @@ function AuthedApp() {
       <FilesTab projects={projects} selectedId={selectedId} onSelect={selectProject} />
     )
   } else if (tab === 'view') {
-    body = <ViewTab />
+    // View is kept mounted below so capture survives tab switches.
+    body = null
   } else if (tab === 'cursor') {
     body = (
       <CursorTab
@@ -368,7 +369,16 @@ function AuthedApp() {
           </span>
         )}
       </div>
-      <main className="flex-1 min-h-0 overflow-hidden">{body}</main>
+      <main className="flex-1 min-h-0 overflow-hidden relative">
+        {/* Keep View mounted (hidden) so JWT WS + capture stay up across tab switches. */}
+        <div
+          className={tab === 'view' ? 'h-full' : 'hidden'}
+          aria-hidden={tab !== 'view'}
+        >
+          <ViewTab />
+        </div>
+        {tab !== 'view' && body}
+      </main>
 
       <ToastStack />
       <NotificationCenter />

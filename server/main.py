@@ -319,22 +319,22 @@ async def api_share_hostname(request: Request, _: None = Depends(require_auth)):
 @app.get("/api/projects")
 async def api_projects(_: None = Depends(require_auth)):
     load_projects(force=True)
-    out = []
-    for meta in list_projects_meta():
+
+    async def _one(meta: dict) -> dict:
         try:
             project = get_project(meta["id"])
             ports = await project_port_status(project)
         except Exception:
             ports = []
-        sessions = pty_manager.list_sessions(meta["id"])
-        out.append(
-            {
-                **meta,
-                "portsStatus": ports,
-                "sessions": sessions,
-                "cursor": cursor_bridge.agent_info(meta["id"]),
-            }
-        )
+        return {
+            **meta,
+            "portsStatus": ports,
+            "sessions": pty_manager.list_sessions(meta["id"]),
+            "cursor": cursor_bridge.agent_info(meta["id"]),
+        }
+
+    metas = list_projects_meta()
+    out = list(await asyncio.gather(*[_one(m) for m in metas], return_exceptions=False))
     return {"projects": out}
 
 

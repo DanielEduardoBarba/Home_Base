@@ -114,11 +114,20 @@ fi
 
 need_root() {
   if [[ "$(id -u)" -ne 0 ]]; then
+    # Prefer passwordless sudo; fall back to pkexec (GUI polkit) when available.
+    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+      echo "sudo"
+      return
+    fi
+    if command -v pkexec >/dev/null 2>&1; then
+      echo "pkexec"
+      return
+    fi
     if command -v sudo >/dev/null 2>&1; then
       echo "sudo"
       return
     fi
-    echo "Error: root or sudo required for $1" >&2
+    echo "Error: root, sudo, or pkexec required for $1" >&2
     exit 1
   fi
   echo ""
@@ -901,23 +910,32 @@ ensure_homebased_running_on_exit() {
 stop_homebased() {
   # Must stop before replacing binaries — Linux returns ETXTBSY ("Text file busy")
   # when cp overwrites an executable that is still mapped/running.
+  # systemctl can hang when the bus is degraded; never block forever on stop.
   if systemctl list-unit-files "$SERVICE_NAME" &>/dev/null; then
-    if run_priv systemctl stop "$SERVICE_NAME" 2>/dev/null; then
+    if timeout 8 run_priv systemctl stop "$SERVICE_NAME" 2>/dev/null; then
       HOMEBASED_UNIT_STOPPED=1
-    elif systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-      echo "Error: could not stop $SERVICE_NAME (need sudo/root) — aborting install" >&2
-      exit 1
     else
+      echo "    systemctl stop timed out/failed — force-killing homebase processes"
+      timeout 5 run_priv systemctl kill -s KILL "$SERVICE_NAME" 2>/dev/null || true
+      run_priv pkill -KILL -x homebase 2>/dev/null || true
+      run_priv pkill -KILL -x homebased 2>/dev/null || true
+      # Also kill by listen port in case the process was renamed
+      local pids
+      pids="$(ss -ltnp 2>/dev/null | awk '/:8888[[:space:]]/ {print}' | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true)"
+      if [[ -n "$pids" ]]; then
+        # shellcheck disable=SC2086
+        run_priv kill -KILL $pids 2>/dev/null || true
+      fi
       HOMEBASED_UNIT_STOPPED=1
     fi
   fi
   if systemctl list-unit-files "$LEGACY_SERVICE" &>/dev/null; then
-    run_priv systemctl stop "$LEGACY_SERVICE" 2>/dev/null || true
+    timeout 5 run_priv systemctl stop "$LEGACY_SERVICE" 2>/dev/null || true
   fi
   # Ensure no leftover process holds the inode
   local waited=0
   while pgrep -x homebase >/dev/null 2>&1 || pgrep -x homebased >/dev/null 2>&1; do
-    if [[ "$waited" -ge 30 ]]; then
+    if [[ "$waited" -ge 20 ]]; then
       run_priv pkill -KILL -x homebase 2>/dev/null || true
       run_priv pkill -KILL -x homebased 2>/dev/null || true
       break
@@ -925,6 +943,7 @@ stop_homebased() {
     sleep 0.1
     waited=$((waited + 1))
   done
+  sleep 0.3
 }
 
 # Install unit file, enable, restart, and verify active + :8888.
@@ -932,33 +951,37 @@ stop_homebased() {
 restart_homebased_service() {
   echo "==> Restarting $SERVICE_NAME"
   run_priv cp "$SERVICE_SRC" "$SERVICE_DST"
-  run_priv systemctl daemon-reload
-  run_priv systemctl enable "$SERVICE_NAME"
-  run_priv systemctl reset-failed "$SERVICE_NAME" 2>/dev/null || true
-  if ! run_priv systemctl restart "$SERVICE_NAME"; then
-    echo "Error: systemctl restart $SERVICE_NAME failed" >&2
-    run_priv journalctl -u "$SERVICE_NAME" -n 40 --no-pager >&2 || true
-    return 1
+  timeout 15 run_priv systemctl daemon-reload || true
+  timeout 15 run_priv systemctl enable "$SERVICE_NAME" || true
+  timeout 10 run_priv systemctl reset-failed "$SERVICE_NAME" 2>/dev/null || true
+  if ! timeout 20 run_priv systemctl restart "$SERVICE_NAME"; then
+    echo "    systemctl restart failed/timed out — starting wrapper directly" >&2
+    run_priv pkill -KILL -x homebase 2>/dev/null || true
+    # Detach under systemd if possible; else bare start
+    if ! timeout 15 run_priv systemctl start "$SERVICE_NAME" 2>/dev/null; then
+      echo "    falling back to nohup $INSTALL_WRAPPER" >&2
+      run_priv bash -c "nohup '$INSTALL_WRAPPER' >/tmp/homebased-fallback.log 2>&1 &" || true
+    fi
   fi
   local i
   for i in $(seq 1 40); do
-    if run_priv systemctl is-active --quiet "$SERVICE_NAME"; then
+    if timeout 3 run_priv systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+      break
+    fi
+    # Accept success if something is listening even when systemd status is stuck
+    if ss -ltn 2>/dev/null | grep -qE ":${PROD_PORT}[[:space:]]"; then
       break
     fi
     sleep 0.25
   done
-  if ! run_priv systemctl is-active --quiet "$SERVICE_NAME"; then
-    echo "Error: $SERVICE_NAME is not active after restart" >&2
-    run_priv systemctl --no-pager --full status "$SERVICE_NAME" >&2 || true
-    run_priv journalctl -u "$SERVICE_NAME" -n 40 --no-pager >&2 || true
-    return 1
-  fi
   HOMEBASED_UNIT_STOPPED=0
-  run_priv systemctl --no-pager --full status "$SERVICE_NAME" || true
+  timeout 5 run_priv systemctl --no-pager --full status "$SERVICE_NAME" || true
   if wait_for_listen "$PROD_PORT"; then
     echo "==> $SERVICE_NAME active — http://localhost:${PROD_PORT}/"
   else
-    echo "Warning: $SERVICE_NAME is active but nothing on :$PROD_PORT yet — journalctl -u $SERVICE_NAME -n 50" >&2
+    echo "Error: nothing listening on :$PROD_PORT after restart" >&2
+    timeout 5 run_priv journalctl -u "$SERVICE_NAME" -n 40 --no-pager >&2 || true
+    return 1
   fi
   echo "==> Service $SERVICE_NAME enabled and restarted"
   echo "    HOMEBASE_HOME=$HOMEBASE_VAR  binary=$INSTALL_BIN → $INSTALL_BIN_REAL  port=$PROD_PORT"

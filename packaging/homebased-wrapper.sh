@@ -22,11 +22,21 @@ run_probe() {
   local target="$1"
   [[ -x "$target" ]] || return 1
   # Probe never writes into /var/lib/homebased or /usr/share (Nuitka unpack + jwt).
-  local tmp
+  local tmp out rc
   tmp="$(mktemp -d /tmp/homebased-probe.XXXXXX)"
-  TMPDIR="$tmp" HOMEBASE_SELF_TEST=1 HOMEBASE_HOME="$tmp" HOMEBASE_RUNTIME="$tmp/.runtime" \
-    "$target" >/dev/null 2>&1
-  local rc=$?
+  out="$tmp/probe.out"
+  # One retry: SIGKILL of a prior onefile run can leave /tmp in a bad state briefly.
+  for _try in 1 2; do
+    TMPDIR="$tmp" HOMEBASE_SELF_TEST=1 HOMEBASE_HOME="$tmp" HOMEBASE_RUNTIME="$tmp/.runtime" \
+      "$target" >"$out" 2>&1
+    rc=$?
+    [[ "$rc" -eq 0 ]] && break
+    sleep 0.15
+  done
+  if [[ "$rc" -ne 0 && -s "$out" ]]; then
+    echo "homebase: self-test output from $target:" >&2
+    sed -n '1,40p' "$out" >&2 || true
+  fi
   rm -rf "$tmp" 2>/dev/null || true
   return "$rc"
 }

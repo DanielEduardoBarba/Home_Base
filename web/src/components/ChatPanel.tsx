@@ -15,7 +15,13 @@ import { useNotifyOptional } from '../lib/NotifyContext'
 import { presentFromTool, presentLabel } from '../lib/present'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 import { speechSupported, startSpeechDictation, type SpeechHandle } from '../lib/speech'
-import { formatMsgTime, polishThinking, prettyToolName } from '../lib/toolFormat'
+import {
+  formatMsgTime,
+  formatToolDetail,
+  joinThinkingChunk,
+  polishThinking,
+  prettyToolName,
+} from '../lib/toolFormat'
 import type { CursorModel, FsEntry, Project } from '../lib/types'
 import {
   connStateLabel,
@@ -54,6 +60,31 @@ export function writeDockOpen(open: boolean): void {
   } catch {
     /* ignore */
   }
+}
+
+/** Merge streamed assistant text with a later snapshot without doubling paraphrases. */
+function mergeAssistantText(prev: string, next: string, preferNext = false): string {
+  if (!next) return prev
+  if (!prev) return next
+  if (prev === next) return prev
+  if (next.startsWith(prev) || prev.startsWith(next)) {
+    return next.length >= prev.length ? next : prev
+  }
+  // Near-duplicate paraphrase (common when deltas + final sdk_message both arrive)
+  const a = prev.trim()
+  const b = next.trim()
+  const head = Math.min(48, a.length, b.length)
+  if (head >= 16 && (a.startsWith(b.slice(0, head)) || b.startsWith(a.slice(0, head)))) {
+    return preferNext || next.length >= prev.length ? next : prev
+  }
+  // Overlap at the join (delta already included the start of the snapshot)
+  const maxOverlap = Math.min(80, a.length, b.length)
+  for (let n = maxOverlap; n >= 12; n--) {
+    if (a.endsWith(b.slice(0, n))) return a + b.slice(n)
+  }
+  if (preferNext) return next
+  // Never concatenate two full assistant turns — keep the longer coherent blob
+  return next.length >= prev.length ? next : prev
 }
 
 function MsgMeta({ at, align = 'start' }: { at?: number; align?: 'start' | 'end' }) {
@@ -281,6 +312,8 @@ export function ChatPanel({
   const [pickerEntries, setPickerEntries] = useState<FsEntry[]>([])
   const [pickingFolder, setPickingFolder] = useState(false)
   const [listening, setListening] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [activity, setActivity] = useState('')
   const [dockOpenLocal, setDockOpenLocal] = useState(() => readDockOpen())
   const canSpeak = useMemo(() => speechSupported(), [])
 
@@ -298,6 +331,8 @@ export function ChatPanel({
   const dockOpenedAt = useRef(0)
   const bottomRef = useRef<HTMLDivElement>(null)
   const assistantBuf = useRef('')
+  /** True once text-delta arrived this turn — final sdk_message must replace, not append. */
+  const gotTextDeltasRef = useRef(false)
   const activeIdRef = useRef(activeId)
   const tabsRef = useRef(tabs)
   const speechRef = useRef<SpeechHandle | null>(null)
@@ -478,30 +513,58 @@ export function ChatPanel({
             patchTab(chatId, (t) => ({ ...t, agentId: msg.agentId }))
           } else if (msg.type === 'run') {
             setStreaming(true)
-          } else if (msg.type === 'text-delta' || msg.type === 'text') {
-            assistantBuf.current += msg.text || ''
+            gotTextDeltasRef.current = false
+            setActivity('starting…')
+          } else if (msg.type === 'text-delta') {
+            const chunk = String(msg.text || '')
+            if (!chunk) return
+            gotTextDeltasRef.current = true
+            assistantBuf.current += chunk
             pushAssistant(chatId, assistantBuf.current, true)
+            setActivity('')
+          } else if (msg.type === 'text') {
+            // Full text snapshot (not a delta) — replace buffer
+            const text = String(msg.text || '')
+            if (!text) return
+            gotTextDeltasRef.current = true
+            assistantBuf.current = mergeAssistantText(assistantBuf.current, text, true)
+            pushAssistant(chatId, assistantBuf.current, true)
+            setActivity('')
           } else if (msg.type === 'thinking-delta') {
             appendThinking(chatId, msg.text || '')
+            setActivity('thinking…')
           } else if (msg.type === 'thinking-completed') {
             finishThinking(chatId)
+            setActivity('')
           } else if (msg.type === 'tool-delta') {
             upsertTool(chatId, {
               callId: msg.callId ? String(msg.callId) : undefined,
               name: String(msg.name || 'tool'),
               status: String(msg.status || 'running'),
               args: msg.args,
+              summary: msg.summary ? String(msg.summary) : undefined,
               file: msg.file,
             })
+            const toolLabel = prettyToolName(String(msg.name || 'tool'))
+            setActivity(
+              String(msg.status || '') === 'completed' ? '' : `${toolLabel}…`,
+            )
           } else if (msg.type === 'status-delta') {
-            /* light activity — avoid spamming status rows for every step */
+            const label = String(msg.text || msg.phase || '')
+              .replace(/-/g, ' ')
+              .trim()
+            if (label && !/^(token delta|turn ended)$/i.test(label)) {
+              setActivity(label)
+            }
           } else if (msg.type === 'message') {
             handleSdkMessage(chatId, msg.message)
           } else if (msg.type === 'done') {
             const wasStreaming = streamingRef.current
             setStreaming(false)
+            setActivity('')
             finalizeStreamingBubbles(chatId)
             assistantBuf.current = ''
+            gotTextDeltasRef.current = false
             const err =
               String(msg.status || '').toLowerCase() === 'error' ||
               String(msg.status || '').toLowerCase() === 'failed'
@@ -525,8 +588,10 @@ export function ChatPanel({
             }
           } else if (msg.type === 'error') {
             setStreaming(false)
+            setActivity('')
             finalizeStreamingBubbles(chatId)
             assistantBuf.current = ''
+            gotTextDeltasRef.current = false
             const detail = String(msg.error || 'Agent error')
             const tip = msg.busy
               ? detail
@@ -544,8 +609,10 @@ export function ChatPanel({
             }
           } else if (msg.type === 'cancelled') {
             setStreaming(false)
+            setActivity('')
             finalizeStreamingBubbles(chatId)
             assistantBuf.current = ''
+            gotTextDeltasRef.current = false
             pushMsg(chatId, {
               id: uid(),
               role: 'system',
@@ -601,7 +668,7 @@ export function ChatPanel({
       if (last?.role === 'thinking') {
         msgs[msgs.length - 1] = {
           ...last,
-          text: (last.text || '') + chunk,
+          text: joinThinkingChunk(last.text || '', chunk),
           streaming: true,
         }
         return { ...t, messages: msgs }
@@ -645,15 +712,11 @@ export function ChatPanel({
       name: string
       status: string
       args?: unknown
+      summary?: string
       file?: { path: string; action: string }
     },
   ) {
-    const detail =
-      typeof opts.args === 'string'
-        ? opts.args
-        : opts.args
-          ? JSON.stringify(opts.args).slice(0, 400)
-          : undefined
+    const detail = formatToolDetail(opts.name, opts.args, opts.summary)
     let newlyCompleted = false
     patchTab(chatId, (t) => {
       const msgs = [...t.messages]
@@ -664,7 +727,7 @@ export function ChatPanel({
       const tool = {
         name: opts.name,
         status: opts.status,
-        detail: detail ?? (idx >= 0 ? msgs[idx].tool?.detail : undefined),
+        detail: detail || (idx >= 0 ? msgs[idx].tool?.detail : undefined),
         callId: opts.callId,
       }
       if (idx >= 0) {
@@ -730,16 +793,14 @@ export function ChatPanel({
         name: message.name || 'tool',
         status: String(message.status || 'running'),
         args: message.args,
+        summary: (message as { summary?: string }).summary,
         file: message.file,
       })
       return
     }
     if (mtype === 'status' || mtype === 'task') {
-      pushMsg(chatId, {
-        id: uid(),
-        role: 'status',
-        text: message.text || message.status || mtype,
-      })
+      const label = String(message.text || message.status || mtype).trim()
+      if (label) setActivity(label)
       return
     }
     const text = (message?.content || [])
@@ -747,19 +808,14 @@ export function ChatPanel({
       .map((b) => b.text || '')
       .join('')
     if ((mtype === 'assistant' || text) && text) {
-      // Final assistant snapshot after deltas — replace, don't double-append
-      if (
-        assistantBuf.current &&
-        (text.startsWith(assistantBuf.current.slice(0, Math.min(40, assistantBuf.current.length))) ||
-          assistantBuf.current.startsWith(text.slice(0, Math.min(40, text.length))))
-      ) {
-        assistantBuf.current = text
-      } else if (!assistantBuf.current) {
-        assistantBuf.current = text
-      } else {
-        assistantBuf.current += text
-      }
+      // Final snapshot after live deltas — always merge/replace, never naive concat
+      assistantBuf.current = mergeAssistantText(
+        assistantBuf.current,
+        text,
+        gotTextDeltasRef.current,
+      )
       pushAssistant(chatId, assistantBuf.current, false)
+      setActivity('')
     }
   }
 
@@ -836,7 +892,10 @@ export function ChatPanel({
     if (!prompt || !active || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
     setError('')
     setStreaming(true)
+    setActivity('starting…')
+    setSettingsOpen(false)
     assistantBuf.current = ''
+    gotTextDeltasRef.current = false
     pushMsg(active.id, { id: uid(), role: 'user', text: prompt })
     if (active.messages.length === 0 && (active.title === 'New chat' || active.title.startsWith('./'))) {
       const titled = prompt.slice(0, 32) + (prompt.length > 32 ? '…' : '')
@@ -1133,57 +1192,8 @@ export function ChatPanel({
           />
         </div>
 
-        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Mode">
-          {CHAT_MODES.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              title={m.title}
-              disabled={streaming}
-              onClick={() => chooseMode(m.id)}
-              className={`px-2 py-1 rounded-md text-[11px] font-semibold border transition-colors disabled:opacity-40 ${
-                mode === m.id
-                  ? 'border-accent/50 bg-accent/15 text-accent'
-                  : 'border-line bg-panel-2 text-mute hover:text-text'
-              }`}
-            >
-              {m.label}
-            </button>
-          ))}
-          <button
-            type="button"
-            title={
-              approvalPolicy === 'ask'
-                ? 'Tools/shell require Allow before running (safer)'
-                : 'Tools run automatically (like trusted IDE workspace)'
-            }
-            disabled={streaming}
-            onClick={() => chooseApprovalPolicy(approvalPolicy === 'ask' ? 'auto' : 'ask')}
-            className={`ml-auto px-2 py-1 rounded-md text-[10px] font-semibold border disabled:opacity-40 ${
-              approvalPolicy === 'ask'
-                ? 'border-amber/40 bg-amber/10 text-amber'
-                : 'border-ok/40 bg-ok/10 text-ok'
-            }`}
-          >
-            {approvalPolicy === 'ask' ? 'Ask before tools' : 'Auto-run tools'}
-          </button>
-        </div>
-
-        <div className="flex items-center gap-2 text-[11px]">
-          <select
-            value={model || defaultModel}
-            onChange={(e) => chooseModel(e.target.value)}
-            disabled={streaming}
-            className="hb-select py-1 text-[11px] min-w-0 flex-1 max-w-[14rem]"
-            aria-label="Model"
-          >
-            {modelOptions.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.displayName}
-              </option>
-            ))}
-          </select>
-          <span className="text-mute truncate hidden sm:inline">
+        <div className="flex items-center gap-2 text-[11px] min-w-0">
+          <span className="text-mute truncate min-w-0">
             <span className="text-sky font-medium">{cwdLabel}</span>
           </span>
           {isDock && (
@@ -1193,7 +1203,7 @@ export function ChatPanel({
               onClick={() => {
                 if (!connected) wsHandleRef.current?.reconnect()
               }}
-              className={`text-[10px] shrink-0 px-1.5 py-0.5 rounded border font-semibold ${
+              className={`text-[10px] shrink-0 px-1.5 py-0.5 rounded border font-semibold ml-auto ${
                 connected
                   ? 'text-ok border-ok/30 bg-ok/10'
                   : connState === 'reconnecting' || connState === 'connecting'
@@ -1217,43 +1227,16 @@ export function ChatPanel({
             </button>
           )}
         </div>
-
-        {/* Quick present actions — chat can drive the workspace */}
-        {onPresent && (
-          <div className="flex flex-wrap gap-1.5">
-            <button
-              type="button"
-              className="hb-chat-present-btn"
-              onClick={() => onPresent({ scene: 'shell', newShell: true })}
-            >
-              + Shell
-            </button>
-            <button
-              type="button"
-              className="hb-chat-present-btn"
-              onClick={() => onPresent({ scene: 'apps' })}
-            >
-              Apps
-            </button>
-            <button
-              type="button"
-              className="hb-chat-present-btn"
-              onClick={() => onPresent({ scene: 'files' })}
-            >
-              Files
-            </button>
-            <button
-              type="button"
-              className="hb-chat-present-btn"
-              onClick={() => onPresent({ scene: 'shell' })}
-            >
-              Sessions
-            </button>
-          </div>
-        )}
       </div>
     </div>
   )
+
+  const modeMeta = CHAT_MODES.find((m) => m.id === mode) || CHAT_MODES[0]
+  const modelLabel =
+    modelOptions.find((m) => m.id === (model || defaultModel))?.displayName ||
+    model ||
+    defaultModel ||
+    'Auto'
 
   const messages = (
     <div
@@ -1268,8 +1251,8 @@ export function ChatPanel({
           </p>
           <p className="text-mute text-xs leading-relaxed">
             {isDock
-              ? 'Ask anything. Use + Shell / Apps / Files to present in the workspace. Tabs are per project; pick a folder for scoped chats.'
-              : 'Chats stay on this device. Use + to start at the root or in a folder. Present Shell from the toolbar to watch a process.'}
+              ? 'Ask anything. Open the gear next to the message box for mode, model, and tools. Use Present to show Shell / Apps / Files.'
+              : 'Chats stay on this device. Use + for a new tab. Open the gear by Send for mode, model, tools, and Present.'}
           </p>
         </div>
       )}
@@ -1310,7 +1293,9 @@ export function ChatPanel({
       ))}
       {streaming && (
         <p className="text-xs font-mono text-accent animate-pulse">
-          {pendingApprovals.length ? 'waiting for approval…' : 'agent working…'}
+          {pendingApprovals.length
+            ? 'waiting for approval…'
+            : activity || 'agent working…'}
         </p>
       )}
       {error && <p className="text-sm text-danger">{error}</p>}
@@ -1321,29 +1306,217 @@ export function ChatPanel({
   const composer = (
     <form
       onSubmit={send}
-      className={`hb-chat-composer shrink-0 border-t border-line px-3 pt-3 space-y-2 ${
+      className={`hb-chat-composer shrink-0 border-t border-line px-3 pt-2 pb-3 space-y-2 relative ${
         isDock ? 'rounded-b-2xl' : ''
       }`}
     >
-      {!isDock && (
-        <div className="flex items-center gap-2">
+      {settingsOpen && (
+        <>
           <button
             type="button"
-            onClick={() => void resetChat()}
-            disabled={streaming || !active?.messages.length}
-            className="text-[11px] text-mute hover:text-danger ml-auto px-2 py-1 disabled:opacity-30"
-            title="Clear messages and start a fresh agent for this tab"
-          >
-            Clear chat
-          </button>
-        </div>
+            className="hb-chat-sheet-scrim"
+            aria-label="Close chat options"
+            onClick={() => setSettingsOpen(false)}
+          />
+          <div className="hb-chat-sheet" role="dialog" aria-label="Chat options">
+            <div className="hb-chat-sheet-handle" aria-hidden />
+            <p className="text-[10px] uppercase tracking-wider text-mute font-semibold px-0.5">
+              Mode
+            </p>
+            <div className="flex flex-wrap gap-1.5" role="group" aria-label="Mode">
+              {CHAT_MODES.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  title={m.title}
+                  disabled={streaming}
+                  onClick={() => chooseMode(m.id)}
+                  className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border transition-colors disabled:opacity-40 ${
+                    mode === m.id
+                      ? 'border-accent/50 bg-accent/15 text-accent'
+                      : 'border-line bg-panel-2 text-mute hover:text-text'
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-2 pt-1">
+              <label className="text-[10px] uppercase tracking-wider text-mute font-semibold shrink-0">
+                Model
+              </label>
+              <select
+                value={model || defaultModel}
+                onChange={(e) => chooseModel(e.target.value)}
+                disabled={streaming}
+                className="hb-select py-1.5 text-[11px] min-w-0 flex-1"
+                aria-label="Model"
+              >
+                {modelOptions.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.displayName}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <button
+              type="button"
+              title={
+                approvalPolicy === 'ask'
+                  ? 'Tools/shell require Allow before running (safer)'
+                  : 'Tools run automatically (like trusted IDE workspace)'
+              }
+              disabled={streaming}
+              onClick={() => chooseApprovalPolicy(approvalPolicy === 'ask' ? 'auto' : 'ask')}
+              className={`w-full px-3 py-2 rounded-lg text-[11px] font-semibold border text-left disabled:opacity-40 ${
+                approvalPolicy === 'ask'
+                  ? 'border-amber/40 bg-amber/10 text-amber'
+                  : 'border-ok/40 bg-ok/10 text-ok'
+              }`}
+            >
+              {approvalPolicy === 'ask' ? 'Ask before tools' : 'Auto-run tools'}
+            </button>
+            {onPresent && (
+              <div className="flex flex-wrap gap-1.5 pt-0.5">
+                <button
+                  type="button"
+                  className="hb-chat-present-btn"
+                  onClick={() => {
+                    onPresent({ scene: 'shell', newShell: true })
+                    setSettingsOpen(false)
+                  }}
+                >
+                  + Shell
+                </button>
+                <button
+                  type="button"
+                  className="hb-chat-present-btn"
+                  onClick={() => {
+                    onPresent({ scene: 'apps' })
+                    setSettingsOpen(false)
+                  }}
+                >
+                  Apps
+                </button>
+                <button
+                  type="button"
+                  className="hb-chat-present-btn"
+                  onClick={() => {
+                    onPresent({ scene: 'files' })
+                    setSettingsOpen(false)
+                  }}
+                >
+                  Files
+                </button>
+                <button
+                  type="button"
+                  className="hb-chat-present-btn"
+                  onClick={() => {
+                    onPresent({ scene: 'shell' })
+                    setSettingsOpen(false)
+                  }}
+                >
+                  Sessions
+                </button>
+              </div>
+            )}
+            {!isDock && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSettingsOpen(false)
+                  void resetChat()
+                }}
+                disabled={streaming || !active?.messages.length}
+                className="text-[11px] text-mute hover:text-danger px-1 py-1 disabled:opacity-30 text-left"
+                title="Clear messages and start a fresh agent for this tab"
+              >
+                Clear chat
+              </button>
+            )}
+          </div>
+        </>
       )}
+
+      <div className="flex items-center gap-1.5 min-w-0">
+        <button
+          type="button"
+          className={`hb-chat-opt-btn ${settingsOpen ? 'hb-chat-opt-btn-open' : ''}`}
+          aria-expanded={settingsOpen}
+          aria-label="Chat options"
+          title="Mode, model, tools"
+          onClick={() => setSettingsOpen((o) => !o)}
+        >
+          <svg viewBox="0 0 24 24" className="hb-chat-opt-icon" aria-hidden>
+            <path
+              d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7z"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.75"
+            />
+            <path
+              d="M19.4 13a7.6 7.6 0 0 0 .05-1l2-1.55-1.9-3.3-2.35.75a7.7 7.7 0 0 0-1.7-1L15.2 3h-3.8l-.3 2.85a7.7 7.7 0 0 0-1.7 1L7 5.15 5.1 8.45 7.1 10a7.6 7.6 0 0 0 0 2l-2 1.55 1.9 3.3 2.35-.75a7.7 7.7 0 0 0 1.7 1L11.4 21h3.8l.3-2.85a7.7 7.7 0 0 0 1.7-1l2.35.75 1.9-3.3L19.4 13z"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.35"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+        <div className="hb-chat-opt-chips min-w-0 flex-1">
+          <span className="hb-chat-opt-chip" title={modeMeta.title}>
+            <svg viewBox="0 0 16 16" aria-hidden>
+              <path
+                d="M3 11.5 8 3l5 8.5H3z"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinejoin="round"
+              />
+            </svg>
+            {modeMeta.label}
+          </span>
+          <span className="hb-chat-opt-chip" title="Model">
+            <svg viewBox="0 0 16 16" aria-hidden>
+              <circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" strokeWidth="1.4" />
+              <circle cx="8" cy="8" r="1.6" fill="currentColor" />
+            </svg>
+            <span className="truncate max-w-[7rem]">{modelLabel}</span>
+          </span>
+          <span
+            className={`hb-chat-opt-chip ${
+              approvalPolicy === 'ask' ? 'hb-chat-opt-chip-warn' : 'hb-chat-opt-chip-ok'
+            }`}
+            title={approvalPolicy === 'ask' ? 'Ask before tools' : 'Auto-run tools'}
+          >
+            <svg viewBox="0 0 16 16" aria-hidden>
+              {approvalPolicy === 'ask' ? (
+                <path
+                  d="M8 2.5a3.5 3.5 0 0 0-3.5 3.5V8H3.5v5.5h9V8H11.5V6A3.5 3.5 0 0 0 8 2.5zm-2 5.5V6a2 2 0 1 1 4 0v2H6z"
+                  fill="currentColor"
+                />
+              ) : (
+                <path
+                  d="M3.5 8.2 6.2 11l6.3-6.5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              )}
+            </svg>
+            {approvalPolicy === 'ask' ? 'Ask' : 'Auto'}
+          </span>
+        </div>
+      </div>
+
       <div className="flex gap-2 items-stretch">
         <div className="flex-1 min-w-0 relative">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            rows={isDock ? 2 : 2}
+            rows={2}
             placeholder={listening ? 'Listening… speak in English' : `Message (${cwdLabel})…`}
             className={`w-full rounded-xl bg-panel-2 border px-3 py-2.5 pr-12 text-sm resize-none outline-none focus:border-accent ${
               listening ? 'border-accent/60' : 'border-line'
@@ -1351,7 +1524,6 @@ export function ChatPanel({
             enterKeyHint="send"
             autoComplete="off"
             onFocus={() => {
-              // Keep the fixed shell aligned with the visual viewport above the keyboard.
               window.scrollTo(0, 0)
               requestAnimationFrame(() => window.scrollTo(0, 0))
             }}

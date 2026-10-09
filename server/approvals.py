@@ -90,13 +90,17 @@ def remove_listener(fn: Listener) -> None:
 
 
 async def _broadcast(payload: dict[str, Any]) -> None:
-    for fn in list(_listeners):
+    """Notify UI listeners; never let a slow WebSocket block the hook HTTP path."""
+
+    async def _one(fn: Listener) -> None:
         try:
             res = fn(payload)
             if asyncio.iscoroutine(res) or asyncio.isfuture(res):
-                await res  # type: ignore[arg-type]
+                await asyncio.wait_for(res, timeout=2.0)  # type: ignore[arg-type]
         except Exception as e:
             log.warning("approval listener failed: %s", e)
+
+    await asyncio.gather(*[_one(fn) for fn in list(_listeners)], return_exceptions=True)
 
 
 def list_pending() -> list[dict[str, Any]]:

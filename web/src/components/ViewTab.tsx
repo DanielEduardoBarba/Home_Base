@@ -349,6 +349,14 @@ export function ViewTab() {
         url: () => wsUrl('/ws/view'),
         onState: (s) => {
           if (!disposed) setConn(s)
+          // Auth-lost disposes the handle permanently — drop it so Start can reopen.
+          if (s === 'auth') {
+            connRef.current = null
+            if (!disposed) {
+              setWanted(false)
+              setError('Session expired — sign in again, then Start View.')
+            }
+          }
         },
         onOpen: (ws) => {
           if (disposed) return

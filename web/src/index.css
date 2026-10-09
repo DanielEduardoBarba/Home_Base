@@ -1090,6 +1090,7 @@ html[data-hb-keyboard] .hb-work-body:has(.hb-chat-dock) .hb-work-main {
 @media (prefers-reduced-motion: reduce) {
   .hb-enter,
   .hb-chat-thinking-live,
+  .hb-chat-sheet,
   .hb-toast,
   .hb-mic-btn-live,
   button {
@@ -1267,6 +1268,129 @@ html[data-hb-keyboard] .hb-work-body:has(.hb-chat-dock) .hb-work-main {
 html[data-hb-keyboard] .hb-chat-composer {
   /* Keyboard already clears the home indicator — don't double-pad */
   padding-bottom: 0.65rem;
+}
+
+.hb-chat-sheet-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: color-mix(in srgb, var(--hb-overlay) 55%, transparent);
+  border: 0;
+  padding: 0;
+}
+
+.hb-chat-sheet {
+  position: absolute;
+  left: 0.5rem;
+  right: 0.5rem;
+  bottom: calc(100% + 0.35rem);
+  z-index: 31;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding: 0.65rem 0.85rem 0.85rem;
+  border-radius: 1rem 1rem 0.85rem 0.85rem;
+  border: 1px solid var(--hb-line);
+  background: color-mix(in srgb, var(--hb-panel) 97%, var(--hb-surface-tint));
+  box-shadow: 0 -8px 28px color-mix(in srgb, #000 28%, transparent);
+  animation: hb-sheet-up 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  max-height: min(58vh, 22rem);
+  overflow-y: auto;
+}
+
+.hb-chat-sheet-handle {
+  width: 2.25rem;
+  height: 0.22rem;
+  border-radius: 999px;
+  margin: 0 auto 0.15rem;
+  background: color-mix(in srgb, var(--hb-mute) 45%, transparent);
+}
+
+@keyframes hb-sheet-up {
+  from {
+    opacity: 0;
+    transform: translateY(0.65rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.hb-chat-opt-btn {
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  border-radius: 0.65rem;
+  border: 1px solid var(--hb-line);
+  background: var(--hb-panel-2);
+  color: var(--hb-mute);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hb-chat-opt-btn:hover {
+  color: var(--hb-text);
+  border-color: color-mix(in srgb, var(--hb-accent) 40%, var(--hb-line));
+}
+
+.hb-chat-opt-btn-open {
+  color: var(--hb-accent);
+  border-color: color-mix(in srgb, var(--hb-accent) 45%, var(--hb-line));
+  background: color-mix(in srgb, var(--hb-accent) 12%, var(--hb-panel));
+}
+
+.hb-chat-opt-icon {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+.hb-chat-opt-chips {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  overflow-x: auto;
+  min-width: 0;
+  scrollbar-width: none;
+}
+
+.hb-chat-opt-chips::-webkit-scrollbar {
+  display: none;
+}
+
+.hb-chat-opt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  flex-shrink: 0;
+  max-width: 100%;
+  padding: 0.2rem 0.45rem;
+  border-radius: 0.45rem;
+  border: 1px solid var(--hb-line);
+  background: var(--hb-panel-2);
+  color: var(--hb-mute);
+  font-size: 0.625rem;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.hb-chat-opt-chip svg {
+  width: 0.75rem;
+  height: 0.75rem;
+  flex-shrink: 0;
+}
+
+.hb-chat-opt-chip-warn {
+  color: var(--hb-amber);
+  border-color: color-mix(in srgb, var(--hb-amber) 35%, var(--hb-line));
+  background: color-mix(in srgb, var(--hb-amber) 10%, var(--hb-panel));
+}
+
+.hb-chat-opt-chip-ok {
+  color: var(--hb-ok);
+  border-color: color-mix(in srgb, var(--hb-ok) 35%, var(--hb-line));
+  background: color-mix(in srgb, var(--hb-ok) 10%, var(--hb-panel));
 }
 
 .hb-chat-present-btn {

@@ -110,6 +110,8 @@ class ClientState:
     pending: int = 0
     last_ack_seq: int = 0
     last_rtt_ms: float = 0.0
+    # True when client sent explicit fps/quality (LAN/VPN presets) — skip auto-adapt.
+    user_locked: bool = False
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -161,6 +163,8 @@ class _XInput:
         self._screen = 0
         self._width = 0
         self._height = 0
+        self._desk_left = 0
+        self._desk_top = 0
         self._X: Any = None
         self._Xtst: Any = None
         self._keysym_cache: dict[str, int] = {}
@@ -253,12 +257,15 @@ class _XInput:
     def motion(self, x: int, y: int) -> None:
         if not self._dpy and not self.open():
             return
-        # Soft clamp to virtual desktop; multi-monitor coords stay in-range for Xinerama.
-        if self._width > 0 and self._height > 0:
-            x = max(0, min(self._width - 1, int(x)))
-            y = max(0, min(self._height - 1, int(y)))
-        else:
-            x, y = int(x), int(y)
+        # Soft clamp to virtual desktop. Origin may be negative (monitor left of primary).
+        x, y = int(x), int(y)
+        left = getattr(self, "_desk_left", 0) or 0
+        top = getattr(self, "_desk_top", 0) or 0
+        width = self._width or 0
+        height = self._height or 0
+        if width > 0 and height > 0:
+            x = max(left, min(left + width - 1, x))
+            y = max(top, min(top + height - 1, y))
         self._Xtst.XTestFakeMotionEvent(self._dpy, self._screen, x, y, 0)
         self._X.XFlush(self._dpy)
 
@@ -570,6 +577,17 @@ def _dispatch_worker_cmd(
                     xin.refresh_size()
                     mw, mh = xin.size
                     rect = {"left": 0, "top": 0, "width": mw, "height": mh}
+                # Keep motion clamp aligned with virtual desktop (may be negative origin).
+                try:
+                    desk = _monitor_rect(sct_holder[0], 0)
+                    xin._desk_left = int(desk.get("left") or 0)
+                    xin._desk_top = int(desk.get("top") or 0)
+                    if desk.get("width"):
+                        xin._width = int(desk["width"])
+                    if desk.get("height"):
+                        xin._height = int(desk["height"])
+                except Exception:
+                    pass
                 nx = float(msg.get("x") or 0)
                 ny = float(msg.get("y") or 0)
                 x = int(rect["left"] + nx * mw)
@@ -657,11 +675,15 @@ def run_view_worker() -> int:
             print(f"view-worker crash: {e}", file=sys.stderr, flush=True)
         return 1
     finally:
-        xin.close()
+        try:
+            xin.close()
+        except BaseException:
+            pass
         if sct_holder[0] is not None:
             try:
+                # Parent terminate/SIGINT can raise KeyboardInterrupt inside mss/xcb.
                 sct_holder[0].close()
-            except Exception:
+            except BaseException:
                 pass
     return 0
 
@@ -945,6 +967,10 @@ class ViewHub:
         ok = False
         err = ""
         sw = sh = 0
+        # Never tear down a live capture from a status probe (race with connect).
+        streaming = bool(self._clients) or (
+            self._loop_task is not None and not self._loop_task.done()
+        )
         try:
             self._bridge.start()
             resp = self._bridge._call({"cmd": "ping"}, timeout=4.0)
@@ -957,9 +983,12 @@ class ViewHub:
             self._bridge.monitors = list(resp.get("monitors") or [])
         except Exception as e:
             err = str(e)
-        # Don't leave a worker running from a status probe if nobody is streaming
-        if not self._clients:
-            self._bridge.stop()
+        if not streaming and not self._clients:
+            # Re-check idle: a connect may have raced in during ping.
+            if not self._clients and (
+                self._loop_task is None or self._loop_task.done()
+            ):
+                self._bridge.stop()
         return {
             "ok": ok,
             "display": display,
@@ -1018,6 +1047,13 @@ class ViewHub:
         async with self._lock:
             self._clients.pop(id(ws), None)
             empty = not self._clients
+        # Best-effort release stuck remote buttons/keys for this session.
+        try:
+            await self._bridge.call({"cmd": "pointer", "mode": "rel", "action": "up", "button": 0}, timeout=1.0)
+            await self._bridge.call({"cmd": "pointer", "mode": "rel", "action": "up", "button": 1}, timeout=1.0)
+            await self._bridge.call({"cmd": "pointer", "mode": "rel", "action": "up", "button": 2}, timeout=1.0)
+        except Exception:
+            pass
         if empty:
             task = self._loop_task
             if task and not task.done():
@@ -1033,6 +1069,11 @@ class ViewHub:
             self._last_err_sent = ""
 
     def shutdown(self) -> None:
+        task = self._loop_task
+        if task and not task.done():
+            task.cancel()
+        self._loop_task = None
+        self._clients.clear()
         self._bridge.stop()
 
     async def handle_message(self, client: ClientState, msg: dict[str, Any]) -> None:
@@ -1045,8 +1086,12 @@ class ViewHub:
                 seq = int(msg.get("seq") or 0)
             except (TypeError, ValueError):
                 return
+            # Ignore duplicate / out-of-order acks so pending cannot desync.
+            if seq and seq <= client.last_ack_seq:
+                return
+            if seq:
+                client.last_ack_seq = seq
             client.pending = max(0, client.pending - 1)
-            client.last_ack_seq = seq
             try:
                 client.last_rtt_ms = float(msg.get("rttMs") or 0)
             except (TypeError, ValueError):
@@ -1058,8 +1103,10 @@ class ViewHub:
                 client.max_width = _clamp(int(msg.get("maxWidth") or client.max_width), MIN_WIDTH, MAX_WIDTH)
             if msg.get("quality") is not None:
                 client.quality = _clamp(int(msg.get("quality") or client.quality), MIN_QUALITY, MAX_QUALITY)
+                client.user_locked = True
             if msg.get("fps") is not None:
                 client.fps = _clamp(int(msg.get("fps") or client.fps), MIN_FPS, MAX_FPS)
+                client.user_locked = True
             if msg.get("monitor") is not None:
                 try:
                     client.monitor = max(0, int(msg.get("monitor")))
@@ -1106,6 +1153,9 @@ class ViewHub:
             return
 
     def _adapt(self, client: ClientState) -> None:
+        # Respect explicit LAN/VPN presets — only auto-tune the "auto" path.
+        if client.user_locked:
+            return
         if client.pending >= 3:
             client.quality = max(MIN_QUALITY, client.quality - 6)
             client.fps = max(MIN_FPS, client.fps - 2)
