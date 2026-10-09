@@ -151,7 +151,7 @@ export function LogsTab() {
           <p className="text-[11px] font-mono text-mute">
             {filter === 'journald'
               ? `journalctl -u homebased · max ${MAX} · tap a line to copy`
-              : `Shared ring · max ${MAX} · python + browser + cursor · tap a line to copy`}
+              : `Shared ring · max ${MAX} · python + browser + cursor · prior crash/stop lines replay on startup · tap a line to copy`}
           </p>
           {error && <p className="text-danger text-xs">{error}</p>}
         </div>

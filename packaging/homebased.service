@@ -2,6 +2,9 @@
 Description=Home Base control plane (homebased)
 After=network-online.target
 Wants=network-online.target
+# Crash loops stop after 8 tries in 2 minutes. `systemctl stop` still stays down.
+StartLimitIntervalSec=120
+StartLimitBurst=8
 
 [Service]
 Type=simple
@@ -20,8 +23,11 @@ Environment=HOMEBASE_XAUTHORITY=/home/daniel/.Xauthority
 EnvironmentFile=-/var/lib/homebased/.env
 # Force production port after EnvironmentFile so a copied dev .env cannot override it
 Environment=HOMEBASE_PORT=8888
-Restart=on-failure
+# Any process exit (crash, fatal signal, or exit 0) comes back.
+# An explicit `systemctl stop` stays stopped so deploys can swap the binary.
+Restart=always
 RestartSec=3
+OOMPolicy=kill
 # Allow PTY shells and child process trees for managed projects
 KillMode=control-group
 TimeoutStopSec=20

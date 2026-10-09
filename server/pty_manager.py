@@ -274,5 +274,31 @@ class PtyManager:
             killed.append(sid)
         return killed
 
+    def output_tail(
+        self,
+        project_id: str,
+        *,
+        kinds: Optional[set[str]] = None,
+        lines: int = 200,
+    ) -> str:
+        """Joined PTY ring buffers for a project (Run+Expo compose Logs fallback)."""
+        chunks: list[str] = []
+        for s in self._sessions.values():
+            if s.project_id != project_id:
+                continue
+            if kinds and s.kind not in kinds:
+                continue
+            if not s.output_buffer:
+                continue
+            header = s.label or s.id
+            chunks.append(f"--- {s.kind}: {header} ---\n")
+            chunks.append("".join(s.output_buffer))
+            if not chunks[-1].endswith("\n"):
+                chunks.append("\n")
+        if not chunks:
+            return ""
+        text = "".join(chunks)
+        return "\n".join(text.splitlines()[-max(1, lines):])
+
 
 pty_manager = PtyManager()

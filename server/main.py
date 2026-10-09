@@ -109,18 +109,33 @@ async def lifespan(app: FastAPI):
             if cand.is_file():
                 approval_hub.ensure_user_hooks(cand)
                 break
-    yield
-    await cursor_bridge.close()
-    for s in list(pty_manager.list_sessions()):
+    from .crash_log import record_event, replay_events, replay_journal
+
+    n_saved = replay_events()
+    n_journal = await replay_journal()
+    if n_saved or n_journal:
+        trace_append(
+            "warn",
+            f"previous run: {n_saved} saved event(s), {n_journal} journal line(s)",
+            source="server",
+        )
+    try:
+        yield
+    finally:
+        record_event("warn", "homebased shutting down")
         try:
-            await pty_manager.kill(s["id"])
+            await cursor_bridge.close()
         except Exception:
             pass
-    try:
-        view_hub.shutdown()
-    except Exception:
-        pass
-    trace_append("info", "shutdown", source="server")
+        for s in list(pty_manager.list_sessions()):
+            try:
+                await pty_manager.kill(s["id"])
+            except Exception:
+                pass
+        try:
+            view_hub.shutdown()
+        except Exception:
+            pass
 
 
 app = FastAPI(title="Home Base", version=APP_VERSION, lifespan=lifespan)

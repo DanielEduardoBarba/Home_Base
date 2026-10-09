@@ -55,10 +55,12 @@ def self_test() -> int:
 def main() -> None:
     import uvicorn
     from server.config import get_settings
+    from server.crash_log import install_crash_hooks
     from server.cursor_env import ensure_cursor_bridge_env
     from server.main import app
     from server.version import read_version, running_as_backup
 
+    install_crash_hooks()
     ensure_cursor_bridge_env()
     settings = get_settings()
     if running_as_backup():

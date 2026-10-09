@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -10,6 +12,7 @@ from .network import project_lan_env
 from .notifications import push as notify
 from .ports import kill_pids, kill_ports
 from .pty_manager import pty_manager
+from .shell_env import resolve_seat_user
 from .trace_log import append as trace
 
 
@@ -64,6 +67,84 @@ def _resolve_script(project: Project, script: str) -> Path:
     return path
 
 
+def _chown_tree(path: Path, uid: int, gid: int) -> None:
+    """Best-effort chown so seat-user PTYs can write stateDir/tmp caches."""
+    try:
+        os.chown(path, uid, gid)
+    except OSError:
+        return
+    if not path.is_dir():
+        return
+    try:
+        entries = list(path.iterdir())
+    except OSError:
+        return
+    for child in entries:
+        try:
+            if child.is_symlink():
+                continue
+            if child.is_dir():
+                _chown_tree(child, uid, gid)
+            else:
+                os.chown(child, uid, gid)
+        except OSError:
+            continue
+
+
+def ensure_project_state_writable(project: Project) -> None:
+    """Create stateDir/tmp and chown to seat user when homebased is root.
+
+    Older root PTYs left root-owned caches; seat-user Next/Expo then hit EACCES.
+    """
+    if not project.state_dir:
+        return
+    state = project.path / project.state_dir
+    tmp = state / "tmp"
+    try:
+        state.mkdir(parents=True, exist_ok=True)
+        tmp.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+
+    seat = resolve_seat_user()
+    if not seat or os.geteuid() != 0:
+        return
+    _chown_tree(state, seat.uid, seat.gid)
+
+
+async def _wait_for_compose_gate(
+    project: Project,
+    *,
+    timeout: float = 75.0,
+) -> dict[str, Any]:
+    """After a run-kind compose step, wait for API (or first non-expo port) before Expo."""
+    from .health import check_port
+
+    prefer = [p for p in project.ports if p.id == "api"]
+    if not prefer:
+        prefer = [p for p in project.ports if p.id != "expo"][:1]
+    if not prefer:
+        return {"ready": True, "ports": [], "waited": False}
+
+    deadline = time.monotonic() + timeout
+    last: list[dict[str, Any]] = []
+    while time.monotonic() < deadline:
+        last = [await check_port(project, p.id) for p in prefer]
+        ready = True
+        for row in last:
+            if not row.get("up"):
+                ready = False
+                break
+            health = row.get("health")
+            if isinstance(health, dict) and health.get("ok") is False:
+                ready = False
+                break
+        if ready:
+            return {"ready": True, "ports": last, "waited": True}
+        await asyncio.sleep(1.0)
+    return {"ready": False, "ports": last, "waited": True}
+
+
 async def stop_project(project_id: str) -> dict[str, Any]:
     project = get_project(project_id)
     # Keep interactive Shell-tab PTYs; stop managed run/ship/action sessions.
@@ -115,19 +196,60 @@ async def run_action_def(
         return await run_action_def(project_id, target)
 
     if action.type == "compose":
-        # e.g. Run + Expo → two PTYs (./build.sh --run and --run --expo)
+        # e.g. Run + Expo → two PTYs (./build.sh --run and --run --expo).
+        # Start run first, wait for API health, then Expo so Metro is not racing a cold API.
         ids = list(action.compose)
         if not ids:
             raise ValueError(f"Action {action.id} type=compose needs compose: [actionId, …]")
+        await asyncio.to_thread(ensure_project_state_writable, project)
         sessions: list[dict[str, Any]] = []
-        for aid in ids:
+        gate: dict[str, Any] | None = None
+        for i, aid in enumerate(ids):
             target = project.action(aid)
             if target.type == "compose":
                 raise ValueError("Nested compose actions are not supported")
             result = await run_action_def(project_id, target)
             if result.get("type") == "session" and result.get("session"):
                 sessions.append(result["session"])
-        return {"type": "sessions", "sessions": sessions}
+            # Gate Expo (and later steps) on the run stack being reachable.
+            if target.kind == "run" and i < len(ids) - 1:
+                gate = await _wait_for_compose_gate(project)
+                if not gate.get("ready"):
+                    notify(
+                        f"{project.name}: {action.label}",
+                        "Run started but API not healthy yet — starting Expo anyway",
+                        level="warn",
+                        category="process",
+                        meta={
+                            "projectId": project_id,
+                            "actionId": action.id,
+                            "gate": gate,
+                        },
+                    )
+        # Summary after both PTYs exist (spawn toasts already fired per child).
+        from .health import project_port_status
+
+        ports = await project_port_status(project)
+        up = [p["id"] for p in ports if p.get("up")]
+        down = [p["id"] for p in ports if not p.get("up")]
+        level = "success" if not down else ("warn" if up else "error")
+        body = f"up={','.join(up) or 'none'}"
+        if down:
+            body += f" down={','.join(down)}"
+        notify(
+            f"{project.name}: {action.label}",
+            body,
+            level=level,
+            category="process",
+            meta={
+                "projectId": project_id,
+                "actionId": action.id,
+                "sessions": [s.get("id") for s in sessions],
+                "ports": ports,
+                "gate": gate,
+            },
+        )
+        return {"type": "sessions", "sessions": sessions, "ports": ports, "gate": gate}
 
     if action.type != "script" and action.type not in {"", "script"}:
         # treat unknown with script as script
@@ -145,6 +267,8 @@ async def run_action_def(
     # Replace prior sessions of same kind for run/expo to avoid duplicates
     if kind in {"run", "expo"}:
         await pty_manager.kill_by_project(project_id, kinds={kind})
+
+    await asyncio.to_thread(ensure_project_state_writable, project)
 
     # VPN/LAN: inject advertise host so Expo Metro + NEXT/EXPO API URLs are reachable
     # off-localhost (WireGuard preferred). Action env wins on key conflicts.
@@ -192,16 +316,38 @@ async def trigger_action(
 
 
 def tail_logs(project_id: str, lines: int = 200) -> dict[str, Any]:
+    """Prefer stateDir/stack.log; fall back to live run/expo PTY rings when empty.
+
+    Plain `./build.sh --run` (Home Base compose) historically left stack.log blank —
+    real output lives in the PTY buffer until the project tees into the file.
+    """
     project = get_project(project_id)
     path = project.stack_log
-    if not path.is_file():
-        return {"path": str(path), "exists": False, "text": ""}
-    try:
-        content = path.read_text(errors="replace").splitlines()
-        text = "\n".join(content[-lines:])
-    except OSError as e:
-        return {"path": str(path), "exists": True, "text": "", "error": str(e)}
-    return {"path": str(path), "exists": True, "text": text}
+    file_text = ""
+    exists = path.is_file()
+    if exists:
+        try:
+            content = path.read_text(errors="replace").splitlines()
+            file_text = "\n".join(content[-lines:])
+        except OSError as e:
+            return {"path": str(path), "exists": True, "text": "", "error": str(e)}
+
+    if file_text.strip():
+        return {"path": str(path), "exists": exists, "text": file_text, "source": "file"}
+
+    pty_text = pty_manager.output_tail(
+        project_id,
+        kinds={"run", "expo", "ship", "action"},
+        lines=lines,
+    )
+    if pty_text.strip():
+        return {
+            "path": str(path),
+            "exists": exists,
+            "text": pty_text,
+            "source": "pty",
+        }
+    return {"path": str(path), "exists": exists, "text": "", "source": "empty"}
 
 
 def list_projects_meta() -> list[dict[str, Any]]:

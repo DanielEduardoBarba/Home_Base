@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger("homebase.system")
 
 WG_DIR = Path("/etc/wireguard")
 UNIT_RE = re.compile(r"^[a-zA-Z0-9_.@+-]+$")
@@ -67,7 +71,44 @@ async def restart_unit(unit: str) -> dict[str, Any]:
 
 
 async def restart_homebased() -> dict[str, Any]:
-    return await restart_unit("homebased.service")
+    """Restart from a transient timer outside this service's cgroup.
+
+    `systemctl restart` run inside homebased is killed with the stop
+    (KillMode=control-group) and can leave the unit down. The timer survives.
+    """
+    from .crash_log import record_event
+
+    record_event("warn", "homebased restart scheduled")
+    timer = f"homebased-self-restart-{time.time_ns()}"
+    proc = await asyncio.create_subprocess_exec(
+        "systemd-run",
+        "--collect",
+        f"--unit={timer}",
+        "--on-active=1s",
+        "--timer-property=AccuracySec=100ms",
+        "systemctl",
+        "restart",
+        "homebased.service",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=15.0)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise TimeoutError("systemd-run timed out scheduling homebased restart")
+    if proc.returncode != 0:
+        err = (err_b or b"").decode("utf-8", errors="replace").strip()
+        log.warning("systemd-run failed (%s): %s", proc.returncode, err)
+        return await restart_unit("homebased.service")
+    return {
+        "ok": True,
+        "unit": "homebased.service",
+        "active": True,
+        "scheduled": True,
+        "timer": timer,
+        "stdout": (out_b or b"").decode("utf-8", errors="replace").strip(),
+    }
 
 
 async def restart_wireguard(iface: str | None = None) -> dict[str, Any]:
