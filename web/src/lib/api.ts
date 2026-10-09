@@ -95,6 +95,14 @@ export const api = {
       xauthority: boolean
       screenW: number
       screenH: number
+      monitors?: {
+        index: number
+        label: string
+        left: number
+        top: number
+        width: number
+        height: number
+      }[]
       clients: number
       error?: string
       fps?: number

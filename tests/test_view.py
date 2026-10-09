@@ -7,9 +7,16 @@ from server.view import (
     FRAME_HEADER,
     FRAME_MAGIC,
     _browser_to_keysym,
+    _monitor_rect,
+    _monitors_payload,
     discover_x11_env,
     display_owner_ids,
 )
+
+
+class _FakeSct:
+    def __init__(self, monitors):
+        self.monitors = monitors
 
 
 def test_frame_header_size():
@@ -53,3 +60,20 @@ def test_header_client_offsets_match():
     assert struct.unpack_from("<H", v, 8)[0] == 100
     assert struct.unpack_from("<H", v, 10)[0] == 50
     assert v[17] == 40
+
+
+def test_monitors_payload_labels():
+    sct = _FakeSct(
+        [
+            {"left": 0, "top": 0, "width": 3840, "height": 1200},
+            {"left": 0, "top": 0, "width": 1920, "height": 1200},
+            {"left": 1920, "top": 0, "width": 1920, "height": 1200},
+        ]
+    )
+    mons = _monitors_payload(sct)
+    assert len(mons) == 3
+    assert mons[0]["label"] == "All displays"
+    assert mons[1]["label"] == "Display 1"
+    assert mons[2]["width"] == 1920
+    assert _monitor_rect(sct, 2)["left"] == 1920
+    assert _monitor_rect(sct, 99)["width"] == 3840  # invalid → virtual desktop

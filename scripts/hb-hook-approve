@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""Cursor hooks → Home Base approval gate (stdin JSON → stdout permission)."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+DEFAULT_URL = "http://127.0.0.1:8888/api/internal/hook-approve"
+SECRET_CANDIDATES = (
+    os.environ.get("HOMEBASE_HOOK_SECRET", "").strip(),
+    "/var/lib/homebased/.runtime/hook_secret",
+    os.path.expanduser("~/.local/share/homebase/.runtime/hook_secret"),
+)
+
+
+def _read_secret() -> str:
+    env = os.environ.get("HOMEBASE_HOOK_SECRET", "").strip()
+    if env:
+        return env
+    home = os.environ.get("HOMEBASE_HOME", "").strip()
+    paths = []
+    if home:
+        paths.append(os.path.join(home, ".runtime", "hook_secret"))
+    paths.extend(
+        [
+            "/var/lib/homebased/.runtime/hook_secret",
+            os.path.expanduser("~/.local/share/homebase/.runtime/hook_secret"),
+            os.path.expanduser(
+                "~/APP_PROJECTS/GENERAL/home_base/.runtime/hook_secret"
+            ),
+        ]
+    )
+    for p in paths:
+        try:
+            if p and os.path.isfile(p):
+                val = open(p, encoding="utf-8").read().strip()
+                if val:
+                    return val
+        except OSError:
+            continue
+    return ""
+
+
+def main() -> int:
+    raw = sys.stdin.read()
+    try:
+        payload = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        payload = {}
+
+    secret = _read_secret()
+    port = os.environ.get("HOMEBASE_PORT", "8888").strip() or "8888"
+    url = os.environ.get("HOMEBASE_HOOK_URL", "").strip() or (
+        f"http://127.0.0.1:{port}/api/internal/hook-approve"
+    )
+
+    body = {
+        "secret": secret,
+        "event": payload.get("hook_event_name") or payload.get("hookEventName") or "",
+        "payload": payload,
+    }
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=590) as resp:
+            out = json.loads(resp.read().decode("utf-8") or "{}")
+    except Exception as e:
+        # failClosed hooks treat non-schema / errors as block — return deny
+        out = {
+            "permission": "deny",
+            "user_message": f"Home Base approval unreachable: {e}",
+            "agent_message": "Approval service unavailable; do not retry silently.",
+        }
+
+    permission = str(out.get("permission") or "deny").lower()
+    if permission not in {"allow", "deny", "ask"}:
+        permission = "deny"
+    result = {
+        "permission": permission,
+        "user_message": out.get("user_message") or out.get("userMessage") or "",
+        "agent_message": out.get("agent_message") or out.get("agentMessage") or "",
+    }
+    sys.stdout.write(json.dumps(result))
+    sys.stdout.flush()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

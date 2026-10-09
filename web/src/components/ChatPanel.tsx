@@ -2,12 +2,20 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import ReactMarkdown from 'react-markdown'
 import { api, wsUrl } from '../lib/api'
 import { loadChatTabs, newChatTab, persistChatTabs } from '../lib/chatTabs'
-import type { ChatMsg, ChatTab, PresentRequest } from '../lib/chatTypes'
+import type {
+  ApprovalPolicy,
+  ChatMode,
+  ChatMsg,
+  ChatTab,
+  PendingApproval,
+  PresentRequest,
+} from '../lib/chatTypes'
 import { uid } from '../lib/id'
 import { useNotifyOptional } from '../lib/NotifyContext'
 import { presentFromTool, presentLabel } from '../lib/present'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 import { speechSupported, startSpeechDictation, type SpeechHandle } from '../lib/speech'
+import { formatMsgTime, polishThinking, prettyToolName } from '../lib/toolFormat'
 import type { CursorModel, FsEntry, Project } from '../lib/types'
 import {
   connStateLabel,
@@ -19,8 +27,16 @@ import { IconBtn } from './IconBtn'
 import { ProjectSelect } from './ProjectSelect'
 
 const MODEL_STORAGE_KEY = 'hb-cursor-model'
+const MODE_STORAGE_KEY = 'hb-cursor-mode'
+const APPROVAL_STORAGE_KEY = 'hb-cursor-approval-policy'
 /** Previous system default — treat as unset so Auto becomes the new default. */
 const LEGACY_DEFAULT_MODELS = new Set(['composer-2.5', 'composer-2', 'composer-1.5'])
+const CHAT_MODES: { id: ChatMode; label: string; title: string }[] = [
+  { id: 'agent', label: 'Agent', title: 'Build and edit — full tools' },
+  { id: 'ask', label: 'Ask', title: 'Read-only Q&A — no edits or shell' },
+  { id: 'plan', label: 'Plan', title: 'Design first, implement after you approve' },
+  { id: 'debug', label: 'Debug', title: 'Hypothesis-driven debugging' },
+]
 /** Work chat dock: '1' = open, anything else / missing = minimized (default). */
 export const DOCK_OPEN_KEY = 'hb-chat-dock-open'
 
@@ -40,6 +56,21 @@ export function writeDockOpen(open: boolean): void {
   }
 }
 
+function MsgMeta({ at, align = 'start' }: { at?: number; align?: 'start' | 'end' }) {
+  const t = formatMsgTime(at)
+  if (!t) return null
+  return (
+    <time
+      className={`hb-chat-meta block text-[10px] text-mute/80 mt-1 ${
+        align === 'end' ? 'text-right' : 'text-left'
+      }`}
+      dateTime={at ? new Date(at).toISOString() : undefined}
+    >
+      {t}
+    </time>
+  )
+}
+
 function MessageCard({
   m,
   onPresent,
@@ -49,78 +80,102 @@ function MessageCard({
 }) {
   if (m.role === 'user') {
     return (
-      <div className="hb-chat-user rounded-2xl px-3.5 py-3 text-sm leading-relaxed ml-6 shadow-sm">
-        {m.text}
+      <div className="ml-6">
+        <div className="hb-chat-user rounded-2xl px-3.5 py-3 text-sm leading-relaxed shadow-sm">
+          {m.text}
+        </div>
+        <MsgMeta at={m.at} align="end" />
       </div>
     )
   }
   if (m.role === 'thinking') {
+    const body = m.streaming ? m.text || '' : polishThinking(m.text || '')
     return (
-      <div
-        className={`hb-chat-thinking rounded-xl px-3 py-2 text-xs font-mono text-amber mr-8${
-          m.streaming ? ' hb-chat-thinking-live' : ''
+      <details
+        className={`hb-chat-thinking rounded-xl px-3 py-2 text-xs text-amber mr-8${
+          m.streaming ? ' hb-chat-thinking-live open' : ''
         }`}
+        open={m.streaming || undefined}
       >
-        <span className="uppercase tracking-wider text-[10px] opacity-80">
-          thinking{m.streaming ? '…' : ''}
-        </span>
-        <div className="mt-1 whitespace-pre-wrap opacity-90">{m.text}</div>
-      </div>
+        <summary className="cursor-pointer select-none list-none flex items-center gap-2">
+          <span className="uppercase tracking-wider text-[10px] opacity-80 font-semibold">
+            thinking{m.streaming ? '…' : ''}
+          </span>
+          {!m.streaming && <span className="text-mute opacity-70 normal-case tracking-normal">tap to expand</span>}
+          <MsgMeta at={m.at} />
+        </summary>
+        <div className="mt-1.5 whitespace-pre-wrap leading-relaxed opacity-95 hb-chat-thinking-body">
+          {body}
+          {m.streaming && (
+            <span className="hb-chat-caret" aria-hidden>
+              ▍
+            </span>
+          )}
+        </div>
+      </details>
     )
   }
   if (m.role === 'tool') {
-    const hint = presentFromTool(m.tool?.name || '', undefined)
+    const hint = presentFromTool(m.tool?.name || '', undefined, m.tool?.sessionId)
+    const label = prettyToolName(m.tool?.name || 'tool')
+    const status = m.tool?.status || 'running'
     return (
-      <div className="hb-chat-tool rounded-xl px-3 py-2.5 mr-6 text-xs">
-        <div className="flex items-center gap-2 font-mono">
-          <span className="text-violet font-semibold">{m.tool?.name || 'tool'}</span>
-          <span
-            className={
-              m.tool?.status === 'completed'
-                ? 'text-ok'
-                : m.tool?.status === 'error'
-                  ? 'text-danger'
-                  : 'text-sky'
-            }
-          >
-            {m.tool?.status || 'running'}
-          </span>
-          {hint && onPresent && m.tool?.status === 'completed' && (
-            <button
-              type="button"
-              className="ml-auto text-accent font-semibold hover:underline"
-              onClick={() => onPresent(hint)}
+      <div className="mr-6">
+        <div className="hb-chat-tool rounded-xl px-3 py-2.5 text-xs">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-violet font-semibold">{label}</span>
+            <span
+              className={
+                status === 'completed'
+                  ? 'text-ok'
+                  : status === 'error'
+                    ? 'text-danger'
+                    : 'text-sky'
+              }
             >
-              {presentLabel(hint)}
-            </button>
+              {status === 'completed' ? 'done' : status === 'running' ? 'running…' : status}
+            </span>
+            {hint && onPresent && (status === 'completed' || m.tool?.sessionId) && (
+              <button
+                type="button"
+                className="ml-auto text-accent font-semibold hover:underline"
+                onClick={() => onPresent(hint)}
+              >
+                {presentLabel(hint)}
+              </button>
+            )}
+          </div>
+          {m.tool?.detail && (
+            <p className="mt-1.5 text-[11px] text-mute leading-snug break-words">{m.tool.detail}</p>
           )}
         </div>
-        {m.tool?.detail && (
-          <pre className="mt-1.5 text-[11px] text-mute whitespace-pre-wrap break-all max-h-28 overflow-auto">
-            {m.tool.detail}
-          </pre>
-        )}
+        <MsgMeta at={m.at} />
       </div>
     )
   }
   if (m.role === 'file') {
     return (
-      <div className="hb-chat-file rounded-xl px-3 py-2.5 mr-6 text-xs font-mono shadow-sm">
-        <div className="flex items-center gap-2">
-          <span className="text-sky font-semibold uppercase text-[10px] tracking-wide">
-            {m.file?.action || 'file'}
-          </span>
-          <span className="text-text truncate flex-1 min-w-0">{m.file?.path}</span>
-          {m.file?.path && onPresent && (
-            <button
-              type="button"
-              className="text-accent font-semibold shrink-0 hover:underline"
-              onClick={() => onPresent({ scene: 'files', path: m.file!.path })}
-            >
-              Show
-            </button>
-          )}
+      <div className="mr-6">
+        <div className="hb-chat-file rounded-xl px-3 py-2.5 text-xs shadow-sm">
+          <div className="flex items-center gap-2">
+            <span className="text-sky font-semibold uppercase text-[10px] tracking-wide">
+              {m.file?.action || 'file'}
+            </span>
+            <span className="text-text truncate flex-1 min-w-0 font-mono text-[11px]">
+              {m.file?.path}
+            </span>
+            {m.file?.path && onPresent && (
+              <button
+                type="button"
+                className="text-accent font-semibold shrink-0 hover:underline"
+                onClick={() => onPresent({ scene: 'files', path: m.file!.path })}
+              >
+                Show
+              </button>
+            )}
+          </div>
         </div>
+        <MsgMeta at={m.at} />
       </div>
     )
   }
@@ -128,30 +183,37 @@ function MessageCard({
     const err =
       m.role === 'system' &&
       /^(error|⚠|connection lost|agent run)/i.test((m.text || '').trim())
+    const done = m.role === 'status' && /^done\b/i.test((m.text || '').trim())
     return (
       <div
-        className={`text-[11px] font-mono px-1 whitespace-pre-wrap break-words ${
-          err ? 'text-danger' : 'text-mute'
+        className={`hb-chat-status flex items-baseline gap-2 px-1 ${
+          err ? 'text-danger' : done ? 'text-mute' : 'text-mute'
         }`}
       >
-        {m.text}
+        <span className="text-[11px] leading-snug whitespace-pre-wrap break-words flex-1 min-w-0">
+          {m.text}
+        </span>
+        <MsgMeta at={m.at} />
       </div>
     )
   }
   return (
-    <div className="hb-chat-assistant rounded-2xl px-3.5 py-3 text-sm leading-relaxed mr-4 shadow-sm">
-      {m.streaming ? (
-        <div className="whitespace-pre-wrap break-words">
-          {m.text}
-          <span className="hb-chat-caret" aria-hidden>
-            ▍
-          </span>
-        </div>
-      ) : (
-        <div className="markdown-body">
-          <ReactMarkdown>{m.text || ''}</ReactMarkdown>
-        </div>
-      )}
+    <div className="mr-4">
+      <div className="hb-chat-assistant rounded-2xl px-3.5 py-3 text-sm leading-relaxed shadow-sm">
+        {m.streaming ? (
+          <div className="whitespace-pre-wrap break-words">
+            {m.text}
+            <span className="hb-chat-caret" aria-hidden>
+              ▍
+            </span>
+          </div>
+        ) : (
+          <div className="markdown-body">
+            <ReactMarkdown>{m.text || ''}</ReactMarkdown>
+          </div>
+        )}
+      </div>
+      <MsgMeta at={m.at} />
     </div>
   )
 }
@@ -186,6 +248,23 @@ export function ChatPanel({
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState('')
   const [models, setModels] = useState<CursorModel[]>([])
+  const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([])
+  const [mode, setMode] = useState<ChatMode>(() => {
+    try {
+      const saved = (localStorage.getItem(MODE_STORAGE_KEY) || 'agent') as ChatMode
+      return CHAT_MODES.some((m) => m.id === saved) ? saved : 'agent'
+    } catch {
+      return 'agent'
+    }
+  })
+  const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>(() => {
+    try {
+      const saved = localStorage.getItem(APPROVAL_STORAGE_KEY) || 'ask'
+      return saved === 'auto' ? 'auto' : 'ask'
+    } catch {
+      return 'ask'
+    }
+  })
   const [model, setModel] = useState(() => {
     try {
       const saved = localStorage.getItem(MODEL_STORAGE_KEY) || ''
@@ -355,13 +434,50 @@ export function ChatPanel({
           if (msg.type === 'ready') {
             if (msg.chatId && msg.chatId !== activeIdRef.current) return
             patchTab(chatId, (t) => ({ ...t, agentId: msg.cursor?.agentId || null }))
+            if (msg.cursor?.mode) {
+              const m = String(msg.cursor.mode) as ChatMode
+              if (CHAT_MODES.some((x) => x.id === m)) setMode(m)
+            }
+            if (msg.approvalPolicy === 'auto' || msg.approvalPolicy === 'ask') {
+              setApprovalPolicy(msg.approvalPolicy)
+            }
+            if (Array.isArray(msg.pendingApprovals)) {
+              setPendingApprovals(msg.pendingApprovals as PendingApproval[])
+            }
+            if (msg.cursor?.running) setStreaming(true)
             if (!msg.cursor?.configured) {
               setError(
                 'Cursor key missing on this server. On the host, put CURSOR_API_KEY in .env then run ./build.sh --deploy (or restart homebased after syncing /var/lib/homebased/.env).',
               )
             }
+          } else if (msg.type === 'running') {
+            setStreaming(true)
+            setError('Agent still working — wait or press Stop.')
+          } else if (msg.type === 'approval') {
+            const ap: PendingApproval = {
+              id: String(msg.id || ''),
+              kind: String(msg.kind || 'tool'),
+              tool: String(msg.tool || 'tool'),
+              detail: String(msg.detail || ''),
+              command: msg.command ? String(msg.command) : undefined,
+              cwd: msg.cwd ? String(msg.cwd) : undefined,
+              chatId: msg.chatId ? String(msg.chatId) : undefined,
+              createdAt: typeof msg.createdAt === 'number' ? msg.createdAt : Date.now() / 1000,
+            }
+            if (ap.id) {
+              setPendingApprovals((prev) =>
+                prev.some((p) => p.id === ap.id) ? prev : [...prev, ap],
+              )
+            }
+          } else if (msg.type === 'approval-resolved' || msg.type === 'approval-ack') {
+            const id = String(msg.id || '')
+            if (id) setPendingApprovals((prev) => prev.filter((p) => p.id !== id))
+          } else if (msg.type === 'approval-policy') {
+            if (msg.policy === 'auto' || msg.policy === 'ask') setApprovalPolicy(msg.policy)
           } else if (msg.type === 'agent') {
             patchTab(chatId, (t) => ({ ...t, agentId: msg.agentId }))
+          } else if (msg.type === 'run') {
+            setStreaming(true)
           } else if (msg.type === 'text-delta' || msg.type === 'text') {
             assistantBuf.current += msg.text || ''
             pushAssistant(chatId, assistantBuf.current, true)
@@ -656,6 +772,30 @@ export function ChatPanel({
     }
   }
 
+  function chooseMode(next: ChatMode) {
+    setMode(next)
+    try {
+      localStorage.setItem(MODE_STORAGE_KEY, next)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function chooseApprovalPolicy(next: ApprovalPolicy) {
+    setApprovalPolicy(next)
+    try {
+      localStorage.setItem(APPROVAL_STORAGE_KEY, next)
+    } catch {
+      /* ignore */
+    }
+    wsRef.current?.send(JSON.stringify({ type: 'approval_policy', policy: next }))
+  }
+
+  function decideApproval(id: string, decision: 'allow' | 'deny') {
+    wsRef.current?.send(JSON.stringify({ type: 'approve', id, decision }))
+    setPendingApprovals((prev) => prev.filter((p) => p.id !== id))
+  }
+
   function createChat(cwd = '', title?: string) {
     const t = newChatTab(cwd, title)
     setTabs((prev) => [...prev, t])
@@ -708,6 +848,8 @@ export function ChatPanel({
         type: 'send',
         prompt,
         model: model || defaultModel,
+        mode,
+        approvalPolicy,
         chatId: active.id,
         cwd: active.cwd || undefined,
       }),
@@ -991,6 +1133,42 @@ export function ChatPanel({
           />
         </div>
 
+        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Mode">
+          {CHAT_MODES.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              title={m.title}
+              disabled={streaming}
+              onClick={() => chooseMode(m.id)}
+              className={`px-2 py-1 rounded-md text-[11px] font-semibold border transition-colors disabled:opacity-40 ${
+                mode === m.id
+                  ? 'border-accent/50 bg-accent/15 text-accent'
+                  : 'border-line bg-panel-2 text-mute hover:text-text'
+              }`}
+            >
+              {m.label}
+            </button>
+          ))}
+          <button
+            type="button"
+            title={
+              approvalPolicy === 'ask'
+                ? 'Tools/shell require Allow before running (safer)'
+                : 'Tools run automatically (like trusted IDE workspace)'
+            }
+            disabled={streaming}
+            onClick={() => chooseApprovalPolicy(approvalPolicy === 'ask' ? 'auto' : 'ask')}
+            className={`ml-auto px-2 py-1 rounded-md text-[10px] font-semibold border disabled:opacity-40 ${
+              approvalPolicy === 'ask'
+                ? 'border-amber/40 bg-amber/10 text-amber'
+                : 'border-ok/40 bg-ok/10 text-ok'
+            }`}
+          >
+            {approvalPolicy === 'ask' ? 'Ask before tools' : 'Auto-run tools'}
+          </button>
+        </div>
+
         <div className="flex items-center gap-2 text-[11px]">
           <select
             value={model || defaultModel}
@@ -1098,8 +1276,42 @@ export function ChatPanel({
       {active?.messages.map((m) => (
         <MessageCard key={m.id} m={m} onPresent={onPresent} />
       ))}
+      {pendingApprovals.map((ap) => (
+        <div
+          key={ap.id}
+          className="rounded-xl border border-amber/40 bg-amber/10 px-3 py-2.5 space-y-2 mr-4"
+        >
+          <div className="flex items-center gap-2 text-xs font-semibold">
+            <span className="text-amber uppercase tracking-wide text-[10px]">
+              Pending approval
+            </span>
+            <span className="font-mono text-text">{ap.tool}</span>
+          </div>
+          <pre className="text-[11px] font-mono text-mute whitespace-pre-wrap break-all max-h-28 overflow-auto">
+            {ap.command || ap.detail || ap.tool}
+          </pre>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="flex-1 rounded-lg hb-btn-primary text-xs font-semibold py-1.5 border-0"
+              onClick={() => decideApproval(ap.id, 'allow')}
+            >
+              Allow
+            </button>
+            <button
+              type="button"
+              className="flex-1 rounded-lg border border-danger/50 text-danger text-xs font-semibold py-1.5"
+              onClick={() => decideApproval(ap.id, 'deny')}
+            >
+              Deny
+            </button>
+          </div>
+        </div>
+      ))}
       {streaming && (
-        <p className="text-xs font-mono text-accent animate-pulse">agent working…</p>
+        <p className="text-xs font-mono text-accent animate-pulse">
+          {pendingApprovals.length ? 'waiting for approval…' : 'agent working…'}
+        </p>
       )}
       {error && <p className="text-sm text-danger">{error}</p>}
       <div ref={bottomRef} />
@@ -1195,9 +1407,9 @@ export function ChatPanel({
             <button
               type="button"
               onClick={cancel}
-              className="rounded-xl border border-danger/50 text-danger text-xs py-2"
+              className="rounded-xl border border-danger/50 text-danger text-xs py-2 font-semibold"
             >
-              Cancel
+              Stop
             </button>
           )}
         </div>

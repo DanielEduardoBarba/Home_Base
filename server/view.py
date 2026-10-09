@@ -106,10 +106,51 @@ class ClientState:
     max_width: int = DEFAULT_MAX_WIDTH
     quality: int = DEFAULT_QUALITY
     fps: int = DEFAULT_FPS
+    monitor: int = 0  # 0 = all displays (mss virtual desktop)
     pending: int = 0
     last_ack_seq: int = 0
     last_rtt_ms: float = 0.0
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+def _monitors_payload(sct: Any) -> list[dict[str, Any]]:
+    """mss index 0 = virtual desktop; 1..n = physical displays."""
+    out: list[dict[str, Any]] = []
+    mons = getattr(sct, "monitors", None) or []
+    for i, m in enumerate(mons):
+        try:
+            w, h = int(m["width"]), int(m["height"])
+            if w <= 0 or h <= 0:
+                continue
+            label = "All displays" if i == 0 else f"Display {i}"
+            out.append(
+                {
+                    "index": i,
+                    "label": label,
+                    "left": int(m["left"]),
+                    "top": int(m["top"]),
+                    "width": w,
+                    "height": h,
+                }
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def _monitor_rect(sct: Any, index: int) -> dict[str, int]:
+    mons = getattr(sct, "monitors", None) or []
+    if not mons:
+        return {"left": 0, "top": 0, "width": 0, "height": 0}
+    if index < 0 or index >= len(mons):
+        index = 0
+    m = mons[index]
+    return {
+        "left": int(m["left"]),
+        "top": int(m["top"]),
+        "width": int(m["width"]),
+        "height": int(m["height"]),
+    }
 
 
 class _XInput:
@@ -161,8 +202,25 @@ class _XInput:
             X.XKeysymToKeycode.argtypes = [c_void_p, c_ulong]
             X.XKeysymToKeycode.restype = c_int
             Xtst.XTestFakeMotionEvent.argtypes = [c_void_p, c_int, c_int, c_int, c_ulong]
+            Xtst.XTestFakeRelativeMotionEvent.argtypes = [c_void_p, c_int, c_int, c_ulong]
             Xtst.XTestFakeButtonEvent.argtypes = [c_void_p, c_uint, c_int, c_ulong]
             Xtst.XTestFakeKeyEvent.argtypes = [c_void_p, c_uint, c_int, c_ulong]
+            X.XDefaultRootWindow.argtypes = [c_void_p]
+            X.XDefaultRootWindow.restype = c_ulong
+            from ctypes import POINTER, c_uint
+
+            X.XQueryPointer.argtypes = [
+                c_void_p,
+                c_ulong,
+                POINTER(c_ulong),
+                POINTER(c_ulong),
+                POINTER(c_int),
+                POINTER(c_int),
+                POINTER(c_int),
+                POINTER(c_int),
+                POINTER(c_uint),
+            ]
+            X.XQueryPointer.restype = c_int
 
             screen = X.XDefaultScreen(dpy)
             self._X = X
@@ -195,10 +253,55 @@ class _XInput:
     def motion(self, x: int, y: int) -> None:
         if not self._dpy and not self.open():
             return
-        x = max(0, min(self._width - 1, int(x)))
-        y = max(0, min(self._height - 1, int(y)))
+        # Soft clamp to virtual desktop; multi-monitor coords stay in-range for Xinerama.
+        if self._width > 0 and self._height > 0:
+            x = max(0, min(self._width - 1, int(x)))
+            y = max(0, min(self._height - 1, int(y)))
+        else:
+            x, y = int(x), int(y)
         self._Xtst.XTestFakeMotionEvent(self._dpy, self._screen, x, y, 0)
         self._X.XFlush(self._dpy)
+
+    def relative_motion(self, dx: int, dy: int) -> None:
+        if not self._dpy and not self.open():
+            return
+        dx, dy = int(dx), int(dy)
+        if dx == 0 and dy == 0:
+            return
+        self._Xtst.XTestFakeRelativeMotionEvent(self._dpy, dx, dy, 0)
+        self._X.XFlush(self._dpy)
+
+    def query_pointer(self) -> tuple[int, int]:
+        """Root-window pointer position, or (-1, -1) on failure."""
+        if not self._dpy and not self.open():
+            return -1, -1
+        try:
+            from ctypes import byref, c_int, c_uint, c_ulong
+
+            root = self._X.XDefaultRootWindow(self._dpy)
+            root_ret = c_ulong()
+            child = c_ulong()
+            root_x = c_int()
+            root_y = c_int()
+            win_x = c_int()
+            win_y = c_int()
+            mask = c_uint()
+            ok = self._X.XQueryPointer(
+                self._dpy,
+                root,
+                byref(root_ret),
+                byref(child),
+                byref(root_x),
+                byref(root_y),
+                byref(win_x),
+                byref(win_y),
+                byref(mask),
+            )
+            if not ok:
+                return -1, -1
+            return int(root_x.value), int(root_y.value)
+        except Exception:
+            return -1, -1
 
     def button(self, button: int, pressed: bool) -> None:
         if not self._dpy and not self.open():
@@ -338,11 +441,20 @@ def _grab_jpeg(
     last_hash: bytes,
     max_width: int,
     quality: int,
+    monitor: int = 0,
 ) -> tuple[bytes, int, int, bool, bytes]:
     from PIL import Image
 
-    mon = sct.monitors[0]
-    sw, sh = int(mon["width"]), int(mon["height"])
+    rect = _monitor_rect(sct, int(monitor))
+    sw, sh = rect["width"], rect["height"]
+    if sw <= 0 or sh <= 0:
+        raise RuntimeError("no monitors")
+    mon = {
+        "left": rect["left"],
+        "top": rect["top"],
+        "width": sw,
+        "height": sh,
+    }
     shot = sct.grab(mon)
     bgra = bytes(shot.raw)
     size = shot.size
@@ -390,19 +502,27 @@ def _dispatch_worker_cmd(
     if cmd == "ping":
         ok = xin.open()
         w, h = xin.refresh_size() if ok else (0, 0)
-        if not ok:
-            try:
-                if sct_holder[0] is None:
-                    sct_holder[0] = mss.mss()
-                mon = sct_holder[0].monitors[0]
-                w, h = int(mon["width"]), int(mon["height"])
+        monitors: list[dict[str, Any]] = []
+        cx = cy = -1
+        try:
+            if sct_holder[0] is None:
+                sct_holder[0] = mss.mss()
+            monitors = _monitors_payload(sct_holder[0])
+            if not ok and monitors:
+                w, h = monitors[0]["width"], monitors[0]["height"]
                 ok = w > 0
-            except Exception as e:
+        except Exception as e:
+            if not ok:
                 return {"ok": False, "error": str(e) or xin.error}
+        if ok:
+            cx, cy = xin.query_pointer()
         return {
             "ok": ok,
             "screenW": w,
             "screenH": h,
+            "monitors": monitors,
+            "cursorX": cx,
+            "cursorY": cy,
             "uid": os.getuid(),
             "error": "" if ok else xin.error,
         }
@@ -416,6 +536,7 @@ def _dispatch_worker_cmd(
                 last_hash_holder[0],
                 int(msg.get("maxWidth") or DEFAULT_MAX_WIDTH),
                 int(msg.get("quality") or DEFAULT_QUALITY),
+                int(msg.get("monitor") or 0),
             )
             last_hash_holder[0] = digest
             return {
@@ -424,32 +545,51 @@ def _dispatch_worker_cmd(
                 "sw": sw,
                 "sh": sh,
                 "changed": changed,
+                "monitors": _monitors_payload(sct_holder[0]),
             }
         except Exception as e:
             return {"ok": False, "error": str(e)}
     if cmd == "pointer":
         try:
             xin.open()
-            sw, sh = xin.size
-            if sw <= 0:
-                xin.refresh_size()
-                sw, sh = xin.size
-            nx = float(msg.get("x") or 0)
-            ny = float(msg.get("y") or 0)
-            x = int(nx * sw)
-            y = int(ny * sh)
+            if sct_holder[0] is None:
+                sct_holder[0] = mss.mss()
+            mode = str(msg.get("mode") or "abs")
             action = str(msg.get("action") or "")
-            if action in ("move", "down", "up", "wheel"):
-                xin.motion(x, y)
+            if mode == "rel" or action == "relmove":
+                dx = int(round(float(msg.get("dx") or 0)))
+                dy = int(round(float(msg.get("dy") or 0)))
+                if action in ("move", "relmove") or (action in ("down", "up", "wheel") and (dx or dy)):
+                    if dx or dy:
+                        xin.relative_motion(dx, dy)
+                # Relative clicks act at the current cursor — do not warp.
+            else:
+                rect = _monitor_rect(sct_holder[0], int(msg.get("monitor") or 0))
+                mw, mh = rect["width"], rect["height"]
+                if mw <= 0 or mh <= 0:
+                    xin.refresh_size()
+                    mw, mh = xin.size
+                    rect = {"left": 0, "top": 0, "width": mw, "height": mh}
+                nx = float(msg.get("x") or 0)
+                ny = float(msg.get("y") or 0)
+                x = int(rect["left"] + nx * mw)
+                y = int(rect["top"] + ny * mh)
+                if action in ("move", "down", "up", "wheel"):
+                    xin.motion(x, y)
             if action == "down":
                 xin.button(_dom_button_to_x(int(msg.get("button") or 0)), True)
             elif action == "up":
                 xin.button(_dom_button_to_x(int(msg.get("button") or 0)), False)
+            elif action == "click":
+                btn = _dom_button_to_x(int(msg.get("button") or 0))
+                xin.button(btn, True)
+                xin.button(btn, False)
             elif action == "wheel":
                 dy = float(msg.get("deltaY") or 0)
                 if dy:
                     xin.wheel(dy)
-            return {"ok": True}
+            cx, cy = xin.query_pointer()
+            return {"ok": True, "cursorX": cx, "cursorY": cy}
         except Exception as e:
             return {"ok": False, "error": str(e)}
     if cmd == "key":
@@ -478,6 +618,7 @@ def run_view_worker() -> int:
     sct_holder: list[Any] = [None]
     encode_buf = io.BytesIO()
     last_hash_holder: list[bytes] = [b""]
+    last_monitor_holder: list[int] = [0]
 
     print(
         f"view-worker ready uid={os.getuid()} display={os.environ.get('DISPLAY')} "
@@ -493,6 +634,11 @@ def run_view_worker() -> int:
                 break
             if not isinstance(msg, dict):
                 continue
+            if msg.get("cmd") == "grab":
+                mon = int(msg.get("monitor") or 0)
+                if mon != last_monitor_holder[0]:
+                    last_hash_holder[0] = b""
+                    last_monitor_holder[0] = mon
             resp = _dispatch_worker_cmd(
                 msg,
                 xin=xin,
@@ -624,6 +770,7 @@ class _X11Bridge:
         self._io_lock = threading.Lock()
         self.screen_w = 0
         self.screen_h = 0
+        self.monitors: list[dict[str, Any]] = []
         self.uid = -1
         self.last_error = ""
         self._stderr_tail: list[str] = []
@@ -807,6 +954,7 @@ class ViewHub:
             err = "" if ok else str(resp.get("error") or self._bridge.last_error)
             if sw:
                 self._bridge.screen_w, self._bridge.screen_h = sw, sh
+            self._bridge.monitors = list(resp.get("monitors") or [])
         except Exception as e:
             err = str(e)
         # Don't leave a worker running from a status probe if nobody is streaming
@@ -818,6 +966,7 @@ class ViewHub:
             "xauthority": bool(xauth and Path(xauth).is_file()),
             "screenW": sw,
             "screenH": sh,
+            "monitors": self._bridge.monitors,
             "viewUid": uid,
             "viewGid": gid,
             "clients": len(self._clients),
@@ -831,12 +980,16 @@ class ViewHub:
             self._clients[id(ws)] = client
             if not self._loop_task or self._loop_task.done():
                 self._loop_task = asyncio.create_task(self._capture_loop(), name="view-capture")
+        cursor_x = cursor_y = -1
         try:
             self._bridge.start()
             resp = await self._bridge.call({"cmd": "ping"})
             if resp.get("ok"):
                 self._bridge.screen_w = int(resp.get("screenW") or 0)
                 self._bridge.screen_h = int(resp.get("screenH") or 0)
+                self._bridge.monitors = list(resp.get("monitors") or [])
+                cursor_x = int(resp.get("cursorX") if resp.get("cursorX") is not None else -1)
+                cursor_y = int(resp.get("cursorY") if resp.get("cursorY") is not None else -1)
             else:
                 await ws.send_json(
                     {"type": "error", "error": resp.get("error") or "Cannot open display"}
@@ -848,6 +1001,10 @@ class ViewHub:
                 "type": "hello",
                 "screenW": self._bridge.screen_w,
                 "screenH": self._bridge.screen_h,
+                "monitors": self._bridge.monitors,
+                "monitor": client.monitor,
+                "cursorX": cursor_x,
+                "cursorY": cursor_y,
                 "maxWidth": client.max_width,
                 "quality": client.quality,
                 "fps": client.fps,
@@ -897,15 +1054,25 @@ class ViewHub:
             self._adapt(client)
             return
         if mtype == "config":
-            client.max_width = _clamp(int(msg.get("maxWidth") or client.max_width), MIN_WIDTH, MAX_WIDTH)
-            client.quality = _clamp(int(msg.get("quality") or client.quality), MIN_QUALITY, MAX_QUALITY)
-            client.fps = _clamp(int(msg.get("fps") or client.fps), MIN_FPS, MAX_FPS)
+            if msg.get("maxWidth") is not None:
+                client.max_width = _clamp(int(msg.get("maxWidth") or client.max_width), MIN_WIDTH, MAX_WIDTH)
+            if msg.get("quality") is not None:
+                client.quality = _clamp(int(msg.get("quality") or client.quality), MIN_QUALITY, MAX_QUALITY)
+            if msg.get("fps") is not None:
+                client.fps = _clamp(int(msg.get("fps") or client.fps), MIN_FPS, MAX_FPS)
+            if msg.get("monitor") is not None:
+                try:
+                    client.monitor = max(0, int(msg.get("monitor")))
+                except (TypeError, ValueError):
+                    pass
             await client.ws.send_json(
                 {
                     "type": "config",
                     "maxWidth": client.max_width,
                     "quality": client.quality,
                     "fps": client.fps,
+                    "monitor": client.monitor,
+                    "monitors": self._bridge.monitors,
                 }
             )
             return
@@ -914,10 +1081,14 @@ class ViewHub:
                 {
                     "cmd": "pointer",
                     "action": msg.get("action"),
+                    "mode": msg.get("mode") or "abs",
                     "x": msg.get("x"),
                     "y": msg.get("y"),
+                    "dx": msg.get("dx"),
+                    "dy": msg.get("dy"),
                     "button": msg.get("button"),
                     "deltaY": msg.get("deltaY"),
+                    "monitor": client.monitor,
                 },
                 timeout=2.0,
             )
@@ -965,12 +1136,19 @@ class ViewHub:
                 max_width = max(c.max_width for c in active)
                 quality = max(c.quality for c in active)
                 fps = max(c.fps for c in active)
+                mon_set = {c.monitor for c in active}
+                monitor = next(iter(mon_set)) if len(mon_set) == 1 else 0
                 interval = 1.0 / max(MIN_FPS, min(MAX_FPS, fps))
 
                 t0 = time.monotonic()
                 try:
                     resp = await self._bridge.call(
-                        {"cmd": "grab", "maxWidth": max_width, "quality": quality},
+                        {
+                            "cmd": "grab",
+                            "maxWidth": max_width,
+                            "quality": quality,
+                            "monitor": monitor,
+                        },
                         timeout=3.0,
                     )
                 except asyncio.CancelledError:
@@ -989,6 +1167,8 @@ class ViewHub:
                 sh = int(resp.get("sh") or 0)
                 if sw:
                     self._bridge.screen_w, self._bridge.screen_h = sw, sh
+                if resp.get("monitors"):
+                    self._bridge.monitors = list(resp.get("monitors") or [])
 
                 packet = resp.get("packet") or b""
                 changed = bool(resp.get("changed"))

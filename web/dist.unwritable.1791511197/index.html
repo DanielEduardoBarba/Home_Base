@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, interactive-widget=resizes-content"
+    />
+    <meta name="theme-color" content="#070a0f" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icon.svg" />
+    <title>Home Base</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      try {
+        var t = localStorage.getItem('hb-theme')
+        if (t !== 'day' && t !== 'night') t = 'night'
+        document.documentElement.dataset.theme = t
+        document.documentElement.style.colorScheme = t === 'day' ? 'light' : 'dark'
+        document.documentElement.dataset.safeTop =
+          localStorage.getItem('hb-safe-top') === '1' ? '1' : '0'
+      } catch (e) {}
+    </script>
+    <script type="module" crossorigin src="/assets/index-B3KgOQA1.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-FFGjBO5N.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

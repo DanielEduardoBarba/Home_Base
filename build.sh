@@ -703,6 +703,7 @@ cmd_bin() {
     --standalone \
     --assume-yes-for-downloads \
     --remove-output \
+    --jobs="${HOMEBASE_NUITKA_JOBS:-1}" \
     --output-dir="$BIN_OUT_DIR" \
     --output-filename="$BIN_NAME" \
     --include-package=server \
@@ -721,6 +722,7 @@ cmd_bin() {
     --include-data-dir=config/presets=config/presets \
     --include-data-files=config/projects.example.json=config/projects.example.json \
     --include-data-files=VERSION=VERSION \
+    --include-data-files=scripts/hb-hook-approve=hb-hook-approve \
     --follow-imports \
     --nofollow-import-to=nuitka \
     --nofollow-import-to=tkinter \
@@ -1161,6 +1163,10 @@ cmd_service() {
   free_prod_port
   prepare_var_lib
   install_cursor_bridge
+  if [[ -f scripts/hb-hook-approve ]]; then
+    echo "==> Installing approval hook → $INSTALL_SHARE/hb-hook-approve"
+    run_priv install -m 0755 scripts/hb-hook-approve "$INSTALL_SHARE/hb-hook-approve"
+  fi
 
   if ! restart_homebased_service; then
     exit 1

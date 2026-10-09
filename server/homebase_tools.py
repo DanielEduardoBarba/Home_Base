@@ -71,7 +71,9 @@ def _resolve_project_id(args: Mapping[str, Any], default: str) -> str:
     return pid or default
 
 
-def build_homebase_tools(project_id: str) -> dict[str, CustomTool]:
+def build_homebase_tools(
+    project_id: str, *, readonly: bool = False
+) -> dict[str, CustomTool]:
     """In-process tools scoped with a default project (overridable via projectId)."""
 
     async def list_projects_tool(
@@ -199,7 +201,7 @@ def build_homebase_tools(project_id: str) -> dict[str, CustomTool]:
             }
         )
 
-    return {
+    tools = {
         "homebase_list_projects": CustomTool(
             execute=list_projects_tool,
             description=(
@@ -336,3 +338,14 @@ def build_homebase_tools(project_id: str) -> dict[str, CustomTool]:
             },
         ),
     }
+    if readonly:
+        allow = {
+            "homebase_list_projects",
+            "homebase_project_status",
+            "homebase_logs",
+            "homebase_sessions",
+            "homebase_inbox",
+            "homebase_host_status",
+        }
+        tools = {k: v for k, v in tools.items() if k in allow}
+    return tools

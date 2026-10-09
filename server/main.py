@@ -24,6 +24,7 @@ from .auth import (
     ws_authenticate,
 )
 from .config import BUNDLE_ROOT, ROOT, get_project, get_settings, list_projects, load_projects
+from . import approvals as approval_hub
 from .cursor_bridge import cursor_bridge
 from .files import list_dir, read_file, write_file
 from .health import project_port_status
@@ -86,6 +87,22 @@ async def lifespan(app: FastAPI):
     n = len(list_projects())
     log.info("Loaded %d project(s) from config (v%s)", n, APP_VERSION)
     trace_append("info", f"startup: {n} project(s) v{APP_VERSION}", source="server")
+    approval_hub.ensure_hook_secret()
+    # Prefer stable share path (Nuitka onefile unpacks BUNDLE_ROOT under /tmp).
+    hook_candidates = [
+        Path("/usr/share/homebased/hb-hook-approve"),
+        ROOT / "scripts" / "hb-hook-approve",
+        BUNDLE_ROOT / "hb-hook-approve",
+    ]
+    for cand in hook_candidates:
+        if cand.is_file() and "/tmp/onefile_" not in str(cand):
+            approval_hub.ensure_user_hooks(cand)
+            break
+    else:
+        for cand in hook_candidates:
+            if cand.is_file():
+                approval_hub.ensure_user_hooks(cand)
+                break
     yield
     await cursor_bridge.close()
     for s in list(pty_manager.list_sessions()):
@@ -484,6 +501,70 @@ async def api_cursor_models(_: None = Depends(require_auth)):
     return await cursor_bridge.list_models()
 
 
+@app.get("/api/cursor/approvals")
+async def api_cursor_approvals(_: None = Depends(require_auth)):
+    return {
+        "policy": approval_hub.get_policy(),
+        "pending": approval_hub.list_pending(),
+    }
+
+
+class ApprovalPolicyBody(BaseModel):
+    policy: str = "ask"
+
+
+@app.post("/api/cursor/approvals/policy")
+async def api_cursor_approval_policy(
+    body: ApprovalPolicyBody, _: None = Depends(require_auth)
+):
+    return {"policy": approval_hub.set_policy(body.policy)}
+
+
+@app.post("/api/internal/hook-approve")
+async def api_internal_hook_approve(request: Request):
+    """Localhost-only gate used by scripts/hb-hook-approve (Cursor hooks)."""
+    peer = request.client.host if request.client else ""
+    if peer not in {"127.0.0.1", "::1", "localhost"}:
+        raise HTTPException(403, "localhost only")
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise HTTPException(400, "invalid json") from e
+    if not approval_hub.verify_secret(str(body.get("secret") or "")):
+        raise HTTPException(403, "bad secret")
+    payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+    event = str(body.get("event") or payload.get("hook_event_name") or "")
+    tool = str(
+        payload.get("tool_name")
+        or payload.get("toolName")
+        or payload.get("tool")
+        or ("Shell" if "shell" in event.lower() else "tool")
+    )
+    command = str(payload.get("command") or "")
+    detail = command or str(payload.get("tool_input") or payload.get("input") or tool)
+    if isinstance(payload.get("tool_input"), dict):
+        try:
+            detail = json.dumps(payload.get("tool_input"))[:2000]
+        except Exception:
+            pass
+    cwd = str(payload.get("cwd") or "")
+    agent_id = str(
+        payload.get("agent_id")
+        or payload.get("agentId")
+        or payload.get("conversation_id")
+        or ""
+    )
+    result = await approval_hub.request_approval(
+        kind="shell" if "shell" in event.lower() else "tool",
+        tool=tool,
+        detail=detail,
+        command=command,
+        cwd=cwd,
+        agent_id=agent_id,
+    )
+    return result
+
+
 @app.get("/api/cursor/{project_id}")
 async def api_cursor_info(
     project_id: str,
@@ -763,28 +844,49 @@ async def ws_cursor(websocket: WebSocket):
         await websocket.close(code=1008)
         return
 
+    info0 = cursor_bridge.agent_info(project_id, chat_id=chat_id)
     await websocket.send_json(
         {
             "type": "ready",
-            "cursor": cursor_bridge.agent_info(project_id, chat_id=chat_id),
+            "cursor": info0,
             "chatId": chat_id,
             "cwd": cwd,
+            "approvalPolicy": approval_hub.get_policy(),
+            "pendingApprovals": approval_hub.list_pending(),
         }
     )
+    if info0.get("running"):
+        await websocket.send_json(
+            {
+                "type": "running",
+                "chatId": chat_id,
+                "cursor": info0,
+            }
+        )
 
     stream_tasks: dict[str, asyncio.Task[None]] = {}
+
+    async def _on_approval(payload: dict[str, Any]) -> None:
+        try:
+            await websocket.send_json(payload)
+        except Exception:
+            pass
+
+    approval_hub.add_listener(_on_approval)
 
     async def _pump_send(
         send_chat: str,
         prompt: str,
         model: Optional[str],
         send_cwd: Optional[str],
+        send_mode: Optional[str],
     ) -> None:
         try:
             async for event in cursor_bridge.send_stream(
                 project_id,
                 prompt,
                 model=model,
+                mode=send_mode,
                 chat_id=send_chat,
                 cwd=send_cwd,
             ):
@@ -843,6 +945,7 @@ async def ws_cursor(websocket: WebSocket):
                 if not prompt:
                     continue
                 model = (msg.get("model") or "").strip() or None
+                send_mode = (msg.get("mode") or "").strip() or None
                 send_chat = (
                     (msg.get("chatId") or msg.get("chat") or chat_id).strip()
                     or "default"
@@ -851,6 +954,10 @@ async def ws_cursor(websocket: WebSocket):
                 chat_id = send_chat
                 if send_cwd is not None:
                     cwd = send_cwd
+                # Optional per-send approval policy (ask | auto)
+                pol = (msg.get("approvalPolicy") or "").strip().lower()
+                if pol in {"ask", "auto"}:
+                    approval_hub.set_policy(pol)
                 existing = stream_tasks.get(send_chat)
                 if existing and not existing.done():
                     await websocket.send_json(
@@ -858,7 +965,7 @@ async def ws_cursor(websocket: WebSocket):
                             "type": "error",
                             "error": (
                                 "Agent is already working on this chat — "
-                                "wait or press Cancel, then retry."
+                                "wait or press Stop, then retry."
                             ),
                             "chatId": send_chat,
                             "recoverable": True,
@@ -867,7 +974,24 @@ async def ws_cursor(websocket: WebSocket):
                     )
                     continue
                 stream_tasks[send_chat] = asyncio.create_task(
-                    _pump_send(send_chat, prompt, model, send_cwd)
+                    _pump_send(send_chat, prompt, model, send_cwd, send_mode)
+                )
+            elif mtype == "approve":
+                appr_id = str(msg.get("id") or "")
+                decision = str(msg.get("decision") or "")
+                ok = await approval_hub.decide(appr_id, decision)
+                await websocket.send_json(
+                    {
+                        "type": "approval-ack",
+                        "id": appr_id,
+                        "ok": ok,
+                        "decision": decision,
+                    }
+                )
+            elif mtype == "approval_policy":
+                pol = approval_hub.set_policy(str(msg.get("policy") or "ask"))
+                await websocket.send_json(
+                    {"type": "approval-policy", "policy": pol}
                 )
             elif mtype == "cancel":
                 cancel_chat = (
@@ -920,6 +1044,7 @@ async def ws_cursor(websocket: WebSocket):
         except Exception:
             pass
     finally:
+        approval_hub.remove_listener(_on_approval)
         for task in list(stream_tasks.values()):
             if not task.done():
                 task.cancel()

@@ -52,6 +52,51 @@ def _resolve_model(model: Optional[str] = None) -> str:
     return chosen or settings.cursor_model or "auto"
 
 
+# UI modes (Cursor IDE parity). SDK wire only supports agent|plan; ask/debug
+# are approximated (disallowed mutating tools / debug guidance).
+_VALID_MODES = frozenset({"agent", "ask", "plan", "debug"})
+_ASK_DISALLOWED = (
+    "Shell",
+    "Write",
+    "Delete",
+    "Edit",
+    "StrReplace",
+    "ApplyPatch",
+    "DeleteFile",
+    "WriteFile",
+    "EditNotebook",
+    "Task",
+    "Await",
+)
+_DEBUG_PREFIX = (
+    "[Home Base · Debug mode] Investigate root causes with hypotheses and "
+    "runtime evidence before large edits. Prefer targeted instrumentation and "
+    "a focused fix; clean up temporary logs when done.\n\n"
+)
+_ASK_PREFIX = (
+    "[Home Base · Ask mode] Read-only: answer and explain. Do not edit files, "
+    "run shell commands that change state, or ship/deploy. Use read/search tools only.\n\n"
+)
+
+
+def _resolve_mode(mode: Optional[str] = None) -> str:
+    m = (mode or "agent").strip().lower()
+    return m if m in _VALID_MODES else "agent"
+
+
+def _sdk_mode(mode: str) -> str:
+    """Map UI mode → cursor-sdk AgentModeOption."""
+    return "plan" if mode == "plan" else "agent"
+
+
+def _mode_prefix(mode: str) -> str:
+    if mode == "ask":
+        return _ASK_PREFIX
+    if mode == "debug":
+        return _DEBUG_PREFIX
+    return ""
+
+
 def _session_key(project_id: str, chat_id: str) -> str:
     cid = (chat_id or "default").strip() or "default"
     return f"{project_id}:{cid}"
@@ -84,6 +129,7 @@ class CursorBridge:
         self._send_locks: dict[str, asyncio.Lock] = {}
         self._models: dict[str, str] = {}
         self._cwds: dict[str, str] = {}
+        self._modes: dict[str, str] = {}
         # Full Home Base preamble once per session; short reminder after
         self._context_primed: set[str] = set()
 
@@ -222,16 +268,26 @@ class CursorBridge:
         chat_id: str = "default",
         cwd: Optional[str] = None,
         model: Optional[str] = None,
+        mode: Optional[str] = None,
     ):
-        from cursor_sdk import AsyncAgent, LocalAgentOptions
+        from cursor_sdk import AgentOptions, AsyncAgent, LocalAgentOptions
 
         key = _session_key(project_id, chat_id)
         model_id = _resolve_model(model)
+        ui_mode = _resolve_mode(mode)
         work_cwd = _resolve_cwd(project_id, cwd)
+        ask_mode = ui_mode == "ask"
+
+        # Ask uses a restricted toolset — recreate when crossing ask ↔ other modes.
+        prev_mode = self._modes.get(key)
+        if key in self._agents and prev_mode is not None:
+            if (prev_mode == "ask") != ask_mode:
+                await self.reset_agent(project_id, chat_id=chat_id)
 
         if key in self._agents:
             self._models[key] = model_id
             self._cwds[key] = str(work_cwd)
+            self._modes[key] = ui_mode
             return self._agents[key]
 
         settings = get_settings()
@@ -247,17 +303,22 @@ class CursorBridge:
         local = LocalAgentOptions(
             cwd=str(work_cwd),
             setting_sources=["project"],
-            custom_tools=build_homebase_tools(project_id),
+            custom_tools=build_homebase_tools(project_id, readonly=ask_mode),
         )
+        sdk_mode = _sdk_mode(ui_mode)
+        base_opts: dict[str, Any] = {
+            "api_key": settings.cursor_api_key,
+            "model": model_id,
+            "local": local,
+            "name": f"Home Base · {project.name}",
+            "mode": sdk_mode,
+        }
+        if ask_mode:
+            base_opts["disallowed_tools"] = list(_ASK_DISALLOWED)
 
         if agent_id:
             try:
-                options = {
-                    "api_key": settings.cursor_api_key,
-                    "model": model_id,
-                    "local": local,
-                    "name": f"Home Base · {project.name}",
-                }
+                options = AgentOptions(**base_opts)
                 if hasattr(client, "resume_agent"):
                     agent = await client.resume_agent(agent_id, options)
                 else:
@@ -265,29 +326,21 @@ class CursorBridge:
                 self._agents[key] = agent
                 self._models[key] = model_id
                 self._cwds[key] = str(work_cwd)
+                self._modes[key] = ui_mode
                 return agent
             except Exception as e:
                 log.warning("resume failed for %s: %s — creating new", key, e)
 
+        options = AgentOptions(**base_opts)
         if hasattr(client, "create_agent"):
-            agent = await client.create_agent(
-                model=model_id,
-                api_key=settings.cursor_api_key,
-                local=local,
-                name=f"Home Base · {project.name}",
-            )
+            agent = await client.create_agent(options)
         else:
-            agent = await AsyncAgent.create(
-                client=client,
-                model=model_id,
-                api_key=settings.cursor_api_key,
-                local=local,
-                name=f"Home Base · {project.name}",
-            )
+            agent = await AsyncAgent.create(options, client=client)
 
         self._agents[key] = agent
         self._models[key] = model_id
         self._cwds[key] = str(work_cwd)
+        self._modes[key] = ui_mode
         aid = _agent_id(agent)
         if aid:
             data = _load_agents()
@@ -300,6 +353,7 @@ class CursorBridge:
         agent = self._agents.pop(key, None)
         self._models.pop(key, None)
         self._cwds.pop(key, None)
+        self._modes.pop(key, None)
         self._active_run.pop(key, None)
         self._context_primed.discard(key)
         if agent:
@@ -333,6 +387,7 @@ class CursorBridge:
             "running": key in self._active_run,
             "model": self._models.get(key) or get_settings().cursor_model,
             "defaultModel": get_settings().cursor_model,
+            "mode": self._modes.get(key) or "agent",
             "cwd": self._cwds.get(key),
         }
 
@@ -391,36 +446,51 @@ class CursorBridge:
         return cleared
 
     async def _begin_run(
-        self, agent: Any, send_text: str, model_id: str, *, key: str
+        self,
+        agent: Any,
+        send_text: str,
+        model_id: str,
+        *,
+        key: str,
+        mode: str = "agent",
     ) -> Any:
-        from cursor_sdk import SendOptions
+        from cursor_sdk import LocalSendOptions, SendOptions
 
-        options = SendOptions(model=model_id, on_delta=_noop_delta)
-        # Local tracked run still active (e.g. prior WS aborted mid-stream).
-        prior = self._active_run.pop(key, None)
-        if prior is not None:
-            await self._cancel_run_obj(prior)
-            await asyncio.sleep(0.2)
+        # Never steal a live tracked run — caller must Cancel first.
+        if key in self._active_run:
+            raise RuntimeError(
+                "Agent is already working on this chat — wait or press Stop, then retry."
+            )
+
+        sdk_mode = _sdk_mode(mode)
+
+        def _opts(*, force: bool) -> Any:
+            return SendOptions(
+                model=model_id,
+                mode=sdk_mode,
+                on_delta=_noop_delta,
+                local=LocalSendOptions(force=force),
+            )
 
         try:
-            return await agent.send(send_text, options)
+            return await agent.send(send_text, _opts(force=False))
         except Exception as e:
             if not _is_active_run_conflict(e):
                 raise
+            # Orphaned SDK run (Home Base lost the handle). Expire via local.force.
             log.warning(
-                "active-run conflict on %s — clearing stale runs then retry: %s",
+                "orphan active-run on %s — force-expire then retry: %s",
                 key,
                 e,
             )
             trace_append(
                 "warn",
-                f"cursor active-run conflict — recovering ({key})",
+                f"cursor orphan active-run — force recovery ({key})",
                 source="cursor",
                 projectId=key.split(":", 1)[0],
             )
-            await self._cancel_agent_active_runs(agent)
-            await asyncio.sleep(0.4)
-            return await agent.send(send_text, options)
+            await asyncio.sleep(0.15)
+            return await agent.send(send_text, _opts(force=True))
 
     def _emit_error_event(
         self,
@@ -467,17 +537,19 @@ class CursorBridge:
         prompt: str,
         *,
         model: Optional[str] = None,
+        mode: Optional[str] = None,
         chat_id: str = "default",
         cwd: Optional[str] = None,
     ) -> AsyncIterator[dict[str, Any]]:
         key = _session_key(project_id, chat_id)
         model_id = _resolve_model(model)
+        ui_mode = _resolve_mode(mode)
         lock = self._lock_for(key)
 
-        if lock.locked():
+        if lock.locked() or key in self._active_run:
             yield {
                 "type": "error",
-                "error": "Agent is already working on this chat — wait or press Cancel, then retry.",
+                "error": "Agent is already working on this chat — wait or press Stop, then retry.",
                 "chatId": chat_id,
                 "recoverable": True,
                 "busy": True,
@@ -487,7 +559,11 @@ class CursorBridge:
         async with lock:
             try:
                 agent = await self.get_or_create_agent(
-                    project_id, chat_id=chat_id, cwd=cwd, model=model_id
+                    project_id,
+                    chat_id=chat_id,
+                    cwd=cwd,
+                    model=model_id,
+                    mode=ui_mode,
                 )
             except Exception as e:
                 yield self._emit_error_event(project_id, chat_id, e, key=key)
@@ -502,11 +578,13 @@ class CursorBridge:
                     "type": "agent",
                     "agentId": aid,
                     "model": model_id,
+                    "mode": ui_mode,
                     "chatId": chat_id,
                     "cwd": self._cwds.get(key),
                 }
 
             # Full Home Base identity once per session; tools stay on the agent.
+            prefix = _mode_prefix(ui_mode)
             if key not in self._context_primed:
                 send_text = wrap_prompt(
                     prompt,
@@ -517,22 +595,28 @@ class CursorBridge:
                 self._context_primed.add(key)
             else:
                 send_text = prompt
+            if prefix and not send_text.startswith(prefix.strip()[:20]):
+                send_text = prefix + send_text
 
             try:
                 # on_delta enables enableDeltas on the wire — without it, thinking/text
                 # arrive as complete messages only (feels like one dump at the end).
-                run = await self._begin_run(agent, send_text, model_id, key=key)
+                run = await self._begin_run(
+                    agent, send_text, model_id, key=key, mode=ui_mode
+                )
             except Exception as e:
                 yield self._emit_error_event(project_id, chat_id, e, key=key)
                 return
 
             self._models[key] = model_id
+            self._modes[key] = ui_mode
             self._active_run[key] = run
             run_id = getattr(run, "id", None) or getattr(run, "run_id", None)
             yield {
                 "type": "run",
                 "runId": run_id,
                 "model": model_id,
+                "mode": ui_mode,
                 "chatId": chat_id,
             }
 
@@ -543,9 +627,10 @@ class CursorBridge:
                     async for event in run.events():
                         update = getattr(event, "interaction_update", None)
                         if update is not None:
-                            payload = _serialize_delta(update)
+                            payload = await _handle_interaction(
+                                project_id, chat_id, update
+                            )
                             if payload:
-                                payload["chatId"] = chat_id
                                 yield payload
                         message = getattr(event, "sdk_message", None)
                         if message is not None:
@@ -617,6 +702,155 @@ def _noop_delta(_update: Any) -> None:
     return None
 
 
+async def _handle_interaction(
+    project_id: str, chat_id: str, update: Any
+) -> Optional[dict[str, Any]]:
+    """Serialize an interaction update and mirror agent shells into Shell PTYs."""
+    from . import agent_shell_mirror as asm
+
+    utype = getattr(update, "type", None)
+    if utype == "shell-output-delta":
+        event = getattr(update, "event", None) or {}
+        if not isinstance(event, Mapping):
+            event = {}
+        call_id = (
+            event.get("callId")
+            or event.get("call_id")
+            or event.get("toolCallId")
+            or None
+        )
+        await asm.mirror_shell_output(str(call_id) if call_id else None, event)
+        text = asm._event_text(event)
+        if not text:
+            return None
+        return {
+            "type": "shell-delta",
+            "chatId": chat_id,
+            "callId": call_id,
+            "text": text[-2000:],
+        }
+
+    payload = _serialize_delta(update)
+    if not payload:
+        return None
+    payload["chatId"] = chat_id
+
+    if payload.get("type") == "tool-delta":
+        tool = getattr(update, "tool_call", None) or {}
+        if not isinstance(tool, Mapping):
+            tool = {}
+        call_id = str(payload.get("callId") or "")
+        phase = payload.get("phase")
+        extra: Optional[dict[str, Any]] = None
+        if phase == "tool-call-started" and call_id:
+            extra = await asm.mirror_on_tool_start(project_id, call_id, tool)
+        elif phase == "tool-call-completed" and call_id:
+            extra = await asm.mirror_on_tool_complete(project_id, call_id, tool)
+        if extra:
+            if extra.get("sessionId"):
+                payload["sessionId"] = extra["sessionId"]
+            if extra.get("name"):
+                payload["name"] = extra["name"]
+            if extra.get("summary"):
+                payload["summary"] = extra["summary"]
+    return payload
+
+
+def _tool_display_name(tool: Mapping[str, Any]) -> str:
+    for key in ("type", "name", "toolName", "tool_name"):
+        v = tool.get(key)
+        if isinstance(v, str) and v.strip() and v.strip().lower() != "tool":
+            return v.strip()
+    for key in tool:
+        lk = str(key).lower()
+        if lk.endswith("toolcall") or lk.endswith("_tool_call") or "shell" in lk:
+            if "shell" in lk:
+                return "shell"
+            if "read" in lk:
+                return "read"
+            if "edit" in lk or "write" in lk:
+                return "edit"
+            if "grep" in lk or "search" in lk:
+                return "grep"
+            if "glob" in lk:
+                return "glob"
+            if "delete" in lk:
+                return "delete"
+    return "tool"
+
+
+def _flatten_tool_args(tool: Mapping[str, Any]) -> Any:
+    args = tool.get("args") or tool.get("arguments") or tool.get("input")
+    if args is not None:
+        return args
+    for key in tool:
+        lk = str(key).lower()
+        if isinstance(tool.get(key), Mapping) and (
+            "toolcall" in lk or "shell" in lk or lk.endswith("call")
+        ):
+            inner = dict(tool[key])  # type: ignore[arg-type]
+            nested = inner.get("args") or inner.get("arguments") or inner.get("input")
+            if nested is not None:
+                return nested
+            return inner
+    return None
+
+
+def _tool_summary(name: str, args: Any) -> str:
+    """Human one-liner for chat tool cards (no raw JSON)."""
+    n = (name or "tool").lower()
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except Exception:
+            s = args.strip()
+            return s[:240] if s else name
+
+    if not isinstance(args, dict):
+        return name
+
+    path = ""
+    for key in ("path", "file", "filePath", "filename", "target", "target_file"):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            path = val.strip()
+            break
+
+    if n in {"shell", "bash", "terminal", "execute", "command", "pty"}:
+        cmd = str(args.get("command") or args.get("cmd") or "").strip()
+        return cmd[:240] if cmd else "shell"
+
+    if n in {"read", "read_file", "readfile"}:
+        return f"Read {path}" if path else "Read file"
+    if n in {"write", "write_file", "writefile"}:
+        return f"Write {path}" if path else "Write file"
+    if n in {"edit", "strreplace", "search_replace", "apply_patch", "edit_file"}:
+        return f"Edit {path}" if path else "Edit file"
+    if n in {"delete", "delete_file"}:
+        return f"Delete {path}" if path else "Delete file"
+    if n in {"grep", "rg", "search"}:
+        pat = str(args.get("pattern") or args.get("query") or "").strip()
+        where = path or str(args.get("glob") or args.get("path") or "").strip()
+        if pat and where:
+            return f"Search “{pat[:80]}” in {where}"
+        if pat:
+            return f"Search “{pat[:120]}”"
+        return "Search"
+    if n in {"glob", "list_dir", "ls", "listdir"}:
+        g = str(args.get("glob_pattern") or args.get("glob") or path or "").strip()
+        return f"List {g}" if g else "List files"
+    if n.startswith("homebase_"):
+        return n.replace("_", " ")
+    if path:
+        return f"{name} {path}"
+    # Last resort: short key=value, not full JSON dump
+    bits = []
+    for k, v in list(args.items())[:3]:
+        if isinstance(v, (str, int, float, bool)) and v != "":
+            bits.append(f"{k}={str(v)[:60]}")
+    return " · ".join(bits) if bits else name
+
+
 def _serialize_delta(update: Any) -> Optional[dict[str, Any]]:
     """Map SDK InteractionUpdate → WS payload for live UI streaming."""
     utype = getattr(update, "type", None)
@@ -635,26 +869,23 @@ def _serialize_delta(update: Any) -> Optional[dict[str, Any]]:
         tool = getattr(update, "tool_call", None) or {}
         if not isinstance(tool, Mapping):
             tool = {}
-        name = (
-            tool.get("name")
-            or tool.get("toolName")
-            or tool.get("tool_name")
-            or "tool"
-        )
+        name = _tool_display_name(tool)
         status = (
             "completed"
             if utype == "tool-call-completed"
             else "running"
         )
         call_id = getattr(update, "call_id", None) or tool.get("callId") or tool.get("id")
-        args = tool.get("args") or tool.get("arguments") or tool.get("input")
-        hint = _file_hint_from_args(args)
+        args = _flatten_tool_args(tool)
+        hint = _file_hint_from_args(args) or _file_hint_from_args(tool)
+        summary = _tool_summary(name, args)
         out: dict[str, Any] = {
             "type": "tool-delta",
             "callId": call_id,
             "name": str(name),
             "status": status,
             "phase": utype,
+            "summary": summary,
         }
         if args is not None:
             try:
@@ -687,7 +918,7 @@ def _file_hint_from_args(args: Any) -> Optional[dict[str, str]]:
             m = re.search(r"[\w./\\-]+\.\w{1,12}", args)
             return {"path": m.group(0), "action": "touch"} if m else None
     if isinstance(args, dict):
-        for key in ("path", "file", "filePath", "filename", "target"):
+        for key in ("path", "file", "filePath", "filename", "target", "target_file"):
             val = args.get(key)
             if isinstance(val, str) and val.strip():
                 action = "edit"
@@ -695,6 +926,11 @@ def _file_hint_from_args(args: Any) -> Optional[dict[str, str]]:
                     action = "write"
                 elif "old_string" in args or "oldString" in args:
                     action = "edit"
+                elif key in ("path", "file", "filePath") and not any(
+                    k in args for k in ("old_string", "oldString", "new_string", "newString", "contents", "content")
+                ):
+                    # Likely a read when only path is present
+                    action = "read"
                 return {"path": val.strip(), "action": action}
     return None
 
@@ -709,13 +945,30 @@ def _serialize_message(message: Any) -> dict[str, Any]:
         return out
 
     if mtype == "tool_call":
-        name = getattr(message, "name", "") or "tool"
+        # SDK may put the real type on the message or nested tool payload
+        raw_tool = {}
+        for attr in ("tool_call", "toolCall", "tool"):
+            cand = getattr(message, attr, None)
+            if isinstance(cand, Mapping):
+                raw_tool = dict(cand)
+                break
+        name = (
+            getattr(message, "name", None)
+            or getattr(message, "type", None)
+            or _tool_display_name(raw_tool)
+            or "tool"
+        )
+        if str(name).lower() in {"tool_call", "toolcall"}:
+            name = _tool_display_name(raw_tool) or "tool"
         status = getattr(message, "status", "") or ""
         args = getattr(message, "args", None)
+        if args is None:
+            args = _flatten_tool_args(raw_tool)
         result = getattr(message, "result", None)
-        out["name"] = name
+        out["name"] = str(name)
         out["status"] = status
         out["callId"] = getattr(message, "call_id", None) or getattr(message, "callId", None)
+        out["summary"] = _tool_summary(str(name), args)
         try:
             out["args"] = args if isinstance(args, (dict, list, str, int, float, bool)) or args is None else str(args)[:2000]
         except Exception:
@@ -731,7 +984,7 @@ def _serialize_message(message: Any) -> dict[str, Any]:
         hint = _file_hint_from_args(args)
         if hint:
             out["file"] = hint
-        out["content"] = [{"type": "text", "text": f"{name} · {status}"}]
+        out["content"] = [{"type": "text", "text": out["summary"] or f"{name} · {status}"}]
         return out
 
     if mtype in {"status", "task"}:

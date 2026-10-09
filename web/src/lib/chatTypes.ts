@@ -8,8 +8,32 @@ export type ChatMsg = {
   text?: string
   /** True while this bubble is still receiving streamed tokens. */
   streaming?: boolean
-  tool?: { name: string; status: string; detail?: string; callId?: string }
+  /** Epoch ms when the bubble was created / last meaningfully updated. */
+  at?: number
+  tool?: {
+    name: string
+    status: string
+    detail?: string
+    callId?: string
+    sessionId?: string
+  }
   file?: { path: string; action: string }
+}
+
+/** Cursor IDE–style conversation modes (Ask/Debug approximated via tool policy). */
+export type ChatMode = 'agent' | 'ask' | 'plan' | 'debug'
+
+export type ApprovalPolicy = 'ask' | 'auto'
+
+export type PendingApproval = {
+  id: string
+  kind: string
+  tool: string
+  detail: string
+  command?: string
+  cwd?: string
+  chatId?: string
+  createdAt?: number
 }
 
 export type ChatTab = {
@@ -18,6 +42,7 @@ export type ChatTab = {
   cwd: string
   messages: ChatMsg[]
   agentId?: string | null
+  mode?: ChatMode
   updatedAt: number
 }
 
