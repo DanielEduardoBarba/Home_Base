@@ -32,10 +32,7 @@ function parseHeader(buf: ArrayBuffer) {
   }
 }
 
-/**
- * View — live laptop screen. Connect is explicit; leaving the tab disconnects.
- * Maximize hides chrome/nav; a top tab opens a mini menu to exit / change opts.
- */
+/** View — connect explicitly; maximize hides chrome; top chip toggles a tiny menu. */
 export function ViewTab() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -58,15 +55,13 @@ export function ViewTab() {
   const [probe, setProbe] = useState('')
   const fpsCount = useRef(0)
   const fpsT0 = useRef(performance.now())
-
   presetRef.current = preset
 
   useEffect(() => {
     void api
       .viewStatus()
       .then((s) => {
-        if (s.ok) setProbe(`${s.screenW}×${s.screenH} · ${s.display}`)
-        else setProbe(s.error || 'display unavailable')
+        setProbe(s.ok ? `${s.screenW}×${s.screenH}` : s.error || 'unavailable')
       })
       .catch((e) => setProbe(e instanceof Error ? e.message : String(e)))
   }, [])
@@ -207,7 +202,6 @@ export function ViewTab() {
 
     const onResize = () => schedulePaint()
     window.addEventListener('resize', onResize)
-
     return () => {
       disposed = true
       window.removeEventListener('resize', onResize)
@@ -221,8 +215,7 @@ export function ViewTab() {
 
   useEffect(() => {
     const ws = connRef.current?.getSocket()
-    if (!ws || ws.readyState !== WebSocket.OPEN) return
-    if (preset === 'auto') return
+    if (!ws || ws.readyState !== WebSocket.OPEN || preset === 'auto') return
     ws.send(JSON.stringify({ type: 'config', ...PRESETS[preset] }))
   }, [preset])
 
@@ -233,12 +226,7 @@ export function ViewTab() {
     setError('')
   }
 
-  function connect() {
-    setError('')
-    setWanted(true)
-  }
-
-  function normFromClient(clientX: number, clientY: number): { x: number; y: number } | null {
+  function normFromClient(clientX: number, clientY: number) {
     const wrap = wrapRef.current
     const rect = paintRectRef.current
     if (!wrap || rect.w < 1 || rect.h < 1) return null
@@ -246,19 +234,10 @@ export function ViewTab() {
     const lx = clientX - bounds.left
     const ly = clientY - bounds.top
     if (lx < rect.x || ly < rect.y || lx > rect.x + rect.w || ly > rect.y + rect.h) return null
-    return {
-      x: (lx - rect.x) / rect.w,
-      y: (ly - rect.y) / rect.h,
-    }
+    return { x: (lx - rect.x) / rect.w, y: (ly - rect.y) / rect.h }
   }
 
-  function sendPointer(
-    action: string,
-    clientX: number,
-    clientY: number,
-    button = 0,
-    deltaY = 0,
-  ) {
+  function sendPointer(action: string, clientX: number, clientY: number, button = 0, deltaY = 0) {
     if (!wanted) return
     const n = normFromClient(clientX, clientY)
     if (!n) return
@@ -267,16 +246,7 @@ export function ViewTab() {
     const now = performance.now()
     if (action === 'move' && now - lastPointerRef.current < 16) return
     lastPointerRef.current = now
-    ws.send(
-      JSON.stringify({
-        type: 'pointer',
-        action,
-        x: n.x,
-        y: n.y,
-        button,
-        deltaY,
-      }),
-    )
+    ws.send(JSON.stringify({ type: 'pointer', action, x: n.x, y: n.y, button, deltaY }))
   }
 
   function onPointerDown(e: PointerEvent) {
@@ -291,13 +261,9 @@ export function ViewTab() {
 
   function onPointerMove(e: PointerEvent) {
     if (!wanted) return
-    if (!capturingRef.current && e.pointerType === 'mouse') {
+    if (capturingRef.current || e.pointerType === 'mouse') {
       sendPointer('move', e.clientX, e.clientY, e.button)
-      return
-    }
-    if (capturingRef.current) {
-      sendPointer('move', e.clientX, e.clientY, e.button)
-      e.preventDefault()
+      if (capturingRef.current) e.preventDefault()
     }
   }
 
@@ -321,85 +287,75 @@ export function ViewTab() {
       e.preventDefault()
       return
     }
-    if (e.key === 'Tab') e.preventDefault()
     e.preventDefault()
     const ws = connRef.current?.getSocket()
     if (!ws || ws.readyState !== WebSocket.OPEN) return
-    ws.send(
-      JSON.stringify({
-        type: 'key',
-        action,
-        key: e.key,
-        code: e.code,
-      }),
-    )
+    ws.send(JSON.stringify({ type: 'key', action, key: e.key, code: e.code }))
   }
 
+  const live = wanted && conn === 'live'
   const link =
     conn === 'live' ? 'text-ok' : conn === 'reconnecting' || conn === 'connecting' ? 'text-amber' : 'text-danger'
-  const live = wanted && conn === 'live'
 
-  const qualitySelect = (
-    <select
-      className="hb-select"
-      aria-label="Stream quality"
-      value={preset}
-      onChange={(e) => setPreset(e.target.value as QualityPreset)}
-    >
-      <option value="auto">Auto</option>
-      <option value="lan">LAN</option>
-      <option value="vpn">VPN</option>
-    </select>
+  const controls = (
+    <>
+      <select
+        className="hb-select hb-select-sm"
+        aria-label="Quality"
+        value={preset}
+        onChange={(e) => setPreset(e.target.value as QualityPreset)}
+      >
+        <option value="auto">Auto</option>
+        <option value="lan">LAN</option>
+        <option value="vpn">VPN</option>
+      </select>
+      {wanted ? (
+        <>
+          {!maximized && (
+            <button
+              type="button"
+              className="hb-btn hb-btn-ghost hb-btn-sm"
+              disabled={!live}
+              onClick={() => setMaximized(true)}
+            >
+              Max
+            </button>
+          )}
+          <button type="button" className="hb-btn hb-btn-ghost hb-btn-sm" onClick={disconnect}>
+            Stop
+          </button>
+        </>
+      ) : (
+        <button type="button" className="hb-btn hb-btn-primary hb-btn-sm" onClick={() => setWanted(true)}>
+          Start
+        </button>
+      )}
+    </>
   )
 
   return (
     <div className={`h-full flex flex-col min-h-0 ${maximized ? '' : 'hb-with-nav'}`}>
       {!maximized && (
         <div className="hb-chrome shrink-0">
-          <div className="hb-chrome-inner space-y-2">
-            <div className="flex flex-wrap items-center gap-2 justify-between">
+          <div className="hb-chrome-inner">
+            <div className="flex items-center gap-2 justify-between">
               <div className="min-w-0">
-                <h1 className="text-sm font-semibold tracking-tight">View</h1>
-                <p className="text-xs text-mute truncate">
+                <p className="text-xs font-semibold tracking-tight">View</p>
+                <p className="text-[0.65rem] text-mute truncate">
                   {wanted ? (
                     <>
                       <span className={link}>{connStateLabel(conn)}</span>
                       {stats.screen ? ` · ${stats.screen}` : ''}
-                      {stats.fps > 0 ? ` · ${stats.fps.toFixed(0)} fps` : ''}
-                      {stats.kbps > 0 ? ` · ${stats.kbps.toFixed(0)} kb/s` : ''}
+                      {stats.fps > 0 ? ` · ${Math.round(stats.fps)}fps` : ''}
                     </>
                   ) : (
-                    <>Disconnected{probe ? ` · ${probe}` : ''}</>
+                    <>Off{probe ? ` · ${probe}` : ''}</>
                   )}
                 </p>
               </div>
-              <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
-                {qualitySelect}
-                {wanted ? (
-                  <>
-                    <button
-                      type="button"
-                      className="hb-btn hb-btn-ghost text-xs"
-                      onClick={() => setMaximized(true)}
-                      disabled={!live}
-                    >
-                      Maximize
-                    </button>
-                    <button type="button" className="hb-btn hb-btn-ghost text-xs" onClick={disconnect}>
-                      Disconnect
-                    </button>
-                  </>
-                ) : (
-                  <button type="button" className="hb-btn hb-btn-primary text-xs" onClick={connect}>
-                    Connect
-                  </button>
-                )}
-              </div>
+              <div className="flex items-center gap-1.5 shrink-0">{controls}</div>
             </div>
-            {error && <p className="text-xs text-danger">{error}</p>}
-            {live && !focused && (
-              <p className="text-xs text-mute">Tap the screen to control · keyboard when focused</p>
-            )}
+            {error && <p className="text-[0.65rem] text-danger mt-1">{error}</p>}
           </div>
         </div>
       )}
@@ -412,35 +368,27 @@ export function ViewTab() {
             aria-expanded={menuOpen}
             onClick={() => setMenuOpen((o) => !o)}
           >
-            View
             <span className={`hb-view-max-dot ${live ? 'ok' : 'warn'}`} />
+            Menu
           </button>
           {menuOpen && (
-            <div className="hb-view-max-menu hb-surface">
-              <p className="text-xs text-mute truncate px-1">
+            <div className="hb-view-max-menu">
+              <p className="text-[0.65rem] text-mute truncate">
                 <span className={link}>{connStateLabel(conn)}</span>
                 {stats.screen ? ` · ${stats.screen}` : ''}
-                {stats.fps > 0 ? ` · ${stats.fps.toFixed(0)} fps` : ''}
               </p>
-              {error && <p className="text-xs text-danger px-1">{error}</p>}
-              <div className="flex flex-wrap items-center gap-2">
-                {qualitySelect}
+              {error && <p className="text-[0.65rem] text-danger">{error}</p>}
+              <div className="flex flex-wrap items-center gap-1.5">
+                {controls}
                 <button
                   type="button"
-                  className="hb-btn hb-btn-ghost text-xs"
+                  className="hb-btn hb-btn-ghost hb-btn-sm"
                   onClick={() => {
                     setMaximized(false)
                     setMenuOpen(false)
                   }}
                 >
-                  Exit max
-                </button>
-                <button
-                  type="button"
-                  className="hb-btn hb-btn-ghost text-xs"
-                  onClick={disconnect}
-                >
-                  Disconnect
+                  Exit
                 </button>
               </div>
             </div>
@@ -468,9 +416,13 @@ export function ViewTab() {
       >
         {!wanted && (
           <div className="hb-view-idle">
-            <p className="text-sm text-mute">Connect to stream this laptop’s screen</p>
-            <button type="button" className="hb-btn hb-btn-primary text-sm mt-3" onClick={connect}>
-              Connect
+            <p className="text-xs text-mute">Stream this laptop’s screen</p>
+            <button
+              type="button"
+              className="hb-btn hb-btn-primary hb-btn-sm mt-2"
+              onClick={() => setWanted(true)}
+            >
+              Start
             </button>
           </div>
         )}

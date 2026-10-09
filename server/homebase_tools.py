@@ -185,10 +185,13 @@ def build_homebase_tools(project_id: str) -> dict[str, CustomTool]:
             homebased_active = await unit_active("homebased.service")
         except Exception:
             homebased_active = None
+        from .network import advertise_host
+
         return _json(
             {
                 **status_payload(),
                 "bind": {"host": settings.host, "port": settings.port},
+                "advertiseHost": advertise_host(),
                 "homebasedActive": homebased_active,
                 "wireguard": units,
                 "projectCount": len(list_projects()),

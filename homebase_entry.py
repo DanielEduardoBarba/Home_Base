@@ -75,6 +75,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # View X11 helper — must run before self-test/uvicorn (setpriv drops to seat user).
+    if (
+        "--view-worker" in sys.argv
+        or os.environ.get("HOMEBASE_VIEW_WORKER", "").strip() in ("1", "true", "yes")
+    ):
+        from server.view import run_view_worker
+
+        raise SystemExit(run_view_worker())
     if os.environ.get("HOMEBASE_SELF_TEST", "").strip() in ("1", "true", "yes") or "--self-test" in sys.argv:
         raise SystemExit(self_test())
     os.environ.setdefault("HOMEBASE_HOST", os.environ.get("HOMEBASE_HOST", "0.0.0.0"))

@@ -164,10 +164,14 @@ async def api_version():
 
 @app.get("/api/system/status")
 async def api_system_status(_: None = Depends(require_auth)):
+    from .network import advertise_host, list_ipv4_interfaces
+
     wg = list_wireguard()
     return {
         "wireguard": wg,
         "homebasedUnit": "homebased.service",
+        "advertiseHost": advertise_host(),
+        "interfaces": [{"iface": i, "ip": ip} for i, ip in list_ipv4_interfaces()],
         **version_status(),
     }
 

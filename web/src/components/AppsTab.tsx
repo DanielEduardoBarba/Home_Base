@@ -193,15 +193,29 @@ export function AppsTab({
                 port: p.port,
                 up: false,
               }))
-            ).map((ps) => (
-              <div key={ps.id} className="hb-port !py-1.5" data-up={ps.up}>
-                <div className="flex items-center justify-center gap-1">
-                  <Dot up={ps.up} />
-                  <span>:{ps.port}</span>
-                </div>
-                <div className="mt-0.5 truncate text-[10px] opacity-90">{ps.label || ps.id}</div>
-              </div>
-            ))}
+            ).map((ps) => {
+              // Same host the SPA was loaded from (VPN/LAN), not localhost
+              const href = `${location.protocol}//${location.hostname}:${ps.port}/`
+              return (
+                <a
+                  key={ps.id}
+                  href={href}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={href}
+                  className="hb-port !py-1.5 block no-underline"
+                  data-up={ps.up}
+                >
+                  <div className="flex items-center justify-center gap-1">
+                    <Dot up={ps.up} />
+                    <span>:{ps.port}</span>
+                  </div>
+                  <div className="mt-0.5 truncate text-[10px] opacity-90">
+                    {ps.label || ps.id}
+                  </div>
+                </a>
+              )
+            })}
           </div>
         )}
 

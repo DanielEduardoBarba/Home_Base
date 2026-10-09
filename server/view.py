@@ -1,9 +1,9 @@
 """JWT-gated remote desktop: X11 capture + input over WebSocket.
 
 homebased runs as root; the user X session only accepts the seat owner.
-Capture/input therefore run in a forked helper that setuid()s to the owner
-of /tmp/.X11-unix/X<n> before touching X11. Capture runs only while clients
-are connected.
+Nuitka onefile cannot fork safely, so capture/input run in a setpriv
+subprocess (`homebase --view-worker`) as the seat UID. Capture runs only
+while clients are connected.
 """
 from __future__ import annotations
 
@@ -11,9 +11,13 @@ import asyncio
 import hashlib
 import io
 import logging
-import multiprocessing as mp
 import os
+import pickle
+import shutil
 import struct
+import subprocess
+import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -304,24 +308,27 @@ def _browser_to_keysym(key: str, code: str) -> Optional[str]:
     return None
 
 
-def _drop_privileges(uid: int, gid: int) -> None:
-    if os.geteuid() != 0 or uid == 0:
-        return
-    import pwd
+_MSG_HDR = struct.Struct(">I")
 
-    pw = pwd.getpwuid(uid)
-    try:
-        os.initgroups(pw.pw_name, gid)
-    except OSError:
-        try:
-            os.setgroups([gid])
-        except OSError:
-            pass
-    os.setgid(gid)
-    os.setuid(uid)
-    os.environ["HOME"] = pw.pw_dir
-    os.environ["USER"] = pw.pw_name
-    os.environ["LOGNAME"] = pw.pw_name
+
+def _send_msg(out: Any, obj: Any) -> None:
+    data = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
+    out.write(_MSG_HDR.pack(len(data)))
+    out.write(data)
+    out.flush()
+
+
+def _recv_msg(inp: Any) -> Any:
+    hdr = inp.read(_MSG_HDR.size)
+    if not hdr or len(hdr) < _MSG_HDR.size:
+        raise EOFError("worker closed")
+    (n,) = _MSG_HDR.unpack(hdr)
+    if n <= 0 or n > 64 * 1024 * 1024:
+        raise ValueError(f"bad worker message size {n}")
+    data = inp.read(n)
+    if len(data) < n:
+        raise EOFError("worker closed mid-message")
+    return pickle.loads(data)
 
 
 def _grab_jpeg(
@@ -365,137 +372,228 @@ def _grab_jpeg(
     return header + payload, sw, sh, True, digest
 
 
-def _x11_worker(conn: Any, display: str, xauth: str, uid: int, gid: int) -> None:
-    """Child process: drop to seat user, then own all X11 I/O."""
+def _dispatch_worker_cmd(
+    msg: dict[str, Any],
+    *,
+    xin: _XInput,
+    sct_holder: list[Any],
+    encode_buf: io.BytesIO,
+    last_hash_holder: list[bytes],
+) -> dict[str, Any]:
+    """Handle one worker command; returns response dict (may include packet bytes)."""
+    import mss
+
+    cmd = msg.get("cmd")
+    if cmd == "stop":
+        return {"ok": True, "stop": True}
+    if cmd == "ping":
+        ok = xin.open()
+        w, h = xin.refresh_size() if ok else (0, 0)
+        if not ok:
+            try:
+                if sct_holder[0] is None:
+                    sct_holder[0] = mss.mss()
+                mon = sct_holder[0].monitors[0]
+                w, h = int(mon["width"]), int(mon["height"])
+                ok = w > 0
+            except Exception as e:
+                return {"ok": False, "error": str(e) or xin.error}
+        return {
+            "ok": ok,
+            "screenW": w,
+            "screenH": h,
+            "uid": os.getuid(),
+            "error": "" if ok else xin.error,
+        }
+    if cmd == "grab":
+        try:
+            if sct_holder[0] is None:
+                sct_holder[0] = mss.mss()
+            packet, sw, sh, changed, digest = _grab_jpeg(
+                sct_holder[0],
+                encode_buf,
+                last_hash_holder[0],
+                int(msg.get("maxWidth") or DEFAULT_MAX_WIDTH),
+                int(msg.get("quality") or DEFAULT_QUALITY),
+            )
+            last_hash_holder[0] = digest
+            return {
+                "ok": True,
+                "packet": packet,
+                "sw": sw,
+                "sh": sh,
+                "changed": changed,
+            }
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+    if cmd == "pointer":
+        try:
+            xin.open()
+            sw, sh = xin.size
+            if sw <= 0:
+                xin.refresh_size()
+                sw, sh = xin.size
+            nx = float(msg.get("x") or 0)
+            ny = float(msg.get("y") or 0)
+            x = int(nx * sw)
+            y = int(ny * sh)
+            action = str(msg.get("action") or "")
+            if action in ("move", "down", "up", "wheel"):
+                xin.motion(x, y)
+            if action == "down":
+                xin.button(_dom_button_to_x(int(msg.get("button") or 0)), True)
+            elif action == "up":
+                xin.button(_dom_button_to_x(int(msg.get("button") or 0)), False)
+            elif action == "wheel":
+                dy = float(msg.get("deltaY") or 0)
+                if dy:
+                    xin.wheel(dy)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+    if cmd == "key":
+        try:
+            xin.open()
+            action = str(msg.get("action") or "")
+            key = str(msg.get("key") or "")
+            code = str(msg.get("code") or "")
+            if action == "down":
+                xin.key(key, code, True)
+            elif action == "up":
+                xin.key(key, code, False)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+    return {"ok": False, "error": f"unknown cmd {cmd}"}
+
+
+def run_view_worker() -> int:
+    """Entry for `homebase --view-worker` (already running as seat user via setpriv)."""
+    apply_x11_env()
+    inp = sys.stdin.buffer
+    out = sys.stdout.buffer
+
+    xin = _XInput()
+    sct_holder: list[Any] = [None]
+    encode_buf = io.BytesIO()
+    last_hash_holder: list[bytes] = [b""]
+
+    print(
+        f"view-worker ready uid={os.getuid()} display={os.environ.get('DISPLAY')} "
+        f"xauth={os.environ.get('XAUTHORITY')}",
+        file=sys.stderr,
+        flush=True,
+    )
     try:
-        _drop_privileges(uid, gid)
-        os.environ["DISPLAY"] = display
-        os.environ["XAUTHORITY"] = xauth
-
-        import mss
-
-        xin = _XInput()
-        sct: Any = None
-        last_hash = b""
-        encode_buf = io.BytesIO()
-
         while True:
             try:
-                msg = conn.recv()
+                msg = _recv_msg(inp)
             except EOFError:
                 break
             if not isinstance(msg, dict):
                 continue
-            cmd = msg.get("cmd")
-            if cmd == "stop":
+            resp = _dispatch_worker_cmd(
+                msg,
+                xin=xin,
+                sct_holder=sct_holder,
+                encode_buf=encode_buf,
+                last_hash_holder=last_hash_holder,
+            )
+            stop = bool(resp.pop("stop", False))
+            _send_msg(out, resp)
+            if stop:
                 break
-            if cmd == "ping":
-                ok = xin.open()
-                w, h = xin.refresh_size() if ok else (0, 0)
-                if not ok:
-                    # Still try mss for size
-                    try:
-                        if sct is None:
-                            sct = mss.mss()
-                        mon = sct.monitors[0]
-                        w, h = int(mon["width"]), int(mon["height"])
-                        ok = w > 0
-                    except Exception as e:
-                        conn.send({"ok": False, "error": str(e) or xin.error})
-                        continue
-                conn.send(
-                    {
-                        "ok": ok,
-                        "screenW": w,
-                        "screenH": h,
-                        "uid": os.getuid(),
-                        "error": "" if ok else xin.error,
-                    }
-                )
-                continue
-            if cmd == "grab":
-                try:
-                    if sct is None:
-                        sct = mss.mss()
-                    packet, sw, sh, changed, last_hash = _grab_jpeg(
-                        sct,
-                        encode_buf,
-                        last_hash,
-                        int(msg.get("maxWidth") or DEFAULT_MAX_WIDTH),
-                        int(msg.get("quality") or DEFAULT_QUALITY),
-                    )
-                    conn.send(
-                        {
-                            "ok": True,
-                            "packet": packet,
-                            "sw": sw,
-                            "sh": sh,
-                            "changed": changed,
-                        }
-                    )
-                except Exception as e:
-                    conn.send({"ok": False, "error": str(e)})
-                continue
-            if cmd == "pointer":
-                try:
-                    xin.open()
-                    sw, sh = xin.size
-                    if sw <= 0:
-                        xin.refresh_size()
-                        sw, sh = xin.size
-                    nx = float(msg.get("x") or 0)
-                    ny = float(msg.get("y") or 0)
-                    x = int(nx * sw)
-                    y = int(ny * sh)
-                    action = str(msg.get("action") or "")
-                    if action in ("move", "down", "up", "wheel"):
-                        xin.motion(x, y)
-                    if action == "down":
-                        xin.button(_dom_button_to_x(int(msg.get("button") or 0)), True)
-                    elif action == "up":
-                        xin.button(_dom_button_to_x(int(msg.get("button") or 0)), False)
-                    elif action == "wheel":
-                        dy = float(msg.get("deltaY") or 0)
-                        if dy:
-                            xin.wheel(dy)
-                    conn.send({"ok": True})
-                except Exception as e:
-                    conn.send({"ok": False, "error": str(e)})
-                continue
-            if cmd == "key":
-                try:
-                    xin.open()
-                    action = str(msg.get("action") or "")
-                    key = str(msg.get("key") or "")
-                    code = str(msg.get("code") or "")
-                    if action == "down":
-                        xin.key(key, code, True)
-                    elif action == "up":
-                        xin.key(key, code, False)
-                    conn.send({"ok": True})
-                except Exception as e:
-                    conn.send({"ok": False, "error": str(e)})
-                continue
-            conn.send({"ok": False, "error": f"unknown cmd {cmd}"})
     except Exception as e:
         try:
-            conn.send({"ok": False, "error": f"worker crash: {e}"})
+            _send_msg(out, {"ok": False, "error": f"worker crash: {e}"})
         except Exception:
-            pass
+            print(f"view-worker crash: {e}", file=sys.stderr, flush=True)
+        return 1
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        xin.close()
+        if sct_holder[0] is not None:
+            try:
+                sct_holder[0].close()
+            except Exception:
+                pass
+    return 0
+
+
+def _is_elf_binary(path: str) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return f.read(4).startswith(b"\x7fELF")
+    except OSError:
+        return False
+
+
+def _resolve_worker_inner_cmd() -> list[str]:
+    """Command that enters --view-worker (no setpriv yet)."""
+    here = Path(__file__).resolve()
+    entry = here.parents[1] / "homebase_entry.py"
+    # Source checkout (has build.sh) → always use this tree so we never spawn a stale /usr binary.
+    if entry.is_file() and (entry.parent / "build.sh").is_file():
+        return [sys.executable, str(entry), "--view-worker"]
+
+    share = os.environ.get("HOMEBASE_SHARE", "/usr/share/homebased").rstrip("/")
+    argv0 = os.path.realpath(sys.argv[0]) if sys.argv else ""
+    for cand in (argv0, f"{share}/homebase", "/usr/share/homebased/homebase", os.environ.get("HOMEBASE_BIN", "")):
+        if cand and os.path.isfile(cand) and os.access(cand, os.X_OK) and _is_elf_binary(cand):
+            return [cand, "--view-worker"]
+
+    if entry.is_file():
+        return [sys.executable, str(entry), "--view-worker"]
+    return [
+        sys.executable,
+        "-c",
+        "from server.view import run_view_worker; raise SystemExit(run_view_worker())",
+    ]
+
+
+def _build_worker_cmd(uid: int, gid: int) -> tuple[list[str], dict[str, str]]:
+    import pwd
+
+    display, xauth = discover_x11_env()
+    pw = pwd.getpwuid(uid)
+    env = os.environ.copy()
+    env["DISPLAY"] = display
+    env["XAUTHORITY"] = xauth
+    env["HOME"] = pw.pw_dir
+    env["USER"] = pw.pw_name
+    env["LOGNAME"] = pw.pw_name
+    env.pop("HOMEBASE_SELF_TEST", None)
+    env["HOMEBASE_VIEW_WORKER"] = "1"
+
+    inner = _resolve_worker_inner_cmd()
+    if os.geteuid() == 0 and uid != 0:
+        setpriv = shutil.which("setpriv")
+        if setpriv:
+            # Root→seat user. --init-groups required with --regid (do not also pass --clear-groups).
+            cmd = [
+                setpriv,
+                f"--reuid={uid}",
+                f"--regid={gid}",
+                "--init-groups",
+                "--",
+                *inner,
+            ]
+        else:
+            runuser = shutil.which("runuser")
+            if not runuser:
+                raise RuntimeError("setpriv/runuser required for View as root")
+            cmd = [runuser, "-u", pw.pw_name, "--", *inner]
+    else:
+        cmd = inner
+    return cmd, env
 
 
 class _X11Bridge:
-    """Parent-side handle to the privilege-dropped X11 worker."""
+    """Parent-side handle to the setpriv --view-worker subprocess."""
 
     def __init__(self) -> None:
-        self._proc: Optional[mp.Process] = None
-        self._conn: Any = None
+        self._proc: Optional[subprocess.Popen[bytes]] = None
         self._lock = asyncio.Lock()
+        self._io_lock = threading.Lock()
         self.screen_w = 0
         self.screen_h = 0
         self.uid = -1
@@ -503,7 +601,7 @@ class _X11Bridge:
 
     @property
     def alive(self) -> bool:
-        return bool(self._proc and self._proc.is_alive() and self._conn)
+        return bool(self._proc and self._proc.poll() is None and self._proc.stdin and self._proc.stdout)
 
     def start(self) -> None:
         if self.alive:
@@ -511,66 +609,116 @@ class _X11Bridge:
         self.stop()
         display, xauth = discover_x11_env()
         uid, gid = display_owner_ids(display)
-        ctx = mp.get_context("fork")
-        parent_conn, child_conn = ctx.Pipe(duplex=True)
-        proc = ctx.Process(
-            target=_x11_worker,
-            args=(child_conn, display, xauth, uid, gid),
-            name="homebase-view-x11",
-            daemon=True,
+        cmd, env = _build_worker_cmd(uid, gid)
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            bufsize=0,
         )
-        proc.start()
-        child_conn.close()
         self._proc = proc
-        self._conn = parent_conn
         self.uid = uid
+
+        def _drain_stderr() -> None:
+            assert proc.stderr is not None
+            try:
+                for line in iter(proc.stderr.readline, b""):
+                    text = line.decode("utf-8", errors="replace").rstrip()
+                    if text:
+                        log.info("view-worker: %s", text)
+            except Exception:
+                pass
+
+        threading.Thread(target=_drain_stderr, name="view-worker-err", daemon=True).start()
         log.info(
-            "view X11 worker started display=%s uid=%s xauth=%s",
+            "view X11 worker started cmd=%s display=%s uid=%s xauth=%s",
+            cmd[:3],
             display,
             uid,
             xauth,
         )
+        # Warm ping
+        resp = self._call({"cmd": "ping"}, timeout=6.0, _restarting=True)
+        if not resp.get("ok"):
+            err = str(resp.get("error") or self.last_error or "worker ping failed")
+            self.last_error = err
+            log.warning("view worker ping failed: %s", err)
 
     def stop(self) -> None:
-        conn = self._conn
         proc = self._proc
-        self._conn = None
         self._proc = None
-        if conn is not None:
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None and proc.stdin:
+                with self._io_lock:
+                    try:
+                        _send_msg(proc.stdin, {"cmd": "stop"})
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=2.0)
+        except Exception:
             try:
-                conn.send({"cmd": "stop"})
-            except Exception:
-                pass
-            try:
-                conn.close()
-            except Exception:
-                pass
-        if proc is not None and proc.is_alive():
-            proc.join(timeout=1.5)
-            if proc.is_alive():
                 proc.kill()
-                proc.join(timeout=0.5)
+            except Exception:
+                pass
 
-    def _call(self, msg: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
+    def _call(
+        self, msg: dict[str, Any], timeout: float = 5.0, *, _restarting: bool = False
+    ) -> dict[str, Any]:
         if not self.alive:
-            self.start()
-        assert self._conn is not None
-        self._conn.send(msg)
-        if not self._conn.poll(timeout):
+            if _restarting:
+                # start() already in progress
+                pass
+            else:
+                self.start()
+        proc = self._proc
+        if proc is None or proc.stdin is None or proc.stdout is None or proc.poll() is not None:
+            self.last_error = "X11 worker not running"
+            return {"ok": False, "error": self.last_error}
+        with self._io_lock:
+            try:
+                _send_msg(proc.stdin, msg)
+            except Exception as e:
+                self.last_error = f"worker write failed: {e}"
+                self.stop()
+                return {"ok": False, "error": self.last_error}
+            # Blocking read with crude timeout via poll loop
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    self.last_error = f"X11 worker exited (code {proc.returncode})"
+                    self.stop()
+                    return {"ok": False, "error": self.last_error}
+                # stdout is unbuffered binary; use short select
+                import select
+
+                r, _, _ = select.select([proc.stdout], [], [], 0.1)
+                if not r:
+                    continue
+                try:
+                    resp = _recv_msg(proc.stdout)
+                except Exception as e:
+                    self.last_error = f"X11 worker exited: {e}"
+                    self.stop()
+                    return {"ok": False, "error": self.last_error}
+                if not isinstance(resp, dict):
+                    return {"ok": False, "error": "bad worker response"}
+                if not resp.get("ok"):
+                    self.last_error = str(resp.get("error") or "X11 error")
+                return resp
             self.last_error = "X11 worker timeout"
             self.stop()
             return {"ok": False, "error": self.last_error}
-        try:
-            resp = self._conn.recv()
-        except EOFError:
-            self.last_error = "X11 worker exited"
-            self.stop()
-            return {"ok": False, "error": self.last_error}
-        if not isinstance(resp, dict):
-            return {"ok": False, "error": "bad worker response"}
-        if not resp.get("ok"):
-            self.last_error = str(resp.get("error") or "X11 error")
-        return resp
 
     async def call(self, msg: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
         async with self._lock:

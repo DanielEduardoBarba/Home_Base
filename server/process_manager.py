@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .config import SESSIONS_PATH, ActionDef, Project, get_project, list_projects
+from .network import project_lan_env
 from .notifications import push as notify
 from .ports import kill_pids, kill_ports
 from .pty_manager import pty_manager
@@ -145,14 +146,22 @@ async def run_action_def(
     if kind in {"run", "expo"}:
         await pty_manager.kill_by_project(project_id, kinds={kind})
 
-    env = dict(action.env) if action.env else None
+    # VPN/LAN: inject advertise host so Expo Metro + NEXT/EXPO API URLs are reachable
+    # off-localhost (WireGuard preferred). Action env wins on key conflicts.
+    env: dict[str, str] = {}
+    if kind in {"run", "expo"}:
+        env.update(
+            project_lan_env([(p.id, p.port) for p in project.ports])
+        )
+    if action.env:
+        env.update(dict(action.env))
     session = await pty_manager.spawn(
         cmdline,
         cwd=project.path,
         kind=kind,
         project_id=project_id,
         label=f"{action.label}: {' '.join([action.script, *args])}",
-        env=env,
+        env=env or None,
     )
     _persist()
     trace(
