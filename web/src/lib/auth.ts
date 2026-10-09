@@ -25,11 +25,6 @@ export function setSession(token: string, expiresAt: number): void {
   }
 }
 
-/** @deprecated use setSession */
-export function setToken(token: string): void {
-  localStorage.setItem(TOKEN_KEY, token.trim())
-}
-
 export function clearToken(): void {
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(EXP_KEY)

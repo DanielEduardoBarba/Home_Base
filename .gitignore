@@ -24,6 +24,7 @@ web/node_modules/
 web/dist/
 
 # Nuitka / packaged binary (copied to /usr/bin on --deploy)
+nuitka-crash-report.xml
 dist/
 dist.oldroot/
 *.bin

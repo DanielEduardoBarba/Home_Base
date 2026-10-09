@@ -71,10 +71,3 @@ async def project_port_status(project: Project) -> list[dict[str, Any]]:
         )
     _cache[project.id] = (now, out)
     return out
-
-
-def clear_port_status_cache(project_id: str | None = None) -> None:
-    if project_id is None:
-        _cache.clear()
-    else:
-        _cache.pop(project_id, None)

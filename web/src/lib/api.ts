@@ -81,7 +81,6 @@ export const api = {
       ok: boolean
       cursorConfigured: boolean
       passwordSet: boolean
-      tokenConfigured: boolean
       model: string
       jwtTtlSec: number
       version?: string

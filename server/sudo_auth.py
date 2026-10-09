@@ -10,7 +10,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from .config import RUNTIME_DIR
 
@@ -163,27 +163,3 @@ def ensure_process_env() -> None:
     """Install askpass into the homebased process env (inherited by children)."""
     env = askpass_env()
     os.environ.update(env)
-
-
-def maybe_sudo_event(text: str, *, chat_id: str = "", call_id: Optional[str] = None,
-                     session_id: Optional[str] = None) -> Optional[dict[str, Any]]:
-    """If text looks like a sudo prompt, return a WS event payload."""
-    if not detect_sudo_prompt(text):
-        return None
-    st = status()
-    log.info(
-        "sudo prompt detected chat=%s call=%s session=%s cached=%s",
-        chat_id or "-",
-        (call_id or "")[:12] or "-",
-        session_id or "-",
-        st.get("cached"),
-    )
-    return {
-        "type": "sudo-request",
-        "chatId": chat_id or None,
-        "callId": call_id,
-        "sessionId": session_id,
-        "cached": bool(st.get("cached")),
-        "ttlSec": st.get("ttlSec") or 0,
-        "message": "Sudo password required — enter it below (not stored in chat history).",
-    }

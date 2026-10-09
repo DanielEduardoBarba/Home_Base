@@ -722,14 +722,8 @@ async def _handle_interaction(
             or event.get("toolCallId")
             or None
         )
-        # agent_shell_mirror may return None (older) — fall back to call→session cache
-        try:
-            sid = await asm.mirror_shell_output(str(call_id) if call_id else None, event)
-        except TypeError:
-            await asm.mirror_shell_output(str(call_id) if call_id else None, event)
-            sid = None
-        if not sid and call_id:
-            sid = _shell_call_sessions.get(str(call_id))
+        await asm.mirror_shell_output(str(call_id) if call_id else None, event)
+        sid = _shell_call_sessions.get(str(call_id)) if call_id else None
         text = asm._event_text(event)
         if not text:
             return None

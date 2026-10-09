@@ -5,7 +5,7 @@ from typing import Any
 
 from .config import Project
 
-# Skip huge / noisy dirs in tree listings
+# Skip huge / noisy dirs in directory listings
 SKIP_DIRS = {
     "node_modules",
     ".git",
@@ -24,7 +24,6 @@ SKIP_DIRS = {
 
 MAX_READ_BYTES = 1_500_000
 MAX_WRITE_BYTES = 1_500_000
-MAX_TREE_ENTRIES = 800
 
 
 def _is_absolute_api_path(path: str) -> bool:
@@ -64,59 +63,6 @@ def _entry_path(request_path: str, parent: Path, child: Path) -> str:
     rel = request_path.strip("/")
     name = child.name
     return f"{rel}/{name}" if rel else name
-
-
-def list_tree(project: Project, rel: str = "", depth: int = 2) -> dict[str, Any]:
-    root = _resolve(project, rel)
-    if not root.exists():
-        raise FileNotFoundError(rel or ".")
-    if not root.is_dir():
-        raise NotADirectoryError(rel or ".")
-
-    abs_mode = _is_absolute_api_path(rel)
-    entries: list[dict[str, Any]] = []
-    count = 0
-
-    def walk(path: Path, prefix: str, remaining: int) -> None:
-        nonlocal count
-        if count >= MAX_TREE_ENTRIES:
-            return
-        try:
-            children = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
-        except PermissionError:
-            return
-        for child in children:
-            if count >= MAX_TREE_ENTRIES:
-                return
-            name = child.name
-            if name in SKIP_DIRS or name.startswith(".pnpm"):
-                continue
-            if abs_mode:
-                rel_path = str(child)
-            else:
-                rel_path = f"{prefix}/{name}" if prefix else name
-            item: dict[str, Any] = {
-                "name": name,
-                "path": rel_path.replace("\\", "/"),
-                "type": "dir" if child.is_dir() else "file",
-            }
-            if child.is_file():
-                try:
-                    item["size"] = child.stat().st_size
-                except OSError:
-                    item["size"] = 0
-            entries.append(item)
-            count += 1
-            if child.is_dir() and remaining > 0:
-                walk(child, rel_path if not abs_mode else "", remaining - 1)
-
-    prefix = "" if abs_mode else rel.strip("/")
-    walk(root, prefix, max(0, depth))
-    return {
-        "root": rel if abs_mode else (rel or "."),
-        "entries": entries,
-        "truncated": count >= MAX_TREE_ENTRIES,
-    }
 
 
 def list_dir(

@@ -185,12 +185,3 @@ def redeem(share_id: str) -> dict[str, Any]:
     record_success()
     issued = issue_jwt(kind="session", ttl=JWT_TTL_SEC)
     return {**issued, "shareConsumed": True}
-
-
-# Back-compat name used by older login paths
-def consume(share_id: str) -> bool:
-    try:
-        redeem(share_id)
-        return True
-    except HTTPException:
-        return False

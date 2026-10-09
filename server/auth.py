@@ -62,7 +62,11 @@ def jwt_secret() -> bytes:
         raw = JWT_SECRET_PATH.read_bytes().strip()
         if len(raw) >= 32:
             return raw
+    # Later reads use .strip(); a random key that starts or ends with
+    # whitespace would not match the value used to sign the first token.
     secret = secrets.token_bytes(48)
+    while secret != secret.strip():
+        secret = secrets.token_bytes(48)
     JWT_SECRET_PATH.write_bytes(secret)
     _chmod_private(JWT_SECRET_PATH)
     return secret
@@ -199,11 +203,6 @@ def change_password(new_password: str, current_password: str) -> None:
     if not current_password or not verify_password(current_password):
         raise HTTPException(401, "Current password is incorrect")
     _write_password_hash(new_password, initialized=True)
-
-
-def set_password(password: str) -> None:
-    """Internal/test helper: write hash and mark initialized."""
-    _write_password_hash(password, initialized=True)
 
 
 def verify_password(password: str) -> bool:
@@ -462,8 +461,6 @@ def auth_public_status() -> dict[str, Any]:
         "canBootstrap": boot,
         "jwtTtlSec": JWT_TTL_SEC,
         "lockout": lockout_status(),
-        # Legacy field for older clients during transition
-        "tokenConfigured": set_ or is_initialized(),
     }
 
 

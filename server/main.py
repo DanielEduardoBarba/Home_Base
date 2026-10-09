@@ -171,7 +171,6 @@ async def api_health():
     return {
         "ok": True,
         "passwordSet": status["passwordSet"],
-        "tokenConfigured": status["passwordSet"],  # compat
         "cursorConfigured": bool(settings.cursor_api_key),
         "model": settings.cursor_model,
         "jwtTtlSec": status["jwtTtlSec"],

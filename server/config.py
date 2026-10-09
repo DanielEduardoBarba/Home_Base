@@ -250,13 +250,6 @@ def load_projects(*, force: bool = False) -> dict[str, Project]:
         return projects
 
 
-def save_projects_raw(data: dict[str, Any]) -> None:
-    with _lock:
-        PROJECTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        PROJECTS_PATH.write_text(json.dumps(data, indent=2) + "\n")
-        load_projects(force=True)
-
-
 def get_project(project_id: str) -> Project:
     projects = load_projects()
     if project_id not in projects:

@@ -245,7 +245,3 @@ async def mirror_on_tool_complete(
         "name": "shell",
         "summary": command[:240] if command else None,
     }
-
-
-def drop_mirror(call_id: str) -> None:
-    _mirrors.pop(call_id, None)
