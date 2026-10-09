@@ -103,6 +103,8 @@ export function polishThinking(text: string): string {
 export function joinThinkingChunk(prev: string, chunk: string): string {
   if (!chunk) return prev
   if (!prev) return chunk
+  if (chunk.startsWith(prev)) return chunk
+  if (prev.startsWith(chunk)) return prev
   if (/\s$/.test(prev) || /^\s/.test(chunk)) return prev + chunk
   if (/^[.,;:!?…)}\]"']/.test(chunk)) return prev + chunk
   if (/[({\["']$/.test(prev)) return prev + chunk
@@ -115,6 +117,62 @@ export function joinThinkingChunk(prev: string, chunk: string): string {
     return `${prev} ${chunk}`
   }
   return prev + chunk
+}
+
+/**
+ * Append a streamed text/thinking chunk. Handles both true token deltas and
+ * cumulative snapshots so words build a sentence instead of overwriting.
+ */
+export function appendStreamChunk(prev: string, chunk: string): string {
+  if (!chunk) return prev
+  if (!prev) return chunk
+  if (chunk === prev) return prev
+  // Cumulative snapshot (full text so far)
+  if (chunk.startsWith(prev)) return chunk
+  if (prev.startsWith(chunk)) return prev
+  if (prev.endsWith(chunk) && chunk.length >= 2) return prev
+  // Overlap at the join (chunk repeats a tail of prev). Min 4 avoids
+  // single-letter false joins like "cat"+"tastrophe" → "catastrophe".
+  const maxOverlap = Math.min(120, prev.length, chunk.length)
+  for (let n = maxOverlap; n >= 4; n--) {
+    if (prev.endsWith(chunk.slice(0, n))) return prev + chunk.slice(n)
+  }
+  return joinThinkingChunk(prev, chunk)
+}
+
+/** Alias for appendStreamChunk (softSpace is always applied via joinThinkingChunk). */
+export function applyStreamChunk(prev: string, chunk: string): string {
+  return appendStreamChunk(prev, chunk)
+}
+
+/**
+ * Merge a later assistant snapshot with the live stream buffer.
+ * Never clobber a longer live buffer with a short non-overlapping token
+ * (that was leaving the bubble as just ".").
+ */
+export function mergeAssistantText(prev: string, next: string, preferNext = false): string {
+  if (!next) return prev
+  if (!prev) return next
+  if (prev === next) return prev
+  if (next.startsWith(prev) || prev.startsWith(next)) {
+    return next.length >= prev.length ? next : prev
+  }
+  const a = prev.trim()
+  const b = next.trim()
+  const head = Math.min(48, a.length, b.length)
+  if (head >= 16 && (a.startsWith(b.slice(0, head)) || b.startsWith(a.slice(0, head)))) {
+    return next.length >= prev.length || (preferNext && next.length >= prev.length * 0.85)
+      ? next
+      : prev
+  }
+  const maxOverlap = Math.min(80, a.length, b.length)
+  for (let n = maxOverlap; n >= 12; n--) {
+    if (a.endsWith(b.slice(0, n))) return a + b.slice(n)
+  }
+  // preferNext only when the snapshot is at least as long — short tokens must append
+  if (preferNext && next.length >= prev.length) return next
+  if (next.length >= prev.length) return next
+  return appendStreamChunk(prev, next)
 }
 
 export function formatMsgTime(at?: number): string {

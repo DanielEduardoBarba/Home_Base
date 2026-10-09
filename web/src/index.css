@@ -153,18 +153,27 @@ body::before {
 }
 
 #root {
-  /* Pin to the visible window so mobile chrome can’t leave a bottom gap */
+  /* Stretch to the visible window edges — height:auto + bottom:0 avoids a
+     short --hb-app-height leaving a dead strip under the nav (“browser footer”). */
   position: fixed;
   left: 0;
   right: 0;
   top: var(--hb-vv-top, 0px);
-  bottom: auto;
+  bottom: 0;
   width: 100%;
   max-width: 100%;
-  height: var(--hb-app-height, 100dvh);
-  max-height: var(--hb-app-height, 100dvh);
+  height: auto;
+  max-height: none;
+  min-height: 0;
   overflow: hidden;
   z-index: 1;
+}
+
+/* Soft keyboard: pin to the visual viewport height instead of layout bottom */
+html[data-hb-keyboard] #root {
+  bottom: auto;
+  height: var(--hb-app-height, 100dvh);
+  max-height: var(--hb-app-height, 100dvh);
 }
 
 .hb-app-shell {
@@ -653,6 +662,22 @@ html[data-hb-keyboard] .hb-work-body:has(.hb-chat-dock) .hb-work-main {
   padding: 0.35rem 0.5rem env(safe-area-inset-bottom, 0px);
 }
 
+/* Extra paint below the nav so a short visualViewport can’t show a footer gap */
+.hb-nav::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: 48px;
+  background: var(--hb-nav-bg);
+  pointer-events: none;
+}
+
+html[data-hb-fullscreen] .hb-nav {
+  padding-bottom: max(0.35rem, env(safe-area-inset-bottom, 0px));
+}
+
 .hb-nav-dock {
   pointer-events: auto;
   max-width: none;
@@ -677,6 +702,10 @@ html[data-hb-keyboard] .hb-work-body:has(.hb-chat-dock) .hb-work-main {
     border-top: none;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
+  }
+
+  .hb-nav::after {
+    display: none;
   }
 
   .hb-nav-dock {
@@ -948,12 +977,6 @@ html[data-hb-keyboard] .hb-work-body:has(.hb-chat-dock) .hb-work-main {
   overflow: hidden;
 }
 
-.hb-toast-close {
-  font-size: 1.1rem;
-  line-height: 1;
-  color: var(--hb-mute);
-  padding: 0 0.15rem;
-}
 
 .hb-inbox-backdrop,
 .hb-drawer-backdrop {
@@ -1239,7 +1262,8 @@ html[data-hb-keyboard] .hb-work-body:has(.hb-chat-dock) .hb-work-main {
 }
 
 .hb-work-body:has(.hb-chat-dock) .hb-work-main {
-  padding-bottom: 85vh;
+  /* Match tall mobile dock (nearly full height under status/safe area) */
+  padding-bottom: 96vh;
 }
 
 @media (min-width: 768px) {
@@ -1603,7 +1627,8 @@ html[data-hb-keyboard] .hb-chat-composer {
   flex-direction: column;
   left: 0;
   right: 0;
-  top: 15%;
+  /* Tall sheet — leave a thin top peek of the Work scene */
+  top: max(2.75rem, env(safe-area-inset-top, 0px));
   bottom: 0;
   height: auto;
   max-height: none;
@@ -1668,9 +1693,9 @@ html[data-hb-keyboard] .hb-chat-composer {
   .hb-chat-dock {
     left: auto;
     right: 0.85rem;
-    top: 15%;
+    top: 4.5%;
     bottom: 0.85rem;
-    width: min(26rem, calc(100% - 1.5rem));
+    width: min(28rem, calc(100% - 1.5rem));
     border-radius: 1rem;
     border-bottom: 1px solid var(--hb-line);
   }

@@ -16,9 +16,10 @@ import { presentFromTool, presentLabel } from '../lib/present'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 import { speechSupported, startSpeechDictation, type SpeechHandle } from '../lib/speech'
 import {
+  appendStreamChunk,
   formatMsgTime,
   formatToolDetail,
-  joinThinkingChunk,
+  mergeAssistantText,
   polishThinking,
   prettyToolName,
 } from '../lib/toolFormat'
@@ -60,31 +61,6 @@ export function writeDockOpen(open: boolean): void {
   } catch {
     /* ignore */
   }
-}
-
-/** Merge streamed assistant text with a later snapshot without doubling paraphrases. */
-function mergeAssistantText(prev: string, next: string, preferNext = false): string {
-  if (!next) return prev
-  if (!prev) return next
-  if (prev === next) return prev
-  if (next.startsWith(prev) || prev.startsWith(next)) {
-    return next.length >= prev.length ? next : prev
-  }
-  // Near-duplicate paraphrase (common when deltas + final sdk_message both arrive)
-  const a = prev.trim()
-  const b = next.trim()
-  const head = Math.min(48, a.length, b.length)
-  if (head >= 16 && (a.startsWith(b.slice(0, head)) || b.startsWith(a.slice(0, head)))) {
-    return preferNext || next.length >= prev.length ? next : prev
-  }
-  // Overlap at the join (delta already included the start of the snapshot)
-  const maxOverlap = Math.min(80, a.length, b.length)
-  for (let n = maxOverlap; n >= 12; n--) {
-    if (a.endsWith(b.slice(0, n))) return a + b.slice(n)
-  }
-  if (preferNext) return next
-  // Never concatenate two full assistant turns — keep the longer coherent blob
-  return next.length >= prev.length ? next : prev
 }
 
 function MsgMeta({ at, align = 'start' }: { at?: number; align?: 'start' | 'end' }) {
@@ -612,11 +588,11 @@ export function ChatPanel({
             const chunk = String(msg.text || '')
             if (!chunk) return
             gotTextDeltasRef.current = true
-            assistantBuf.current += chunk
+            assistantBuf.current = appendStreamChunk(assistantBuf.current, chunk)
             pushAssistant(chatId, assistantBuf.current, true)
             setPhase('streaming', 'writing…')
           } else if (msg.type === 'text') {
-            // Full text snapshot (not a delta) — replace buffer
+            // Full text snapshot (not a delta) — merge into buffer
             const text = String(msg.text || '')
             if (!text) return
             gotTextDeltasRef.current = true
@@ -795,9 +771,26 @@ export function ChatPanel({
   function pushAssistant(chatId: string, text: string, live = false) {
     patchTab(chatId, (t) => {
       const msgs = [...t.messages]
-      const last = msgs[msgs.length - 1]
-      if (last?.role === 'assistant') {
-        msgs[msgs.length - 1] = { ...last, text, streaming: live }
+      // Keep updating the live assistant bubble even if tools/thinking interleaved
+      let idx = -1
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role === 'assistant' && (msgs[i].streaming || live)) {
+          idx = i
+          break
+        }
+        if (msgs[i].role === 'user') break
+      }
+      if (idx < 0) {
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          if (msgs[i].role === 'assistant') {
+            idx = i
+            break
+          }
+          if (msgs[i].role === 'user') break
+        }
+      }
+      if (idx >= 0) {
+        msgs[idx] = { ...msgs[idx], text, streaming: live }
         return { ...t, messages: msgs }
       }
       return {
@@ -811,11 +804,21 @@ export function ChatPanel({
     if (!chunk) return
     patchTab(chatId, (t) => {
       const msgs = [...t.messages]
-      const last = msgs[msgs.length - 1]
-      if (last?.role === 'thinking') {
-        msgs[msgs.length - 1] = {
-          ...last,
-          text: joinThinkingChunk(last.text || '', chunk),
+      let idx = -1
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role === 'thinking' && msgs[i].streaming) {
+          idx = i
+          break
+        }
+        if (msgs[i].role === 'user') break
+      }
+      if (idx < 0 && msgs[msgs.length - 1]?.role === 'thinking') {
+        idx = msgs.length - 1
+      }
+      if (idx >= 0) {
+        msgs[idx] = {
+          ...msgs[idx],
+          text: appendStreamChunk(msgs[idx].text || '', chunk),
           streaming: true,
         }
         return { ...t, messages: msgs }
@@ -921,13 +924,24 @@ export function ChatPanel({
   ) {
     const mtype = message?.type
     if (mtype === 'thinking') {
-      // Complete thinking snapshot — replace last thinking bubble (don't stack)
+      // Snapshot — merge into last thinking bubble (don't overwrite with a short token)
       patchTab(chatId, (t) => {
         const msgs = [...t.messages]
-        const last = msgs[msgs.length - 1]
         const text = message.text || ''
-        if (last?.role === 'thinking') {
-          msgs[msgs.length - 1] = { ...last, text, streaming: false }
+        let idx = -1
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          if (msgs[i].role === 'thinking') {
+            idx = i
+            break
+          }
+          if (msgs[i].role === 'user') break
+        }
+        if (idx >= 0) {
+          msgs[idx] = {
+            ...msgs[idx],
+            text: appendStreamChunk(msgs[idx].text || '', text),
+            streaming: false,
+          }
           return { ...t, messages: msgs }
         }
         return {
@@ -1127,18 +1141,16 @@ export function ChatPanel({
       return
     }
     notify?.unlockAudio()
+    // Freeze composer prefix for the whole listen session — speech.ts owns the
+    // cumulative transcript so words append instead of overwriting / doubling.
     inputBeforeSpeech.current = input.trim()
+    const applySpeech = (text: string) => {
+      const base = inputBeforeSpeech.current
+      setInput(base ? `${base} ${text}` : text)
+    }
     const handle = startSpeechDictation({
-      onPartial: (text) => {
-        const base = inputBeforeSpeech.current
-        setInput(base ? `${base} ${text}` : text)
-      },
-      onFinal: (text) => {
-        const base = inputBeforeSpeech.current
-        const next = base ? `${base} ${text}` : text
-        setInput(next)
-        inputBeforeSpeech.current = next
-      },
+      onPartial: applySpeech,
+      onFinal: applySpeech,
       onError: (message) => setError(message),
       onEnd: () => {
         speechRef.current = null

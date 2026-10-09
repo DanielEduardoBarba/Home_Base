@@ -18,6 +18,7 @@ export function ToastStack() {
           key={t.id}
           type="button"
           className="hb-toast"
+          aria-label={`${t.title}. Open notifications`}
           onClick={() => {
             dismissToast(t.id)
             openInbox()
@@ -27,16 +28,6 @@ export function ToastStack() {
           <span className="hb-toast-body">
             <span className="hb-toast-title">{t.title}</span>
             {t.body ? <span className="hb-toast-text">{t.body}</span> : null}
-          </span>
-          <span
-            className="hb-toast-close"
-            role="presentation"
-            onClick={(e) => {
-              e.stopPropagation()
-              dismissToast(t.id)
-            }}
-          >
-            ×
           </span>
         </button>
       ))}

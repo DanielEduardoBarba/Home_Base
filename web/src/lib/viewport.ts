@@ -18,6 +18,19 @@ export function installViewportHeight(): () => void {
     return !!a.closest('[contenteditable="true"], input, textarea, select')
   }
 
+  const isFullscreenLike = (): boolean => {
+    try {
+      if (document.fullscreenElement) return true
+      const w = window as Window & { navigator?: Navigator & { standalone?: boolean } }
+      if (w.navigator?.standalone) return true
+      if (window.matchMedia('(display-mode: standalone)').matches) return true
+      if (window.matchMedia('(display-mode: fullscreen)').matches) return true
+    } catch {
+      /* ignore */
+    }
+    return false
+  }
+
   const sync = () => {
     const vv = window.visualViewport
     let h = window.innerHeight
@@ -40,9 +53,14 @@ export function installViewportHeight(): () => void {
         top = Math.max(0, Math.round(vv.offsetTop))
       } else {
         // Prefer the larger of layout vs visual so fullscreen Chrome / PWA
-        // fills to the bottom (no gap under #root).
+        // fills to the bottom (no gap under #root that looks like a browser footer).
         const visual = Math.round(vv.height + Math.max(0, vv.offsetTop))
         h = Math.max(layoutH, visual, Math.round(vv.height))
+        // Standalone / fullscreen: prefer layout height (shell CSS stretches via
+        // bottom:0). Avoid screen.height — it can overshoot the visible area.
+        if (isFullscreenLike()) {
+          h = Math.max(h, window.innerHeight)
+        }
         top = 0
       }
     } else {
@@ -56,6 +74,7 @@ export function installViewportHeight(): () => void {
     root.style.setProperty('--hb-app-height', `${h}px`)
     root.style.setProperty('--hb-vv-top', `${top}px`)
     root.toggleAttribute('data-hb-keyboard', keyboardOpen)
+    root.toggleAttribute('data-hb-fullscreen', isFullscreenLike())
     // Cancel iOS Safari's habit of scrolling the layout viewport under a focused input.
     if (keyboardOpen && (window.scrollY !== 0 || window.scrollX !== 0)) {
       window.scrollTo(0, 0)
@@ -68,6 +87,7 @@ export function installViewportHeight(): () => void {
   window.addEventListener('pageshow', sync)
   window.addEventListener('focusin', sync)
   window.addEventListener('focusout', sync)
+  document.addEventListener('fullscreenchange', sync)
   const vv = window.visualViewport
   vv?.addEventListener('resize', sync)
   vv?.addEventListener('scroll', sync)
@@ -78,6 +98,7 @@ export function installViewportHeight(): () => void {
     window.removeEventListener('pageshow', sync)
     window.removeEventListener('focusin', sync)
     window.removeEventListener('focusout', sync)
+    document.removeEventListener('fullscreenchange', sync)
     vv?.removeEventListener('resize', sync)
     vv?.removeEventListener('scroll', sync)
   }
