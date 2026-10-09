@@ -898,7 +898,10 @@ export function ViewTab() {
   )
 
   return (
-    <div className={`h-full flex flex-col min-h-0 ${maximized ? '' : 'hb-with-nav'}`}>
+    <div
+      className={`h-full min-h-0 flex flex-col ${maximized ? 'hb-view-root-max' : 'hb-with-nav'}`}
+      style={{ minHeight: '100%' }}
+    >
       {!maximized && (
         <div className="hb-chrome shrink-0">
           <div className="hb-chrome-inner">

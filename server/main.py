@@ -44,6 +44,7 @@ from .static_compress import compressed_file_response
 from .system_ctl import list_wireguard, restart_homebased, restart_wireguard
 from .trace_log import install_logging_handler, snapshot as trace_snapshot
 from .trace_log import append as trace_append
+from . import sudo_auth
 from .version import read_version, running_as_backup, status_payload as version_status
 from .view import view_hub
 
@@ -87,6 +88,11 @@ async def lifespan(app: FastAPI):
     n = len(list_projects())
     log.info("Loaded %d project(s) from config (v%s)", n, APP_VERSION)
     trace_append("info", f"startup: {n} project(s) v{APP_VERSION}", source="server")
+    try:
+        sudo_auth.ensure_process_env()
+        trace_append("info", "sudo askpass ready", source="server")
+    except Exception as e:
+        log.warning("sudo askpass init: %s", e)
     approval_hub.ensure_hook_secret()
     # Prefer stable share path (Nuitka onefile unpacks BUNDLE_ROOT under /tmp).
     hook_candidates = [
@@ -659,6 +665,130 @@ async def api_trace_client(request: Request, _: None = Depends(require_auth)):
     return {"ok": True, "accepted": accepted}
 
 
+@app.get("/api/trace/journal")
+async def api_trace_journal(
+    limit: int = 200,
+    unit: str = "homebased",
+    _: None = Depends(require_auth),
+):
+    """Recent journalctl lines for homebased (JWT). Cap 300 — for Logs → Journald."""
+    lim = max(1, min(int(limit or 200), 300))
+    unit_name = (unit or "homebased").strip() or "homebased"
+    # Only allow our unit names — no arbitrary journal queries.
+    allowed = {"homebased", "homebased.service", "wg-quick@wg0", "wg-quick@wghome"}
+    if unit_name not in allowed and not unit_name.startswith("wg-quick@"):
+        raise HTTPException(400, "unit not allowed")
+    if not unit_name.endswith(".service") and not unit_name.startswith("wg-quick@"):
+        unit_name = f"{unit_name}.service"
+    cmd = [
+        "journalctl",
+        "-u",
+        unit_name,
+        "-n",
+        str(lim),
+        "--no-pager",
+        "-o",
+        "short-iso",
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=8.0)
+    except FileNotFoundError:
+        raise HTTPException(503, "journalctl not available")
+    except asyncio.TimeoutError:
+        raise HTTPException(504, "journalctl timed out")
+    except Exception as e:
+        log.warning("journalctl failed: %s", e)
+        raise HTTPException(500, f"journalctl failed: {e}")
+    text = (out_b or b"").decode("utf-8", errors="replace")
+    err = (err_b or b"").decode("utf-8", errors="replace").strip()
+    if proc.returncode not in (0, None) and not text.strip():
+        raise HTTPException(500, err or f"journalctl exit {proc.returncode}")
+    items: list[dict[str, Any]] = []
+    for i, line in enumerate(text.splitlines()[-lim:]):
+        line = line.rstrip()
+        if not line:
+            continue
+        level = "info"
+        low = line.lower()
+        if " error " in low or line.lower().endswith("error") or " failed" in low:
+            level = "error"
+        elif " warn" in low or "warning" in low:
+            level = "warn"
+        items.append(
+            {
+                "id": i + 1,
+                "ts": 0,
+                "level": level,
+                "source": "journald",
+                "message": line[:4000],
+            }
+        )
+    return {
+        "items": items,
+        "lastId": len(items),
+        "max": lim,
+        "unit": unit_name,
+        "error": err or None,
+    }
+
+
+@app.get("/api/sudo/status")
+async def api_sudo_status(_: None = Depends(require_auth)):
+    """Whether a short-lived sudo password is vaulted (never returns the secret)."""
+    return sudo_auth.status()
+
+
+class SudoBody(BaseModel):
+    password: str = Field(min_length=1, max_length=512)
+    sessionId: Optional[str] = None
+    ttlSec: Optional[int] = None
+
+
+@app.post("/api/sudo")
+async def api_sudo(body: SudoBody, _: None = Depends(require_auth)):
+    """Vault sudo password for askpass + optionally feed an interactive PTY."""
+    try:
+        result = sudo_auth.store_password(
+            body.password, ttl_sec=int(body.ttlSec or sudo_auth.TTL_SEC)
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except OSError as e:
+        raise HTTPException(500, f"vault write failed: {e}")
+    fed = False
+    if body.sessionId:
+        try:
+            # Password + newline — matches typing into a live sudo prompt.
+            await pty_manager.write(body.sessionId, body.password.rstrip("\n") + "\n")
+            fed = True
+            trace_append(
+                "info",
+                f"sudo password fed to session {body.sessionId[:12]}",
+                source="server",
+            )
+        except KeyError:
+            trace_append(
+                "warn",
+                f"sudo session missing {body.sessionId[:12]}",
+                source="server",
+            )
+        except Exception as e:
+            log.warning("sudo pty write: %s", e)
+            trace_append("warn", f"sudo pty write failed: {e}", source="server")
+    return {**result, "fedSession": fed}
+
+
+@app.delete("/api/sudo")
+async def api_sudo_clear(_: None = Depends(require_auth)):
+    sudo_auth.clear_password()
+    return {"ok": True}
+
+
 @app.get("/api/view/status")
 def api_view_status(_: None = Depends(require_auth)):
     """Probe whether screen capture/input is available (JWT)."""
@@ -993,6 +1123,63 @@ async def ws_cursor(websocket: WebSocket):
                 await websocket.send_json(
                     {"type": "approval-policy", "policy": pol}
                 )
+            elif mtype == "sudo":
+                # Short-lived sudo password from Chat UI — never echoed back.
+                pw = str(msg.get("password") or "")
+                sid = str(msg.get("sessionId") or "").strip() or None
+                send_chat = (
+                    (msg.get("chatId") or msg.get("chat") or chat_id).strip()
+                    or "default"
+                )
+                if not pw:
+                    await websocket.send_json(
+                        {
+                            "type": "sudo-ack",
+                            "ok": False,
+                            "error": "password required",
+                            "chatId": send_chat,
+                        }
+                    )
+                    continue
+                try:
+                    result = sudo_auth.store_password(pw)
+                    fed = False
+                    if sid:
+                        try:
+                            await pty_manager.write(sid, pw.rstrip("\n") + "\n")
+                            fed = True
+                        except Exception as e:
+                            log.warning("sudo ws pty write: %s", e)
+                    trace_append(
+                        "info",
+                        f"sudo vaulted via chat chat={send_chat} fed={fed}",
+                        source="cursor",
+                        projectId=project_id,
+                        chatId=send_chat,
+                    )
+                    await websocket.send_json(
+                        {
+                            "type": "sudo-ack",
+                            "ok": True,
+                            "chatId": send_chat,
+                            "fedSession": fed,
+                            "ttlSec": result.get("ttlSec"),
+                            "expiresAt": result.get("expiresAt"),
+                        }
+                    )
+                except Exception as e:
+                    log.warning("sudo ws store: %s", e)
+                    await websocket.send_json(
+                        {
+                            "type": "sudo-ack",
+                            "ok": False,
+                            "error": str(e),
+                            "chatId": send_chat,
+                        }
+                    )
+            elif mtype == "sudo_clear":
+                sudo_auth.clear_password()
+                await websocket.send_json({"type": "sudo-ack", "ok": True, "cleared": True})
             elif mtype == "cancel":
                 cancel_chat = (
                     (msg.get("chatId") or msg.get("chat") or chat_id).strip()

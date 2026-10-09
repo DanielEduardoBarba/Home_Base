@@ -1344,6 +1344,11 @@ html[data-hb-keyboard] .hb-chat-composer {
 .hb-chat-opt-icon {
   width: 1.05rem;
   height: 1.05rem;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .hb-chat-opt-chips {
@@ -1442,6 +1447,133 @@ html[data-hb-keyboard] .hb-chat-composer {
   animation: hb-pulse-soft 1.2s ease-in-out infinite;
 }
 
+.hb-chat-fab-dot-warn {
+  background: var(--hb-amber, #d4a017);
+}
+
+.hb-chat-status {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.85rem;
+  border-top: 1px solid color-mix(in srgb, var(--hb-line) 80%, transparent);
+  background: color-mix(in srgb, var(--hb-panel) 88%, transparent);
+  font-size: 0.68rem;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  color: var(--hb-mute);
+  min-height: 1.85rem;
+}
+
+.hb-chat-status-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: var(--hb-mute);
+  flex-shrink: 0;
+}
+
+.hb-chat-status-dot.starting,
+.hb-chat-status-dot.thinking,
+.hb-chat-status-dot.tool,
+.hb-chat-status-dot.streaming,
+.hb-chat-status-dot.approval,
+.hb-chat-status-dot.sudo,
+.hb-chat-status-dot.busy {
+  background: var(--hb-accent);
+  animation: hb-pulse-soft 1.1s ease-in-out infinite;
+}
+
+.hb-chat-status-dot.done {
+  background: var(--hb-ok, #2f9e6e);
+}
+
+.hb-chat-status-dot.error {
+  background: var(--hb-danger, #d64545);
+}
+
+.hb-chat-status-dot.sudo,
+.hb-chat-status-dot.approval {
+  background: var(--hb-amber, #d4a017);
+}
+
+.hb-chat-status-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.hb-chat-status-badge {
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.58rem;
+  font-weight: 700;
+  color: var(--hb-accent);
+}
+
+.hb-chat-status.error .hb-chat-status-badge {
+  color: var(--hb-danger, #d64545);
+}
+
+.hb-chat-status.done .hb-chat-status-badge {
+  color: var(--hb-ok, #2f9e6e);
+}
+
+.hb-chat-status-action,
+.hb-chat-status-sudo {
+  flex-shrink: 0;
+  border: 1px solid var(--hb-line);
+  background: var(--hb-panel-2);
+  color: var(--hb-mute);
+  border-radius: 0.4rem;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.58rem;
+  font-weight: 650;
+}
+
+.hb-chat-status-sudo {
+  border-color: color-mix(in srgb, var(--hb-amber, #d4a017) 45%, var(--hb-line));
+  color: var(--hb-amber, #d4a017);
+}
+
+.hb-chat-enter {
+  animation: hb-fade-up 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.hb-work-scene-enter {
+  animation: hb-scene-in 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes hb-scene-in {
+  from {
+    opacity: 0.55;
+    transform: translateY(0.35rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes hb-dock-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(1.1rem);
+  }
+}
+
+@keyframes hb-scrim-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
 /* Dimmed click-catcher behind the Work chat dock — same language as Alerts inbox */
 .hb-chat-dock-scrim {
   position: absolute;
@@ -1489,6 +1621,17 @@ html[data-hb-keyboard] .hb-chat-composer {
   box-shadow: 0 -10px 36px rgba(0, 0, 0, 0.28);
   overflow: hidden;
   animation: hb-fade-up 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, opacity;
+}
+
+.hb-chat-dock.hb-chat-dock-leaving {
+  animation: hb-dock-out 240ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  pointer-events: none;
+}
+
+.hb-chat-dock-scrim.hb-chat-dock-leaving {
+  animation: hb-scrim-out 220ms ease-in forwards;
+  pointer-events: none;
 }
 
 [data-theme='day'] .hb-chat-dock {
@@ -1560,13 +1703,22 @@ html[data-hb-keyboard] .hb-chat-composer {
   }
 }
 
-/* View — remote screen stage */
+/* View — fill the app shell (mobile Chrome / fullscreen) */
+.hb-view-root-max {
+  height: 100%;
+  min-height: 100%;
+}
+
+/* View — remote screen stage (fill remaining shell height on mobile Chrome) */
 .hb-view-stage {
   touch-action: none;
   overscroll-behavior: none;
   background: #07090d;
   user-select: none;
   -webkit-user-select: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
 }
 
 .hb-view-canvas {

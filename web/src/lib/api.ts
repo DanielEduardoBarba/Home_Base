@@ -303,4 +303,28 @@ export const api = {
     request<{ items: TraceLine[]; lastId: number; max: number }>(
       `/api/trace?limit=${limit}&afterId=${afterId}`,
     ),
+  traceJournal: (limit = 200, unit = 'homebased') =>
+    request<{
+      items: TraceLine[]
+      lastId: number
+      max: number
+      unit: string
+      error?: string | null
+    }>(`/api/trace/journal?limit=${limit}&unit=${encodeURIComponent(unit)}`),
+  sudoStatus: () =>
+    request<{
+      cached: boolean
+      expiresAt: number
+      ttlSec: number
+      askpassWaiting: boolean
+    }>('/api/sudo/status'),
+  sudoUnlock: (password: string, sessionId?: string) =>
+    request<{ ok: boolean; ttlSec: number; expiresAt: number; fedSession: boolean }>(
+      '/api/sudo',
+      {
+        method: 'POST',
+        body: JSON.stringify({ password, sessionId: sessionId || null }),
+      },
+    ),
+  sudoClear: () => request<{ ok: boolean }>('/api/sudo', { method: 'DELETE' }),
 }

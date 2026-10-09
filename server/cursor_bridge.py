@@ -15,6 +15,9 @@ from .trace_log import append as trace_append
 
 log = logging.getLogger("homebase.cursor")
 
+# call_id → mirrored Shell PTY session id (for Show-in-Shell + sudo feed)
+_shell_call_sessions: dict[str, str] = {}
+
 
 def _is_active_run_conflict(exc: BaseException) -> bool:
     msg = str(exc).lower()
@@ -719,16 +722,46 @@ async def _handle_interaction(
             or event.get("toolCallId")
             or None
         )
-        await asm.mirror_shell_output(str(call_id) if call_id else None, event)
+        # agent_shell_mirror may return None (older) — fall back to call→session cache
+        try:
+            sid = await asm.mirror_shell_output(str(call_id) if call_id else None, event)
+        except TypeError:
+            await asm.mirror_shell_output(str(call_id) if call_id else None, event)
+            sid = None
+        if not sid and call_id:
+            sid = _shell_call_sessions.get(str(call_id))
         text = asm._event_text(event)
         if not text:
             return None
-        return {
+        payload: dict[str, Any] = {
             "type": "shell-delta",
             "chatId": chat_id,
             "callId": call_id,
             "text": text[-2000:],
         }
+        if sid:
+            payload["sessionId"] = sid
+        try:
+            from .sudo_auth import detect_sudo_prompt
+
+            if detect_sudo_prompt(text):
+                payload["sudoPrompt"] = True
+                log.info(
+                    "sudo prompt in shell-delta chat=%s call=%s session=%s",
+                    chat_id,
+                    str(call_id or "")[:12],
+                    sid or "-",
+                )
+                trace_append(
+                    "warn",
+                    f"sudo prompt detected chat={chat_id}",
+                    source="cursor",
+                    projectId=project_id,
+                    chatId=chat_id,
+                )
+        except Exception:
+            pass
+        return payload
 
     payload = _serialize_delta(update)
     if not payload:
@@ -749,6 +782,8 @@ async def _handle_interaction(
         if extra:
             if extra.get("sessionId"):
                 payload["sessionId"] = extra["sessionId"]
+                if call_id:
+                    _shell_call_sessions[call_id] = str(extra["sessionId"])
             if extra.get("name"):
                 payload["name"] = extra["name"]
             if extra.get("summary"):

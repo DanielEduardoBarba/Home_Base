@@ -105,6 +105,14 @@ class PtyManager:
         if env:
             merged.update(env)
         full_env = enrich_shell_env(merged)
+        # Sudo askpass for interactive shells / actions (Chat can vault a password).
+        try:
+            from .sudo_auth import askpass_env
+
+            for k, v in askpass_env().items():
+                full_env.setdefault(k, v)
+        except Exception:
+            pass
         full_env.setdefault("TERM", "xterm-256color")
         full_env.setdefault("COLORTERM", "truecolor")
 

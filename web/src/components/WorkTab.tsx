@@ -70,8 +70,8 @@ export function WorkTab({
     setScene(present.scene)
     if (present.scene === 'shell') applyShellPresent(present, presentKey)
     if (present.scene === 'files') setFocusPath(present.path || null)
-    // Present from Chat opens the dock once; preference is still persisted
-    setDockOpen(true)
+    // Show file/shell → focus the workspace; minimize chat so it doesn't cover it
+    setDockOpen(false)
   }, [present, presentKey, lastPresentKey])
 
   function applyPresent(req: PresentRequest) {
@@ -80,7 +80,8 @@ export function WorkTab({
     setScene(req.scene)
     if (req.scene === 'shell') applyShellPresent(req, key)
     if (req.scene === 'files') setFocusPath(req.path || null)
-    setDockOpen(true)
+    // Message "Show" / Present → minimize chat so the scene is visible
+    setDockOpen(false)
   }
 
   return (
@@ -111,7 +112,10 @@ export function WorkTab({
       </div>
 
       <div className="hb-work-body flex-1 min-h-0 relative">
-        <div className="hb-work-main h-full min-h-0 overflow-hidden">
+        <div
+          key={`${scene}-${presentKey || 0}-${focusPath || ''}-${startShellKey || 0}`}
+          className="hb-work-main hb-work-scene-enter h-full min-h-0 overflow-hidden"
+        >
           {scene === 'apps' && (
             <div className="h-full overflow-y-auto">
               <AppsTab

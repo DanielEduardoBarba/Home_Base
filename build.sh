@@ -112,36 +112,62 @@ if [[ "$DO_HELP" == true ]]; then
   exit 0
 fi
 
-need_root() {
-  if [[ "$(id -u)" -ne 0 ]]; then
-    # Prefer passwordless sudo; fall back to pkexec (GUI polkit) when available.
-    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-      echo "sudo"
-      return
-    fi
-    if command -v pkexec >/dev/null 2>&1; then
-      echo "pkexec"
-      return
-    fi
-    if command -v sudo >/dev/null 2>&1; then
-      echo "sudo"
-      return
-    fi
-    echo "Error: root, sudo, or pkexec required for $1" >&2
+# Privilege model: ONE sudo password for the whole install/deploy.
+# Never use pkexec here — each pkexec call re-prompts (30+ times on --service).
+PRIV_MODE="" # root | sudo | (empty until ensure_priv_session)
+_SUDO_KEEPALIVE_PID=""
+
+ensure_priv_session() {
+  local why="${1:-homebased install}"
+  if [[ "${PRIV_MODE}" == "root" || "${PRIV_MODE}" == "sudo" ]]; then
+    return 0
+  fi
+  if [[ "$(id -u)" -eq 0 ]]; then
+    PRIV_MODE="root"
+    return 0
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "Error: sudo is required for $why" >&2
+    echo "    (pkexec is intentionally unused — it prompts once per command)" >&2
     exit 1
   fi
-  echo ""
+  if sudo -n true 2>/dev/null; then
+    PRIV_MODE="sudo"
+  else
+    echo "==> Elevating once for $why (single sudo password; cached for this run)"
+    if ! sudo -v; then
+      echo "Error: sudo authentication failed for $why" >&2
+      exit 1
+    fi
+    PRIV_MODE="sudo"
+  fi
+  # Keep the sudo timestamp alive until we exit (install can take minutes).
+  (
+    while true; do
+      sleep 50
+      sudo -n true 2>/dev/null || exit 0
+    done
+  ) &
+  _SUDO_KEEPALIVE_PID=$!
+}
+
+_stop_sudo_keepalive() {
+  if [[ -n "${_SUDO_KEEPALIVE_PID:-}" ]]; then
+    kill "${_SUDO_KEEPALIVE_PID}" 2>/dev/null || true
+    wait "${_SUDO_KEEPALIVE_PID}" 2>/dev/null || true
+    _SUDO_KEEPALIVE_PID=""
+  fi
 }
 
 run_priv() {
-  local wrap
-  wrap="$(need_root "$*")"
-  if [[ -n "$wrap" ]]; then
-    # shellcheck disable=SC2086
-    $wrap "$@"
-  else
+  if [[ "$(id -u)" -eq 0 || "${PRIV_MODE}" == "root" ]]; then
     "$@"
+    return
   fi
+  if [[ "${PRIV_MODE}" != "sudo" ]]; then
+    ensure_priv_session "$*"
+  fi
+  sudo "$@"
 }
 
 # Repo / dist owner: SUDO_USER when elevated, else filesystem owner of ROOT, else self.
@@ -294,7 +320,15 @@ build_web_dist() {
         exit 1
       }
   fi
-  (cd web && npm run build)
+  # Vite 8's Rust tooling (oxc/rolldown) uses rayon; under memory pressure
+  # spawning a full CPU-count pool can fail with EAGAIN and abort the build.
+  # Cap threads so deploy still works on a busy laptop (Cursor/Firefox/swap).
+  (
+    cd web
+    export RAYON_NUM_THREADS="${RAYON_NUM_THREADS:-2}"
+    export UV_THREADPOOL_SIZE="${UV_THREADPOOL_SIZE:-2}"
+    npm run build
+  )
 }
 
 cmd_setup() {
@@ -307,7 +341,7 @@ cmd_setup() {
   else
     (cd web && npm install --silent)
   fi
-  (cd web && npm run build)
+  build_web_dist
 
   mkdir -p config .runtime/logs dist
   if [[ ! -f config/projects.json ]]; then
@@ -451,6 +485,11 @@ pids_on_port() {
 kill_port() {
   local port="$1"
   local pid
+  # Production :8888 is owned by homebased.service — never kill-by-port.
+  if [[ "$port" == "$PROD_PORT" ]]; then
+    echo "    refusing kill_port on :$PROD_PORT — use: systemctl stop|restart $SERVICE_NAME" >&2
+    return 0
+  fi
   for pid in $(pids_on_port "$port"); do
     [[ -z "$pid" ]] && continue
     stop_process_tree "$pid"
@@ -812,24 +851,24 @@ remove_legacy_install() {
 }
 
 free_prod_port() {
-  echo "==> Freeing production port $PROD_PORT"
-  local pid
-  for pid in $(pids_on_port "$PROD_PORT"); do
-    echo "    killing pid $pid on :$PROD_PORT"
-    run_priv kill -TERM "$pid" 2>/dev/null || true
-  done
-  sleep 0.5
-  for pid in $(pids_on_port "$PROD_PORT"); do
-    run_priv kill -KILL "$pid" 2>/dev/null || true
-  done
+  # Port should already be free after systemctl stop. Do not kill by port —
+  # that races systemd and can occupy :8888 outside the unit.
+  echo "==> Checking production port $PROD_PORT"
+  local pids
+  pids="$(pids_on_port "$PROD_PORT" || true)"
+  if [[ -n "$pids" ]]; then
+    echo "    warning: still listening on :$PROD_PORT (pids: $pids) — stop $SERVICE_NAME with systemctl" >&2
+  else
+    echo "    :$PROD_PORT is free"
+  fi
 }
 
 prepare_var_lib() {
   migrate_legacy_var
   echo "==> Preparing $HOMEBASE_VAR"
   run_priv mkdir -p "$HOMEBASE_VAR/config" "$HOMEBASE_VAR/.runtime/logs"
-  if [[ -f .env ]] && [[ ! -f "$HOMEBASE_VAR/.env" ]]; then
-    run_priv cp .env "$HOMEBASE_VAR/.env"
+  if [[ -f "$ROOT/.env" ]] && [[ ! -f "$HOMEBASE_VAR/.env" ]]; then
+    run_priv cp "$ROOT/.env" "$HOMEBASE_VAR/.env"
     echo "    copied .env → $HOMEBASE_VAR/.env"
   fi
   if [[ -f "$HOMEBASE_VAR/.env" ]]; then
@@ -843,11 +882,11 @@ prepare_var_lib() {
     sync_env_key_from_repo "HOMEBASE_XAUTHORITY"
   fi
   # Deploy machine is source of truth for project registry
-  if [[ -f config/projects.json ]]; then
-    run_priv cp config/projects.json "$HOMEBASE_VAR/config/projects.json"
+  if [[ -f "$ROOT/config/projects.json" ]]; then
+    run_priv cp "$ROOT/config/projects.json" "$HOMEBASE_VAR/config/projects.json"
     echo "    synced config/projects.json → $HOMEBASE_VAR/config/"
   elif [[ ! -f "$HOMEBASE_VAR/config/projects.json" ]]; then
-    run_priv cp config/projects.example.json "$HOMEBASE_VAR/config/projects.json"
+    run_priv cp "$ROOT/config/projects.example.json" "$HOMEBASE_VAR/config/projects.json"
     echo "    seeded config/projects.json from example"
   fi
   # Keep Run + Expo as compose (two PTYs) even on older prod projects.json
@@ -892,58 +931,43 @@ ensure_homebased_running_on_exit() {
     return 0
   fi
   echo "==> Deploy interrupted — starting $SERVICE_NAME again" >&2
-  # Prefer systemd; if sudo/askpass fails, still try a direct start so :8888 is not left dead.
-  if run_priv systemctl start "$SERVICE_NAME" 2>/dev/null \
-    || run_priv systemctl restart "$SERVICE_NAME" 2>/dev/null; then
+  if run_priv systemctl start "$SERVICE_NAME" \
+    || run_priv systemctl restart "$SERVICE_NAME"; then
     return 0
   fi
-  if systemctl start "$SERVICE_NAME" 2>/dev/null \
-    || systemctl restart "$SERVICE_NAME" 2>/dev/null; then
-    return 0
-  fi
-  if [[ -x "$INSTALL_BIN" || -x "$INSTALL_BIN_REAL" ]]; then
-    echo "    warning: systemctl failed — attempting direct $INSTALL_BIN start" >&2
-    nohup "$INSTALL_BIN" >/tmp/homebased-fallback.log 2>&1 &
-  fi
+  echo "    error: systemctl could not start $SERVICE_NAME — run: systemctl start $SERVICE_NAME" >&2
+  return 1
 }
 
 stop_homebased() {
   # Must stop before replacing binaries — Linux returns ETXTBSY ("Text file busy")
   # when cp overwrites an executable that is still mapped/running.
-  # systemctl can hang when the bus is degraded; never block forever on stop.
-  if systemctl list-unit-files "$SERVICE_NAME" &>/dev/null; then
-    if timeout 8 run_priv systemctl stop "$SERVICE_NAME" 2>/dev/null; then
-      HOMEBASED_UNIT_STOPPED=1
-    else
-      echo "    systemctl stop timed out/failed — force-killing homebase processes"
-      timeout 5 run_priv systemctl kill -s KILL "$SERVICE_NAME" 2>/dev/null || true
-      run_priv pkill -KILL -x homebase 2>/dev/null || true
-      run_priv pkill -KILL -x homebased 2>/dev/null || true
-      # Also kill by listen port in case the process was renamed
-      local pids
-      pids="$(ss -ltnp 2>/dev/null | awk '/:8888[[:space:]]/ {print}' | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true)"
-      if [[ -n "$pids" ]]; then
-        # shellcheck disable=SC2086
-        run_priv kill -KILL $pids 2>/dev/null || true
-      fi
-      HOMEBASED_UNIT_STOPPED=1
-    fi
+  # Unit TimeoutStopSec=20; let systemd stop (and SIGKILL the cgroup) — no pkill.
+  if ! systemctl list-unit-files "$SERVICE_NAME" &>/dev/null; then
+    return 0
   fi
+  echo "==> Stopping $SERVICE_NAME (systemctl)"
+  # timeout must wrap the real binary, not the run_priv bash function.
+  # 35s > TimeoutStopSec so systemd can finish its own stop sequence.
+  if ! run_priv timeout 35 systemctl stop "$SERVICE_NAME"; then
+    echo "Error: systemctl stop $SERVICE_NAME failed — approve polkit/sudo and retry" >&2
+    echo "    do not kill homebase by hand; use: systemctl stop $SERVICE_NAME" >&2
+    exit 1
+  fi
+  HOMEBASED_UNIT_STOPPED=1
   if systemctl list-unit-files "$LEGACY_SERVICE" &>/dev/null; then
-    timeout 5 run_priv systemctl stop "$LEGACY_SERVICE" 2>/dev/null || true
+    run_priv timeout 30 systemctl stop "$LEGACY_SERVICE" 2>/dev/null || true
   fi
-  # Ensure no leftover process holds the inode
+  # Wait briefly for the listen socket to drop (systemd already stopped the unit).
   local waited=0
-  while pgrep -x homebase >/dev/null 2>&1 || pgrep -x homebased >/dev/null 2>&1; do
-    if [[ "$waited" -ge 20 ]]; then
-      run_priv pkill -KILL -x homebase 2>/dev/null || true
-      run_priv pkill -KILL -x homebased 2>/dev/null || true
+  while ss -ltn 2>/dev/null | grep -qE ":${PROD_PORT}[[:space:]]"; do
+    if [[ "$waited" -ge 30 ]]; then
+      echo "    warning: :$PROD_PORT still listening after systemctl stop" >&2
       break
     fi
     sleep 0.1
     waited=$((waited + 1))
   done
-  sleep 0.3
 }
 
 # Install unit file, enable, restart, and verify active + :8888.
@@ -951,36 +975,34 @@ stop_homebased() {
 restart_homebased_service() {
   echo "==> Restarting $SERVICE_NAME"
   run_priv cp "$SERVICE_SRC" "$SERVICE_DST"
-  timeout 15 run_priv systemctl daemon-reload || true
-  timeout 15 run_priv systemctl enable "$SERVICE_NAME" || true
-  timeout 10 run_priv systemctl reset-failed "$SERVICE_NAME" 2>/dev/null || true
-  if ! timeout 20 run_priv systemctl restart "$SERVICE_NAME"; then
-    echo "    systemctl restart failed/timed out — starting wrapper directly" >&2
-    run_priv pkill -KILL -x homebase 2>/dev/null || true
-    # Detach under systemd if possible; else bare start
-    if ! timeout 15 run_priv systemctl start "$SERVICE_NAME" 2>/dev/null; then
-      echo "    falling back to nohup $INSTALL_WRAPPER" >&2
-      run_priv bash -c "nohup '$INSTALL_WRAPPER' >/tmp/homebased-fallback.log 2>&1 &" || true
-    fi
+  run_priv timeout 15 systemctl daemon-reload || true
+  run_priv timeout 15 systemctl enable "$SERVICE_NAME" || true
+  run_priv timeout 10 systemctl reset-failed "$SERVICE_NAME" 2>/dev/null || true
+  if ! run_priv timeout 35 systemctl restart "$SERVICE_NAME"; then
+    echo "Error: systemctl restart $SERVICE_NAME failed" >&2
+    run_priv timeout 5 systemctl --no-pager --full status "$SERVICE_NAME" >&2 || true
+    run_priv timeout 5 journalctl -u "$SERVICE_NAME" -n 40 --no-pager >&2 || true
+    return 1
   fi
   local i
   for i in $(seq 1 40); do
-    if timeout 3 run_priv systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-      break
-    fi
-    # Accept success if something is listening even when systemd status is stuck
-    if ss -ltn 2>/dev/null | grep -qE ":${PROD_PORT}[[:space:]]"; then
+    if run_priv timeout 3 systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
       break
     fi
     sleep 0.25
   done
   HOMEBASED_UNIT_STOPPED=0
-  timeout 5 run_priv systemctl --no-pager --full status "$SERVICE_NAME" || true
+  run_priv timeout 5 systemctl --no-pager --full status "$SERVICE_NAME" || true
+  if ! run_priv timeout 3 systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+    echo "Error: $SERVICE_NAME is not active after restart" >&2
+    run_priv timeout 5 journalctl -u "$SERVICE_NAME" -n 40 --no-pager >&2 || true
+    return 1
+  fi
   if wait_for_listen "$PROD_PORT"; then
     echo "==> $SERVICE_NAME active — http://localhost:${PROD_PORT}/"
   else
     echo "Error: nothing listening on :$PROD_PORT after restart" >&2
-    timeout 5 run_priv journalctl -u "$SERVICE_NAME" -n 40 --no-pager >&2 || true
+    run_priv timeout 5 journalctl -u "$SERVICE_NAME" -n 40 --no-pager >&2 || true
     return 1
   fi
   echo "==> Service $SERVICE_NAME enabled and restarted"
@@ -1169,7 +1191,8 @@ cmd_service() {
     echo "Error: missing $SERVICE_SRC" >&2
     exit 1
   fi
-  trap ensure_homebased_running_on_exit EXIT
+  ensure_priv_session "homebased service install"
+  trap '_stop_sudo_keepalive; ensure_homebased_running_on_exit' EXIT
 
   INSTALL_USED_BACKUP=0
   if [[ -x "$BIN_PATH" ]]; then
@@ -1186,9 +1209,9 @@ cmd_service() {
   free_prod_port
   prepare_var_lib
   install_cursor_bridge
-  if [[ -f scripts/hb-hook-approve ]]; then
+  if [[ -f "$ROOT/scripts/hb-hook-approve" ]]; then
     echo "==> Installing approval hook → $INSTALL_SHARE/hb-hook-approve"
-    run_priv install -m 0755 scripts/hb-hook-approve "$INSTALL_SHARE/hb-hook-approve"
+    run_priv install -m 0755 "$ROOT/scripts/hb-hook-approve" "$INSTALL_SHARE/hb-hook-approve"
   fi
 
   if ! restart_homebased_service; then
@@ -1204,6 +1227,8 @@ cmd_service() {
 
 cmd_deploy() {
   echo "==> Deploy: build → install homebase binary → restart homebased.service"
+  # Elevate before bin so reclaiming root-owned dist/web paths only prompts once.
+  ensure_priv_session "homebased deploy"
   cmd_bin
   # install_binary runs once inside cmd_service (avoid double-install, which
   # would copy the NEW primary over .bak and lose the real previous binary)

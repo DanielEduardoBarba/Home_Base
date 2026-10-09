@@ -5,6 +5,8 @@ import type { TraceLine } from '../lib/types'
 
 const MAX = 300
 
+type LogFilter = 'all' | 'server' | 'web' | 'cursor' | 'journald'
+
 function levelClass(level: string): string {
   if (level === 'error') return 'text-danger'
   if (level === 'warn' || level === 'warning') return 'text-warn'
@@ -12,7 +14,15 @@ function levelClass(level: string): string {
   return 'text-text'
 }
 
+function sourceClass(source: string): string {
+  if (source === 'web') return 'text-sky'
+  if (source === 'cursor') return 'text-violet'
+  if (source === 'journald') return 'text-amber'
+  return 'text-mute'
+}
+
 function formatTs(ts: number): string {
+  if (!ts) return ''
   try {
     return new Date(ts * 1000).toLocaleTimeString()
   } catch {
@@ -25,12 +35,13 @@ function lineText(l: TraceLine): string {
 }
 
 /**
- * Single ring from the server (includes flushed browser console lines).
+ * Shared ring (server / web / cursor) + Journald category for homebased unit.
  * Cap = 300 on both ends — no unbounded arrays in the UI.
  */
 export function LogsTab() {
   const [lines, setLines] = useState<TraceLine[]>([])
-  const [filter, setFilter] = useState<'all' | 'server' | 'web'>('all')
+  const [journalLines, setJournalLines] = useState<TraceLine[]>([])
+  const [filter, setFilter] = useState<LogFilter>('all')
   const [error, setError] = useState('')
   const [paused, setPaused] = useState(false)
   const [copied, setCopied] = useState('')
@@ -40,31 +51,40 @@ export function LogsTab() {
   const load = useCallback(async () => {
     if (paused) return
     try {
-      const data = await api.trace(MAX)
-      setLines(data.items.slice(-MAX))
-      setError('')
+      if (filter === 'journald') {
+        const data = await api.traceJournal(MAX)
+        setJournalLines(data.items.slice(-MAX))
+        setError(data.error || '')
+      } else {
+        const data = await api.trace(MAX)
+        setLines(data.items.slice(-MAX))
+        setError('')
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [paused])
+  }, [paused, filter])
 
   useSceneRefresh(load)
 
   useEffect(() => {
-    load()
-    const t = setInterval(load, 2000)
+    void load()
+    const t = setInterval(() => void load(), filter === 'journald' ? 4000 : 2000)
     return () => clearInterval(t)
-  }, [load])
+  }, [load, filter])
+
+  const visible =
+    filter === 'journald'
+      ? journalLines
+      : lines.filter((l) => {
+          if (filter === 'all') return true
+          return (l.source || 'server') === filter
+        })
 
   useEffect(() => {
     if (!stickBottom.current || !listRef.current) return
     listRef.current.scrollTop = listRef.current.scrollHeight
-  }, [lines])
-
-  const visible = lines.filter((l) => {
-    if (filter === 'all') return true
-    return (l.source || 'server') === filter
-  })
+  }, [visible])
 
   async function copyVisible() {
     const text = visible.map(lineText).join('\n')
@@ -100,12 +120,17 @@ export function LogsTab() {
             <h1 className="font-display font-bold text-base mr-auto tracking-tight">Logs</h1>
             <select
               value={filter}
-              onChange={(e) => setFilter(e.target.value as typeof filter)}
+              onChange={(e) => {
+                stickBottom.current = true
+                setFilter(e.target.value as LogFilter)
+              }}
               className="hb-select !min-h-9 py-1.5 text-xs"
             >
               <option value="all">All</option>
               <option value="server">Server</option>
               <option value="web">Web</option>
+              <option value="cursor">Cursor</option>
+              <option value="journald">Journald</option>
             </select>
             <button
               type="button"
@@ -124,7 +149,9 @@ export function LogsTab() {
             </button>
           </div>
           <p className="text-[11px] font-mono text-mute">
-            Shared ring · max {MAX} · python + browser console · tap a line to copy
+            {filter === 'journald'
+              ? `journalctl -u homebased · max ${MAX} · tap a line to copy`
+              : `Shared ring · max ${MAX} · python + browser + cursor · tap a line to copy`}
           </p>
           {error && <p className="text-danger text-xs">{error}</p>}
         </div>
@@ -142,20 +169,16 @@ export function LogsTab() {
           {visible.length === 0 && (
             <li className="text-mute py-6 text-center">No log lines yet.</li>
           )}
-          {visible.map((l) => (
-            <li key={l.id}>
+          {visible.map((l, idx) => (
+            <li key={`${l.source}-${l.id}-${idx}`}>
               <button
                 type="button"
                 onClick={() => void copyOne(l)}
                 className="w-full flex gap-2 border-b border-line/35 py-1.5 text-left hover:bg-panel-2/80 rounded-md px-1"
                 title="Copy line"
               >
-                <span className="text-mute shrink-0 w-[4.5rem]">{formatTs(l.ts)}</span>
-                <span
-                  className={`shrink-0 w-14 uppercase ${
-                    l.source === 'web' ? 'text-sky' : 'text-mute'
-                  }`}
-                >
+                <span className="text-mute shrink-0 w-[4.5rem]">{formatTs(l.ts) || '—'}</span>
+                <span className={`shrink-0 w-16 uppercase ${sourceClass(l.source || 'server')}`}>
                   {l.source || 'server'}
                 </span>
                 <span className={`shrink-0 w-12 uppercase ${levelClass(l.level)}`}>{l.level}</span>

@@ -8,6 +8,9 @@ import socket
 from pathlib import Path
 from typing import Iterable
 
+# systemd unit for this control plane — never SIGKILL via project Stop / kill_ports.
+HOMEBASED_UNIT = "homebased.service"
+
 
 def port_open(host: str, port: int, timeout: float = 0.35) -> bool:
     try:
@@ -98,11 +101,62 @@ def pids_on_port(port: int) -> set[int]:
     return _pids_for_inodes(_inodes_for_port(port))
 
 
+def control_plane_ports() -> set[int]:
+    """Listen ports owned by this Home Base process (use systemctl, not kill)."""
+    out: set[int] = set()
+    raw = (os.environ.get("HOMEBASE_PORT") or "").strip()
+    if raw.isdigit():
+        out.add(int(raw))
+    return out
+
+
+def _self_ancestry() -> set[int]:
+    """This process and its parents (Nuitka onefile parent must not be SIGKILL'd)."""
+    seen: set[int] = set()
+    pid = os.getpid()
+    for _ in range(64):
+        if pid <= 1 or pid in seen:
+            break
+        seen.add(pid)
+        try:
+            status = Path(f"/proc/{pid}/status").read_text()
+        except OSError:
+            break
+        ppid = 0
+        for line in status.splitlines():
+            if line.startswith("PPid:"):
+                try:
+                    ppid = int(line.split()[1])
+                except (IndexError, ValueError):
+                    ppid = 0
+                break
+        pid = ppid
+    return seen
+
+
+def pid_in_homebased_unit(pid: int) -> bool:
+    try:
+        return HOMEBASED_UNIT in Path(f"/proc/{pid}/cgroup").read_text()
+    except OSError:
+        return False
+
+
+def is_protected_pid(pid: int) -> bool:
+    """True if we must not kill this pid (control plane / self tree)."""
+    if pid <= 1:
+        return True
+    if pid in _self_ancestry():
+        return True
+    if pid_in_homebased_unit(pid):
+        return True
+    return False
+
+
 def kill_pids(pids: Iterable[int]) -> list[int]:
     """SIGTERM then SIGKILL process groups / pids. Returns ones we signaled."""
     stopped: list[int] = []
     for pid in sorted(set(pids)):
-        if pid <= 1 or pid == os.getpid():
+        if is_protected_pid(pid):
             continue
         try:
             os.killpg(pid, signal.SIGTERM)
@@ -129,8 +183,12 @@ def kill_pids(pids: Iterable[int]) -> list[int]:
 
 
 def kill_ports(ports: Iterable[int]) -> list[int]:
-    """Kill every process listening on any of the given ports."""
+    """Kill listeners on the given ports — never the Home Base control plane."""
     pids: set[int] = set()
+    protected = control_plane_ports()
     for port in ports:
-        pids |= pids_on_port(int(port))
+        port = int(port)
+        if port in protected:
+            continue
+        pids |= pids_on_port(port)
     return kill_pids(pids)

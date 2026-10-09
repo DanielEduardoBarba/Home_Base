@@ -314,11 +314,32 @@ export function ChatPanel({
   const [listening, setListening] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [activity, setActivity] = useState('')
+  /** Durable agent phase for status chrome (survives brief empty activity). */
+  const [agentPhase, setAgentPhase] = useState<
+    'idle' | 'starting' | 'thinking' | 'tool' | 'streaming' | 'approval' | 'sudo' | 'done' | 'error' | 'busy'
+  >('idle')
+  const [runLog, setRunLog] = useState<string[]>([])
+  const [sudoOpen, setSudoOpen] = useState(false)
+  const [sudoPassword, setSudoPassword] = useState('')
+  const [sudoSessionId, setSudoSessionId] = useState<string | undefined>()
+  const [sudoCallId, setSudoCallId] = useState<string | undefined>()
+  const [sudoCachedTtl, setSudoCachedTtl] = useState(0)
+  const [sudoBusy, setSudoBusy] = useState(false)
   const [dockOpenLocal, setDockOpenLocal] = useState(() => readDockOpen())
+  /** Keep dock mounted while exit animation plays. */
+  const [dockMounted, setDockMounted] = useState(() => readDockOpen())
+  const [dockClosing, setDockClosing] = useState(false)
   const canSpeak = useMemo(() => speechSupported(), [])
 
   const dockOpen = dockOpenProp ?? dockOpenLocal
   function setDockOpen(open: boolean) {
+    if (open) {
+      setDockMounted(true)
+      setDockClosing(false)
+    } else if (dockMounted) {
+      // Start exit animation immediately (don't wait for useEffect)
+      setDockClosing(true)
+    }
     writeDockOpen(open)
     if (onDockOpenChange) onDockOpenChange(open)
     else setDockOpenLocal(open)
@@ -330,6 +351,9 @@ export function ChatPanel({
   const dockRef = useRef<HTMLElement | null>(null)
   const dockOpenedAt = useRef(0)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  /** Follow new messages only while the user is near the bottom. */
+  const stickBottom = useRef(true)
   const assistantBuf = useRef('')
   /** True once text-delta arrived this turn — final sdk_message must replace, not append. */
   const gotTextDeltasRef = useRef(false)
@@ -340,12 +364,28 @@ export function ChatPanel({
   const streamingRef = useRef(false)
   const notifyRef = useRef(notify)
   const onPresentRef = useRef(onPresent)
+  const doneClearTimer = useRef<number | null>(null)
   activeIdRef.current = activeId
   tabsRef.current = tabs
   streamingRef.current = streaming
   connStateRef.current = connState
   notifyRef.current = notify
   onPresentRef.current = onPresent
+
+  function pushRunLog(line: string) {
+    const stamp = new Date().toLocaleTimeString()
+    const entry = `${stamp} ${line}`
+    console.info('[cursor]', line)
+    setRunLog((prev) => [...prev.slice(-40), entry])
+  }
+
+  function setPhase(
+    phase: typeof agentPhase,
+    label?: string,
+  ) {
+    setAgentPhase(phase)
+    if (label !== undefined) setActivity(label)
+  }
 
   const active = useMemo(
     () => tabs.find((t) => t.id === activeId) || tabs[0],
@@ -360,6 +400,9 @@ export function ChatPanel({
     setInput('')
     setError('')
     setStreaming(false)
+    setPhase('idle', '')
+    setRunLog([])
+    stickBottom.current = true
   }, [project?.id])
 
   useEffect(() => {
@@ -370,13 +413,46 @@ export function ChatPanel({
     return () => window.clearTimeout(t)
   }, [project?.id, tabs, activeId, streaming])
 
+  // Entering a chat tab → jump to bottom and stick unless user scrolls away
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [active?.messages, streaming])
+    stickBottom.current = true
+    const el = listRef.current
+    if (el) {
+      requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight
+      })
+    }
+  }, [activeId])
+
+  useEffect(() => {
+    if (!stickBottom.current) return
+    const el = listRef.current
+    if (el) {
+      // Instant while streaming so follow feels glued; smooth when settling
+      el.scrollTo({
+        top: el.scrollHeight,
+        behavior: streaming ? 'auto' : 'smooth',
+      })
+    } else {
+      bottomRef.current?.scrollIntoView({ behavior: streaming ? 'auto' : 'smooth' })
+    }
+  }, [active?.messages, streaming, activity, pendingApprovals.length, sudoOpen])
+
+  // Sync dock mount when parent forces open (e.g. prop flip)
+  useEffect(() => {
+    if (!isDock) return
+    if (dockOpen) {
+      setDockMounted(true)
+      setDockClosing(false)
+      dockOpenedAt.current = Date.now()
+    } else if (dockMounted && !dockClosing) {
+      setDockClosing(true)
+    }
+  }, [isDock, dockOpen])
 
   // Work dock: click outside → minimize (debounce so open-click / near-miss don't bounce)
   useEffect(() => {
-    if (!isDock || !dockOpen) return
+    if (!isDock || !dockOpen || dockClosing) return
     dockOpenedAt.current = Date.now()
     const onPointer = (ev: PointerEvent) => {
       if (Date.now() - dockOpenedAt.current < 350) return
@@ -386,12 +462,22 @@ export function ChatPanel({
       if (el?.contains(t)) return
       if (t instanceof Element && t.closest('.hb-chat-fab')) return
       // Ignore while a dock modal is open
-      if (newOpen || deleteId) return
+      if (newOpen || deleteId || sudoOpen) return
       setDockOpen(false)
     }
     document.addEventListener('pointerdown', onPointer, true)
     return () => document.removeEventListener('pointerdown', onPointer, true)
-  }, [isDock, dockOpen, newOpen, deleteId])
+  }, [isDock, dockOpen, dockClosing, newOpen, deleteId, sudoOpen])
+
+  useEffect(() => {
+    void api.sudoStatus()
+      .then((s) => setSudoCachedTtl(s.ttlSec || 0))
+      .catch(() => undefined)
+    const t = window.setInterval(() => {
+      setSudoCachedTtl((v) => (v > 0 ? Math.max(0, v - 5) : 0))
+    }, 5000)
+    return () => window.clearInterval(t)
+  }, [])
 
   const refreshModels = useCallback(async () => {
     try {
@@ -487,7 +573,9 @@ export function ChatPanel({
             }
           } else if (msg.type === 'running') {
             setStreaming(true)
+            setPhase('busy', 'agent still working…')
             setError('Agent still working — wait or press Stop.')
+            pushRunLog('busy — agent still working on this chat')
           } else if (msg.type === 'approval') {
             const ap: PendingApproval = {
               id: String(msg.id || ''),
@@ -514,14 +602,19 @@ export function ChatPanel({
           } else if (msg.type === 'run') {
             setStreaming(true)
             gotTextDeltasRef.current = false
-            setActivity('starting…')
+            setPhase('starting', 'starting…')
+            pushRunLog(`run started model=${msg.model || '?'} runId=${msg.runId || '?'}`)
+            if (doneClearTimer.current) {
+              window.clearTimeout(doneClearTimer.current)
+              doneClearTimer.current = null
+            }
           } else if (msg.type === 'text-delta') {
             const chunk = String(msg.text || '')
             if (!chunk) return
             gotTextDeltasRef.current = true
             assistantBuf.current += chunk
             pushAssistant(chatId, assistantBuf.current, true)
-            setActivity('')
+            setPhase('streaming', 'writing…')
           } else if (msg.type === 'text') {
             // Full text snapshot (not a delta) — replace buffer
             const text = String(msg.text || '')
@@ -529,13 +622,14 @@ export function ChatPanel({
             gotTextDeltasRef.current = true
             assistantBuf.current = mergeAssistantText(assistantBuf.current, text, true)
             pushAssistant(chatId, assistantBuf.current, true)
-            setActivity('')
+            setPhase('streaming', 'writing…')
           } else if (msg.type === 'thinking-delta') {
             appendThinking(chatId, msg.text || '')
-            setActivity('thinking…')
+            setPhase('thinking', 'thinking…')
           } else if (msg.type === 'thinking-completed') {
             finishThinking(chatId)
-            setActivity('')
+            setPhase('streaming', '')
+            pushRunLog('thinking done')
           } else if (msg.type === 'tool-delta') {
             upsertTool(chatId, {
               callId: msg.callId ? String(msg.callId) : undefined,
@@ -544,24 +638,66 @@ export function ChatPanel({
               args: msg.args,
               summary: msg.summary ? String(msg.summary) : undefined,
               file: msg.file,
+              sessionId: msg.sessionId ? String(msg.sessionId) : undefined,
             })
             const toolLabel = prettyToolName(String(msg.name || 'tool'))
-            setActivity(
-              String(msg.status || '') === 'completed' ? '' : `${toolLabel}…`,
-            )
+            const st = String(msg.status || '')
+            if (st === 'completed') {
+              pushRunLog(`tool done · ${toolLabel}`)
+              setPhase('streaming', '')
+            } else if (st === 'error') {
+              pushRunLog(`tool error · ${toolLabel}`)
+              setPhase('error', `${toolLabel} failed`)
+            } else {
+              pushRunLog(`tool · ${toolLabel}`)
+              setPhase('tool', `${toolLabel}…`)
+            }
+          } else if (msg.type === 'shell-delta') {
+            const chunk = String(msg.text || '')
+            if (msg.sudoPrompt || /\[sudo\]\s+password/i.test(chunk)) {
+              setSudoOpen(true)
+              if (msg.sessionId) setSudoSessionId(String(msg.sessionId))
+              if (msg.callId) setSudoCallId(String(msg.callId))
+              setPhase('sudo', 'sudo password needed…')
+              pushRunLog('sudo password prompt detected')
+            } else if (chunk.trim()) {
+              pushRunLog(`shell · ${chunk.trim().slice(0, 80)}`)
+            }
+          } else if (msg.type === 'sudo-request') {
+            setSudoOpen(true)
+            if (msg.sessionId) setSudoSessionId(String(msg.sessionId))
+            if (msg.callId) setSudoCallId(String(msg.callId))
+            setPhase('sudo', 'sudo password needed…')
+            pushRunLog('sudo-request from server')
+          } else if (msg.type === 'sudo-ack') {
+            setSudoBusy(false)
+            if (msg.ok) {
+              setSudoPassword('')
+              setSudoOpen(false)
+              setSudoCachedTtl(Number(msg.ttlSec) || 300)
+              pushRunLog(
+                msg.cleared
+                  ? 'sudo vault cleared'
+                  : `sudo vaulted · ttl=${msg.ttlSec || '?'}s fed=${!!msg.fedSession}`,
+              )
+              setPhase(streamingRef.current ? 'tool' : 'idle', streamingRef.current ? 'continuing…' : '')
+            } else {
+              setError(String(msg.error || 'sudo failed'))
+              pushRunLog(`sudo failed · ${msg.error || '?'}`)
+            }
           } else if (msg.type === 'status-delta') {
             const label = String(msg.text || msg.phase || '')
               .replace(/-/g, ' ')
               .trim()
             if (label && !/^(token delta|turn ended)$/i.test(label)) {
-              setActivity(label)
+              setPhase('streaming', label)
+              pushRunLog(`status · ${label}`)
             }
           } else if (msg.type === 'message') {
             handleSdkMessage(chatId, msg.message)
           } else if (msg.type === 'done') {
             const wasStreaming = streamingRef.current
             setStreaming(false)
-            setActivity('')
             finalizeStreamingBubbles(chatId)
             assistantBuf.current = ''
             gotTextDeltasRef.current = false
@@ -571,10 +707,19 @@ export function ChatPanel({
             if (err) {
               const detail = `Agent run ended with error (${msg.status}) — you can continue this chat.`
               setError(detail)
+              setPhase('error', 'error')
               pushMsg(chatId, { id: uid(), role: 'system', text: detail })
+              pushRunLog(`done · error status=${msg.status}`)
               console.error('[cursor]', detail, msg)
             } else {
               setError('')
+              setPhase('done', 'done')
+              pushRunLog(`done · status=${msg.status || 'ok'}`)
+              if (doneClearTimer.current) window.clearTimeout(doneClearTimer.current)
+              doneClearTimer.current = window.setTimeout(() => {
+                setPhase('idle', '')
+                doneClearTimer.current = null
+              }, 2500)
             }
             if (wasStreaming && notifyRef.current) {
               const tab = tabsRef.current.find((t) => t.id === activeIdRef.current)
@@ -588,7 +733,6 @@ export function ChatPanel({
             }
           } else if (msg.type === 'error') {
             setStreaming(false)
-            setActivity('')
             finalizeStreamingBubbles(chatId)
             assistantBuf.current = ''
             gotTextDeltasRef.current = false
@@ -597,7 +741,9 @@ export function ChatPanel({
               ? detail
               : `${detail} — chat is still open; cancel if stuck, then send again.`
             setError(tip)
+            setPhase(msg.busy ? 'busy' : 'error', msg.busy ? 'busy' : 'error')
             pushMsg(chatId, { id: uid(), role: 'system', text: `⚠ ${tip}` })
+            pushRunLog(`error · ${detail}`)
             console.error('[cursor]', tip, msg)
             if (notifyRef.current) {
               notifyRef.current.ping({
@@ -609,10 +755,11 @@ export function ChatPanel({
             }
           } else if (msg.type === 'cancelled') {
             setStreaming(false)
-            setActivity('')
+            setPhase('idle', '')
             finalizeStreamingBubbles(chatId)
             assistantBuf.current = ''
             gotTextDeltasRef.current = false
+            pushRunLog('cancelled')
             pushMsg(chatId, {
               id: uid(),
               role: 'system',
@@ -714,6 +861,7 @@ export function ChatPanel({
       args?: unknown
       summary?: string
       file?: { path: string; action: string }
+      sessionId?: string
     },
   ) {
     const detail = formatToolDetail(opts.name, opts.args, opts.summary)
@@ -724,11 +872,13 @@ export function ChatPanel({
         ? msgs.findIndex((m) => m.role === 'tool' && m.tool?.callId === opts.callId)
         : -1
       const prevStatus = idx >= 0 ? msgs[idx].tool?.status : undefined
+      const prevSession = idx >= 0 ? msgs[idx].tool?.sessionId : undefined
       const tool = {
         name: opts.name,
         status: opts.status,
         detail: detail || (idx >= 0 ? msgs[idx].tool?.detail : undefined),
         callId: opts.callId,
+        sessionId: opts.sessionId || prevSession,
       }
       if (idx >= 0) {
         msgs[idx] = { ...msgs[idx], tool }
@@ -749,7 +899,7 @@ export function ChatPanel({
     if (newlyCompleted && opts.file?.path) {
       onPresentRef.current?.({ scene: 'files', path: opts.file.path })
     }
-    const shellHint = presentFromTool(opts.name)
+    const shellHint = presentFromTool(opts.name, undefined, opts.sessionId)
     if (shellHint && newlyCompleted) {
       onPresentRef.current?.(shellHint)
     }
@@ -788,19 +938,29 @@ export function ChatPanel({
       return
     }
     if (mtype === 'tool_call') {
+      const name = message.name || 'tool'
+      const st = String(message.status || 'running')
       upsertTool(chatId, {
         callId: message.callId || message.call_id,
-        name: message.name || 'tool',
-        status: String(message.status || 'running'),
+        name,
+        status: st,
         args: message.args,
         summary: (message as { summary?: string }).summary,
         file: message.file,
+        sessionId: (message as { sessionId?: string }).sessionId,
       })
+      const label = prettyToolName(name)
+      if (st === 'completed') setPhase('streaming', '')
+      else if (st === 'error') setPhase('error', `${label} failed`)
+      else setPhase('tool', `${label}…`)
       return
     }
     if (mtype === 'status' || mtype === 'task') {
       const label = String(message.text || message.status || mtype).trim()
-      if (label) setActivity(label)
+      if (label) {
+        setPhase('streaming', label)
+        pushRunLog(`sdk status · ${label}`)
+      }
       return
     }
     const text = (message?.content || [])
@@ -892,10 +1052,13 @@ export function ChatPanel({
     if (!prompt || !active || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
     setError('')
     setStreaming(true)
-    setActivity('starting…')
+    setPhase('starting', 'starting…')
+    setRunLog([])
+    pushRunLog(`send · mode=${mode} model=${model || defaultModel}`)
     setSettingsOpen(false)
     assistantBuf.current = ''
     gotTextDeltasRef.current = false
+    stickBottom.current = true
     pushMsg(active.id, { id: uid(), role: 'user', text: prompt })
     if (active.messages.length === 0 && (active.title === 'New chat' || active.title.startsWith('./'))) {
       const titled = prompt.slice(0, 32) + (prompt.length > 32 ? '…' : '')
@@ -917,7 +1080,39 @@ export function ChatPanel({
 
   function cancel() {
     if (!active) return
+    pushRunLog('stop requested')
+    setPhase('idle', '')
     wsRef.current?.send(JSON.stringify({ type: 'cancel', chatId: active.id }))
+  }
+
+  function submitSudo(e?: FormEvent) {
+    e?.preventDefault()
+    const pw = sudoPassword
+    if (!pw || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+    setSudoBusy(true)
+    pushRunLog('submitting sudo password (not logged)')
+    wsRef.current.send(
+      JSON.stringify({
+        type: 'sudo',
+        password: pw,
+        sessionId: sudoSessionId,
+        callId: sudoCallId,
+        chatId: activeIdRef.current,
+      }),
+    )
+  }
+
+  function clearSudoVault() {
+    wsRef.current?.send(JSON.stringify({ type: 'sudo_clear' }))
+    setSudoCachedTtl(0)
+    setSudoOpen(false)
+    setSudoPassword('')
+  }
+
+  function presentFromChat(req: PresentRequest) {
+    pushRunLog(`present · ${req.scene}${req.path ? ` ${req.path}` : ''}`)
+    onPresent?.(req)
+    if (isDock) setDockOpen(false)
   }
 
   function stopListening() {
@@ -1238,11 +1433,49 @@ export function ChatPanel({
     defaultModel ||
     'Auto'
 
+  const statusPhase =
+    pendingApprovals.length > 0
+      ? 'approval'
+      : sudoOpen
+        ? 'sudo'
+        : connState === 'reconnecting' || connState === 'connecting'
+          ? 'starting'
+          : connState === 'offline'
+            ? 'error'
+            : agentPhase
+
+  const statusLabel =
+    pendingApprovals.length > 0
+      ? 'waiting for approval…'
+      : sudoOpen
+        ? 'sudo password needed…'
+        : connState === 'reconnecting'
+          ? 'reconnecting…'
+          : connState === 'connecting'
+            ? 'connecting…'
+            : connState === 'offline'
+              ? 'offline'
+              : activity ||
+                (statusPhase === 'done'
+                  ? 'done'
+                  : statusPhase === 'error'
+                    ? 'error'
+                    : statusPhase === 'busy'
+                      ? 'busy — wait or Stop'
+                      : streaming
+                        ? 'agent working…'
+                        : connected
+                          ? 'ready'
+                          : connStateLabel(connState))
+
   const messages = (
     <div
-      className={`flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 py-3 space-y-3 ${
-        isDock ? '' : ''
-      }`}
+      ref={listRef}
+      className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 py-3 space-y-3"
+      onScroll={(e) => {
+        const el = e.currentTarget
+        stickBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 72
+      }}
     >
       {(!active || active.messages.length === 0) && (
         <div className="mt-2 max-w-md space-y-2">
@@ -1257,12 +1490,12 @@ export function ChatPanel({
         </div>
       )}
       {active?.messages.map((m) => (
-        <MessageCard key={m.id} m={m} onPresent={onPresent} />
+        <MessageCard key={m.id} m={m} onPresent={onPresent ? presentFromChat : undefined} />
       ))}
       {pendingApprovals.map((ap) => (
         <div
           key={ap.id}
-          className="rounded-xl border border-amber/40 bg-amber/10 px-3 py-2.5 space-y-2 mr-4"
+          className="rounded-xl border border-amber/40 bg-amber/10 px-3 py-2.5 space-y-2 mr-4 hb-chat-enter"
         >
           <div className="flex items-center gap-2 text-xs font-semibold">
             <span className="text-amber uppercase tracking-wide text-[10px]">
@@ -1291,15 +1524,92 @@ export function ChatPanel({
           </div>
         </div>
       ))}
-      {streaming && (
-        <p className="text-xs font-mono text-accent animate-pulse">
-          {pendingApprovals.length
-            ? 'waiting for approval…'
-            : activity || 'agent working…'}
-        </p>
+      {sudoOpen && (
+        <form
+          onSubmit={submitSudo}
+          className="rounded-xl border border-amber/45 bg-amber/10 px-3 py-2.5 space-y-2 mr-4 hb-chat-enter"
+        >
+          <div className="flex items-center gap-2 text-xs font-semibold">
+            <span className="text-amber uppercase tracking-wide text-[10px]">Sudo</span>
+            <span className="text-mute font-normal">
+              Password for elevated commands — not saved in chat history
+            </span>
+          </div>
+          <input
+            type="password"
+            value={sudoPassword}
+            onChange={(e) => setSudoPassword(e.target.value)}
+            autoComplete="current-password"
+            placeholder="sudo password"
+            className="w-full rounded-lg bg-panel-2 border border-line px-3 py-2 text-sm outline-none focus:border-accent"
+            autoFocus
+          />
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={sudoBusy || !sudoPassword}
+              className="flex-1 rounded-lg hb-btn-primary text-xs font-semibold py-1.5 border-0 disabled:opacity-40"
+            >
+              {sudoBusy ? 'Sending…' : 'Unlock sudo'}
+            </button>
+            <button
+              type="button"
+              className="rounded-lg border border-line text-mute text-xs font-semibold px-3 py-1.5"
+              onClick={() => {
+                setSudoOpen(false)
+                setSudoPassword('')
+              }}
+            >
+              Dismiss
+            </button>
+          </div>
+        </form>
       )}
-      {error && <p className="text-sm text-danger">{error}</p>}
+      {error && <p className="text-sm text-danger hb-chat-enter">{error}</p>}
       <div ref={bottomRef} />
+    </div>
+  )
+
+  const statusBar = (
+    <div
+      className={`hb-chat-status shrink-0 ${statusPhase}`}
+      title={runLog.slice(-8).join('\n') || statusLabel}
+      role="status"
+      aria-live="polite"
+    >
+      <span className={`hb-chat-status-dot ${statusPhase}`} aria-hidden />
+      <span className="hb-chat-status-label truncate">{statusLabel}</span>
+      {(streaming || statusPhase === 'done' || statusPhase === 'error' || statusPhase === 'busy') && (
+        <span className="hb-chat-status-badge">
+          {statusPhase === 'done'
+            ? 'done'
+            : statusPhase === 'error'
+              ? 'error'
+              : statusPhase === 'busy'
+                ? 'busy'
+                : 'working'}
+        </span>
+      )}
+      {sudoCachedTtl > 0 && (
+        <button
+          type="button"
+          className="hb-chat-status-sudo"
+          title="Clear vaulted sudo password"
+          onClick={clearSudoVault}
+        >
+          sudo {Math.ceil(sudoCachedTtl / 60)}m
+        </button>
+      )}
+      {!sudoOpen && (
+        <button
+          type="button"
+          className="hb-chat-status-action"
+          title="Enter sudo password for agent shell"
+          onClick={() => setSudoOpen(true)}
+        >
+          Sudo…
+        </button>
+      )}
     </div>
   )
 
@@ -1382,7 +1692,7 @@ export function ChatPanel({
                   type="button"
                   className="hb-chat-present-btn"
                   onClick={() => {
-                    onPresent({ scene: 'shell', newShell: true })
+                    presentFromChat({ scene: 'shell', newShell: true })
                     setSettingsOpen(false)
                   }}
                 >
@@ -1392,7 +1702,7 @@ export function ChatPanel({
                   type="button"
                   className="hb-chat-present-btn"
                   onClick={() => {
-                    onPresent({ scene: 'apps' })
+                    presentFromChat({ scene: 'apps' })
                     setSettingsOpen(false)
                   }}
                 >
@@ -1402,7 +1712,7 @@ export function ChatPanel({
                   type="button"
                   className="hb-chat-present-btn"
                   onClick={() => {
-                    onPresent({ scene: 'files' })
+                    presentFromChat({ scene: 'files' })
                     setSettingsOpen(false)
                   }}
                 >
@@ -1412,7 +1722,7 @@ export function ChatPanel({
                   type="button"
                   className="hb-chat-present-btn"
                   onClick={() => {
-                    onPresent({ scene: 'shell' })
+                    presentFromChat({ scene: 'shell' })
                     setSettingsOpen(false)
                   }}
                 >
@@ -1448,19 +1758,8 @@ export function ChatPanel({
           onClick={() => setSettingsOpen((o) => !o)}
         >
           <svg viewBox="0 0 24 24" className="hb-chat-opt-icon" aria-hidden>
-            <path
-              d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7z"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.75"
-            />
-            <path
-              d="M19.4 13a7.6 7.6 0 0 0 .05-1l2-1.55-1.9-3.3-2.35.75a7.7 7.7 0 0 0-1.7-1L15.2 3h-3.8l-.3 2.85a7.7 7.7 0 0 0-1.7 1L7 5.15 5.1 8.45 7.1 10a7.6 7.6 0 0 0 0 2l-2 1.55 1.9 3.3 2.35-.75a7.7 7.7 0 0 0 1.7 1L11.4 21h3.8l.3-2.85a7.7 7.7 0 0 0 1.7-1l2.35.75 1.9-3.3L19.4 13z"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.35"
-              strokeLinejoin="round"
-            />
+            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+            <circle cx="12" cy="12" r="3" />
           </svg>
         </button>
         <div className="hb-chat-opt-chips min-w-0 flex-1">
@@ -1589,8 +1888,8 @@ export function ChatPanel({
     </form>
   )
 
-  // Dock: collapsed launcher
-  if (isDock && !dockOpen) {
+  // Dock: FAB when fully closed; keep panel mounted while closing for exit animation
+  if (isDock && !dockMounted) {
     return (
       <button
         type="button"
@@ -1603,23 +1902,39 @@ export function ChatPanel({
         </svg>
         <span>Chat</span>
         {streaming && <span className="hb-chat-fab-dot" />}
+        {(agentPhase === 'error' || agentPhase === 'sudo') && (
+          <span className="hb-chat-fab-dot hb-chat-fab-dot-warn" />
+        )}
       </button>
     )
   }
 
   if (isDock) {
+    const panelOpen = dockOpen && !dockClosing
     return (
       <>
         <button
           type="button"
-          className="hb-chat-dock-scrim"
+          className={`hb-chat-dock-scrim${dockClosing ? ' hb-chat-dock-leaving' : ''}`}
           aria-label="Minimize chat"
           onClick={() => setDockOpen(false)}
         />
-        <aside ref={dockRef} className="hb-chat-dock" aria-label="Work chat">
+        <aside
+          ref={dockRef}
+          className={`hb-chat-dock${dockClosing ? ' hb-chat-dock-leaving' : ''}`}
+          aria-label="Work chat"
+          data-open={panelOpen ? '1' : '0'}
+          onAnimationEnd={(e) => {
+            if (!dockClosing) return
+            if (e.target !== e.currentTarget) return
+            setDockMounted(false)
+            setDockClosing(false)
+          }}
+        >
           {modals}
           {header}
           {messages}
+          {statusBar}
           {composer}
         </aside>
       </>
@@ -1631,6 +1946,7 @@ export function ChatPanel({
       {modals}
       {header}
       {messages}
+      {statusBar}
       {composer}
     </div>
   )
