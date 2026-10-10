@@ -17,7 +17,7 @@ import type { PresentRequest } from './lib/chatTypes'
 import { installClientLog } from './lib/clientLog'
 import { NotifyProvider, useNotify } from './lib/NotifyContext'
 import { runSceneRefresh } from './lib/sceneRefresh'
-import { applyMobileSafeTop, applyTheme, getStoredTheme } from './lib/theme'
+import { applyMobileSafeTop } from './lib/theme'
 import { type Project, type Tab } from './lib/types'
 import {
   readLastProjectId,
@@ -27,7 +27,7 @@ import {
 } from './lib/uiPrefs'
 
 installClientLog()
-applyTheme(getStoredTheme())
+// Theme also applied in main.tsx before first paint; keep prefs + safe-area here
 applyMobileSafeTop()
 
 /** Mobile-first: Apps · Work · Chat · Shell · Files · View · Logs · More (Alerts = status-bar bell) */

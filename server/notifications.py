@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -42,7 +43,15 @@ def _rewrite(items: list[dict[str, Any]]) -> None:
     with tmp.open("w", encoding="utf-8") as f:
         for item in items:
             f.write(json.dumps(item, default=str) + "\n")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
     tmp.replace(NOTIFICATIONS_PATH)
+    try:
+        os.chmod(NOTIFICATIONS_PATH, 0o600)
+    except OSError:
+        pass
 
 
 def push(

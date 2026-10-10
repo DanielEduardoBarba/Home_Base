@@ -1,11 +1,8 @@
 import type { PresentRequest } from './chatTypes'
 
-/** Tool names that usually mean a shell / terminal ran. */
-const SHELL_TOOLS = /^(shell|bash|terminal|run_terminal|execute|command|pty)$/i
-
 /** Guess a PresentRequest from a Cursor tool_call so Work can show it. */
 export function presentFromTool(
-  toolName: string,
+  _toolName: string,
   filePath?: string,
   sessionId?: string,
 ): PresentRequest | null {
@@ -15,9 +12,7 @@ export function presentFromTool(
   if (sessionId) {
     return { scene: 'shell', sessionIds: [sessionId] }
   }
-  if (SHELL_TOOLS.test(toolName || '')) {
-    return { scene: 'shell', newShell: false }
-  }
+  // Bare tool name without path/session — do not auto-jump to an empty Shell.
   return null
 }
 

@@ -2,21 +2,22 @@ import { useEffect, useRef } from 'react'
 
 type RefreshFn = () => void | Promise<void>
 
-let sceneRefresh: RefreshFn | null = null
+/** All active tab/scene refresh handlers (Work can host scene + dock Chat). */
+const sceneHandlers = new Set<RefreshFn>()
 
-/** Register the active tab's reload handler (pull-to-refresh calls this). */
+/** Register the active tab's reload handler (pull-to-refresh calls these). */
 export function useSceneRefresh(fn: RefreshFn) {
   const fnRef = useRef(fn)
   fnRef.current = fn
   useEffect(() => {
     const wrapper: RefreshFn = () => fnRef.current()
-    sceneRefresh = wrapper
+    sceneHandlers.add(wrapper)
     return () => {
-      if (sceneRefresh === wrapper) sceneRefresh = null
+      sceneHandlers.delete(wrapper)
     }
   }, [])
 }
 
 export async function runSceneRefresh(): Promise<void> {
-  if (sceneRefresh) await sceneRefresh()
+  await Promise.all([...sceneHandlers].map((h) => h()))
 }

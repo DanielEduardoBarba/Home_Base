@@ -795,22 +795,6 @@ html[data-hb-fullscreen] body {
   stroke-linejoin: round;
 }
 
-.hb-badge {
-  position: absolute;
-  top: 0.3rem;
-  right: calc(50% - 1.35rem);
-  min-width: 1rem;
-  height: 1rem;
-  padding: 0 0.28rem;
-  border-radius: 999px;
-  background: var(--hb-danger);
-  color: white;
-  font-size: 0.56rem;
-  font-weight: 700;
-  line-height: 1rem;
-  text-align: center;
-}
-
 @keyframes hb-fade-up {
   from {
     opacity: 0;
@@ -1546,19 +1530,94 @@ html[data-hb-keyboard] .hb-chat-composer {
 
 .hb-chat-status-badge {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   font-size: 0.58rem;
   font-weight: 700;
   color: var(--hb-accent);
+  padding: 0.12rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--hb-accent) 35%, var(--hb-line));
+  background: color-mix(in srgb, var(--hb-accent) 10%, transparent);
 }
 
+.hb-chat-status-badge.is-thinking {
+  color: var(--hb-amber, #d4a017);
+  border-color: color-mix(in srgb, var(--hb-amber, #d4a017) 40%, var(--hb-line));
+  background: color-mix(in srgb, var(--hb-amber, #d4a017) 12%, transparent);
+}
+
+.hb-chat-status-badge.is-busy {
+  color: var(--hb-accent);
+}
+
+.hb-chat-status-badge.is-error,
 .hb-chat-status.error .hb-chat-status-badge {
   color: var(--hb-danger, #d64545);
+  border-color: color-mix(in srgb, var(--hb-danger, #d64545) 40%, var(--hb-line));
+  background: color-mix(in srgb, var(--hb-danger, #d64545) 10%, transparent);
 }
 
+.hb-chat-status-badge.is-done,
 .hb-chat-status.done .hb-chat-status-badge {
   color: var(--hb-ok, #2f9e6e);
+  border-color: color-mix(in srgb, var(--hb-ok, #2f9e6e) 40%, var(--hb-line));
+  background: color-mix(in srgb, var(--hb-ok, #2f9e6e) 10%, transparent);
+}
+
+.hb-msg-badge-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.45rem;
+}
+
+.hb-msg-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.58rem;
+  font-weight: 700;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  line-height: 1;
+  padding: 0.2rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--hb-line);
+  color: var(--hb-mute);
+  background: color-mix(in srgb, var(--hb-panel-2) 88%, transparent);
+}
+
+.hb-msg-badge-dot {
+  width: 0.35rem;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: currentColor;
+  animation: hb-pulse-soft 1.1s ease-in-out infinite;
+}
+
+.hb-msg-badge-thinking {
+  color: var(--hb-amber, #d4a017);
+  border-color: color-mix(in srgb, var(--hb-amber, #d4a017) 45%, var(--hb-line));
+  background: color-mix(in srgb, var(--hb-amber, #d4a017) 12%, transparent);
+}
+
+.hb-msg-badge-busy,
+.hb-msg-badge-writing {
+  color: var(--hb-accent);
+  border-color: color-mix(in srgb, var(--hb-accent) 40%, var(--hb-line));
+  background: color-mix(in srgb, var(--hb-accent) 10%, transparent);
+}
+
+.hb-msg-badge-done {
+  color: var(--hb-ok, #2f9e6e);
+  border-color: color-mix(in srgb, var(--hb-ok, #2f9e6e) 40%, var(--hb-line));
+  background: color-mix(in srgb, var(--hb-ok, #2f9e6e) 10%, transparent);
 }
 
 .hb-chat-status-action,
@@ -1919,8 +1978,7 @@ html[data-hb-keyboard] .hb-chat-composer {
 }
 
 html.hb-view-max .hb-nav,
-html.hb-view-max .hb-status-bar,
-html.hb-view-max .hb-alerts-fab {
+html.hb-view-max .hb-status-bar {
   display: none !important;
 }
 

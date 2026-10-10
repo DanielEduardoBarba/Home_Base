@@ -256,6 +256,7 @@ def _load_lockout() -> dict:
 def _save_lockout(data: dict) -> None:
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     LOCKOUT_PATH.write_text(json.dumps(data, indent=2))
+    _chmod_private(LOCKOUT_PATH)
 
 
 def lockout_status() -> dict:

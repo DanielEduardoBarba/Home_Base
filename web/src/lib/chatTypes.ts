@@ -10,6 +10,8 @@ export type ChatMsg = {
   streaming?: boolean
   /** Epoch ms when the bubble was created / last meaningfully updated. */
   at?: number
+  /** Thinking duration from the model (ms), when known. */
+  durationMs?: number
   tool?: {
     name: string
     status: string

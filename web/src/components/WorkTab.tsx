@@ -44,8 +44,12 @@ export function WorkTab({
   const [focusPath, setFocusPath] = useState<string | null>(() =>
     present?.scene === 'files' ? present.path || null : null,
   )
-  const [dockOpen, setDockOpenState] = useState(() => readDockOpen())
-  const [lastPresentKey, setLastPresentKey] = useState(presentKey)
+  // Incoming present from Chat → start with dock minimized so the scene is visible
+  const [dockOpen, setDockOpenState] = useState(() =>
+    present && presentKey ? false : readDockOpen(),
+  )
+  // 0 so the first presentKey from Chat→Work is treated as a change
+  const [lastPresentKey, setLastPresentKey] = useState(0)
 
   function setDockOpen(open: boolean) {
     writeDockOpen(open)

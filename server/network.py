@@ -41,9 +41,11 @@ def list_ipv4_interfaces() -> list[tuple[str, str]]:
                 ip = str(info.get("addr") or "").strip()
                 if _is_usable_ipv4(ip):
                     out.append((iface, ip))
-        return out
+        if out:
+            return out
+        # netifaces present but empty — fall through to `ip` / hostname
 
-    # Fallback: hostname -I order (no iface names) + optional `ip` parse via UDP trick
+    # Fallback: hostname resolution + Linux `ip -o -4 addr`
     try:
         host = socket.gethostname()
         for info in socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM):

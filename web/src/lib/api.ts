@@ -215,10 +215,7 @@ export const api = {
     }),
   shareHide: () =>
     request<{ ok: boolean; active: boolean }>('/api/share/hide', { method: 'POST' }),
-  lockout: () =>
-    request<{ locked: boolean; retryAfter: number; failCount: number }>('/api/lockout'),
   projects: () => request<{ projects: Project[] }>('/api/projects'),
-  project: (id: string) => request<Project>(`/api/projects/${id}`),
   action: (id: string, actionId: string, extraArgs: string[] = []) =>
     request<{ type?: string; session?: Session; sessions?: Session[] }>(
       `/api/projects/${id}/action`,
@@ -229,10 +226,6 @@ export const api = {
     ),
   stop: (id: string) =>
     request<{ killedSessions: string[] }>(`/api/projects/${id}/stop`, { method: 'POST' }),
-  logs: (id: string, lines = 200) =>
-    request<{ path: string; exists: boolean; text: string }>(
-      `/api/projects/${id}/logs?lines=${lines}`,
-    ),
   sessions: (project?: string) =>
     request<{ sessions: Session[] }>(
       project ? `/api/sessions?project=${project}` : '/api/sessions',
@@ -242,11 +235,6 @@ export const api = {
   /** Ctrl+C twice — interrupt foreground process; session stays alive. */
   interruptSession: (sessionId: string) =>
     request<{ ok: boolean }>(`/api/sessions/${sessionId}/interrupt`, { method: 'POST' }),
-  resetCursor: (id: string, chatId = 'default') =>
-    request<{ ok: boolean }>(
-      `/api/cursor/${id}/reset?chatId=${encodeURIComponent(chatId)}`,
-      { method: 'POST' },
-    ),
   cursorModels: () =>
     request<{
       configured: boolean
@@ -317,13 +305,4 @@ export const api = {
       ttlSec: number
       askpassWaiting: boolean
     }>('/api/sudo/status'),
-  sudoUnlock: (password: string, sessionId?: string) =>
-    request<{ ok: boolean; ttlSec: number; expiresAt: number; fedSession: boolean }>(
-      '/api/sudo',
-      {
-        method: 'POST',
-        body: JSON.stringify({ password, sessionId: sessionId || null }),
-      },
-    ),
-  sudoClear: () => request<{ ok: boolean }>('/api/sudo', { method: 'DELETE' }),
 }

@@ -247,10 +247,12 @@ class CursorBridge:
                 pass
         self._agents.clear()
         self._models.clear()
+        self._modes.clear()
         self._cwds.clear()
         self._active_run.clear()
         self._send_locks.clear()
         self._context_primed.clear()
+        _shell_call_sessions.clear()
         if self._client is not None:
             try:
                 if hasattr(self._client, "aclose"):
@@ -724,7 +726,7 @@ async def _handle_interaction(
         )
         await asm.mirror_shell_output(str(call_id) if call_id else None, event)
         sid = _shell_call_sessions.get(str(call_id)) if call_id else None
-        text = asm._event_text(event)
+        text = asm.event_text(event)
         if not text:
             return None
         payload: dict[str, Any] = {
@@ -771,13 +773,14 @@ async def _handle_interaction(
         extra: Optional[dict[str, Any]] = None
         if phase == "tool-call-started" and call_id:
             extra = await asm.mirror_on_tool_start(project_id, call_id, tool)
+            if extra and extra.get("sessionId"):
+                _shell_call_sessions[call_id] = str(extra["sessionId"])
         elif phase == "tool-call-completed" and call_id:
             extra = await asm.mirror_on_tool_complete(project_id, call_id, tool)
+            _shell_call_sessions.pop(call_id, None)
         if extra:
             if extra.get("sessionId"):
                 payload["sessionId"] = extra["sessionId"]
-                if call_id:
-                    _shell_call_sessions[call_id] = str(extra["sessionId"])
             if extra.get("name"):
                 payload["name"] = extra["name"]
             if extra.get("summary"):

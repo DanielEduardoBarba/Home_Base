@@ -6,7 +6,8 @@ import signal
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
+import time
+from typing import Any, Optional
 
 from ptyprocess import PtyProcessUnicode
 
@@ -14,6 +15,8 @@ from .shell_env import enrich_shell_env, resolve_seat_user, seat_cmdline
 
 # Late attach (Apps → Shell) needs recent output; keep a ring of chunks.
 OUTPUT_BUFFER_MAX = 256_000
+# After exit, keep the record briefly so clients can see the exit event.
+_EXIT_GC_DELAY_SEC = 2.0
 
 
 @dataclass
@@ -126,7 +129,7 @@ class PtyManager:
             cwd=cwd_s,
             cmdline=cmdline,
             proc=proc,
-            created_at=asyncio.get_event_loop().time(),
+            created_at=time.monotonic(),
             label=label or " ".join(cmdline),
         )
         async with self._lock:
@@ -185,11 +188,18 @@ class PtyManager:
                     await ws.send_json({"type": "exit", "sessionId": session.id})
                 except Exception:
                     pass
-            async with self._lock:
-                # keep record briefly so clients can see exit; remove if no subscribers
-                if session.id in self._sessions and not session.subscribers:
-                    # leave for a bit — cleaned by kill or GC on stop
-                    pass
+            asyncio.create_task(self._gc_after_exit(session))
+
+    async def _gc_after_exit(self, session: PtySession) -> None:
+        """Drop exited sessions once clients have had a chance to observe exit."""
+        try:
+            await asyncio.sleep(_EXIT_GC_DELAY_SEC)
+        except asyncio.CancelledError:
+            return
+        async with self._lock:
+            current = self._sessions.get(session.id)
+            if current is session and current._closed and not current.subscribers:
+                self._sessions.pop(session.id, None)
 
     async def write(self, session_id: str, data: str) -> None:
         session = self._sessions.get(session_id)
@@ -222,8 +232,11 @@ class PtyManager:
 
     def unsubscribe(self, session_id: str, websocket: Any) -> None:
         session = self._sessions.get(session_id)
-        if session:
-            session.subscribers.discard(websocket)
+        if not session:
+            return
+        session.subscribers.discard(websocket)
+        if session._closed and not session.subscribers:
+            self._sessions.pop(session_id, None)
 
     def _kill_tree(self, pid: int) -> None:
         try:

@@ -1,25 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import time
 from pathlib import Path
 from typing import Any, Optional
 
-from .config import SESSIONS_PATH, ActionDef, Project, get_project, list_projects
+from .config import ActionDef, Project, get_project, list_projects
 from .network import project_lan_env
 from .notifications import push as notify
 from .ports import kill_pids, kill_ports
 from .pty_manager import pty_manager
 from .shell_env import resolve_seat_user
 from .trace_log import append as trace
-
-
-def _persist() -> None:
-    payload = {"sessions": pty_manager.list_sessions()}
-    SESSIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SESSIONS_PATH.write_text(json.dumps(payload, indent=2))
 
 
 def _stop_pidfile(project: Project) -> list[int]:
@@ -154,7 +147,6 @@ async def stop_project(project_id: str) -> dict[str, Any]:
     extra = await asyncio.to_thread(_stop_pidfile, project)
     # Always free configured ports so Stop works even when nothing was started via PTY.
     port_killed = await asyncio.to_thread(_stop_by_ports, project)
-    _persist()
     msg = (
         f"sessions={len(killed)} pidfile={len(extra)} ports={len(port_killed)}"
     )
@@ -287,7 +279,6 @@ async def run_action_def(
         label=f"{action.label}: {' '.join([action.script, *args])}",
         env=env or None,
     )
-    _persist()
     trace(
         "info",
         f"action {action.id} → session {session.id}",

@@ -109,7 +109,7 @@ def _short_label(command: str) -> str:
     return f"agent · {one}" if one else "agent · shell"
 
 
-def _event_text(event: Mapping[str, Any]) -> str:
+def event_text(event: Mapping[str, Any]) -> str:
     if not event:
         return ""
     for key in ("data", "text", "chunk", "stdout", "stderr", "output"):
@@ -178,7 +178,7 @@ async def mirror_on_tool_start(
 
 
 async def mirror_shell_output(call_id: Optional[str], event: Mapping[str, Any]) -> None:
-    text = _event_text(event)
+    text = event_text(event)
     if not text:
         return
     sid = None
@@ -239,6 +239,8 @@ async def mirror_on_tool_complete(
             await pty_manager.write(sid, blob)
         except Exception:
             pass
+    async with _lock:
+        _mirrors.pop(call_id, None)
     command, _ = extract_shell_command(tool)
     return {
         "sessionId": sid,

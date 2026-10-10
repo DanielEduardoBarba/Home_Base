@@ -55,3 +55,31 @@ def test_project_lan_env_without_host(monkeypatch: pytest.MonkeyPatch) -> None:
     env = network.project_lan_env([("api", 4100)])
     assert env == {"HOSTNAME": "0.0.0.0"}
     assert "EXPO_PUBLIC_API_URL" not in env
+
+
+def test_list_ipv4_falls_through_empty_netifaces(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If netifaces imports but finds nothing, still try `ip` / hostname paths."""
+
+    class _FakeNetifaces:
+        AF_INET = 2
+
+        @staticmethod
+        def interfaces() -> list[str]:
+            return ["lo"]
+
+        @staticmethod
+        def ifaddresses(_iface: str) -> dict:
+            return {}
+
+    monkeypatch.setitem(__import__("sys").modules, "netifaces", _FakeNetifaces())
+    monkeypatch.setattr(
+        network.subprocess,
+        "run",
+        lambda *a, **k: type(
+            "R",
+            (),
+            {"returncode": 0, "stdout": "2: wg0    inet 10.6.0.1/24 scope global wg0\n"},
+        )(),
+    )
+    addrs = network.list_ipv4_interfaces()
+    assert ("wg0", "10.6.0.1") in addrs

@@ -70,7 +70,6 @@ PRESETS_DIR = BUNDLE_ROOT / "config" / "presets"
 if not PRESETS_DIR.is_dir():
     PRESETS_DIR = CONFIG_DIR / "presets"
 
-SESSIONS_PATH = RUNTIME_DIR / "sessions.json"
 AGENTS_PATH = RUNTIME_DIR / "agents.json"
 LOCKOUT_PATH = RUNTIME_DIR / "lockout.json"
 NOTIFICATIONS_PATH = RUNTIME_DIR / "notifications.jsonl"

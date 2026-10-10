@@ -31,6 +31,19 @@ def test_stream_chunk_keeps_growing_text():
     assert merge_assistant_text("Hello wor", "Hello world", prefer_next=True) == "Hello world"
 
 
+def test_stream_chunk_skips_duplicate_word_deltas():
+    """SDK often re-sends each word bare then with a leading space."""
+    text = ""
+    for chunk in ("I", " I", "did", " did", "the", " the", "job", " job"):
+        text = append_stream_chunk(text, chunk)
+    assert text == "I did the job"
+
+
+def test_stream_chunk_short_overlap():
+    assert append_stream_chunk("I did", " did the") == "I did the"
+    assert append_stream_chunk("Hello", "lo world") == "Hello world"
+
+
 def test_run_continues_with_no_browsers(tmp_path, monkeypatch):
     async def go() -> None:
         import server.chat_workspace as mod

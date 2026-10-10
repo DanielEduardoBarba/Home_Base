@@ -7,8 +7,9 @@ import { isLocalHostPage } from '../lib/types'
 /**
  * Localhost-only: reveal a timed QR with a one-time share id (not the password).
  * Phone redeems it for a 24h JWT. Also: change password here.
+ * Always embedded under More/Settings.
  */
-export function SharingTab({ embedded = false }: { embedded?: boolean } = {}) {
+export function SharingTab(_props: { embedded?: boolean } = {}) {
   const [hostname, setHostname] = useState('')
   const [active, setActive] = useState(false)
   const [expiresIn, setExpiresIn] = useState(0)
@@ -124,53 +125,24 @@ export function SharingTab({ embedded = false }: { embedded?: boolean } = {}) {
   }
 
   if (!isLocalHostPage()) {
-    if (embedded) return null
-    return (
-      <div className="hb-page text-sm text-mute">
-        Sharing and password changes are only available on{' '}
-        <span className="text-accent font-mono">localhost</span>.
-      </div>
-    )
+    return null
   }
 
-  const body = (
-    <>
-      {!embedded && (
-        <header>
-          <div className="hb-brand-rule" />
-          <h1 className="font-display text-3xl md:text-[2.5rem] font-extrabold tracking-tight">
-            Share<span className="text-accent"> access</span>
-          </h1>
-          <p className="text-mute text-sm mt-2 leading-relaxed">
-            QR hands out a one-time redeem code for{' '}
-            <span className="font-mono text-sky">{hostname || '…'}</span> — never your password.
-          </p>
-        </header>
-      )}
-
+  return (
+    <div className="space-y-4">
       <section className="hb-surface p-4 sm:p-5 space-y-4">
-        {embedded && (
-          <p className="text-xs text-mute leading-relaxed">
-            One-time QR for{' '}
-            <span className="font-mono text-sky">{hostname || '…'}</span> — never your password.
-          </p>
-        )}
+        <p className="text-xs text-mute leading-relaxed">
+          One-time QR for{' '}
+          <span className="font-mono text-sky">{hostname || '…'}</span> — never your password.
+        </p>
         {!active || !qrDataUrl ? (
-          <>
-            {!embedded && (
-              <p className="text-xs text-mute leading-relaxed">
-                Phone scans → redeems a temporary id → receives a 24h JWT. Auto-clears after 20s or
-                when someone joins.
-              </p>
-            )}
-            <button
-              type="button"
-              onClick={() => void reveal()}
-              className="hb-btn hb-btn-primary w-full"
-            >
-              Reveal QR
-            </button>
-          </>
+          <button
+            type="button"
+            onClick={() => void reveal()}
+            className="hb-btn hb-btn-primary w-full"
+          >
+            Reveal QR
+          </button>
         ) : (
           <div className="space-y-3">
             <div className="flex items-center justify-between text-xs font-mono">
@@ -239,16 +211,6 @@ export function SharingTab({ embedded = false }: { embedded?: boolean } = {}) {
           )}
         </form>
       </section>
-    </>
-  )
-
-  if (embedded) {
-    return <div className="space-y-4">{body}</div>
-  }
-
-  return (
-    <div className="h-full overflow-y-auto">
-      <div className="hb-page space-y-4 hb-enter !max-w-lg">{body}</div>
     </div>
   )
 }

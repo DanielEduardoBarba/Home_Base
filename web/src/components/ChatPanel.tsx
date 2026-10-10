@@ -37,7 +37,7 @@ const CHAT_MODES: { id: ChatMode; label: string; title: string }[] = [
   { id: 'debug', label: 'Debug', title: 'Hypothesis-driven debugging' },
 ]
 /** Work chat dock: '1' = open, anything else / missing = minimized (default). */
-export const DOCK_OPEN_KEY = 'hb-chat-dock-open'
+const DOCK_OPEN_KEY = 'hb-chat-dock-open'
 
 export function readDockOpen(): boolean {
   try {
@@ -70,6 +70,60 @@ function MsgMeta({ at, align = 'start' }: { at?: number; align?: 'start' | 'end'
   )
 }
 
+function formatElapsed(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  const r = s % 60
+  return `${m}m ${r}s`
+}
+
+function useNowTick(active: boolean, intervalMs = 250): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!active) return
+    setNow(Date.now())
+    const id = window.setInterval(() => setNow(Date.now()), intervalMs)
+    return () => clearInterval(id)
+  }, [active, intervalMs])
+  return now
+}
+
+/** Inline phase chip: thinking / busy / writing / done (+ live seconds while active). */
+function MsgPhaseBadge({
+  kind,
+  startedAt,
+  durationMs,
+  live = false,
+}: {
+  kind: 'thinking' | 'busy' | 'writing' | 'done'
+  startedAt?: number
+  durationMs?: number
+  live?: boolean
+}) {
+  const now = useNowTick(live)
+  let elapsed = ''
+  if (live && startedAt) {
+    elapsed = formatElapsed(now - startedAt)
+  } else if (durationMs != null && durationMs >= 0) {
+    elapsed = formatElapsed(durationMs)
+  }
+  const label =
+    kind === 'done'
+      ? elapsed
+        ? `done · ${elapsed}`
+        : 'done'
+      : elapsed
+        ? `${kind} · ${elapsed}`
+        : kind
+  return (
+    <span className={`hb-msg-badge hb-msg-badge-${kind}`} role="status">
+      {live && kind !== 'done' ? <span className="hb-msg-badge-dot" aria-hidden /> : null}
+      {label}
+    </span>
+  )
+}
+
 function MessageCard({
   m,
   onPresent,
@@ -96,11 +150,18 @@ function MessageCard({
         }`}
         open={m.streaming || undefined}
       >
-        <summary className="cursor-pointer select-none list-none flex items-center gap-2">
-          <span className="uppercase tracking-wider text-[10px] opacity-80 font-semibold">
-            thinking{m.streaming ? '…' : ''}
-          </span>
-          {!m.streaming && <span className="text-mute opacity-70 normal-case tracking-normal">tap to expand</span>}
+        <summary className="cursor-pointer select-none list-none flex items-center gap-2 flex-wrap">
+          <MsgPhaseBadge
+            kind={m.streaming ? 'thinking' : 'done'}
+            startedAt={m.at}
+            durationMs={m.durationMs}
+            live={!!m.streaming}
+          />
+          {!m.streaming && (
+            <span className="text-mute opacity-70 normal-case tracking-normal text-[10px]">
+              tap to expand
+            </span>
+          )}
           <MsgMeta at={m.at} />
         </summary>
         <div className="mt-1.5 whitespace-pre-wrap leading-relaxed opacity-95 hb-chat-thinking-body">
@@ -118,10 +179,16 @@ function MessageCard({
     const hint = presentFromTool(m.tool?.name || '', undefined, m.tool?.sessionId)
     const label = prettyToolName(m.tool?.name || 'tool')
     const status = m.tool?.status || 'running'
+    const running = status === 'running' || status === 'pending'
     return (
       <div className="mr-6">
         <div className="hb-chat-tool rounded-xl px-3 py-2.5 text-xs">
           <div className="flex items-center gap-2 flex-wrap">
+            <MsgPhaseBadge
+              kind={running ? 'busy' : 'done'}
+              startedAt={m.at}
+              live={running}
+            />
             <span className="text-violet font-semibold">{label}</span>
             <span
               className={
@@ -199,6 +266,13 @@ function MessageCard({
   return (
     <div className="mr-4">
       <div className="hb-chat-assistant rounded-2xl px-3.5 py-3 text-sm leading-relaxed shadow-sm">
+        <div className="hb-msg-badge-row">
+          <MsgPhaseBadge
+            kind={m.streaming ? 'writing' : 'done'}
+            startedAt={m.at}
+            live={!!m.streaming}
+          />
+        </div>
         {m.streaming ? (
           <div className="whitespace-pre-wrap break-words">
             {m.text}
@@ -287,6 +361,8 @@ export function ChatPanel({
     'idle' | 'starting' | 'thinking' | 'tool' | 'streaming' | 'approval' | 'sudo' | 'done' | 'error' | 'busy'
   >('idle')
   const [runLog, setRunLog] = useState<string[]>([])
+  /** When the current agentPhase started — drives status-bar elapsed seconds. */
+  const [phaseSince, setPhaseSince] = useState(() => Date.now())
   const [sudoOpen, setSudoOpen] = useState(false)
   const [sudoPassword, setSudoPassword] = useState('')
   const [sudoSessionId, setSudoSessionId] = useState<string | undefined>()
@@ -355,6 +431,19 @@ export function ChatPanel({
     phase: typeof agentPhase,
     label?: string,
   ) {
+    if (phase !== phaseRef.current) {
+      const live = new Set([
+        'starting',
+        'thinking',
+        'tool',
+        'streaming',
+        'approval',
+        'sudo',
+        'busy',
+      ])
+      // Restart the clock for each live phase so thinking/busy seconds are honest
+      if (live.has(phase)) setPhaseSince(Date.now())
+    }
     setAgentPhase(phase)
     if (label !== undefined) setActivity(label)
   }
@@ -1233,6 +1322,38 @@ export function ChatPanel({
             ? 'error'
             : agentPhase
 
+  const statusLive =
+    streaming ||
+    statusPhase === 'thinking' ||
+    statusPhase === 'busy' ||
+    statusPhase === 'streaming' ||
+    statusPhase === 'tool' ||
+    statusPhase === 'starting' ||
+    statusPhase === 'approval' ||
+    statusPhase === 'sudo'
+  const statusNow = useNowTick(statusLive)
+  const statusElapsedLabel = statusLive ? formatElapsed(statusNow - phaseSince) : ''
+  const statusBadgeKind =
+    statusPhase === 'done'
+      ? 'done'
+      : statusPhase === 'error'
+        ? 'error'
+        : statusPhase === 'thinking'
+          ? 'thinking'
+          : statusLive
+            ? statusPhase === 'streaming'
+              ? 'writing'
+              : 'busy'
+            : ''
+  const statusBadgeText =
+    statusBadgeKind === 'done'
+      ? 'done'
+      : statusBadgeKind === 'error'
+        ? 'error'
+        : statusBadgeKind && statusElapsedLabel
+          ? `${statusBadgeKind} · ${statusElapsedLabel}`
+          : statusBadgeKind || (streaming ? `busy · ${statusElapsedLabel}` : '')
+
   const statusLabel =
     pendingApprovals.length > 0
       ? 'waiting for approval…'
@@ -1373,15 +1494,22 @@ export function ChatPanel({
     >
       <span className={`hb-chat-status-dot ${statusPhase}`} aria-hidden />
       <span className="hb-chat-status-label truncate">{statusLabel}</span>
-      {(streaming || statusPhase === 'done' || statusPhase === 'error' || statusPhase === 'busy') && (
-        <span className="hb-chat-status-badge">
-          {statusPhase === 'done'
-            ? 'done'
-            : statusPhase === 'error'
-              ? 'error'
-              : statusPhase === 'busy'
-                ? 'busy'
-                : 'working'}
+      {statusBadgeText && (
+        <span
+          className={`hb-chat-status-badge${
+            statusBadgeKind === 'done'
+              ? ' is-done'
+              : statusBadgeKind === 'error'
+                ? ' is-error'
+                : statusBadgeKind === 'thinking'
+                  ? ' is-thinking'
+                  : ' is-busy'
+          }`}
+        >
+          {statusBadgeKind && statusBadgeKind !== 'done' && statusBadgeKind !== 'error' ? (
+            <span className="hb-msg-badge-dot" aria-hidden />
+          ) : null}
+          {statusBadgeText}
         </span>
       )}
       {sudoCachedTtl > 0 && (

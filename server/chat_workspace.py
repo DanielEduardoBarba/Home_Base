@@ -16,7 +16,7 @@ import secrets
 import time
 from typing import Any, Optional
 
-from .chat_text import append_stream_chunk, merge_assistant_text
+from .chat_text import append_stream_chunk, collapse_doubled_tokens, merge_assistant_text
 from .config import RUNTIME_DIR
 from .cursor_bridge import cursor_bridge
 
@@ -225,6 +225,11 @@ class ChatWorkspace:
         try:
             if raw.get("at"):
                 msg["at"] = int(raw["at"])
+        except (TypeError, ValueError):
+            pass
+        try:
+            if raw.get("durationMs") is not None:
+                msg["durationMs"] = max(0, int(raw["durationMs"]))
         except (TypeError, ValueError):
             pass
         tool = raw.get("tool")
@@ -591,7 +596,12 @@ class ChatWorkspace:
                 self._write_turn(tab, "thinking", append_stream_chunk(current, chunk), streaming=True)
                 changed = True
         elif kind == "thinking-completed":
-            self._close_thinking(tab)
+            ms = event.get("ms")
+            try:
+                duration_ms = int(ms) if ms is not None else None
+            except (TypeError, ValueError):
+                duration_ms = None
+            self._close_thinking(tab, duration_ms=duration_ms)
             changed = True
         elif kind == "tool-delta":
             self._upsert_tool(tab, event)
@@ -650,6 +660,8 @@ class ChatWorkspace:
         messages = tab["messages"]
         idx = self._turn_index(messages, role)
         body = _clip(text)
+        if role in {"assistant", "thinking"}:
+            body = _clip(collapse_doubled_tokens(body))
         if idx >= 0:
             messages[idx]["text"] = body
             messages[idx]["streaming"] = streaming
@@ -665,12 +677,21 @@ class ChatWorkspace:
             },
         )
 
-    def _close_thinking(self, tab: dict[str, Any]) -> None:
+    def _close_thinking(
+        self, tab: dict[str, Any], *, duration_ms: Optional[int] = None
+    ) -> None:
         for msg in reversed(tab["messages"]):
             if msg.get("role") == "user":
                 break
             if msg.get("role") == "thinking" and msg.get("streaming"):
                 msg["streaming"] = False
+                if duration_ms is not None and duration_ms >= 0:
+                    msg["durationMs"] = duration_ms
+                elif msg.get("at"):
+                    try:
+                        msg["durationMs"] = max(0, _now_ms() - int(msg["at"]))
+                    except (TypeError, ValueError):
+                        pass
                 break
 
     def _finish_bubbles(self, tab: dict[str, Any]) -> None:
@@ -777,7 +798,17 @@ class ChatWorkspace:
         if not text:
             return False
         current = self._turn_text(tab, "assistant")
-        merged = merge_assistant_text(current, text, prefer_next=self._saw_deltas.get(key, False))
+        saw = self._saw_deltas.get(key, False)
+        if saw and current:
+            # Live deltas already own the bubble — only adopt a longer/equal snapshot.
+            if text.startswith(current) or current.startswith(text):
+                merged = text if len(text) >= len(current) else current
+            elif text in current:
+                return False
+            else:
+                merged = merge_assistant_text(current, text, prefer_next=True)
+        else:
+            merged = merge_assistant_text(current, text, prefer_next=saw)
         self._write_turn(tab, "assistant", merged, streaming=False)
         return True
 
