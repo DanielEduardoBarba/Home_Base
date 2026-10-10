@@ -81,6 +81,8 @@ export function startSpeechDictation(opts: {
   let durable = ''
   /** Finals within the current recognition session. */
   let sessionFinal = ''
+  /** Interim words committed when the engine replaces a single interim slot. */
+  let sessionCommitted = ''
   /** Last interim seen this session (folded into durable on restart). */
   let lastInterim = ''
   /** Longest live string emitted — never shrink mid-utterance. */
@@ -112,8 +114,22 @@ export function startSpeechDictation(opts: {
       else interim += piece
     }
     sessionFinal = finals.replace(/\s+/g, ' ').trim()
-    lastInterim = interim.replace(/\s+/g, ' ').trim()
-    const live = joinSpeech(durable, sessionFinal, lastInterim)
+    const nextInterim = interim.replace(/\s+/g, ' ').trim()
+    // Mobile engines often keep a single interim slot and replace it with the
+    // latest word — commit the previous interim so words accumulate.
+    if (
+      lastInterim &&
+      nextInterim &&
+      !sessionFinal &&
+      !nextInterim.startsWith(lastInterim) &&
+      !lastInterim.startsWith(nextInterim)
+    ) {
+      sessionCommitted = joinSpeech(sessionCommitted, lastInterim)
+    }
+    lastInterim = nextInterim
+    // Engine finals are authoritative for completed phrases this session.
+    if (sessionFinal) sessionCommitted = ''
+    const live = joinSpeech(durable, sessionCommitted, sessionFinal, lastInterim)
     emit(live, !!sessionFinal)
   }
 
@@ -133,8 +149,9 @@ export function startSpeechDictation(opts: {
     if (!stopped) {
       // Fold this session into durable before the engine restarts with a fresh
       // results list (otherwise the next interim word overwrites the composer).
-      durable = joinSpeech(durable, sessionFinal, lastInterim)
+      durable = joinSpeech(durable, sessionCommitted, sessionFinal, lastInterim)
       sessionFinal = ''
+      sessionCommitted = ''
       lastInterim = ''
       if (durable) {
         lastLive = durable
@@ -171,7 +188,8 @@ export function startSpeechDictation(opts: {
         }
       }
       // Commit whatever we have so the composer keeps the spoken text
-      const finalText = joinSpeech(durable, sessionFinal, lastInterim) || lastLive
+      const finalText =
+        joinSpeech(durable, sessionCommitted, sessionFinal, lastInterim) || lastLive
       if (finalText) opts.onFinal(finalText)
       opts.onEnd?.()
     },

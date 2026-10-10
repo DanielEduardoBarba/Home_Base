@@ -669,13 +669,25 @@ html[data-hb-keyboard] .hb-work-body:has(.hb-chat-dock) .hb-work-main {
   left: 0;
   right: 0;
   top: 100%;
-  height: 48px;
+  /* Tall skirt — covers Android Chrome / fullscreen gaps under the dock */
+  height: 50vh;
   background: var(--hb-nav-bg);
   pointer-events: none;
 }
 
 html[data-hb-fullscreen] .hb-nav {
+  /* Sit flush on the physical bottom; safe-area still pads the tab row */
   padding-bottom: max(0.35rem, env(safe-area-inset-bottom, 0px));
+  bottom: 0;
+}
+
+html[data-hb-fullscreen] #root {
+  bottom: 0;
+  top: var(--hb-vv-top, 0px);
+}
+
+html[data-hb-fullscreen] body {
+  background-color: var(--hb-nav-bg);
 }
 
 .hb-nav-dock {
@@ -930,6 +942,7 @@ html[data-hb-fullscreen] .hb-nav {
 
 .hb-toast {
   pointer-events: auto;
+  cursor: pointer;
   display: flex;
   align-items: flex-start;
   gap: 0.65rem;
@@ -943,6 +956,12 @@ html[data-hb-fullscreen] .hb-nav {
   -webkit-backdrop-filter: blur(16px);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
   animation: hb-fade-up 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.hb-toast:active {
+  transform: scale(0.985);
+  opacity: 0.94;
 }
 
 .hb-toast-dot {
@@ -1263,7 +1282,7 @@ html[data-hb-fullscreen] .hb-nav {
 
 .hb-work-body:has(.hb-chat-dock) .hb-work-main {
   /* Match tall mobile dock (nearly full height under status/safe area) */
-  padding-bottom: 96vh;
+  padding-bottom: 98vh;
 }
 
 @media (min-width: 768px) {
@@ -1627,8 +1646,8 @@ html[data-hb-keyboard] .hb-chat-composer {
   flex-direction: column;
   left: 0;
   right: 0;
-  /* Tall sheet — leave a thin top peek of the Work scene */
-  top: max(2.75rem, env(safe-area-inset-top, 0px));
+  /* Nearly full-height sheet — slim top peek of the Work scene */
+  top: max(0.55rem, env(safe-area-inset-top, 0px));
   bottom: 0;
   height: auto;
   max-height: none;
@@ -1693,7 +1712,7 @@ html[data-hb-keyboard] .hb-chat-composer {
   .hb-chat-dock {
     left: auto;
     right: 0.85rem;
-    top: 4.5%;
+    top: 1.5%;
     bottom: 0.85rem;
     width: min(28rem, calc(100% - 1.5rem));
     border-radius: 1rem;

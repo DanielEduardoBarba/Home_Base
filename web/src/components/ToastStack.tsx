@@ -18,8 +18,10 @@ export function ToastStack() {
           key={t.id}
           type="button"
           className="hb-toast"
-          aria-label={`${t.title}. Open notifications`}
+          aria-label={`${t.title}. Open alerts`}
+          title="Open alerts"
           onClick={() => {
+            // Whole toast = dismiss (former X) + open notification center
             dismissToast(t.id)
             openInbox()
           }}

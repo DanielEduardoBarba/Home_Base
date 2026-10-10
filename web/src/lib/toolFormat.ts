@@ -108,14 +108,9 @@ export function joinThinkingChunk(prev: string, chunk: string): string {
   if (/\s$/.test(prev) || /^\s/.test(chunk)) return prev + chunk
   if (/^[.,;:!?…)}\]"']/.test(chunk)) return prev + chunk
   if (/[({\["']$/.test(prev)) return prev + chunk
-  // Word boundary: previous ended alnum and chunk starts alnum → space
-  if (/\w$/.test(prev) && /^\w/.test(chunk)) {
-    // Continuation of a hyphenated / mid-word stream (very short chunk) — no space
-    if (chunk.length <= 2 && /^[a-z]/.test(chunk) && /[a-z]$/.test(prev)) {
-      return prev + chunk
-    }
-    return `${prev} ${chunk}`
-  }
+  // Word boundary: alnum|alnum → space. Subword streams usually arrive with a
+  // leading space or as a growing snapshot (handled in appendStreamChunk).
+  if (/\w$/.test(prev) && /^\w/.test(chunk)) return `${prev} ${chunk}`
   return prev + chunk
 }
 
@@ -129,12 +124,12 @@ export function appendStreamChunk(prev: string, chunk: string): string {
   if (chunk === prev) return prev
   // Cumulative snapshot (full text so far)
   if (chunk.startsWith(prev)) return chunk
+  // Shorter/equal prefix of the same stream — keep the longer buffer
   if (prev.startsWith(chunk)) return prev
-  if (prev.endsWith(chunk) && chunk.length >= 2) return prev
-  // Overlap at the join (chunk repeats a tail of prev). Min 4 avoids
-  // single-letter false joins like "cat"+"tastrophe" → "catastrophe".
+  // Overlap at the join (chunk repeats a tail of prev). Min 8 avoids false
+  // drops like "this"+"is" (endsWith) or tiny accidental overlaps.
   const maxOverlap = Math.min(120, prev.length, chunk.length)
-  for (let n = maxOverlap; n >= 4; n--) {
+  for (let n = maxOverlap; n >= 8; n--) {
     if (prev.endsWith(chunk.slice(0, n))) return prev + chunk.slice(n)
   }
   return joinThinkingChunk(prev, chunk)
@@ -154,9 +149,9 @@ export function mergeAssistantText(prev: string, next: string, preferNext = fals
   if (!next) return prev
   if (!prev) return next
   if (prev === next) return prev
-  if (next.startsWith(prev) || prev.startsWith(next)) {
-    return next.length >= prev.length ? next : prev
-  }
+  if (next.startsWith(prev)) return next
+  if (prev.startsWith(next)) return prev
+
   const a = prev.trim()
   const b = next.trim()
   const head = Math.min(48, a.length, b.length)
@@ -169,9 +164,15 @@ export function mergeAssistantText(prev: string, next: string, preferNext = fals
   for (let n = maxOverlap; n >= 12; n--) {
     if (a.endsWith(b.slice(0, n))) return a + b.slice(n)
   }
-  // preferNext only when the snapshot is at least as long — short tokens must append
-  if (preferNext && next.length >= prev.length) return next
-  if (next.length >= prev.length) return next
+  // Final sdk snapshot after live deltas: replace only when next clearly
+  // contains the streamed head (rewrite / canonical full text).
+  if (preferNext) {
+    const sample = a.slice(0, Math.min(40, a.length))
+    if (sample.length >= 12 && b.includes(sample) && b.length >= a.length * 0.5) {
+      return next
+    }
+  }
+  // Unrelated short tokens (words, ".") must append — never overwrite.
   return appendStreamChunk(prev, next)
 }
 

@@ -43,6 +43,8 @@ export type ChatTab = {
   messages: ChatMsg[]
   agentId?: string | null
   mode?: ChatMode
+  /** True while the server is still running this chat's agent. */
+  running?: boolean
   updatedAt: number
 }
 

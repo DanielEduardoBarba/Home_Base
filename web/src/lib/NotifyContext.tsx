@@ -86,6 +86,11 @@ function showOsNotification(item: {
       } catch {
         /* ignore */
       }
+      try {
+        window.dispatchEvent(new CustomEvent('hb-open-inbox'))
+      } catch {
+        /* ignore */
+      }
       n.close()
     }
   } catch {
@@ -247,6 +252,12 @@ export function NotifyProvider({ children }: { children: ReactNode }) {
     setInboxOpen(true)
     void refresh()
   }, [refresh, unlockAudio])
+
+  useEffect(() => {
+    const onOpen = () => openInbox()
+    window.addEventListener('hb-open-inbox', onOpen)
+    return () => window.removeEventListener('hb-open-inbox', onOpen)
+  }, [openInbox])
 
   const closeInbox = useCallback(() => setInboxOpen(false), [])
   const toggleInbox = useCallback(() => {

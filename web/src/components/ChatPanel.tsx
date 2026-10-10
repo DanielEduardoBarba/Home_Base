@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { api, wsUrl } from '../lib/api'
-import { loadChatTabs, newChatTab, persistChatTabs } from '../lib/chatTabs'
+import { clearLocalChats, loadLocalChatsForImport } from '../lib/chatTabs'
 import type {
   ApprovalPolicy,
   ChatMode,
@@ -10,19 +10,11 @@ import type {
   PendingApproval,
   PresentRequest,
 } from '../lib/chatTypes'
-import { uid } from '../lib/id'
 import { useNotifyOptional } from '../lib/NotifyContext'
 import { presentFromTool, presentLabel } from '../lib/present'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 import { speechSupported, startSpeechDictation, type SpeechHandle } from '../lib/speech'
-import {
-  appendStreamChunk,
-  formatMsgTime,
-  formatToolDetail,
-  mergeAssistantText,
-  polishThinking,
-  prettyToolName,
-} from '../lib/toolFormat'
+import { formatMsgTime, polishThinking, prettyToolName } from '../lib/toolFormat'
 import type { CursorModel, FsEntry, Project } from '../lib/types'
 import {
   connStateLabel,
@@ -330,20 +322,24 @@ export function ChatPanel({
   const listRef = useRef<HTMLDivElement>(null)
   /** Follow new messages only while the user is near the bottom. */
   const stickBottom = useRef(true)
-  const assistantBuf = useRef('')
-  /** True once text-delta arrived this turn — final sdk_message must replace, not append. */
-  const gotTextDeltasRef = useRef(false)
   const activeIdRef = useRef(activeId)
+  /** Tool calls we already opened in Work, so a replay does not steal the scene. */
+  const presentedCalls = useRef<Set<string>>(new Set())
+  const importTried = useRef('')
+  /** After this browser creates a chat, follow the server's new selection once. */
+  const followServerActive = useRef(false)
   const tabsRef = useRef(tabs)
   const speechRef = useRef<SpeechHandle | null>(null)
   const inputBeforeSpeech = useRef('')
   const streamingRef = useRef(false)
+  const phaseRef = useRef(agentPhase)
   const notifyRef = useRef(notify)
   const onPresentRef = useRef(onPresent)
   const doneClearTimer = useRef<number | null>(null)
   activeIdRef.current = activeId
   tabsRef.current = tabs
   streamingRef.current = streaming
+  phaseRef.current = agentPhase
   connStateRef.current = connState
   notifyRef.current = notify
   onPresentRef.current = onPresent
@@ -370,24 +366,27 @@ export function ChatPanel({
 
   useEffect(() => {
     if (!project) return
-    const loaded = loadChatTabs(project.id)
-    setTabs(loaded.tabs)
-    setActiveId(loaded.activeId)
+    setTabs([])
+    setActiveId('')
     setInput('')
     setError('')
     setStreaming(false)
     setPhase('idle', '')
     setRunLog([])
     stickBottom.current = true
+    importTried.current = ''
+    followServerActive.current = false
+    presentedCalls.current = new Set()
   }, [project?.id])
 
+  // Switching chats follows that chat's server run, not whatever the last tab was doing.
   useEffect(() => {
-    if (!project || !tabs.length || !activeId) return
-    // Debounce while streaming so every token doesn't hit localStorage
-    const delay = streaming ? 750 : 0
-    const t = window.setTimeout(() => persistChatTabs(project.id, tabs, activeId), delay)
-    return () => window.clearTimeout(t)
-  }, [project?.id, tabs, activeId, streaming])
+    const tab = tabsRef.current.find((t) => t.id === activeId)
+    if (!tab) return
+    setStreaming(!!tab.running)
+    if (tab.running) setPhase('busy', 'agent working…')
+    else setPhase('idle', '')
+  }, [activeId])
 
   // Entering a chat tab → jump to bottom and stick unless user scrolls away
   useEffect(() => {
@@ -479,12 +478,6 @@ export function ChatPanel({
     void refreshModels()
   }, [refreshModels])
 
-  const patchTab = useCallback((chatId: string, fn: (t: ChatTab) => ChatTab) => {
-    setTabs((prev) =>
-      prev.map((t) => (t.id === chatId ? { ...fn(t), updatedAt: Date.now() } : t)),
-    )
-  }, [])
-
   useEffect(() => {
     if (!project) return
     const projectId = project.id
@@ -494,64 +487,83 @@ export function ChatPanel({
         const prev = connStateRef.current
         connStateRef.current = s
         setConnState(s)
+        // The run stays on the server. Do not write a failure into the transcript.
         if (
           (s === 'reconnecting' || s === 'offline') &&
           prev === 'live' &&
           streamingRef.current
         ) {
-          setStreaming(false)
-          const chatId = activeIdRef.current
-          if (chatId) {
-            finalizeStreamingBubbles(chatId)
-            pushMsg(chatId, {
-              id: uid(),
-              role: 'system',
-              text: 'Connection lost mid-run — socket will reconnect; you can continue this chat.',
-            })
-          }
-          setError('Connection lost mid-run — reconnecting…')
-          console.error('[cursor]', 'connection lost mid-run')
+          setPhase('busy', 'reconnecting — run continues on the server')
         }
       },
       onOpen: (ws) => {
         wsRef.current = ws
-        const tab = tabsRef.current.find((t) => t.id === activeIdRef.current)
-        ws.send(
-          JSON.stringify({
-            type: 'bind',
-            chatId: activeIdRef.current || 'default',
-            cwd: tab?.cwd || '',
-          }),
-        )
       },
       onMessage: (ev) => {
         try {
           const msg = JSON.parse(ev.data as string)
-          const chatId = (msg.chatId as string) || activeIdRef.current
-          if (msg.type === 'ready') {
-            if (msg.chatId && msg.chatId !== activeIdRef.current) return
-            patchTab(chatId, (t) => ({ ...t, agentId: msg.cursor?.agentId || null }))
-            if (msg.cursor?.mode) {
-              const m = String(msg.cursor.mode) as ChatMode
-              if (CHAT_MODES.some((x) => x.id === m)) setMode(m)
-            }
+          const chatId = String(msg.chatId || '')
+          const forActive = !chatId || chatId === activeIdRef.current
+          if (msg.type === 'workspace') {
+            const nextTabs = (Array.isArray(msg.tabs) ? msg.tabs : []) as ChatTab[]
+            setTabs(nextTabs)
+            const held = activeIdRef.current
+            const follow = followServerActive.current
+            followServerActive.current = false
+            const nextActive =
+              !follow && nextTabs.some((t) => t.id === held)
+                ? held
+                : String(msg.activeId || nextTabs[0]?.id || '')
+            setActiveId(nextActive)
+            const current = nextTabs.find((t) => t.id === nextActive) || nextTabs[0]
+            setStreaming(!!current?.running)
+            if (current?.running) setPhase('busy', 'agent working…')
+            else setPhase('idle', '')
             if (msg.approvalPolicy === 'auto' || msg.approvalPolicy === 'ask') {
               setApprovalPolicy(msg.approvalPolicy)
             }
             if (Array.isArray(msg.pendingApprovals)) {
               setPendingApprovals(msg.pendingApprovals as PendingApproval[])
             }
-            if (msg.cursor?.running) setStreaming(true)
-            if (!msg.cursor?.configured) {
+            if (msg.configured === false) {
               setError(
                 'Cursor key missing on this server. On the host, put CURSOR_API_KEY in .env then run ./build.sh --deploy (or restart homebased after syncing /var/lib/homebased/.env).',
               )
             }
-          } else if (msg.type === 'running') {
-            setStreaming(true)
-            setPhase('busy', 'agent still working…')
-            setError('Agent still working — wait or press Stop.')
-            pushRunLog('busy — agent still working on this chat')
+            if (msg.importable === true) {
+              if (importTried.current !== projectId) {
+                const local = loadLocalChatsForImport(projectId)
+                if (local) {
+                  importTried.current = projectId
+                  wsRef.current?.send(
+                    JSON.stringify({
+                      type: 'import',
+                      tabs: local.tabs,
+                      activeId: local.activeId,
+                    }),
+                  )
+                } else {
+                  clearLocalChats(projectId)
+                }
+              }
+            } else {
+              clearLocalChats(projectId)
+            }
+          } else if (msg.type === 'import-ack') {
+            clearLocalChats(projectId)
+          } else if (msg.type === 'tab' && msg.tab?.id) {
+            const tab = msg.tab as ChatTab
+            setTabs((prev) => {
+              const idx = prev.findIndex((t) => t.id === tab.id)
+              if (idx < 0) return [...prev, tab]
+              const next = prev.slice()
+              next[idx] = tab
+              return next
+            })
+            if (tab.id === activeIdRef.current) {
+              setStreaming(!!tab.running)
+              if (!tab.running && phaseRef.current === 'busy') setPhase('idle', '')
+            }
           } else if (msg.type === 'approval') {
             const ap: PendingApproval = {
               id: String(msg.id || ''),
@@ -573,51 +585,42 @@ export function ChatPanel({
             if (id) setPendingApprovals((prev) => prev.filter((p) => p.id !== id))
           } else if (msg.type === 'approval-policy') {
             if (msg.policy === 'auto' || msg.policy === 'ask') setApprovalPolicy(msg.policy)
-          } else if (msg.type === 'agent') {
-            patchTab(chatId, (t) => ({ ...t, agentId: msg.agentId }))
           } else if (msg.type === 'run') {
+            if (!forActive) return
             setStreaming(true)
-            gotTextDeltasRef.current = false
             setPhase('starting', 'starting…')
             pushRunLog(`run started model=${msg.model || '?'} runId=${msg.runId || '?'}`)
             if (doneClearTimer.current) {
               window.clearTimeout(doneClearTimer.current)
               doneClearTimer.current = null
             }
-          } else if (msg.type === 'text-delta') {
-            const chunk = String(msg.text || '')
-            if (!chunk) return
-            gotTextDeltasRef.current = true
-            assistantBuf.current = appendStreamChunk(assistantBuf.current, chunk)
-            pushAssistant(chatId, assistantBuf.current, true)
-            setPhase('streaming', 'writing…')
-          } else if (msg.type === 'text') {
-            // Full text snapshot (not a delta) — merge into buffer
-            const text = String(msg.text || '')
-            if (!text) return
-            gotTextDeltasRef.current = true
-            assistantBuf.current = mergeAssistantText(assistantBuf.current, text, true)
-            pushAssistant(chatId, assistantBuf.current, true)
-            setPhase('streaming', 'writing…')
+          } else if (msg.type === 'text-delta' || msg.type === 'text') {
+            if (forActive && String(msg.text || '')) setPhase('streaming', 'writing…')
           } else if (msg.type === 'thinking-delta') {
-            appendThinking(chatId, msg.text || '')
-            setPhase('thinking', 'thinking…')
+            if (forActive && String(msg.text || '')) setPhase('thinking', 'thinking…')
           } else if (msg.type === 'thinking-completed') {
-            finishThinking(chatId)
+            if (!forActive) return
             setPhase('streaming', '')
             pushRunLog('thinking done')
           } else if (msg.type === 'tool-delta') {
-            upsertTool(chatId, {
-              callId: msg.callId ? String(msg.callId) : undefined,
-              name: String(msg.name || 'tool'),
-              status: String(msg.status || 'running'),
-              args: msg.args,
-              summary: msg.summary ? String(msg.summary) : undefined,
-              file: msg.file,
-              sessionId: msg.sessionId ? String(msg.sessionId) : undefined,
-            })
-            const toolLabel = prettyToolName(String(msg.name || 'tool'))
             const st = String(msg.status || '')
+            const callId = msg.callId ? String(msg.callId) : ''
+            const name = String(msg.name || 'tool')
+            if (st === 'completed' && forActive) {
+              if (!callId || !presentedCalls.current.has(callId)) {
+                if (callId) presentedCalls.current.add(callId)
+                const file = msg.file as { path?: string } | undefined
+                if (file?.path) onPresentRef.current?.({ scene: 'files', path: file.path })
+                const shellHint = presentFromTool(
+                  name,
+                  undefined,
+                  msg.sessionId ? String(msg.sessionId) : undefined,
+                )
+                if (shellHint) onPresentRef.current?.(shellHint)
+              }
+            }
+            if (!forActive) return
+            const toolLabel = prettyToolName(name)
             if (st === 'completed') {
               pushRunLog(`tool done · ${toolLabel}`)
               setPhase('streaming', '')
@@ -636,7 +639,7 @@ export function ChatPanel({
               if (msg.callId) setSudoCallId(String(msg.callId))
               setPhase('sudo', 'sudo password needed…')
               pushRunLog('sudo password prompt detected')
-            } else if (chunk.trim()) {
+            } else if (forActive && chunk.trim()) {
               pushRunLog(`shell · ${chunk.trim().slice(0, 80)}`)
             }
           } else if (msg.type === 'sudo-request') {
@@ -662,6 +665,7 @@ export function ChatPanel({
               pushRunLog(`sudo failed · ${msg.error || '?'}`)
             }
           } else if (msg.type === 'status-delta') {
+            if (!forActive) return
             const label = String(msg.text || msg.phase || '')
               .replace(/-/g, ' ')
               .trim()
@@ -669,36 +673,31 @@ export function ChatPanel({
               setPhase('streaming', label)
               pushRunLog(`status · ${label}`)
             }
-          } else if (msg.type === 'message') {
-            handleSdkMessage(chatId, msg.message)
           } else if (msg.type === 'done') {
-            const wasStreaming = streamingRef.current
-            setStreaming(false)
-            finalizeStreamingBubbles(chatId)
-            assistantBuf.current = ''
-            gotTextDeltasRef.current = false
             const err =
               String(msg.status || '').toLowerCase() === 'error' ||
               String(msg.status || '').toLowerCase() === 'failed'
-            if (err) {
-              const detail = `Agent run ended with error (${msg.status}) — you can continue this chat.`
-              setError(detail)
-              setPhase('error', 'error')
-              pushMsg(chatId, { id: uid(), role: 'system', text: detail })
-              pushRunLog(`done · error status=${msg.status}`)
-              console.error('[cursor]', detail, msg)
-            } else {
-              setError('')
-              setPhase('done', 'done')
-              pushRunLog(`done · status=${msg.status || 'ok'}`)
-              if (doneClearTimer.current) window.clearTimeout(doneClearTimer.current)
-              doneClearTimer.current = window.setTimeout(() => {
-                setPhase('idle', '')
-                doneClearTimer.current = null
-              }, 2500)
+            if (forActive) {
+              setStreaming(false)
+              if (err) {
+                const detail = `Agent run ended with error (${msg.status}) — you can continue this chat.`
+                setError(detail)
+                setPhase('error', 'error')
+                pushRunLog(`done · error status=${msg.status}`)
+                console.error('[cursor]', detail, msg)
+              } else {
+                setError('')
+                setPhase('done', 'done')
+                pushRunLog(`done · status=${msg.status || 'ok'}`)
+                if (doneClearTimer.current) window.clearTimeout(doneClearTimer.current)
+                doneClearTimer.current = window.setTimeout(() => {
+                  setPhase('idle', '')
+                  doneClearTimer.current = null
+                }, 2500)
+              }
             }
-            if (wasStreaming && notifyRef.current) {
-              const tab = tabsRef.current.find((t) => t.id === activeIdRef.current)
+            if (notifyRef.current) {
+              const tab = tabsRef.current.find((t) => t.id === (chatId || activeIdRef.current))
               const label = tab?.title || 'Chat'
               notifyRef.current.ping({
                 title: err ? 'Cursor finished with error' : 'Cursor finished',
@@ -708,20 +707,18 @@ export function ChatPanel({
               })
             }
           } else if (msg.type === 'error') {
-            setStreaming(false)
-            finalizeStreamingBubbles(chatId)
-            assistantBuf.current = ''
-            gotTextDeltasRef.current = false
             const detail = String(msg.error || 'Agent error')
             const tip = msg.busy
               ? detail
               : `${detail} — chat is still open; cancel if stuck, then send again.`
-            setError(tip)
-            setPhase(msg.busy ? 'busy' : 'error', msg.busy ? 'busy' : 'error')
-            pushMsg(chatId, { id: uid(), role: 'system', text: `⚠ ${tip}` })
-            pushRunLog(`error · ${detail}`)
-            console.error('[cursor]', tip, msg)
-            if (notifyRef.current) {
+            if (forActive) {
+              if (!msg.busy) setStreaming(false)
+              setError(tip)
+              setPhase(msg.busy ? 'busy' : 'error', msg.busy ? 'busy' : 'error')
+              pushRunLog(`error · ${detail}`)
+              console.error('[cursor]', tip, msg)
+            }
+            if (!msg.busy && notifyRef.current) {
               notifyRef.current.ping({
                 title: 'Cursor error',
                 body: tip.slice(0, 160),
@@ -730,17 +727,13 @@ export function ChatPanel({
               })
             }
           } else if (msg.type === 'cancelled') {
-            setStreaming(false)
-            setPhase('idle', '')
-            finalizeStreamingBubbles(chatId)
-            assistantBuf.current = ''
-            gotTextDeltasRef.current = false
-            pushRunLog('cancelled')
-            pushMsg(chatId, {
-              id: uid(),
-              role: 'system',
-              text: 'Run cancelled — you can continue this chat.',
-            })
+            if (!forActive) return
+            if (msg.ok === false) {
+              setPhase('idle', '')
+              return
+            }
+            pushRunLog('stop requested — run is ending on the server')
+            setPhase('busy', 'stopping…')
           }
         } catch {
           /* ignore */
@@ -757,241 +750,6 @@ export function ChatPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.id])
 
-  useEffect(() => {
-    if (!active || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
-    wsRef.current.send(
-      JSON.stringify({ type: 'bind', chatId: active.id, cwd: active.cwd || '' }),
-    )
-  }, [active?.id, active?.cwd])
-
-  function pushMsg(chatId: string, m: ChatMsg) {
-    patchTab(chatId, (t) => ({ ...t, messages: [...t.messages, m] }))
-  }
-
-  function pushAssistant(chatId: string, text: string, live = false) {
-    patchTab(chatId, (t) => {
-      const msgs = [...t.messages]
-      // Keep updating the live assistant bubble even if tools/thinking interleaved
-      let idx = -1
-      for (let i = msgs.length - 1; i >= 0; i--) {
-        if (msgs[i].role === 'assistant' && (msgs[i].streaming || live)) {
-          idx = i
-          break
-        }
-        if (msgs[i].role === 'user') break
-      }
-      if (idx < 0) {
-        for (let i = msgs.length - 1; i >= 0; i--) {
-          if (msgs[i].role === 'assistant') {
-            idx = i
-            break
-          }
-          if (msgs[i].role === 'user') break
-        }
-      }
-      if (idx >= 0) {
-        msgs[idx] = { ...msgs[idx], text, streaming: live }
-        return { ...t, messages: msgs }
-      }
-      return {
-        ...t,
-        messages: [...msgs, { id: uid(), role: 'assistant', text, streaming: live }],
-      }
-    })
-  }
-
-  function appendThinking(chatId: string, chunk: string) {
-    if (!chunk) return
-    patchTab(chatId, (t) => {
-      const msgs = [...t.messages]
-      let idx = -1
-      for (let i = msgs.length - 1; i >= 0; i--) {
-        if (msgs[i].role === 'thinking' && msgs[i].streaming) {
-          idx = i
-          break
-        }
-        if (msgs[i].role === 'user') break
-      }
-      if (idx < 0 && msgs[msgs.length - 1]?.role === 'thinking') {
-        idx = msgs.length - 1
-      }
-      if (idx >= 0) {
-        msgs[idx] = {
-          ...msgs[idx],
-          text: appendStreamChunk(msgs[idx].text || '', chunk),
-          streaming: true,
-        }
-        return { ...t, messages: msgs }
-      }
-      return {
-        ...t,
-        messages: [
-          ...msgs,
-          { id: uid(), role: 'thinking', text: chunk, streaming: true },
-        ],
-      }
-    })
-  }
-
-  function finishThinking(chatId: string) {
-    patchTab(chatId, (t) => {
-      const msgs = [...t.messages]
-      for (let i = msgs.length - 1; i >= 0; i--) {
-        if (msgs[i].role === 'thinking' && msgs[i].streaming) {
-          msgs[i] = { ...msgs[i], streaming: false }
-          break
-        }
-      }
-      return { ...t, messages: msgs }
-    })
-  }
-
-  function finalizeStreamingBubbles(chatId: string) {
-    patchTab(chatId, (t) => ({
-      ...t,
-      messages: t.messages.map((m) =>
-        m.streaming ? { ...m, streaming: false } : m,
-      ),
-    }))
-  }
-
-  function upsertTool(
-    chatId: string,
-    opts: {
-      callId?: string
-      name: string
-      status: string
-      args?: unknown
-      summary?: string
-      file?: { path: string; action: string }
-      sessionId?: string
-    },
-  ) {
-    const detail = formatToolDetail(opts.name, opts.args, opts.summary)
-    let newlyCompleted = false
-    patchTab(chatId, (t) => {
-      const msgs = [...t.messages]
-      const idx = opts.callId
-        ? msgs.findIndex((m) => m.role === 'tool' && m.tool?.callId === opts.callId)
-        : -1
-      const prevStatus = idx >= 0 ? msgs[idx].tool?.status : undefined
-      const prevSession = idx >= 0 ? msgs[idx].tool?.sessionId : undefined
-      const tool = {
-        name: opts.name,
-        status: opts.status,
-        detail: detail || (idx >= 0 ? msgs[idx].tool?.detail : undefined),
-        callId: opts.callId,
-        sessionId: opts.sessionId || prevSession,
-      }
-      if (idx >= 0) {
-        msgs[idx] = { ...msgs[idx], tool }
-      } else {
-        msgs.push({ id: uid(), role: 'tool', tool })
-      }
-      newlyCompleted = opts.status === 'completed' && prevStatus !== 'completed'
-      if (newlyCompleted && opts.file?.path) {
-        const already = msgs.some(
-          (m) => m.role === 'file' && m.file?.path === opts.file!.path,
-        )
-        if (!already) {
-          msgs.push({ id: uid(), role: 'file', file: opts.file })
-        }
-      }
-      return { ...t, messages: msgs }
-    })
-    if (newlyCompleted && opts.file?.path) {
-      onPresentRef.current?.({ scene: 'files', path: opts.file.path })
-    }
-    const shellHint = presentFromTool(opts.name, undefined, opts.sessionId)
-    if (shellHint && newlyCompleted) {
-      onPresentRef.current?.(shellHint)
-    }
-  }
-
-  function handleSdkMessage(
-    chatId: string,
-    message: {
-      type?: string
-      text?: string
-      name?: string
-      status?: string
-      callId?: string
-      call_id?: string
-      args?: unknown
-      file?: { path: string; action: string }
-      content?: { type: string; text?: string }[]
-    },
-  ) {
-    const mtype = message?.type
-    if (mtype === 'thinking') {
-      // Snapshot — merge into last thinking bubble (don't overwrite with a short token)
-      patchTab(chatId, (t) => {
-        const msgs = [...t.messages]
-        const text = message.text || ''
-        let idx = -1
-        for (let i = msgs.length - 1; i >= 0; i--) {
-          if (msgs[i].role === 'thinking') {
-            idx = i
-            break
-          }
-          if (msgs[i].role === 'user') break
-        }
-        if (idx >= 0) {
-          msgs[idx] = {
-            ...msgs[idx],
-            text: appendStreamChunk(msgs[idx].text || '', text),
-            streaming: false,
-          }
-          return { ...t, messages: msgs }
-        }
-        return {
-          ...t,
-          messages: [...msgs, { id: uid(), role: 'thinking', text, streaming: false }],
-        }
-      })
-      return
-    }
-    if (mtype === 'tool_call') {
-      const name = message.name || 'tool'
-      const st = String(message.status || 'running')
-      upsertTool(chatId, {
-        callId: message.callId || message.call_id,
-        name,
-        status: st,
-        args: message.args,
-        summary: (message as { summary?: string }).summary,
-        file: message.file,
-        sessionId: (message as { sessionId?: string }).sessionId,
-      })
-      const label = prettyToolName(name)
-      if (st === 'completed') setPhase('streaming', '')
-      else if (st === 'error') setPhase('error', `${label} failed`)
-      else setPhase('tool', `${label}…`)
-      return
-    }
-    if (mtype === 'status' || mtype === 'task') {
-      const label = String(message.text || message.status || mtype).trim()
-      if (label) {
-        setPhase('streaming', label)
-        pushRunLog(`sdk status · ${label}`)
-      }
-      return
-    }
-    const text = (message?.content || [])
-      .filter((b) => b.type === 'text')
-      .map((b) => b.text || '')
-      .join('')
-    if ((mtype === 'assistant' || text) && text) {
-      // Final snapshot after live deltas — always merge/replace, never naive concat
-      assistantBuf.current = mergeAssistantText(
-        assistantBuf.current,
-        text,
-        gotTextDeltasRef.current,
-      )
-      pushAssistant(chatId, assistantBuf.current, false)
-      setActivity('')
-    }
-  }
 
   function chooseModel(id: string) {
     setModel(id)
@@ -1026,22 +784,27 @@ export function ChatPanel({
     setPendingApprovals((prev) => prev.filter((p) => p.id !== id))
   }
 
+  function socketOpen() {
+    return !!wsRef.current && wsRef.current.readyState === WebSocket.OPEN
+  }
+
   function createChat(cwd = '', title?: string) {
-    const t = newChatTab(cwd, title)
-    setTabs((prev) => [...prev, t])
-    setActiveId(t.id)
+    if (!socketOpen()) {
+      setError('Reconnecting to the server — try again in a moment.')
+      return
+    }
+    followServerActive.current = true
+    wsRef.current?.send(JSON.stringify({ type: 'new', cwd, title: title || '' }))
     setNewOpen(false)
     setPickingFolder(false)
   }
 
   function confirmDelete() {
-    if (!deleteId) return
-    setTabs((prev) => {
-      if (prev.length <= 1) return prev
-      const next = prev.filter((t) => t.id !== deleteId)
-      if (activeId === deleteId) setActiveId(next[0].id)
-      return next
-    })
+    if (!deleteId || !socketOpen()) {
+      setDeleteId(null)
+      return
+    }
+    wsRef.current?.send(JSON.stringify({ type: 'delete', chatId: deleteId }))
     setDeleteId(null)
   }
 
@@ -1063,23 +826,36 @@ export function ChatPanel({
   function send(e: FormEvent) {
     e.preventDefault()
     const prompt = input.trim()
-    if (!prompt || !active || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+    if (!prompt || !active) return
+    if (!socketOpen()) {
+      setError('Reconnecting to the server — try again in a moment.')
+      return
+    }
     setError('')
     setStreaming(true)
     setPhase('starting', 'starting…')
     setRunLog([])
     pushRunLog(`send · mode=${mode} model=${model || defaultModel}`)
     setSettingsOpen(false)
-    assistantBuf.current = ''
-    gotTextDeltasRef.current = false
     stickBottom.current = true
-    pushMsg(active.id, { id: uid(), role: 'user', text: prompt })
-    if (active.messages.length === 0 && (active.title === 'New chat' || active.title.startsWith('./'))) {
-      const titled = prompt.slice(0, 32) + (prompt.length > 32 ? '…' : '')
-      patchTab(active.id, (t) => ({ ...t, title: titled }))
-    }
     setInput('')
-    wsRef.current.send(
+    // Show the prompt immediately. The server copy replaces this a moment later.
+    const chatId = active.id
+    setTabs((prev) =>
+      prev.map((t) =>
+        t.id === chatId
+          ? {
+              ...t,
+              running: true,
+              messages: [
+                ...t.messages,
+                { id: `pending-${Date.now()}`, role: 'user', text: prompt, at: Date.now() },
+              ],
+            }
+          : t,
+      ),
+    )
+    wsRef.current?.send(
       JSON.stringify({
         type: 'send',
         prompt,
@@ -1170,11 +946,9 @@ export function ChatPanel({
     }
   }, [])
 
-  async function resetChat() {
-    if (!project || !active) return
-    await api.resetCursor(project.id, active.id)
+  function resetChat() {
+    if (!active || !socketOpen()) return
     wsRef.current?.send(JSON.stringify({ type: 'reset', chatId: active.id }))
-    patchTab(active.id, (t) => ({ ...t, messages: [], agentId: null }))
   }
 
   if (!project) {
@@ -1307,7 +1081,7 @@ export function ChatPanel({
                 <span className="font-mono text-sky"> · ./{pendingDelete.cwd}</span>
               ) : null}
               <br />
-              Messages for this tab will be removed from this device. This cannot be undone.
+              This chat will be removed on the server for every browser. This cannot be undone.
             </p>
             <div className="flex gap-2">
               <button
@@ -1370,7 +1144,10 @@ export function ChatPanel({
               >
                 <button
                   type="button"
-                  onClick={() => setActiveId(t.id)}
+                  onClick={() => {
+                    setActiveId(t.id)
+                    wsRef.current?.send(JSON.stringify({ type: 'select', chatId: t.id }))
+                  }}
                   className="px-2.5 py-1.5 text-[11px] font-semibold max-w-[7.5rem] truncate"
                   title={t.cwd ? `Folder: ${t.cwd}` : `App: ${project.name}`}
                 >
@@ -1462,7 +1239,9 @@ export function ChatPanel({
       : sudoOpen
         ? 'sudo password needed…'
         : connState === 'reconnecting'
-          ? 'reconnecting…'
+          ? streaming
+            ? 'reconnecting — run continues on the server'
+            : 'reconnecting…'
           : connState === 'connecting'
             ? 'connecting…'
             : connState === 'offline'
@@ -1489,15 +1268,18 @@ export function ChatPanel({
         stickBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 72
       }}
     >
-      {(!active || active.messages.length === 0) && (
+      {!active && (
+        <p className="text-mute text-xs">Loading workspace…</p>
+      )}
+      {active && active.messages.length === 0 && (
         <div className="mt-2 max-w-md space-y-2">
           <p className="text-text font-semibold text-sm">
             {isDock ? 'Work chat' : 'Local Cursor agent'}
           </p>
           <p className="text-mute text-xs leading-relaxed">
-            {isDock
-              ? 'Ask anything. Open the gear next to the message box for mode, model, and tools. Use Present to show Shell / Apps / Files.'
-              : 'Chats stay on this device. Use + for a new tab. Open the gear by Send for mode, model, tools, and Present.'}
+            This workspace lives on the server. Any browser signed in here sees the same
+            chats, and a reply keeps going if you leave. Use + for a new tab. Open the gear
+            by Send for mode, model, and tools.
           </p>
         </div>
       )}

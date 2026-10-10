@@ -25,6 +25,7 @@ from .auth import (
 )
 from .config import BUNDLE_ROOT, ROOT, get_project, get_settings, list_projects, load_projects
 from . import approvals as approval_hub
+from .chat_workspace import chat_workspace
 from .cursor_bridge import cursor_bridge
 from .files import list_dir, read_file, write_file
 from .health import project_port_status
@@ -123,6 +124,10 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         record_event("warn", "homebased shutting down")
+        try:
+            chat_workspace.flush_all()
+        except Exception:
+            pass
         try:
             await cursor_bridge.close()
         except Exception:
@@ -336,6 +341,14 @@ async def api_share_hostname(request: Request, _: None = Depends(require_auth)):
     return {"hostname": mdns_hostname()}
 
 
+def _cursor_public(project_id: str) -> dict[str, Any]:
+    """Cursor status for the project list. Running means any chat on this server."""
+    info = cursor_bridge.agent_info(project_id)
+    if chat_workspace.project_running(project_id):
+        info = {**info, "running": True}
+    return info
+
+
 @app.get("/api/projects")
 async def api_projects(_: None = Depends(require_auth)):
     load_projects(force=True)
@@ -350,7 +363,7 @@ async def api_projects(_: None = Depends(require_auth)):
             **meta,
             "portsStatus": ports,
             "sessions": pty_manager.list_sessions(meta["id"]),
-            "cursor": cursor_bridge.agent_info(meta["id"]),
+            "cursor": _cursor_public(meta["id"]),
         }
 
     metas = list_projects_meta()
@@ -370,7 +383,7 @@ async def api_project(project_id: str, _: None = Depends(require_auth)):
         **meta,
         "portsStatus": ports,
         "sessions": pty_manager.list_sessions(project_id),
-        "cursor": cursor_bridge.agent_info(project_id),
+        "cursor": _cursor_public(project_id),
         "logs": tail_logs(project_id, 80),
     }
 
@@ -608,7 +621,7 @@ async def api_cursor_reset(
         get_project(project_id)
     except KeyError:
         raise HTTPException(404, "Unknown project")
-    await cursor_bridge.reset_agent(project_id, chat_id=chatId)
+    await chat_workspace.reset(project_id, chatId)
     return {"ok": True}
 
 
@@ -966,17 +979,15 @@ async def ws_session(websocket: WebSocket, session_id: str):
 
 @app.websocket("/ws/cursor")
 async def ws_cursor(websocket: WebSocket):
-    """One connection per project; client sends bind/send with chatId (no reconnect per tab).
+    """Watch the server workspace for one project.
 
-    Send streams run as tasks so cancel/ping can interleave. Mid-run errors are
-    emitted as recoverable WS events — the socket stays open for continue/retry.
+    The agent run is not tied to this socket. Disconnecting only unsubscribes
+    this browser; the reply keeps going and is stored for the next one.
     """
     if not await ws_authenticate(websocket):
         return
     await websocket.accept()
     project_id = websocket.query_params.get("project")
-    chat_id = (websocket.query_params.get("chat") or "default").strip() or "default"
-    cwd = (websocket.query_params.get("cwd") or "").strip()
     if not project_id:
         await websocket.send_json({"type": "error", "error": "project required"})
         await websocket.close(code=1008)
@@ -988,27 +999,15 @@ async def ws_cursor(websocket: WebSocket):
         await websocket.close(code=1008)
         return
 
-    info0 = cursor_bridge.agent_info(project_id, chat_id=chat_id)
+    snap = chat_workspace.subscribe(project_id, websocket)
     await websocket.send_json(
         {
-            "type": "ready",
-            "cursor": info0,
-            "chatId": chat_id,
-            "cwd": cwd,
+            "type": "workspace",
+            **snap,
             "approvalPolicy": approval_hub.get_policy(),
             "pendingApprovals": approval_hub.list_pending(),
         }
     )
-    if info0.get("running"):
-        await websocket.send_json(
-            {
-                "type": "running",
-                "chatId": chat_id,
-                "cursor": info0,
-            }
-        )
-
-    stream_tasks: dict[str, asyncio.Task[None]] = {}
 
     async def _on_approval(payload: dict[str, Any]) -> None:
         try:
@@ -1018,107 +1017,50 @@ async def ws_cursor(websocket: WebSocket):
 
     approval_hub.add_listener(_on_approval)
 
-    async def _pump_send(
-        send_chat: str,
-        prompt: str,
-        model: Optional[str],
-        send_cwd: Optional[str],
-        send_mode: Optional[str],
-    ) -> None:
-        try:
-            async for event in cursor_bridge.send_stream(
-                project_id,
-                prompt,
-                model=model,
-                mode=send_mode,
-                chat_id=send_chat,
-                cwd=send_cwd,
-            ):
-                await websocket.send_json(event)
-        except Exception as e:
-            log.exception("cursor ws send: %s", e)
-            append_daily(
-                "cursor_error",
-                projectId=project_id,
-                chatId=send_chat,
-                error=str(e),
-            )
-            trace_append(
-                "error",
-                f"cursor ws send: {e}",
-                source="cursor",
-                projectId=project_id,
-                chatId=send_chat,
-            )
-            try:
-                await websocket.send_json(
-                    {
-                        "type": "error",
-                        "error": str(e),
-                        "chatId": send_chat,
-                        "recoverable": True,
-                    }
-                )
-            except Exception:
-                pass
-        finally:
-            stream_tasks.pop(send_chat, None)
+    def _chat_id(msg: dict[str, Any]) -> str:
+        return (msg.get("chatId") or msg.get("chat") or "").strip()
 
     try:
         while True:
             msg = await websocket.receive_json()
             mtype = msg.get("type")
-            if mtype == "bind":
-                chat_id = (
-                    (msg.get("chatId") or msg.get("chat") or "default").strip()
-                    or "default"
+            if mtype in {"bind", "select"}:
+                cid = _chat_id(msg)
+                if cid:
+                    await chat_workspace.select(project_id, cid)
+            elif mtype == "new":
+                await chat_workspace.create_tab(
+                    project_id,
+                    cwd=(msg.get("cwd") or "").strip(),
+                    title=(msg.get("title") or "").strip(),
                 )
-                cwd = (msg.get("cwd") or "").strip()
-                await websocket.send_json(
-                    {
-                        "type": "ready",
-                        "cursor": cursor_bridge.agent_info(
-                            project_id, chat_id=chat_id
-                        ),
-                        "chatId": chat_id,
-                        "cwd": cwd,
-                    }
+            elif mtype == "delete":
+                cid = _chat_id(msg)
+                if cid:
+                    await chat_workspace.delete_tab(project_id, cid)
+            elif mtype == "import":
+                applied = chat_workspace.import_local(
+                    project_id,
+                    msg.get("tabs"),
+                    active_id=str(msg.get("activeId") or ""),
                 )
+                await websocket.send_json({"type": "import-ack", "applied": applied})
+                if applied:
+                    await chat_workspace.broadcast_workspace(project_id)
             elif mtype == "send":
                 prompt = (msg.get("prompt") or "").strip()
                 if not prompt:
                     continue
-                model = (msg.get("model") or "").strip() or None
-                send_mode = (msg.get("mode") or "").strip() or None
-                send_chat = (
-                    (msg.get("chatId") or msg.get("chat") or chat_id).strip()
-                    or "default"
-                )
-                send_cwd = (msg.get("cwd") or cwd or "").strip() or None
-                chat_id = send_chat
-                if send_cwd is not None:
-                    cwd = send_cwd
-                # Optional per-send approval policy (ask | auto)
                 pol = (msg.get("approvalPolicy") or "").strip().lower()
                 if pol in {"ask", "auto"}:
                     approval_hub.set_policy(pol)
-                existing = stream_tasks.get(send_chat)
-                if existing and not existing.done():
-                    await websocket.send_json(
-                        {
-                            "type": "error",
-                            "error": (
-                                "Agent is already working on this chat — "
-                                "wait or press Stop, then retry."
-                            ),
-                            "chatId": send_chat,
-                            "recoverable": True,
-                            "busy": True,
-                        }
-                    )
-                    continue
-                stream_tasks[send_chat] = asyncio.create_task(
-                    _pump_send(send_chat, prompt, model, send_cwd, send_mode)
+                await chat_workspace.send(
+                    project_id,
+                    chat_id=_chat_id(msg),
+                    prompt=prompt,
+                    model=(msg.get("model") or "").strip() or None,
+                    mode=(msg.get("mode") or "").strip() or None,
+                    cwd=(msg.get("cwd") or "").strip() or None,
                 )
             elif mtype == "approve":
                 appr_id = str(msg.get("id") or "")
@@ -1141,10 +1083,7 @@ async def ws_cursor(websocket: WebSocket):
                 # Short-lived sudo password from Chat UI — never echoed back.
                 pw = str(msg.get("password") or "")
                 sid = str(msg.get("sessionId") or "").strip() or None
-                send_chat = (
-                    (msg.get("chatId") or msg.get("chat") or chat_id).strip()
-                    or "default"
-                )
+                send_chat = _chat_id(msg) or "default"
                 if not pw:
                     await websocket.send_json(
                         {
@@ -1195,36 +1134,13 @@ async def ws_cursor(websocket: WebSocket):
                 sudo_auth.clear_password()
                 await websocket.send_json({"type": "sudo-ack", "ok": True, "cleared": True})
             elif mtype == "cancel":
-                cancel_chat = (
-                    (msg.get("chatId") or msg.get("chat") or chat_id).strip()
-                    or "default"
-                )
-                ok = await cursor_bridge.cancel(project_id, chat_id=cancel_chat)
-                await websocket.send_json(
-                    {"type": "cancelled", "ok": ok, "chatId": cancel_chat}
-                )
+                cancel_chat = _chat_id(msg)
+                if cancel_chat:
+                    await chat_workspace.cancel(project_id, cancel_chat)
             elif mtype == "reset":
-                reset_chat = (
-                    (msg.get("chatId") or msg.get("chat") or chat_id).strip()
-                    or "default"
-                )
-                task = stream_tasks.pop(reset_chat, None)
-                if task and not task.done():
-                    task.cancel()
-                    try:
-                        await task
-                    except (asyncio.CancelledError, Exception):
-                        pass
-                await cursor_bridge.reset_agent(project_id, chat_id=reset_chat)
-                await websocket.send_json(
-                    {
-                        "type": "ready",
-                        "cursor": cursor_bridge.agent_info(
-                            project_id, chat_id=reset_chat
-                        ),
-                        "chatId": reset_chat,
-                    }
-                )
+                reset_chat = _chat_id(msg)
+                if reset_chat:
+                    await chat_workspace.reset(project_id, reset_chat)
             elif mtype == "ping":
                 await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:
@@ -1246,11 +1162,7 @@ async def ws_cursor(websocket: WebSocket):
             pass
     finally:
         approval_hub.remove_listener(_on_approval)
-        for task in list(stream_tasks.values()):
-            if not task.done():
-                task.cancel()
-        if stream_tasks:
-            await asyncio.gather(*stream_tasks.values(), return_exceptions=True)
+        chat_workspace.unsubscribe(project_id, websocket)
 
 
 @app.get("/assets/{asset_path:path}")
