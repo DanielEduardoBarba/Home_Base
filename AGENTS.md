@@ -2,12 +2,15 @@
 
 Generic control plane. **Production `:8888`** (systemd as root). **Dev API `:8081`**, **Vite `:3081`** (proxies `/api` + `/ws`) — one off the usual defaults so `./build.sh --run` can sit beside prod. Projects are configured in **gitignored** `config/projects.json` — nothing is hardcoded until added via CLI.
 
+**Backend default is Bun** (`server-ts/`). Python FastAPI (`server/`) remains for rollback via `--python`.
+
 ## Setup
 
 ```bash
 ./build.sh --setup
 ./build.sh --add-project --preset example --path /path/to/your-repo
-./build.sh --run
+./build.sh --run                 # Bun API + Vite
+./build.sh --run --python        # Python uvicorn + Vite (rollback)
 ```
 
 Presets never embed a default filesystem path — always pass `--path`.
@@ -16,7 +19,7 @@ Open the UI at `http://localhost:3081` in dev (Vite). Production is `http://<hos
 
 ## Same-origin client API
 
-SPA fetch/WebSocket paths are always relative (`/api/...`, `/ws/...` via `location.host`). Dev and prod use the same client code — Vite proxies those paths to uvicorn in development; FastAPI serves SPA + API together in production.
+SPA fetch/WebSocket paths are always relative (`/api/...`, `/ws/...` via `location.host`). Dev and prod use the same client code — Vite proxies those paths to the API in development; the backend serves SPA + API together in production.
 
 ## UI tabs
 

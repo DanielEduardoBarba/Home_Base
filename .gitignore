@@ -21,6 +21,7 @@ __pycache__/
 
 # Frontend
 web/node_modules/
+server-ts/node_modules/
 web/dist/
 
 # Nuitka / packaged binary (copied to /usr/bin on --deploy)

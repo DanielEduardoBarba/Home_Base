@@ -13,6 +13,8 @@ DO_BIN=false
 DO_SERVICE=false
 DO_DEPLOY=false
 DO_HELP=false
+# Default runtime is Bun (server-ts/). Pass --python for FastAPI/Nuitka.
+USE_PYTHON=false
 ADD_PRESET=""
 ADD_PATH=""
 ADD_ID=""
@@ -52,13 +54,16 @@ usage() {
 Home Base · build.sh
 
 USAGE
-  ./build.sh --setup              Install deps, build UI, create .env + JWT secret
-  ./build.sh --run                Dev: API (uvicorn --reload) + Vite, with hotkeys
+  ./build.sh --setup              Install deps (Bun server-ts + web), .env + JWT secret
+  ./build.sh --run                Dev: Bun API + Vite (hotkeys r/a/w/q/h)
+  ./build.sh --run --python       Dev: Python uvicorn API + Vite (rollback)
   ./build.sh --add-project --preset NAME --path /abs/or/rel/path
   ./build.sh --add-project --path /abs/or/rel/path [--id ID] [--name NAME]
-  ./build.sh --bin                Nuitka one-file standalone → dist/homebase
+  ./build.sh --bin                Bun compile → dist/homebase (default)
+  ./build.sh --bin --python       Nuitka one-file standalone → dist/homebase
   ./build.sh --service            Install homebased.service, daemon-reload, enable, restart
   ./build.sh --deploy             --bin → safe install under /usr/share + wrapper → --service
+  ./build.sh --deploy --python    Deploy Nuitka Python binary instead of Bun
   ./build.sh -h|--help
 
 Projects live in config/projects.json (gitignored). Presets are templates
@@ -83,6 +88,7 @@ while [[ $# -gt 0 ]]; do
     --bin) DO_BIN=true; shift ;;
     --service) DO_SERVICE=true; shift ;;
     --deploy) DO_DEPLOY=true; shift ;;
+    --python) USE_PYTHON=true; shift ;;
     --add-project) shift ;;
     --preset) ADD_PRESET="${2:-}"; shift 2 ;;
     --path) ADD_PATH="${2:-}"; shift 2 ;;
@@ -332,7 +338,10 @@ build_web_dist() {
 }
 
 cmd_setup() {
-  echo "==> Python venv + deps"
+  echo "==> Bun server-ts deps"
+  ensure_bun_server
+
+  echo "==> Python venv + deps (rollback / --python)"
   ensure_venv
 
   echo "==> Frontend deps + production build"
@@ -372,8 +381,10 @@ PY
   echo "  Open UI on localhost → create a password (only localhost can set/change it)."
   echo "  Sessions are JWT with 24h TTL. Share QR issues a one-time redeem code."
   echo "  Add projects:  ./build.sh --add-project --preset example --path /path/to/your-repo"
-  echo "  Dev console:   ./build.sh --run   (api + vite, hotkeys r/a/w/q/h)"
-  echo "  Deploy:        ./build.sh --deploy"
+  echo "  Dev console:   ./build.sh --run          (Bun API + vite)"
+  echo "  Dev Python:    ./build.sh --run --python"
+  echo "  Deploy:        ./build.sh --deploy       (Bun binary)"
+  echo "  Deploy Python: ./build.sh --deploy --python"
 }
 
 cmd_add_project() {
@@ -535,12 +546,28 @@ dev_session_alive() {
   return 1
 }
 
+ensure_bun_server() {
+  if ! command -v bun >/dev/null 2>&1; then
+    echo "Error: bun not found on PATH (install from https://bun.sh)" >&2
+    exit 1
+  fi
+  if [[ ! -d "$ROOT/server-ts/node_modules" ]]; then
+    echo "==> Installing server-ts deps (bun)"
+    (cd "$ROOT/server-ts" && bun install)
+  fi
+}
+
 api_cmd() {
   local host="${HOMEBASE_HOST:-0.0.0.0}"
   local port="${HOMEBASE_PORT:-$DEV_API_PORT}"
   # bash -lc: concurrently defaults to /bin/sh (no `source`)
-  printf 'bash -lc %q' \
-    "cd $(printf %q "$ROOT") && . .venv/bin/activate && exec python -m uvicorn server.main:app --host $(printf %q "$host") --port $(printf %q "$port") --reload"
+  if [[ "$USE_PYTHON" == true ]]; then
+    printf 'bash -lc %q' \
+      "cd $(printf %q "$ROOT") && . .venv/bin/activate && exec python -m uvicorn server.main:app --host $(printf %q "$host") --port $(printf %q "$port") --reload"
+  else
+    printf 'bash -lc %q' \
+      "cd $(printf %q "$ROOT/server-ts") && exec bun run --watch src/entry.ts"
+  fi
 }
 
 web_cmd() {
@@ -679,7 +706,11 @@ install_session_traps() {
 }
 
 cmd_run() {
-  ensure_venv
+  if [[ "$USE_PYTHON" == true ]]; then
+    ensure_venv
+  else
+    ensure_bun_server
+  fi
   if [[ ! -f .env ]]; then
     echo "Missing .env — run ./build.sh --setup first" >&2
     exit 1
@@ -699,15 +730,21 @@ cmd_run() {
   fi
   export HOMEBASE_PORT="$DEV_API_PORT"
   export DEV_WEB_PORT
+  export HOMEBASE_HOME="${HOMEBASE_HOME:-$ROOT}"
 
   local lan_ips=""
   if command -v hostname >/dev/null 2>&1; then
     lan_ips="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -4 | tr '\n' ' ' || true)"
   fi
 
+  local runtime_label="Bun server-ts"
+  if [[ "$USE_PYTHON" == true ]]; then
+    runtime_label="Python uvicorn"
+  fi
+
   echo ""
-  echo "${C_BOLD}Home Base · dev${C_RESET}  ${C_DIM}(beside prod :${PROD_PORT})${C_RESET}"
-  echo "  ${C_CYAN}API${C_RESET}   http://localhost:${HOMEBASE_PORT}  (uvicorn --host ${HOMEBASE_HOST})"
+  echo "${C_BOLD}Home Base · dev${C_RESET}  ${C_DIM}(beside prod :${PROD_PORT} · ${runtime_label})${C_RESET}"
+  echo "  ${C_CYAN}API${C_RESET}   http://localhost:${HOMEBASE_PORT}  (${runtime_label} --host ${HOMEBASE_HOST})"
   echo "  ${C_GREEN}Vite${C_RESET}  http://localhost:${DEV_WEB_PORT}  (proxies /api + /ws → :${HOMEBASE_PORT})"
   if [[ -n "${lan_ips// }" ]]; then
     for ip in $lan_ips; do
@@ -730,7 +767,7 @@ cmd_run() {
   fi
 }
 
-cmd_bin() {
+cmd_bin_python() {
   echo "==> Building Nuitka one-file binary → $BIN_PATH"
   ensure_venv
   build_web_dist
@@ -795,6 +832,45 @@ cmd_bin() {
   chmod +x "$BIN_PATH" 2>/dev/null || run_priv chmod +x "$BIN_PATH"
   claim_dist_to_workspace
   echo "==> Binary ready: $BIN_PATH ($(du -h "$BIN_PATH" | cut -f1)) [$(workspace_owner):$(workspace_group)]"
+}
+
+cmd_bin_bun() {
+  echo "==> Building Bun compile binary → $BIN_PATH"
+  ensure_bun_server
+  build_web_dist
+  ensure_dist_writable
+  mkdir -p "$BIN_OUT_DIR"
+  rm -f "$BIN_PATH"
+
+  # Compile entry; wrapper/self-test still apply. SPA served from BUNDLE_ROOT/web/dist
+  # next to the installed binary (deploy copies web/dist into INSTALL_SHARE).
+  (
+    cd "$ROOT/server-ts"
+    bun build --compile --outfile "$BIN_PATH" src/entry.ts
+  )
+
+  if [[ ! -x "$BIN_PATH" ]]; then
+    echo "Error: Bun binary not found at $BIN_PATH" >&2
+    ls -la "$BIN_OUT_DIR" >&2 || true
+    exit 1
+  fi
+
+  chmod +x "$BIN_PATH" 2>/dev/null || run_priv chmod +x "$BIN_PATH"
+  # Ship SPA + VERSION beside install share on --service
+  mkdir -p "$BIN_OUT_DIR/web"
+  rm -rf "$BIN_OUT_DIR/web/dist"
+  cp -a "$ROOT/web/dist" "$BIN_OUT_DIR/web/dist"
+  cp -f "$ROOT/VERSION" "$BIN_OUT_DIR/VERSION"
+  claim_dist_to_workspace
+  echo "==> Binary ready: $BIN_PATH ($(du -h "$BIN_PATH" | cut -f1)) [Bun]"
+}
+
+cmd_bin() {
+  if [[ "$USE_PYTHON" == true ]]; then
+    cmd_bin_python
+  else
+    cmd_bin_bun
+  fi
 }
 
 force_prod_port_in_env() {
@@ -1078,6 +1154,26 @@ install_binary() {
   run_priv cp "$VERSION_FILE" "$INSTALL_SHARE/VERSION" 2>/dev/null || \
     run_priv bash -c "printf '%s\n' $(printf %q "$ver") > $(printf %q "$INSTALL_SHARE/VERSION")"
   run_priv rm -f "$INSTALL_SHARE/.running-backup"
+
+  # Bun compile does not embed SPA — install web/dist + presets beside the binary.
+  if [[ "$USE_PYTHON" != true ]]; then
+    if [[ -d "$BIN_OUT_DIR/web/dist" ]]; then
+      echo "    installing SPA → $INSTALL_SHARE/web/dist"
+      run_priv mkdir -p "$INSTALL_SHARE/web"
+      run_priv rm -rf "$INSTALL_SHARE/web/dist"
+      run_priv cp -a "$BIN_OUT_DIR/web/dist" "$INSTALL_SHARE/web/dist"
+    elif [[ -d "$ROOT/web/dist" ]]; then
+      echo "    installing SPA from repo → $INSTALL_SHARE/web/dist"
+      run_priv mkdir -p "$INSTALL_SHARE/web"
+      run_priv rm -rf "$INSTALL_SHARE/web/dist"
+      run_priv cp -a "$ROOT/web/dist" "$INSTALL_SHARE/web/dist"
+    fi
+    if [[ -d "$ROOT/config/presets" ]]; then
+      run_priv mkdir -p "$INSTALL_SHARE/config"
+      run_priv rm -rf "$INSTALL_SHARE/config/presets"
+      run_priv cp -a "$ROOT/config/presets" "$INSTALL_SHARE/config/presets"
+    fi
+  fi
 
   # Install / refresh wrapper at /usr/bin/homebase; drop old /usr/bin/homebased name
   run_priv cp "$WRAPPER_SRC" "${INSTALL_WRAPPER}.new"
