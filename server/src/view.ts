@@ -1,12 +1,10 @@
 /**
- * JWT-gated remote desktop. Capture/input run in the seat-user Python
- * view-worker (mss + XTest) over a JSON length-prefixed IPC so Bun can drive
- * it without pickle. Bun-native capture remains R-002 follow-up.
+ * JWT-gated remote desktop. Capture/input run in a seat-user Bun view-worker
+ * (libX11 XGetImage + XTest via bun:ffi) over JSON length-prefixed IPC.
  */
 import { spawn, type Subprocess } from "bun";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { BUNDLE_ROOT } from "./config";
+import { basename, join } from "node:path";
 import { detectSeatUser } from "./shell_env";
 import { appendTrace } from "./trace";
 
@@ -102,11 +100,7 @@ class X11Bridge {
       /* ignore */
     }
 
-    const venvPy = join(BUNDLE_ROOT, ".venv", "bin", "python");
-    const entry = join(BUNDLE_ROOT, "homebase_entry.py");
-    const inner = existsSync(venvPy) && existsSync(entry)
-      ? [venvPy, entry, "--view-worker"]
-      : ["python3", "-c", "import sys; from pathlib import Path; sys.path.insert(0, str(Path('.').resolve() / 'server-py')); from server_py.view import run_view_worker; raise SystemExit(run_view_worker())"];
+    const inner = resolveViewWorkerCmd();
 
     let cmd = inner;
     if (process.getuid?.() === 0 && uid !== 0) {
@@ -135,7 +129,6 @@ class X11Bridge {
       USER: seat.name,
       LOGNAME: seat.name,
       HOMEBASE_VIEW_WORKER: "1",
-      HOMEBASE_VIEW_JSON: "1",
       HOMEBASE_HOME: scratch,
       HOMEBASE_RUNTIME: join(scratch, ".runtime"),
       TMPDIR: scratch,
@@ -313,7 +306,7 @@ class ViewHub {
       error: err || (streaming ? null : "Connect to start capture"),
       ...this.stats,
       clients: this.clients.size,
-      worker: "python-json-bridge",
+      worker: "bun-x11-ffi",
     };
   }
 
@@ -355,7 +348,7 @@ class ViewHub {
       error: err || null,
       ...this.stats,
       clients: this.clients.size,
-      worker: "python-json-bridge",
+      worker: "bun-x11-ffi",
     };
   }
 
@@ -580,6 +573,18 @@ export function viewStatus(): Record<string, unknown> {
 
 export async function viewStatusAsync(): Promise<Record<string, unknown>> {
   return viewHub.statusAsync();
+}
+
+/** Spawn argv for the seat-user capture worker (Bun entry or compiled binary). */
+export function resolveViewWorkerCmd(): string[] {
+  const exec = process.execPath;
+  const base = basename(exec).toLowerCase();
+  const isBun = base === "bun" || base.startsWith("bun-");
+  if (isBun) {
+    const entry = join(import.meta.dir, "entry.ts");
+    return [exec, "run", entry, "--view-worker"];
+  }
+  return [exec, "--view-worker"];
 }
 
 void MSG_HDR;

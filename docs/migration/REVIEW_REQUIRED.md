@@ -10,11 +10,10 @@
 
 ## R-002: View X11 worker without Python
 
-- **Issue:** Capture/input still run in Python `homebase --view-worker` (mss + XTest)
-- **Progress:** Bun ViewHub drives that worker over JSON IPC (`HOMEBASE_VIEW_JSON=1`); View works on Bun API
-- **Remaining for zero-Python:** Bun FFI / native helper for grab + XTest
-- **Affected:** Full cutover claim (no Python in prod path)
-- **Recommended:** Port grab/input to Bun when stable; keep JSON bridge until then
+- **Issue:** Capture/input previously required Python `homebase --view-worker` (mss + XTest)
+- **Resolution:** Bun seat-user `--view-worker` (`server/src/view_worker.ts` + `view_x11.ts`) via `bun:ffi` (libX11/libXtst/libXinerama) + `jpeg-js`
+- **Evidence:** Live ping/grab on `:0` returns HBVF JPEG; unit helpers covered
+- **Status:** Closed for Bun path; Python mss worker retained for `--python` rollback only
 
 ## R-003: IDE hook failClosed UX
 
@@ -26,6 +25,6 @@
 ## R-004: node-pty incompatible with Bun 1.3.11
 
 - **Issue:** Loading `node-pty` native addon panics (`uv_version_string` unsupported)
-- **Resolution (in progress):** Use **`Bun.Terminal` / `Bun.spawn({ terminal })`** with pipe fallback
-- **Evidence:** Outside sandbox, `Bun.spawn(..., { terminal })` returns `/dev/pts/N`
-- **Note:** Sandbox/openpty may fail (`Failed to open PTY`) — fallback to pipes
+- **Resolution:** **`Bun.Terminal` / `Bun.spawn({ terminal })`** with pipe fallback
+- **Evidence:** `bun test` PTY unit passes when openpty available; sandbox may still get pipe fallback
+- **Status:** Closed for migration path; keep node-pty out of Bun runtime

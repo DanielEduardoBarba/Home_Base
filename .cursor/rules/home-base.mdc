@@ -24,6 +24,6 @@ Generic control plane: systemd **`homebased`**, binary **`homebase`**. Productio
 
 ## Entry points
 
-- `./build.sh --setup` / `--run` (Bun `server/`) / `--run --python` (FastAPI rollback) / `--add-project --preset …`
+- `./build.sh --setup` (Bun+web deps; `--setup --python` for venv) / `--run` (Bun) / `--run --python` (rollback) / `--add-project --preset …`
 - Default backend: Bun `server/src/entry.ts`; Python `server_py.main` via `--python` (`PYTHONPATH=server-py`)
 - Deploy default: Bun compile; `--deploy --python` for Nuitka

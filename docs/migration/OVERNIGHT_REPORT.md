@@ -1,39 +1,32 @@
 # Overnight report — Python → Bun migration (updated)
 
 **Date:** 2026-10-10  
-**VERSION:** 1.4.25  
-**Cutover safe?** **Partial** — Bun is default for `--run`/`--deploy`. View works via Python X11 worker JSON bridge. Pure zero-Python View still R-002.
+**VERSION:** 1.4.30  
+**Cutover safe?** **Near** — Bun default for `--run`/`--deploy`. View is Bun FFI (no Python on Bun path). R-001 prod compile deploy is operator-owned.
 
-## Completed this continuation
+## Completed
 
-1. **PTY (R-004):** `Bun.Terminal` / `Bun.spawn({ terminal })` with pipe fallback (replaces crashed `node-pty`)
-2. **View:** Bun `ViewHub` + JSON IPC to seat-user Python view-worker (`HOMEBASE_VIEW_JSON=1` in `server-py/server_py/view.py`)
-3. **Cursor:** `@cursor/sdk` Agent create/resume + stream mapping + `homebase_*` custom tools + workspace persistence
-4. **build.sh:** Bun default; `--python` rollback (from earlier)
+1. **PTY (R-004):** `Bun.Terminal` / `Bun.spawn({ terminal })` with pipe fallback
+2. **View (R-002):** seat-user Bun `--view-worker` via `bun:ffi` (libX11 `XGetImage` + XTest + Xinerama); JPEG via `jpeg-js`
+3. **Cursor:** `@cursor/sdk` + `homebase_*` tools + workspace persistence
+4. **build.sh:** Bun default; `--python` rollback
+5. **Rename:** Python → `server-py/server_py/`; Bun → `server/`
 
-## Verified earlier (before host EAGAIN)
+## Verified 2026-10-10
 
 | Check | Result |
 |-------|--------|
-| Python pytest | 48 passed |
-| `bun run typecheck` | PASS (pre-ViewHub expansion) |
-| `bun test` | 7 passed |
-| Self-test / boot | PASS |
-
-**Host note:** Late session blocked by `spawn EAGAIN` — re-run locally:
-
-```bash
-cd server && bun run typecheck && bun test
-HOMEBASE_SELF_TEST=1 bun run src/entry.ts
-./build.sh --run
-```
+| Layout | `server/` Bun + `server-py/` Python |
+| `bun run typecheck` | PASS |
+| `bun test` | 12 passed |
+| view-worker ping/grab | PASS (`runtime=bun`, dual monitors, JPEG `ffd8`) |
+| `HOMEBASE_SELF_TEST=1` | PASS |
 
 ## Remaining gaps
 
 | ID | Item |
 |----|------|
-| R-002 | Zero-Python View (still needs mss/XTest worker process) |
-| R-001 | Prod Bun compile deploy exercised end-to-end |
+| R-001 | Prod Bun compile deploy exercised end-to-end (manual) |
 | Cursor | Full parity of every Python event type / sudo-in-shell / approvals UI |
 
 ## Startup
@@ -47,4 +40,4 @@ HOMEBASE_SELF_TEST=1 bun run src/entry.ts
 
 ## Rollback
 
-`./build.sh --run --python` or `./build.sh --deploy --python` — `server-py/` retained.
+`./build.sh --run --python` or `./build.sh --deploy --python` — `server-py/` retained (mss View).

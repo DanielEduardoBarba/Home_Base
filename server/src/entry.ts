@@ -48,6 +48,11 @@ if (
   process.exit(selfTest());
 }
 
+if (process.argv.includes("--view-worker")) {
+  const { runViewWorker } = await import("./view_worker");
+  process.exit(await runViewWorker());
+}
+
 const hostname = bindHost();
 const port = bindPort();
 

@@ -2,9 +2,9 @@
 
 ## D-001: TypeScript tree location
 
-- **Choice:** `server-ts/` sibling to `server/`
-- **Rationale:** Keeps Python rollback intact
-- **Compatibility:** `--python` keeps FastAPI path
+- **Choice (updated):** Bun lives in `server/`; Python rollback in `server-py/` (`server_py` package)
+- **Rationale:** Critical-path names match Bun default; Python retained for `--python`
+- **History:** Interim `server-ts/` sibling renamed via `scripts/rename-critical-path.sh`
 
 ## D-002: HTTP/WS stack
 
@@ -22,7 +22,14 @@
 
 ## D-005: PTY
 
-- **Choice:** `node-pty` + setpriv/runuser wrap matching `shell_env.py`
+- **Choice (updated):** `Bun.Terminal` / `Bun.spawn({ terminal })` + setpriv/runuser wrap matching `shell_env.py`; pipe fallback if openpty fails
+- **Rejected:** `node-pty` under Bun (native panic — see R-004)
+
+## D-009: View capture on Bun
+
+- **Choice:** Seat-user Bun `--view-worker` with `bun:ffi` → libX11 `XGetImage` + libXtst + libXinerama; JPEG via `jpeg-js`; parent keeps JSON length-prefixed IPC
+- **Rejected for Bun path:** Python mss worker (retained only for `--python`)
+- **Rationale:** Root API process cannot open the seat X11 display; setpriv + same binary/entry flag mirrors deploy shape
 
 ## D-006: Cursor agents
 

@@ -58,9 +58,10 @@ usage() {
 Home Base · build.sh
 
 USAGE
-  ./build.sh --setup              Install deps (Bun server + web), .env + JWT secret
+  ./build.sh --setup              Install Bun server + web deps, .env + JWT secret
+  ./build.sh --setup --python     Also create Python venv (rollback / --python runs)
   ./build.sh --run                Dev: Bun API + Vite (hotkeys r/a/w/q/h)
-  ./build.sh --run --python       Dev: Python uvicorn API + Vite (rollback)
+  ./build.sh --run --python       Dev: Python uvicorn API + Vite (requires --setup --python)
   ./build.sh --add-project --preset NAME --path /abs/or/rel/path
   ./build.sh --add-project --path /abs/or/rel/path [--id ID] [--name NAME]
   ./build.sh --bin                Bun compile → dist/homebase (default)
@@ -345,16 +346,17 @@ cmd_setup() {
   echo "==> Bun server deps"
   ensure_bun_server
 
-  echo "==> Python venv + deps (rollback / --python)"
-  ensure_venv
+  if [[ "$USE_PYTHON" == true ]]; then
+    echo "==> Python venv + deps (--python)"
+    ensure_venv
+  fi
 
-  echo "==> Frontend deps + production build"
+  echo "==> Frontend deps"
   if [[ ! -d web/node_modules ]]; then
     (cd web && npm install)
   else
     (cd web && npm install --silent)
   fi
-  build_web_dist
 
   mkdir -p config .runtime/logs dist
   if [[ ! -f config/projects.json ]]; then
@@ -367,17 +369,15 @@ cmd_setup() {
   fi
 
   # Ensure JWT signing material exists (password is set later via localhost UI)
-  PYTHONPATH="${ROOT}/server-py" .venv/bin/python -c "from server_py.auth import jwt_secret; jwt_secret(); print('JWT secret ready')"
+  (
+    cd "$(bun_server_dir)"
+    bun -e 'import { jwtSecret } from "./src/auth.ts"; jwtSecret(); console.log("JWT secret ready")'
+  )
 
   # Drop legacy HOMEBASE_TOKEN from .env if present (auth is password → JWT now)
   if grep -qE '^HOMEBASE_TOKEN=' .env 2>/dev/null; then
-    python3 - <<'PY'
-from pathlib import Path
-p = Path(".env")
-lines = [ln for ln in p.read_text().splitlines() if not ln.startswith("HOMEBASE_TOKEN=")]
-p.write_text("\n".join(lines) + ("\n" if lines else ""))
-print("Removed legacy HOMEBASE_TOKEN from .env")
-PY
+    sed -i '/^HOMEBASE_TOKEN=/d' .env
+    echo "Removed legacy HOMEBASE_TOKEN from .env"
   fi
 
   echo ""
@@ -386,13 +386,16 @@ PY
   echo "  Sessions are JWT with 24h TTL. Share QR issues a one-time redeem code."
   echo "  Add projects:  ./build.sh --add-project --preset example --path /path/to/your-repo"
   echo "  Dev console:   ./build.sh --run          (Bun API + vite)"
-  echo "  Dev Python:    ./build.sh --run --python"
   echo "  Deploy:        ./build.sh --deploy       (Bun binary)"
-  echo "  Deploy Python: ./build.sh --deploy --python"
+  if [[ "$USE_PYTHON" == true ]]; then
+    echo "  Dev Python:    ./build.sh --run --python"
+    echo "  Deploy Python: ./build.sh --deploy --python"
+  else
+    echo "  Python rollback deps: ./build.sh --setup --python"
+  fi
 }
 
 cmd_add_project() {
-  ensure_venv
   mkdir -p config
   if [[ ! -f config/projects.json ]]; then
     cp config/projects.example.json config/projects.json
@@ -1248,16 +1251,19 @@ wait_for_listen() {
 
 # Nuitka omits cursor_sdk/_vendor/bridge (~180MB node tree). Copy it next to the
 # binary and point CURSOR_SDK_BRIDGE_BIN at the launcher for prod Cursor chat.
-# Never abort deploy — Cursor chat can fail soft; systemd must still restart.
+# Bun path uses in-process @cursor/sdk — no Python bridge. Never abort deploy.
 install_cursor_bridge() {
   local src="" dest launcher env_file
+  if [[ "$USE_PYTHON" != true ]]; then
+    return 0
+  fi
   dest="$INSTALL_SHARE/cursor-sdk-bridge"
   launcher="$dest/bin/cursor-sdk-bridge"
   if [[ -d .venv/lib ]]; then
     src="$(find .venv/lib -path '*/cursor_sdk/_vendor/bridge' -type d 2>/dev/null | head -n1 || true)"
   fi
   if [[ -z "$src" || ! -f "$src/bin/cursor-sdk-bridge" ]]; then
-    echo "    warning: cursor-sdk bridge not in .venv — Cursor chat may fail until ./build.sh --setup" >&2
+    echo "    warning: cursor-sdk bridge not in .venv — Cursor chat may fail until ./build.sh --setup --python" >&2
     return 0
   fi
   echo "==> Installing cursor-sdk bridge → $dest"

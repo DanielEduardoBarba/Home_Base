@@ -15,12 +15,12 @@ States: Implementation = TODO / IN_PROGRESS / DONE / BLOCKED · Verification = T
 | P-PROJECTS | projects/* | main/process | Apps | process.ts | DONE | INFERRED |
 | P-FILES | fs/* | files.py | FilesTab | files.ts | DONE | INFERRED |
 | P-SESSIONS | sessions/* | pty_manager | ShellTab | pty.ts | DONE | INFERRED |
-| P-WS-PTY | /ws/pty,session | pty_manager | Terminal | pty.ts | BLOCKED | pipe only R-004 |
+| P-WS-PTY | /ws/pty,session | pty_manager | Terminal | pty.ts | DONE | PASS (Bun.Terminal unit) |
 | P-NOTIF | notifications/* | notifications.py | Notify | notifications.ts | DONE | INFERRED |
 | P-TRACE | trace/* | trace_log | LogsTab | trace.ts | DONE | INFERRED |
 | P-SYSTEM | system/* | system_ctl | Settings | system.ts | DONE | INFERRED |
 | P-SUDO | sudo/* | sudo_auth | ChatPanel | sudo.ts | DONE | INFERRED |
-| P-CURSOR | cursor REST+WS | cursor_bridge | ChatPanel | cursor.ts | BLOCKED | workspace only |
-| P-VIEW | view status+WS | view.py | ViewTab | view.ts | BLOCKED | R-002 |
+| P-CURSOR | cursor REST+WS | cursor_bridge | ChatPanel | cursor.ts | DONE | INFERRED (SDK+tools; event parity TBD) |
+| P-VIEW | view status+WS | view.py | ViewTab | view.ts | DONE | PASS (bun-x11-ffi ping/grab) |
 | P-STATIC | SPA assets | static_compress | — | static.ts | DONE | INFERRED |
 | P-HOOK | hook-approve | approvals.py | hooks | approvals.ts | DONE | INFERRED (fail-open ask) |

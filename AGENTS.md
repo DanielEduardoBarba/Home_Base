@@ -7,10 +7,11 @@ Generic control plane. **Production `:8888`** (systemd as root). **Dev API `:808
 ## Setup
 
 ```bash
-./build.sh --setup
+./build.sh --setup                 # Bun server + web deps (no Python)
+./build.sh --setup --python        # also Python venv (only if you need --python)
 ./build.sh --add-project --preset example --path /path/to/your-repo
-./build.sh --run                 # Bun API + Vite
-./build.sh --run --python        # Python uvicorn + Vite (rollback)
+./build.sh --run                   # Bun API + Vite
+./build.sh --run --python          # Python uvicorn + Vite (rollback)
 ```
 
 Presets never embed a default filesystem path — always pass `--path`.
@@ -28,7 +29,7 @@ Apps · **Work** · Chat · Shell · Files · **View** · Logs · **More/Setting
 - **Work** — switch Apps / Shell / Files in one workspace with a bottom-right chat dock (Cursor-like). Chat can present a shell or file into the scene.
 - **Chat** — full-page agent; same engine as the Work dock; can jump into Work to show Apps/Shell/Files.
 - **Shell** — standalone PTY + session attach. Under systemd root, Shell/Run/Expo PTYs `setpriv` to the seat user and load that user’s login+interactive env (nvm/pnpm/cargo) so they match a native laptop terminal.
-- **View** — JWT-gated live laptop screen (`/ws/view`) with pointer/keyboard; X11 capture via mss in a forked helper that setuid()s to the seat owner (root systemd cannot open the user display directly). Explicit Connect/Disconnect; maximize mode; adaptive JPEG. Capture runs only while connected.
+- **View** — JWT-gated live laptop screen (`/ws/view`) with pointer/keyboard; Bun path uses a seat-user `--view-worker` (libX11 `XGetImage` + XTest via `bun:ffi`); Python `--python` path still uses mss. Root systemd uses setpriv/runuser to the seat owner (cannot open the user display as root). Explicit Connect/Disconnect; maximize mode; adaptive JPEG. Capture runs only while connected.
 - Alerts bell in the thin top status bar opens a top→bottom near-full inbox; History is a right drawer. Chat supports English speech→text; Cursor done pings toast/sound and optional browser notifications. Theme, notification prefs, cache clear, sign-out, and localhost Share/password live under More.
 
 ## Config model
