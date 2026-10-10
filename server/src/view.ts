@@ -151,7 +151,7 @@ class X11Bridge {
     this.proc = proc;
     this.stdin = proc.stdin as unknown as FileSink;
     this.stdout = proc.stdout as ReadableStream<Uint8Array>;
-    this.reader = this.stdout.getReader();
+    this.reader = this.stdout.getReader() as ReadableStreamDefaultReader<Uint8Array>;
     this.buf = new Uint8Array(0);
 
     void (async () => {
@@ -310,9 +310,9 @@ class ViewHub {
       monitors: this.bridge.monitors,
       viewUid: uid,
       viewGid: gid,
-      clients: this.clients.size,
       error: err || (streaming ? null : "Connect to start capture"),
       ...this.stats,
+      clients: this.clients.size,
       worker: "python-json-bridge",
     };
   }
@@ -352,9 +352,9 @@ class ViewHub {
       monitors: this.bridge.monitors,
       viewUid: uid,
       viewGid: gid,
-      clients: this.clients.size,
       error: err || null,
       ...this.stats,
+      clients: this.clients.size,
       worker: "python-json-bridge",
     };
   }

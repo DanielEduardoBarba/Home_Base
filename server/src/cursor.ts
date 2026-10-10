@@ -115,8 +115,9 @@ export async function listModels(): Promise<Record<string, unknown>> {
   }
   try {
     const { Agent } = await import("@cursor/sdk");
-    if (typeof (Agent as { listModels?: () => Promise<unknown> }).listModels === "function") {
-      const models = await (Agent as { listModels: () => Promise<unknown[]> }).listModels();
+    const listModels = (Agent as unknown as { listModels?: () => Promise<unknown[]> }).listModels;
+    if (typeof listModels === "function") {
+      const models = await listModels();
       return { configured: true, default: defaultModel(), models };
     }
   } catch (e) {
