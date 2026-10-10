@@ -142,7 +142,8 @@ Deploy also syncs those keys into `/var/lib/homebased/.env` and installs the Cur
 ## Tests
 
 ```bash
-.venv/bin/pytest tests/ -q
+PYTHONPATH=server-py .venv/bin/pytest tests/ -q
 HOMEBASE_SELF_TEST=1 .venv/bin/python homebase_entry.py
+cd server && bun run typecheck && bun test
 cd web && npm run lint && npm run build
 ```

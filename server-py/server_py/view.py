@@ -422,7 +422,25 @@ def _browser_to_keysym(key: str, code: str) -> Optional[str]:
 _MSG_HDR = struct.Struct(">I")
 
 
+def _view_json_mode() -> bool:
+    return (os.environ.get("HOMEBASE_VIEW_JSON") or "").strip() in {"1", "true", "yes"}
+
+
 def _send_msg(out: Any, obj: Any) -> None:
+    if _view_json_mode():
+        import base64
+        import json as _json
+
+        payload = dict(obj) if isinstance(obj, dict) else {"ok": False, "error": "bad obj"}
+        pkt = payload.get("packet")
+        if isinstance(pkt, (bytes, bytearray)):
+            payload = {**payload, "packet": base64.b64encode(bytes(pkt)).decode("ascii")}
+            payload["packetEncoding"] = "base64"
+        data = _json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        out.write(_MSG_HDR.pack(len(data)))
+        out.write(data)
+        out.flush()
+        return
     data = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
     out.write(_MSG_HDR.pack(len(data)))
     out.write(data)
@@ -439,6 +457,16 @@ def _recv_msg(inp: Any) -> Any:
     data = inp.read(n)
     if len(data) < n:
         raise EOFError("worker closed mid-message")
+    if _view_json_mode():
+        import base64
+        import json as _json
+
+        obj = _json.loads(data.decode("utf-8"))
+        if isinstance(obj, dict) and obj.get("packetEncoding") == "base64" and isinstance(
+            obj.get("packet"), str
+        ):
+            obj["packet"] = base64.b64decode(obj["packet"])
+        return obj
     return pickle.loads(data)
 
 

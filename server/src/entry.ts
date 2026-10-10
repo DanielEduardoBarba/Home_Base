@@ -6,6 +6,7 @@ import {
   loadProjects,
   readVersion,
 } from "./config";
+import { subscribeCursor } from "./cursor";
 import {
   attachSubscriber,
   detachSubscriber,
@@ -14,11 +15,7 @@ import {
   writeInput,
 } from "./pty";
 import { appendTrace } from "./trace";
-import {
-  viewClientConnected,
-  viewClientDisconnected,
-  viewStatus,
-} from "./view";
+import { viewHub } from "./view";
 
 type WsData = {
   url: URL;
@@ -27,6 +24,7 @@ type WsData = {
   kind?: string;
   projectId?: string;
   sub?: { send: (payload: string | Buffer) => void };
+  unsubCursor?: () => void;
 };
 
 ensureRuntimeDirs();
@@ -127,18 +125,13 @@ const server = Bun.serve<WsData>({
 
       if (url.pathname === "/ws/view") {
         data.kind = "view";
-        viewClientConnected();
-        const st = viewStatus();
-        ws.send(
-          JSON.stringify({
-            type: "hello",
-            monitors: st.monitors,
-            screenW: st.screenW,
-            screenH: st.screenH,
-            quality: 55,
-            error: st.error,
-          }),
-        );
+        const clientWs = {
+          send: (payload: string | Buffer | Uint8Array) => {
+            ws.send(payload);
+          },
+        };
+        (data as { viewWs?: typeof clientWs }).viewWs = clientWs;
+        await viewHub.connect(clientWs);
         return;
       }
 
@@ -150,6 +143,9 @@ const server = Bun.serve<WsData>({
         }
         data.kind = "cursor";
         data.projectId = project;
+        data.unsubCursor = subscribeCursor(project, (msg) =>
+          ws.send(JSON.stringify(msg)),
+        );
         handleCursorMessage(project, { type: "workspace" }, (msg) =>
           ws.send(JSON.stringify(msg)),
         );
@@ -158,7 +154,7 @@ const server = Bun.serve<WsData>({
 
       ws.close(4404, "unknown ws path");
     },
-    message(ws, message) {
+    async message(ws, message) {
       const data = ws.data;
       const text =
         typeof message === "string"
@@ -182,14 +178,8 @@ const server = Bun.serve<WsData>({
       }
 
       if (data.kind === "view") {
-        if (msg.type === "config") {
-          ws.send(
-            JSON.stringify({
-              type: "error",
-              error: "View capture worker incomplete in Bun backend (R-002)",
-            }),
-          );
-        }
+        const viewWs = (data as { viewWs?: { send: (d: string | Buffer | Uint8Array) => void } }).viewWs;
+        if (viewWs) await viewHub.handleMessage(viewWs, msg);
         return;
       }
 
@@ -199,7 +189,7 @@ const server = Bun.serve<WsData>({
         );
       }
     },
-    close(ws) {
+    async close(ws) {
       const data = ws.data;
       if (
         (data.kind === "pty" || data.kind === "session") &&
@@ -208,7 +198,11 @@ const server = Bun.serve<WsData>({
       ) {
         detachSubscriber(data.sessionId, data.sub);
       }
-      if (data.kind === "view") viewClientDisconnected();
+      if (data.kind === "view") {
+        const viewWs = (data as { viewWs?: { send: (d: string | Buffer | Uint8Array) => void } }).viewWs;
+        if (viewWs) await viewHub.disconnect(viewWs);
+      }
+      if (data.kind === "cursor") data.unsubCursor?.();
     },
   },
 });

@@ -10,10 +10,11 @@
 
 ## R-002: View X11 worker without Python
 
-- **Issue:** mss/Pillow/XTest in Python view-worker
-- **Why deferred:** Native X11 capture unverified overnight
-- **Affected:** T-VIEW, cutover honesty
-- **Recommended:** Bun FFI or native helper; temporary Python worker = incomplete
+- **Issue:** Capture/input still run in Python `homebase --view-worker` (mss + XTest)
+- **Progress:** Bun ViewHub drives that worker over JSON IPC (`HOMEBASE_VIEW_JSON=1`); View works on Bun API
+- **Remaining for zero-Python:** Bun FFI / native helper for grab + XTest
+- **Affected:** Full cutover claim (no Python in prod path)
+- **Recommended:** Port grab/input to Bun when stable; keep JSON bridge until then
 
 ## R-003: IDE hook failClosed UX
 
@@ -25,7 +26,6 @@
 ## R-004: node-pty incompatible with Bun 1.3.11
 
 - **Issue:** Loading `node-pty` native addon panics (`uv_version_string` unsupported)
-- **Evidence:** bun test / entry crash with pty.node
-- **Affected:** T-PTY full TTY parity (resize, job control)
-- **Current:** Pipe-backed shell fallback in `server-ts/src/pty.ts` (incomplete vs Python ptyprocess)
-- **Recommended:** Bun-native PTY, `bun-pty`, or Node child for PTY only
+- **Resolution (in progress):** Use **`Bun.Terminal` / `Bun.spawn({ terminal })`** with pipe fallback
+- **Evidence:** Outside sandbox, `Bun.spawn(..., { terminal })` returns `/dev/pts/N`
+- **Note:** Sandbox/openpty may fail (`Failed to open PTY`) — fallback to pipes

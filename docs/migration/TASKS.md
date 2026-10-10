@@ -4,7 +4,7 @@
 |----|-----------|------|-------|------------|
 | T-DOCS | Durable migration docs + rule | — | DONE | docs + rule |
 | T-BASELINE | Isolated Python pytest | T-DOCS | DONE | 48 passed |
-| T-SCAFFOLD | server-ts Bun/Hono/Zod | T-DOCS | DONE | typecheck pass |
+| T-SCAFFOLD | server Bun/Hono/Zod | T-DOCS | DONE | typecheck pass |
 | T-AUTH | Auth/JWT/scrypt/lockout | T-SCAFFOLD | DONE | unit tests + code |
 | T-SHARE | Share localhost gate | T-AUTH | DONE | unit tests |
 | T-HEALTH | health/version | T-SCAFFOLD | DONE | parity tests |

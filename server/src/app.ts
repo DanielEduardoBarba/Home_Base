@@ -26,6 +26,7 @@ import {
   getWorkspace,
   handleCursorMessage,
   listModels,
+  subscribeCursor,
 } from "./cursor";
 import { listDir, readFile, writeFile } from "./files";
 import { clientIp, jsonError, readJson, requireAuth } from "./http";
@@ -55,7 +56,7 @@ import {
   systemStatus,
 } from "./system";
 import { appendTrace, listTrace } from "./trace";
-import { viewStatus } from "./view";
+import { viewStatusAsync } from "./view";
 
 export const app = new Hono();
 
@@ -403,7 +404,7 @@ app.delete("/api/sudo", async (c) => {
 
 app.get("/api/view/status", async (c) => {
   await requireAuth(c);
-  return c.json(viewStatus());
+  return c.json(await viewStatusAsync());
 });
 
 app.get("*", async (c) => {
@@ -430,4 +431,4 @@ export async function authenticateWsToken(
   }
 }
 
-export { handleCursorMessage };
+export { handleCursorMessage, subscribeCursor };

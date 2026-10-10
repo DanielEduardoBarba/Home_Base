@@ -13,7 +13,7 @@ DO_BIN=false
 DO_SERVICE=false
 DO_DEPLOY=false
 DO_HELP=false
-# Default runtime is Bun (server-ts/). Pass --python for FastAPI/Nuitka.
+# Default runtime is Bun (server/). Pass --python for FastAPI/Nuitka.
 USE_PYTHON=false
 ADD_PRESET=""
 ADD_PATH=""
@@ -49,12 +49,16 @@ DEV_API_PORT=8081
 DEV_WEB_PORT=3081
 PROD_PORT=8888
 
+bun_server_dir() {
+  echo "$ROOT/server"
+}
+
 usage() {
   cat <<EOF
 Home Base · build.sh
 
 USAGE
-  ./build.sh --setup              Install deps (Bun server-ts + web), .env + JWT secret
+  ./build.sh --setup              Install deps (Bun server + web), .env + JWT secret
   ./build.sh --run                Dev: Bun API + Vite (hotkeys r/a/w/q/h)
   ./build.sh --run --python       Dev: Python uvicorn API + Vite (rollback)
   ./build.sh --add-project --preset NAME --path /abs/or/rel/path
@@ -338,7 +342,7 @@ build_web_dist() {
 }
 
 cmd_setup() {
-  echo "==> Bun server-ts deps"
+  echo "==> Bun server deps"
   ensure_bun_server
 
   echo "==> Python venv + deps (rollback / --python)"
@@ -363,7 +367,7 @@ cmd_setup() {
   fi
 
   # Ensure JWT signing material exists (password is set later via localhost UI)
-  .venv/bin/python -c "from server.auth import jwt_secret; jwt_secret(); print('JWT secret ready')"
+  PYTHONPATH="${ROOT}/server-py" .venv/bin/python -c "from server_py.auth import jwt_secret; jwt_secret(); print('JWT secret ready')"
 
   # Drop legacy HOMEBASE_TOKEN from .env if present (auth is password → JWT now)
   if grep -qE '^HOMEBASE_TOKEN=' .env 2>/dev/null; then
@@ -416,8 +420,8 @@ cmd_add_project() {
     ADD_PRESET="$ADD_PRESET" ADD_PATH="$resolved" ADD_ID="${ADD_ID:-}" ADD_NAME="${ADD_NAME:-}" python3 - <<'PY'
 import os, sys
 from pathlib import Path
-sys.path.insert(0, ".")
-from server.config import load_preset, upsert_project
+sys.path.insert(0, "server-py")
+from server_py.config import load_preset, upsert_project
 raw = load_preset(os.environ["ADD_PRESET"])
 raw.pop("path", None)
 raw["path"] = str(Path(os.environ["ADD_PATH"]).resolve())
@@ -437,8 +441,8 @@ PY
   ADD_ID="$id" ADD_NAME="$name" ADD_PATH="$resolved" python3 - <<'PY'
 import os, sys
 from pathlib import Path
-sys.path.insert(0, ".")
-from server.config import upsert_project
+sys.path.insert(0, "server-py")
+from server_py.config import upsert_project
 raw = {
   "id": os.environ["ADD_ID"],
   "name": os.environ["ADD_NAME"],
@@ -551,9 +555,11 @@ ensure_bun_server() {
     echo "Error: bun not found on PATH (install from https://bun.sh)" >&2
     exit 1
   fi
-  if [[ ! -d "$ROOT/server-ts/node_modules" ]]; then
-    echo "==> Installing server-ts deps (bun)"
-    (cd "$ROOT/server-ts" && bun install)
+  local bun_dir
+  bun_dir="$(bun_server_dir)"
+  if [[ ! -d "$bun_dir/node_modules" ]]; then
+    echo "==> Installing server deps (bun)"
+    (cd "$bun_dir" && bun install)
   fi
 }
 
@@ -563,10 +569,10 @@ api_cmd() {
   # bash -lc: concurrently defaults to /bin/sh (no `source`)
   if [[ "$USE_PYTHON" == true ]]; then
     printf 'bash -lc %q' \
-      "cd $(printf %q "$ROOT") && . .venv/bin/activate && exec python -m uvicorn server.main:app --host $(printf %q "$host") --port $(printf %q "$port") --reload"
+      "cd $(printf %q "$ROOT") && . .venv/bin/activate && PYTHONPATH=server-py exec python -m uvicorn server_py.main:app --host $(printf %q "$host") --port $(printf %q "$port") --reload"
   else
     printf 'bash -lc %q' \
-      "cd $(printf %q "$ROOT/server-ts") && exec bun run --watch src/entry.ts"
+      "cd $(printf %q "$(bun_server_dir)") && exec bun run --watch src/entry.ts"
   fi
 }
 
@@ -737,7 +743,7 @@ cmd_run() {
     lan_ips="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -4 | tr '\n' ' ' || true)"
   fi
 
-  local runtime_label="Bun server-ts"
+  local runtime_label="Bun server"
   if [[ "$USE_PYTHON" == true ]]; then
     runtime_label="Python uvicorn"
   fi
@@ -783,7 +789,7 @@ cmd_bin_python() {
   rm -f "$BIN_PATH"
 
   # Onefile standalone; bundle SPA + preset templates.
-  python -m nuitka \
+  PYTHONPATH="${ROOT}/server-py${PYTHONPATH:+:$PYTHONPATH}" python -m nuitka \
     --onefile \
     --standalone \
     --assume-yes-for-downloads \
@@ -791,7 +797,7 @@ cmd_bin_python() {
     --jobs="${HOMEBASE_NUITKA_JOBS:-1}" \
     --output-dir="$BIN_OUT_DIR" \
     --output-filename="$BIN_NAME" \
-    --include-package=server \
+    --include-package=server_py \
     --include-package=fastapi \
     --include-package=uvicorn \
     --include-package=starlette \
@@ -845,7 +851,7 @@ cmd_bin_bun() {
   # Compile entry; wrapper/self-test still apply. SPA served from BUNDLE_ROOT/web/dist
   # next to the installed binary (deploy copies web/dist into INSTALL_SHARE).
   (
-    cd "$ROOT/server-ts"
+    cd "$(bun_server_dir)"
     bun build --compile --outfile "$BIN_PATH" src/entry.ts
   )
 

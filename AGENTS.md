@@ -2,7 +2,7 @@
 
 Generic control plane. **Production `:8888`** (systemd as root). **Dev API `:8081`**, **Vite `:3081`** (proxies `/api` + `/ws`) — one off the usual defaults so `./build.sh --run` can sit beside prod. Projects are configured in **gitignored** `config/projects.json` — nothing is hardcoded until added via CLI.
 
-**Backend default is Bun** (`server-ts/`). Python FastAPI (`server/`) remains for rollback via `--python`.
+**Backend default is Bun** (`server/`). Python FastAPI (`server-py/` → package `server_py`) remains for rollback via `--python`.
 
 ## Setup
 

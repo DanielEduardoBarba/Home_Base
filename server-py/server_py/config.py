@@ -12,7 +12,11 @@ from dotenv import load_dotenv
 
 def _bundle_root() -> Path:
     """Read-only assets (web/dist, presets) — source tree or Nuitka extract dir."""
-    return Path(__file__).resolve().parent.parent
+    here = Path(__file__).resolve().parent
+    # Legacy: server/config.py → repo root. After rename: server-py/server_py/config.py.
+    if here.name == "server_py":
+        return here.parent.parent
+    return here.parent
 
 
 def _home_root() -> Path:

@@ -7,6 +7,6 @@ alwaysApply: true
 
 On start or resume: read `docs/migration/STATUS.md`, then relevant `TASKS.md` / `PARITY.md` entries. Inspect the repo before trusting old completion claims.
 
-Preserve API, auth, and persistent-data parity with `server/`. Do not delete the Python baseline. Do not weaken auth/CORS/TTL. Do not mark stubs or Python bridges as complete.
+Preserve API, auth, and persistent-data parity with `server-py/` (`server_py`). Do not delete the Python baseline. Do not weaken auth/CORS/TTL. Do not mark stubs or Python bridges as complete.
 
 Bun is the default runtime for `./build.sh --run` and deploy; use `--python` for the FastAPI path. Record blockers in `REVIEW_REQUIRED.md`. Continue every independent unblocked task. Update STATUS, PARITY, TASKS, and VERIFICATION after each slice.

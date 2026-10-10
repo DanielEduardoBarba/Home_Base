@@ -8,7 +8,7 @@ STRONG = "TestPass1!xx"
 
 
 def test_bootstrap_login_and_verify(auth_runtime):
-    from server import auth
+    from server_py import auth
 
     assert auth.can_bootstrap_password()
     auth.bootstrap_password(STRONG)
@@ -23,7 +23,7 @@ def test_bootstrap_login_and_verify(auth_runtime):
 
 
 def test_invalid_password_rejected(auth_runtime):
-    from server import auth
+    from server_py import auth
 
     auth.bootstrap_password(STRONG)
     with pytest.raises(HTTPException) as ei:
@@ -32,7 +32,7 @@ def test_invalid_password_rejected(auth_runtime):
 
 
 def test_expired_and_invalid_token(auth_runtime):
-    from server import auth
+    from server_py import auth
 
     auth.bootstrap_password(STRONG)
     with pytest.raises(HTTPException) as ei:
@@ -69,7 +69,7 @@ def test_expired_and_invalid_token(auth_runtime):
 
 
 def test_password_change_bumps_epoch(auth_runtime):
-    from server import auth
+    from server_py import auth
 
     auth.bootstrap_password(STRONG)
     first = auth.login_with_password(STRONG)
@@ -87,7 +87,7 @@ def test_password_change_bumps_epoch(auth_runtime):
 
 
 def test_lockout_after_failures(auth_runtime):
-    from server import auth
+    from server_py import auth
 
     auth.bootstrap_password(STRONG)
     for _ in range(auth.FAIL_THRESHOLD):

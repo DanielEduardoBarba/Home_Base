@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from server.config import Project
-from server.files import _resolve
+from server_py.config import Project
+from server_py.files import _resolve
 
 
 def _project(root: Path) -> Project:

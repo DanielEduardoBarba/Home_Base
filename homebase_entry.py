@@ -5,6 +5,18 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+from pathlib import Path
+
+_root = Path(__file__).resolve().parent
+_sp = _root / "server-py"
+if _sp.is_dir() and str(_sp) not in sys.path:
+    sys.path.insert(0, str(_sp))
+try:
+    import server_py  # noqa: F401
+except ImportError:
+    import server as server_py  # type: ignore[no-redef]
+
+    sys.modules["server_py"] = server_py
 
 
 def self_test() -> int:
@@ -27,9 +39,9 @@ def self_test() -> int:
         os.environ["HOMEBASE_RUNTIME"] = os.path.join(tmp, ".runtime")
         os.environ["TMPDIR"] = tmp
         # Reloading is unnecessary if we import after setting env — do imports here.
-        from server.config import BUNDLE_ROOT, get_settings
-        from server.main import app  # noqa: F401
-        from server.version import read_version
+        from server_py.config import BUNDLE_ROOT, get_settings
+        from server_py.main import app  # noqa: F401
+        from server_py.version import read_version
 
         settings = get_settings()
         _ = settings.host, settings.port
@@ -54,11 +66,11 @@ def self_test() -> int:
 
 def main() -> None:
     import uvicorn
-    from server.config import get_settings
-    from server.crash_log import install_crash_hooks
-    from server.cursor_env import ensure_cursor_bridge_env
-    from server.main import app
-    from server.version import read_version, running_as_backup
+    from server_py.config import get_settings
+    from server_py.crash_log import install_crash_hooks
+    from server_py.cursor_env import ensure_cursor_bridge_env
+    from server_py.main import app
+    from server_py.version import read_version, running_as_backup
 
     install_crash_hooks()
     ensure_cursor_bridge_env()
@@ -83,7 +95,7 @@ if __name__ == "__main__":
         "--view-worker" in sys.argv
         or os.environ.get("HOMEBASE_VIEW_WORKER", "").strip() in ("1", "true", "yes")
     ):
-        from server.view import run_view_worker
+        from server_py.view import run_view_worker
 
         raise SystemExit(run_view_worker())
     if os.environ.get("HOMEBASE_SELF_TEST", "").strip() in ("1", "true", "yes") or "--self-test" in sys.argv:

@@ -4,8 +4,8 @@ States: Implementation = TODO / IN_PROGRESS / DONE / BLOCKED · Verification = T
 
 | ID | Feature | Python | Frontend | Target | Impl | Verify |
 |----|---------|--------|----------|--------|------|--------|
-| P-HEALTH | GET /api/health | main.py | api.ts | server-ts | DONE | PASS |
-| P-VERSION | GET /api/version | version.py | api.ts | server-ts | DONE | PASS |
+| P-HEALTH | GET /api/health | main.py | api.ts | server | DONE | PASS |
+| P-VERSION | GET /api/version | version.py | api.ts | server | DONE | PASS |
 | P-AUTH-STATUS | GET /api/auth/status | auth.py | Login | auth.ts | DONE | INFERRED |
 | P-LOGIN | POST /api/login | auth.py | Login | auth.ts | DONE | INFERRED |
 | P-BOOTSTRAP | POST /api/auth/bootstrap | auth.py | Login | auth.ts | DONE | INFERRED |

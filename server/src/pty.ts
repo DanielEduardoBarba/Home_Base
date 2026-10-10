@@ -1,9 +1,9 @@
 /**
- * Shell sessions (pipe-backed).
- * Full PTY (node-pty) crashes Bun 1.3.11 — see REVIEW R-004.
+ * Real PTY sessions via Bun.Terminal (Bun.spawn `{ terminal }`).
+ * Falls back to pipes if openpty fails (e.g. restricted sandboxes).
  */
 import { randomBytes } from "node:crypto";
-import type { Subprocess } from "bun";
+import type { Subprocess, Terminal } from "bun";
 import { detectSeatUser, loginEnvForSeat, wrapArgvForSeat } from "./shell_env";
 import { appendTrace } from "./trace";
 
@@ -15,6 +15,7 @@ export type SessionInfo = {
   pid: number;
   createdAt: number;
   title: string;
+  mode: "pty" | "pipe";
 };
 
 type Subscriber = {
@@ -23,11 +24,10 @@ type Subscriber = {
 
 type PtyBackend = {
   pid: number;
+  mode: "pty" | "pipe";
   write: (data: string) => void;
   resize: (cols: number, rows: number) => void;
   kill: () => void;
-  onData: (cb: (data: string) => void) => void;
-  onExit: (cb: (code: number) => void) => void;
 };
 
 type PtySession = {
@@ -46,11 +46,23 @@ function pushRing(s: PtySession, chunk: string): void {
   if (s.ring.length > MAX_RING) s.ring = s.ring.slice(-MAX_RING);
 }
 
+function broadcast(s: PtySession, msg: string): void {
+  for (const sub of s.subscribers) {
+    try {
+      sub.send(msg);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 function makePipeBackend(
   file: string,
   args: string[],
   cwd: string,
   env: Record<string, string>,
+  onData: (d: string) => void,
+  onExit: (code: number) => void,
 ): PtyBackend {
   const proc = Bun.spawn([file, ...args], {
     cwd,
@@ -59,11 +71,8 @@ function makePipeBackend(
     stdout: "pipe",
     stderr: "pipe",
   }) as Subprocess & {
-    stdin: { write: (d: string | Buffer) => number; end: () => void };
+    stdin: { write: (d: string | Buffer) => number };
   };
-
-  const dataCbs: Array<(d: string) => void> = [];
-  const exitCbs: Array<(c: number) => void> = [];
 
   void (async () => {
     const out = proc.stdout;
@@ -73,12 +82,10 @@ function makePipeBackend(
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        const text = dec.decode(value);
-        for (const cb of dataCbs) cb(text);
+        onData(dec.decode(value));
       }
     }
   })();
-
   void (async () => {
     const err = proc.stderr;
     if (err && typeof err !== "number") {
@@ -87,28 +94,23 @@ function makePipeBackend(
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        const text = dec.decode(value);
-        for (const cb of dataCbs) cb(text);
+        onData(dec.decode(value));
       }
     }
   })();
-
-  void proc.exited.then((code) => {
-    for (const cb of exitCbs) cb(code ?? 0);
-  });
+  void proc.exited.then((code) => onExit(code ?? 0));
 
   return {
     pid: proc.pid,
-    write: (data: string) => {
+    mode: "pipe",
+    write: (data) => {
       try {
         proc.stdin.write(data);
       } catch {
         /* ignore */
       }
     },
-    resize: () => {
-      /* pipes have no resize */
-    },
+    resize: () => {},
     kill: () => {
       try {
         proc.kill();
@@ -116,13 +118,75 @@ function makePipeBackend(
         /* ignore */
       }
     },
-    onData: (cb) => {
-      dataCbs.push(cb);
-    },
-    onExit: (cb) => {
-      exitCbs.push(cb);
-    },
   };
+}
+
+function makePtyBackend(
+  file: string,
+  args: string[],
+  cwd: string,
+  env: Record<string, string>,
+  cols: number,
+  rows: number,
+  onData: (d: string) => void,
+  onExit: (code: number) => void,
+): PtyBackend | null {
+  try {
+    let term: Terminal | undefined;
+    const proc = Bun.spawn([file, ...args], {
+      cwd,
+      env,
+      terminal: {
+        cols,
+        rows,
+        data(_t, data) {
+          const text =
+            typeof data === "string" ? data : new TextDecoder().decode(data);
+          onData(text);
+        },
+      },
+    });
+    term = proc.terminal;
+    if (!term) return null;
+    void proc.exited.then((code) => onExit(code ?? 0));
+    return {
+      pid: proc.pid,
+      mode: "pty",
+      write: (data) => {
+        try {
+          term!.write(data);
+        } catch {
+          /* ignore */
+        }
+      },
+      resize: (c, r) => {
+        try {
+          term!.resize(c, r);
+        } catch {
+          /* ignore */
+        }
+      },
+      kill: () => {
+        try {
+          proc.kill();
+        } catch {
+          /* ignore */
+        }
+        try {
+          term!.close();
+        } catch {
+          /* ignore */
+        }
+      },
+    };
+  } catch (e) {
+    appendTrace(
+      "warn",
+      `Bun.Terminal open failed: ${e instanceof Error ? e.message : String(e)}`,
+      "pty",
+    );
+    return null;
+  }
 }
 
 export function listSessions(projectId?: string): SessionInfo[] {
@@ -153,7 +217,7 @@ export function spawnShell(opts: {
   const shell = seat.shell || "/bin/bash";
   let file = shell;
   let args = ["-l"];
-  if (opts.command && opts.command.length) {
+  if (opts.command?.length) {
     const wrapped = wrapArgvForSeat(opts.command);
     file = wrapped[0]!;
     args = wrapped.slice(1);
@@ -163,7 +227,26 @@ export function spawnShell(opts: {
     args = wrapped.slice(1);
   }
 
-  const backend = makePipeBackend(file, args, opts.cwd, baseEnv);
+  const cols = opts.cols || 100;
+  const rows = opts.rows || 36;
+
+  let session!: PtySession;
+
+  const onData = (data: string) => {
+    pushRing(session, data);
+    broadcast(session, JSON.stringify({ type: "output", data }));
+  };
+  const onExit = (exitCode: number) => {
+    session.exited = true;
+    broadcast(session, JSON.stringify({ type: "exit", code: exitCode }));
+    appendTrace("info", `pty exit ${id} code=${exitCode}`, "pty");
+    sessions.delete(id);
+  };
+
+  let backend =
+    makePtyBackend(file, args, opts.cwd, baseEnv, cols, rows, onData, onExit) ||
+    makePipeBackend(file, args, opts.cwd, baseEnv, onData, onExit);
+
   const info: SessionInfo = {
     id,
     projectId: opts.projectId,
@@ -172,9 +255,10 @@ export function spawnShell(opts: {
     pid: backend.pid,
     createdAt: Date.now() / 1000,
     title: opts.title || "shell",
+    mode: backend.mode,
   };
 
-  const session: PtySession = {
+  session = {
     info,
     backend,
     ring: "",
@@ -182,34 +266,7 @@ export function spawnShell(opts: {
     exited: false,
   };
   sessions.set(id, session);
-
-  backend.onData((data) => {
-    pushRing(session, data);
-    const msg = JSON.stringify({ type: "output", data });
-    for (const sub of session.subscribers) {
-      try {
-        sub.send(msg);
-      } catch {
-        /* ignore */
-      }
-    }
-  });
-
-  backend.onExit((exitCode) => {
-    session.exited = true;
-    const msg = JSON.stringify({ type: "exit", code: exitCode });
-    for (const sub of session.subscribers) {
-      try {
-        sub.send(msg);
-      } catch {
-        /* ignore */
-      }
-    }
-    appendTrace("info", `shell exit ${id} code=${exitCode}`, "pty");
-    sessions.delete(id);
-  });
-
-  appendTrace("info", `shell spawn ${id} cwd=${opts.cwd} mode=pipe`, "pty");
+  appendTrace("info", `pty spawn ${id} cwd=${opts.cwd} mode=${backend.mode}`, "pty");
   return info;
 }
 
@@ -236,9 +293,7 @@ export function attachSubscriber(
 }
 
 export function detachSubscriber(sessionId: string, sub: Subscriber): void {
-  const s = sessions.get(sessionId);
-  if (!s) return;
-  s.subscribers.delete(sub);
+  sessions.get(sessionId)?.subscribers.delete(sub);
 }
 
 export function writeInput(sessionId: string, data: string): void {
@@ -246,11 +301,7 @@ export function writeInput(sessionId: string, data: string): void {
 }
 
 export function resize(sessionId: string, cols: number, rows: number): void {
-  try {
-    sessions.get(sessionId)?.backend.resize(cols, rows);
-  } catch {
-    /* ignore */
-  }
+  sessions.get(sessionId)?.backend.resize(cols, rows);
 }
 
 export function killSession(sessionId: string): boolean {

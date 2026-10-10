@@ -19,11 +19,12 @@ def _candidates() -> list[Path]:
     ]
     # Dev: venv next to source tree
     try:
-        from server.config import BUNDLE_ROOT
+        from server_py.config import BUNDLE_ROOT
 
         root = BUNDLE_ROOT
     except Exception:
-        root = Path(__file__).resolve().parent.parent
+        here = Path(__file__).resolve().parent
+        root = here.parent.parent if here.name == "server_py" else here.parent
     for pattern in (
         root / ".venv" / "lib",
     ):

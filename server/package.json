@@ -1,5 +1,5 @@
 {
-  "name": "homebase-server-ts",
+  "name": "homebase-server",
   "private": true,
   "type": "module",
   "scripts": {

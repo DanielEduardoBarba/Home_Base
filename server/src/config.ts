@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 
 export function bundleRoot(): string {
-  // Source tree: server-ts/src → repo root. Installed Bun binary: prefer share dir.
+  // Source tree: server/src → repo root. Installed Bun binary: prefer share dir.
   const share = "/usr/share/homebased";
   if (existsSync(join(share, "web", "dist", "index.html"))) return share;
   return resolve(here, "../..");

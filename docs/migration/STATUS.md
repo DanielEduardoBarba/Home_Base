@@ -1,18 +1,14 @@
 # Migration STATUS
 
-- **Current phase:** Partial Bun default cutover — core REST + WS scaffolding live; View/PTY/Cursor incomplete
-- **Last completed task:** T-WIRE Bun default in `build.sh`; OVERNIGHT_REPORT written
-- **Current working implementation:** Bun `server-ts/` (default); Python via `--python`
-- **Startup:**
-  - Default: `./build.sh --run` → Bun API `:8081` + Vite `:3081`
-  - Python: `./build.sh --run --python`
-  - Deploy: Bun compile default; `--python` → Nuitka
+- **Current phase:** Completing PTY / View / Cursor gaps
+- **Last completed task:** Bun.Terminal PTY; View JSON bridge to Python X11 worker; Cursor SDK streaming + homebase_* tools
+- **Current working implementation:** Bun `server/` default; Python `server-py/` via `--python`
+- **Startup:** `./build.sh --run` (Bun) · `./build.sh --run --python` (rollback)
 - **Commands:**
-  - `cd server-ts && bun run typecheck` — PASS
-  - `cd server-ts && bun test` — 7 pass
-  - `cd server-ts && bun run test:parity` — included in bun test
-  - Python: `HOMEBASE_HOME=/tmp/hb-baseline .venv/bin/pytest tests/ -q` — 48 pass
-- **Latest verification:** See VERIFICATION.md + OVERNIGHT_REPORT.md
-- **Next unblocked task:** R-004 real PTY; R-002 View worker; Cursor streaming
-- **Key paths:** `server-ts/src/`, `build.sh`, `docs/migration/`
-- **Blocked work:** Full View (R-002), full PTY (R-004), full Cursor stream
+  - `cd server && bun run typecheck`
+  - `cd server && bun test`
+  - `HOMEBASE_SELF_TEST=1 bun run src/entry.ts`
+- **Latest verification:** `build.sh` `bun_server_dir` → `server/` only; docs updated; run `bash scripts/rename-critical-path.sh` if dirs still Python `server/` + `server-ts/` (agent shell EAGAIN blocked mv/tests)
+- **Next:** Confirm typecheck/tests; exercise View connect + Cursor send with API key
+- **Blocked work:** Pure Bun-native X11 capture (still uses Python view-worker over JSON — see R-002)
+- **VERSION:** 1.4.27
