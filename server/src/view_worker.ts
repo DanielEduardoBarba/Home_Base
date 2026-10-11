@@ -237,7 +237,9 @@ function dispatch(
           x = Math.round(rect.left + nx * Math.max(0, mw - 1));
           y = Math.round(rect.top + ny * Math.max(0, mh - 1));
         }
-        if (["move", "down", "up", "wheel"].includes(action)) {
+        // Always park at the View overlay coords before click/down/wheel so
+        // a fighting laptop mouse can't leave X11 elsewhere.
+        if (["move", "down", "up", "wheel", "click"].includes(action)) {
           xin.motion(x, y);
         }
       }

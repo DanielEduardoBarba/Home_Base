@@ -2260,7 +2260,8 @@ html[data-hb-keyboard] .hb-chat-composer {
 
 .hb-view-mode-btn.on {
   color: var(--hb-fg);
-  background: color-mix(in srgb, var(--hb-accent) 22%, var(--hb-panel));
+  background: color-mix(in srgb, var(--hb-accent) 32%, var(--hb-panel));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--hb-accent) 45%, transparent);
 }
 
 .hb-view-cursor {

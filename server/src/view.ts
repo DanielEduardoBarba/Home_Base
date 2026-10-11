@@ -343,6 +343,10 @@ class ViewHub {
   private maxAllowedTier = 0;
   /** While Home Base is driving the pointer, suppress native-cursor echo that fights it. */
   private remoteControlUntil = 0;
+  /** Last Home Base abs target (monitor-local px/py + monitor). Re-parked while owning. */
+  private lastRemotePx = Number.NaN;
+  private lastRemotePy = Number.NaN;
+  private lastRemoteMonitor = 0;
 
   status(): Record<string, unknown> {
     const { display, xauthority } = discoverX11Env();
@@ -557,7 +561,12 @@ class ViewHub {
       }
       if (msg.type === "pointer") {
         // Home Base owns the pointer while the viewer is actively moving it.
-        this.remoteControlUntil = Date.now() + 600;
+        this.remoteControlUntil = Date.now() + 900;
+        if (msg.mode !== "rel" && msg.px != null && msg.py != null) {
+          this.lastRemotePx = Math.round(Number(msg.px));
+          this.lastRemotePy = Math.round(Number(msg.py));
+          this.lastRemoteMonitor = client.monitor;
+        }
         const resp = await this.bridge.call({
           cmd: "pointer",
           mode: msg.mode,
@@ -635,8 +644,45 @@ class ViewHub {
           if (resp.monitors) this.bridge.monitors = resp.monitors as unknown[];
           if (resp.sw) this.bridge.screenW = Number(resp.sw);
           if (resp.sh) this.bridge.screenH = Number(resp.sh);
-          // Native laptop mouse sync — skipped while Home Base is driving.
-          if (Date.now() >= this.remoteControlUntil) {
+          // While Home Base owns the pointer, keep re-parking X11 on the overlay
+          // target so a fighting laptop mouse cannot drift between events.
+          if (Date.now() < this.remoteControlUntil) {
+            if (Number.isFinite(this.lastRemotePx) && Number.isFinite(this.lastRemotePy)) {
+              const mon =
+                (this.bridge.monitors as Array<{
+                  index?: number;
+                  left?: number;
+                  top?: number;
+                }>).find((m) => Number(m.index) === Number(this.lastRemoteMonitor)) ||
+                (this.bridge.monitors as Array<{
+                  index?: number;
+                  left?: number;
+                  top?: number;
+                }>).find((m) => Number(m.index) === 0);
+              const left = Number(mon?.left) || 0;
+              const top = Number(mon?.top) || 0;
+              const wantX = left + this.lastRemotePx;
+              const wantY = top + this.lastRemotePy;
+              const curX = Number(resp.cursorX);
+              const curY = Number(resp.cursorY);
+              if (
+                !Number.isFinite(curX) ||
+                !Number.isFinite(curY) ||
+                Math.abs(curX - wantX) >= 1 ||
+                Math.abs(curY - wantY) >= 1
+              ) {
+                void this.bridge.call({
+                  cmd: "pointer",
+                  mode: "abs",
+                  action: "move",
+                  px: this.lastRemotePx,
+                  py: this.lastRemotePy,
+                  monitor: this.lastRemoteMonitor,
+                });
+              }
+            }
+          } else {
+            // Native laptop mouse sync — only when Home Base is idle.
             this.broadcastCursor(resp, true, "native");
           }
         }

@@ -67,7 +67,20 @@ function parseHeader(buf: ArrayBuffer) {
 function loadControl(): ControlMode {
   try {
     const v = localStorage.getItem(LS_CONTROL)
-    if (v === 'mouse' || v === 'touch') return v
+    if (v === 'mouse' || v === 'touch') {
+      // Phones often had "Mouse" selected when they meant trackpad Touch — fix once.
+      if (
+        v === 'mouse' &&
+        typeof window !== 'undefined' &&
+        window.matchMedia('(pointer: coarse)').matches &&
+        localStorage.getItem('hb-view-control-touchpref') !== '1'
+      ) {
+        localStorage.setItem('hb-view-control-touchpref', '1')
+        localStorage.setItem(LS_CONTROL, 'touch')
+        return 'touch'
+      }
+      return v
+    }
   } catch {
     /* ignore */
   }
@@ -186,8 +199,9 @@ export function ViewTab() {
   const [conn, setConn] = useState<WsConnState>('offline')
   const [error, setError] = useState('')
   const [preset, setPreset] = useState<QualityPreset>(() => loadQuality())
-  const [control, setControl] = useState<ControlMode>('touch')
-  const [monitor, setMonitor] = useState(0)
+  // Load once — avoid mount effect race that overwrote LS and flashed the wrong mode.
+  const [control, setControl] = useState<ControlMode>(() => loadControl())
+  const [monitor, setMonitor] = useState(() => loadMonitor())
   const [monitors, setMonitors] = useState<MonitorInfo[]>([])
   const [zoom, setZoom] = useState(1)
   const [stats, setStats] = useState({ fps: 0, kbps: 0, quality: 0, screen: '' })
@@ -195,24 +209,16 @@ export function ViewTab() {
   const [maximized, setMaximized] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [probe, setProbe] = useState('')
-  const [hint, setHint] = useState(true)
+  const [hint, setHint] = useState(() => {
+    try {
+      return localStorage.getItem(LS_HINT) !== '1'
+    } catch {
+      return true
+    }
+  })
   const [holdPulse, setHoldPulse] = useState(false)
   const notify = useNotifyOptional()
   notifyRef.current = notify
-
-  useEffect(() => {
-    const c = loadControl()
-    const m = loadMonitor()
-    controlRef.current = c
-    monitorRef.current = m
-    setControl(c)
-    setMonitor(m)
-    try {
-      setHint(localStorage.getItem(LS_HINT) !== '1')
-    } catch {
-      setHint(true)
-    }
-  }, [])
   const [cursorOn, setCursorOn] = useState(false)
   const fpsCount = useRef(0)
   const fpsT0 = useRef(performance.now())
@@ -350,7 +356,48 @@ export function ViewTab() {
   }
 
   function markHbControl() {
-    hbControlUntilRef.current = performance.now() + 550
+    hbControlUntilRef.current = performance.now() + 900
+  }
+
+  function pixelsFromNorm(nx: number, ny: number) {
+    const sw = Math.max(2, screenRef.current.w | 0)
+    const sh = Math.max(2, screenRef.current.h | 0)
+    const x = clamp(nx, 0, 1)
+    const y = clamp(ny, 0, 1)
+    return {
+      nx: x,
+      ny: y,
+      px: Math.round(x * (sw - 1)),
+      py: Math.round(y * (sh - 1)),
+    }
+  }
+
+  /** Warp the real X11 cursor to the Home Base overlay position (source of truth). */
+  function sendAbsNorm(
+    action: string,
+    nx: number,
+    ny: number,
+    button = 0,
+    deltaY = 0,
+  ) {
+    if (!wanted) return
+    markHbControl()
+    const m = pixelsFromNorm(nx, ny)
+    lastPointerRef.current = performance.now()
+    sendWs({
+      type: 'pointer',
+      mode: 'abs',
+      action,
+      x: m.nx,
+      y: m.ny,
+      px: m.px,
+      py: m.py,
+      screenW: screenRef.current.w,
+      screenH: screenRef.current.h,
+      button,
+      deltaY,
+    })
+    setCursorNorm(m.nx, m.ny, true, true)
   }
 
   function setCursorNorm(x: number, y: number, show = true, snap = false) {
@@ -398,6 +445,11 @@ export function ViewTab() {
     if (!mon || mon.width < 1 || mon.height < 1) return
     const nx = (cursorX - mon.left) / mon.width
     const ny = (cursorY - mon.top) / mon.height
+    // Other display (or past the rim): don't pin the overlay to an edge — that
+    // desyncs clicks when viewing one screen of a dual-monitor setup.
+    if (monitorRef.current !== 0 && (nx < -0.001 || nx > 1.001 || ny < -0.001 || ny > 1.001)) {
+      return
+    }
     const prev = lastNativeCursorRef.current
     const moved =
       prev.x < 0 || Math.hypot(cursorX - prev.x, cursorY - prev.y) >= 1
@@ -769,10 +821,11 @@ export function ViewTab() {
     const scaleY = bounds.height > 0 ? wrap.clientHeight / bounds.height : 1
     const lx = (clientX - bounds.left) * scaleX
     const ly = (clientY - bounds.top) * scaleY
-    if (lx < rect.x || ly < rect.y || lx > rect.x + rect.w || ly > rect.y + rect.h) return null
     const sw = screenRef.current.w | 0
     const sh = screenRef.current.h | 0
     if (sw < 2 || sh < 2) return null
+    // Clamp to the painted monitor image — dragging past the View edge (or toward
+    // another display) must park on this monitor's rim, not drop updates / desync.
     const nx = clamp((lx - rect.x) / rect.w, 0, 1)
     const ny = clamp((ly - rect.y) / rect.h, 0, 1)
     // Integer pixels inside the capture/monitor rect (matches XGetImage region).
@@ -856,10 +909,11 @@ export function ViewTab() {
     if (Math.abs(dx) < 0.15 && Math.abs(dy) < 0.15) return
     const sw = screenRef.current.w || 1
     const sh = screenRef.current.h || 1
-    markHbControl()
-    lastPointerRef.current = performance.now()
-    sendWs({ type: 'pointer', mode: 'rel', action: 'move', dx, dy })
-    setCursorNorm(cursorNormRef.current.x + dx / sw, cursorNormRef.current.y + dy / sh, true, true)
+    // Trackpad-feel locally, but always absolute-warp the host to the overlay
+    // so a fighting laptop mouse cannot desync click targets.
+    const nx = clamp(cursorNormRef.current.x + dx / sw, 0, 1)
+    const ny = clamp(cursorNormRef.current.y + dy / sh, 0, 1)
+    sendAbsNorm('move', nx, ny)
   }
 
   function sendRel(dxPx: number, dyPx: number) {
@@ -880,8 +934,19 @@ export function ViewTab() {
   }
 
   function sendClick(button: number) {
-    markHbControl()
-    sendWs({ type: 'pointer', mode: 'rel', action: 'click', button })
+    // Flush pending trackpad motion, then click at the overlay — never at a drifted native spot.
+    if (relFlushRafRef.current) {
+      cancelAnimationFrame(relFlushRafRef.current)
+      relFlushRafRef.current = 0
+      flushRelAccum()
+    }
+    if (absFlushRafRef.current) {
+      cancelAnimationFrame(absFlushRafRef.current)
+      absFlushRafRef.current = 0
+      flushAbsPending()
+    }
+    const n = cursorNormRef.current
+    sendAbsNorm('click', n.x, n.y, button)
     if (navigator.vibrate) {
       try {
         navigator.vibrate(button === 2 ? 24 : 12)
@@ -908,7 +973,7 @@ export function ViewTab() {
       if (g.moved || g.longFired) return
       g.longFired = true
       if (g.leftDown) {
-        sendWs({ type: 'pointer', mode: controlRef.current === 'touch' ? 'rel' : 'abs', action: 'up', button: 0 })
+        sendAbsNorm('up', cursorNormRef.current.x, cursorNormRef.current.y, 0)
         g.leftDown = false
       }
       sendClick(2)
@@ -929,12 +994,7 @@ export function ViewTab() {
     clearLongTimer()
     const g = gestureRef.current
     if (g.leftDown) {
-      sendWs({
-        type: 'pointer',
-        mode: controlRef.current === 'touch' ? 'rel' : 'abs',
-        action: 'up',
-        button: 0,
-      })
+      sendAbsNorm('up', cursorNormRef.current.x, cursorNormRef.current.y, 0)
       g.leftDown = false
     }
     g.kind = 'pinch'
@@ -1015,12 +1075,7 @@ export function ViewTab() {
           const dy = midY - g.pinchMidY
           const dx = midX - g.pinchMidX
           if (Math.abs(dy) > 2 || Math.abs(dx) > 2) {
-            sendWs({
-              type: 'pointer',
-              mode: 'rel',
-              action: 'wheel',
-              deltaY: dy * 1.6,
-            })
+            sendAbsNorm('wheel', cursorNormRef.current.x, cursorNormRef.current.y, 0, dy * 1.6)
             g.pinchMidX = midX
             g.pinchMidY = midY
           }
@@ -1136,13 +1191,8 @@ export function ViewTab() {
       return
     }
     if (controlRef.current === 'touch') {
-      // Two-axis trackpad scroll → remote wheel at current cursor
-      sendWs({
-        type: 'pointer',
-        mode: 'rel',
-        action: 'wheel',
-        deltaY: e.deltaY,
-      })
+      // Wheel at the overlay cursor (abs) so native drift can't steal the target.
+      sendAbsNorm('wheel', cursorNormRef.current.x, cursorNormRef.current.y, 0, e.deltaY)
     } else {
       sendAbs('wheel', e.clientX, e.clientY, 0, e.deltaY)
     }
@@ -1185,6 +1235,7 @@ export function ViewTab() {
           type="button"
           className={`hb-view-mode-btn ${control === 'touch' ? 'on' : ''}`}
           aria-pressed={control === 'touch'}
+          title="Trackpad: drag moves the PC cursor · tap = click · hold = right-click"
           onClick={() => setControl('touch')}
         >
           Touch
@@ -1193,9 +1244,10 @@ export function ViewTab() {
           type="button"
           className={`hb-view-mode-btn ${control === 'mouse' ? 'on' : ''}`}
           aria-pressed={control === 'mouse'}
+          title="Point: tap where you want the cursor · hold = right-click"
           onClick={() => setControl('mouse')}
         >
-          Mouse
+          Point
         </button>
       </div>
       <div className="hb-view-mode" role="group" aria-label="Stream quality">
@@ -1328,7 +1380,7 @@ export function ViewTab() {
           <div className="hb-view-idle">
             <p className="text-xs text-mute">Stream this laptop’s screen</p>
             <p className="text-[0.65rem] text-mute mt-1 max-w-[16rem]">
-              Touch = trackpad · Mouse = point-to-click · Pinch to zoom
+              Touch = trackpad · Point = tap to aim · Pinch to zoom
             </p>
             <button
               type="button"
@@ -1391,7 +1443,7 @@ export function ViewTab() {
                 </>
               ) : (
                 <>
-                  <strong>Mouse</strong> — tap where you want the cursor · hold = right click · pinch
+                  <strong>Point</strong> — tap where you want the cursor · hold = right click · pinch
                   zooms
                 </>
               )}
