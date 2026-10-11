@@ -71,14 +71,30 @@ function grabJpeg(
   const sw = shot.screenW;
   const sh = shot.screenH;
 
-  // Cap encode size early — full 4K virtual desktop + jpeg-js RGBA is heavy.
-  const cap = Math.max(320, Math.min(1920, maxWidth || DEFAULT_MAX_WIDTH));
+  // Ultra may ask for native pixels, but jpeg-js encode of huge desktops blocks the
+  // worker past the IPC timeout → black screen. Cap width and total megapixels.
+  const ABS_MAX_WIDTH = 3840;
+  const ABS_MAX_PIXELS = 3840 * 2160;
+  let cap = Math.max(
+    320,
+    Math.min(ABS_MAX_WIDTH, maxWidth > 0 ? maxWidth : DEFAULT_MAX_WIDTH),
+  );
   if (width > cap) {
     const nh = Math.max(1, Math.floor(height * (cap / width)));
     rgba = resizeRgba(rgba, width, height, cap, nh);
     width = cap;
     height = nh;
   }
+  if (width * height > ABS_MAX_PIXELS) {
+    const scale = Math.sqrt(ABS_MAX_PIXELS / (width * height));
+    const nw = Math.max(320, Math.floor(width * scale));
+    const nh = Math.max(1, Math.floor(height * scale));
+    rgba = resizeRgba(rgba, width, height, nw, nh);
+    width = nw;
+    height = nh;
+  }
+  // Keep encode snappy on large frames (quality still looks sharp).
+  const qEnc = width * height > 1920 * 1080 ? Math.min(quality, 82) : quality;
 
   const tw = 48;
   const th = Math.max(1, Math.floor((48 * height) / width));
@@ -97,8 +113,8 @@ function grabJpeg(
   }
 
   // jpeg-js encode requires tightly packed RGBA (width*height*4).
-  const encoded = jpeg.encode({ data: rgba, width, height }, quality);
-  const header = packFrameHeader(width, height, sw, sh, quality);
+  const encoded = jpeg.encode({ data: rgba, width, height }, qEnc);
+  const header = packFrameHeader(width, height, sw, sh, qEnc);
   return {
     packet: Buffer.concat([header, encoded.data]),
     sw,
@@ -189,19 +205,22 @@ function dispatch(
           mw = s.w;
           mh = s.h;
         }
-        try {
-          const desk = xin.monitorRect(0);
-          xin.deskLeft = desk.left;
-          xin.deskTop = desk.top;
-          if (desk.width) xin.width = desk.width;
-          if (desk.height) xin.height = desk.height;
-        } catch {
-          /* ignore */
+        xin.syncDeskBounds();
+        // Prefer integer pixels from the client (mapped to the capture/monitor size).
+        const hasPx = msg.px != null && msg.py != null && Number.isFinite(Number(msg.px));
+        let x: number;
+        let y: number;
+        if (hasPx) {
+          const px = Math.max(0, Math.min(mw - 1, Math.round(Number(msg.px))));
+          const py = Math.max(0, Math.min(mh - 1, Math.round(Number(msg.py))));
+          x = rect.left + px;
+          y = rect.top + py;
+        } else {
+          const nx = Math.min(1, Math.max(0, Number(msg.x || 0)));
+          const ny = Math.min(1, Math.max(0, Number(msg.y || 0)));
+          x = Math.round(rect.left + nx * Math.max(0, mw - 1));
+          y = Math.round(rect.top + ny * Math.max(0, mh - 1));
         }
-        const nx = Number(msg.x || 0);
-        const ny = Number(msg.y || 0);
-        const x = Math.trunc(rect.left + nx * mw);
-        const y = Math.trunc(rect.top + ny * mh);
         if (["move", "down", "up", "wheel"].includes(action)) {
           xin.motion(x, y);
         }

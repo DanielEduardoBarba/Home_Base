@@ -26,6 +26,17 @@ type LibX11 = {
   ) => Pointer | null;
   XDestroyImage: (img: Pointer) => number;
   XFlush: (dpy: Pointer) => number;
+  XWarpPointer: (
+    dpy: Pointer,
+    src_w: bigint,
+    dest_w: bigint,
+    src_x: number,
+    src_y: number,
+    src_width: number,
+    src_height: number,
+    dest_x: number,
+    dest_y: number,
+  ) => number;
   XStringToKeysym: (name: Pointer) => bigint;
   XKeysymToKeycode: (dpy: Pointer, keysym: bigint) => number;
   XQueryPointer: (
@@ -112,6 +123,10 @@ function loadLibs(): void {
     },
     XDestroyImage: { args: ["ptr"], returns: "i32" },
     XFlush: { args: ["ptr"], returns: "i32" },
+    XWarpPointer: {
+      args: ["ptr", "u64", "u64", "i32", "i32", "u32", "u32", "i32", "i32"],
+      returns: "i32",
+    },
     XStringToKeysym: { args: ["ptr"], returns: "u64" },
     XKeysymToKeycode: { args: ["ptr", "u64"], returns: "i32" },
     XQueryPointer: {
@@ -408,6 +423,13 @@ export class X11Session {
       if (!dataPtr || width <= 0 || height <= 0) {
         throw new Error("bad XImage");
       }
+      // Guard against wrong XImage layout / garbage dims (OOM → black View).
+      if (width > 16384 || height > 16384 || width * height > 64 * 1024 * 1024) {
+        throw new Error(`XImage too large (${width}x${height})`);
+      }
+      if (bpl < width || bpp < 24) {
+        throw new Error(`bad XImage stride/bpp bpl=${bpl} bpp=${bpp}`);
+      }
       const nbytes = bpl * height;
       // Copy before XDestroyImage frees the backing store.
       const raw = Buffer.from(toArrayBuffer(dataPtr, 0, nbytes));
@@ -418,8 +440,24 @@ export class X11Session {
     }
   }
 
+  /** Refresh virtual-desktop clamp box from Xinerama (or single-screen fallback). */
+  syncDeskBounds(): void {
+    try {
+      const desk = this.monitorRect(0);
+      if (desk.width > 0 && desk.height > 0) {
+        this.deskLeft = desk.left;
+        this.deskTop = desk.top;
+        this.width = desk.width;
+        this.height = desk.height;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
   motion(x: number, y: number): void {
     if (!this.dpy && !this.open()) return;
+    this.syncDeskBounds();
     const left = this.deskLeft;
     const top = this.deskTop;
     const width = this.width;
@@ -430,8 +468,24 @@ export class X11Session {
       cx = Math.max(left, Math.min(left + width - 1, cx));
       cy = Math.max(top, Math.min(top + height - 1, cy));
     }
-    xtst!.XTestFakeMotionEvent(this.dpy!, this.screen, cx, cy, 0n);
-    x11!.XFlush(this.dpy!);
+    // Root-absolute coords (same space as XGetImage). Prefer Warp; XTest as backup.
+    // Never let a bad FFI call kill the worker — catch and fall through.
+    try {
+      x11!.XWarpPointer(this.dpy!, 0n, this.root, 0, 0, 0, 0, cx, cy);
+    } catch {
+      /* older / odd libX11 */
+    }
+    try {
+      // screen 0 + root coords is correct under Xinerama; -1 misbehaves on some hosts.
+      xtst!.XTestFakeMotionEvent(this.dpy!, this.screen, cx, cy, 0n);
+    } catch {
+      /* ignore */
+    }
+    try {
+      x11!.XFlush(this.dpy!);
+    } catch {
+      /* ignore */
+    }
   }
 
   relativeMotion(dx: number, dy: number): void {

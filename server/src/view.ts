@@ -484,9 +484,24 @@ class ViewHub {
       if (!client) return;
       if (msg.type === "config") {
         if (msg.monitor != null) client.monitor = Number(msg.monitor);
-        if (msg.maxWidth != null) client.maxWidth = Number(msg.maxWidth);
-        if (msg.quality != null) client.quality = Number(msg.quality);
-        if (msg.fps != null) client.fps = Number(msg.fps);
+        if (msg.maxWidth != null) {
+          const w = Number(msg.maxWidth);
+          if (Number.isFinite(w)) {
+            client.maxWidth = Math.max(320, Math.min(3840, Math.floor(w)));
+          }
+        }
+        if (msg.quality != null) {
+          const q = Number(msg.quality);
+          if (Number.isFinite(q)) {
+            client.quality = Math.max(20, Math.min(95, Math.floor(q)));
+          }
+        }
+        if (msg.fps != null) {
+          const f = Number(msg.fps);
+          if (Number.isFinite(f)) {
+            client.fps = Math.max(4, Math.min(24, Math.floor(f)));
+          }
+        }
         // Prefer geometry for the selected monitor — stale bridge.screenW/H from the
         // previous capture makes touch/rel mapping think All-displays is still active.
         const mons = this.bridge.monitors as
@@ -559,33 +574,45 @@ class ViewHub {
           this.loop = null;
           return;
         }
-        const resp = await this.bridge.call({
-          cmd: "grab",
-          maxWidth: first.maxWidth,
-          quality: first.quality,
-          monitor: first.monitor,
-        });
+        const resp = await this.bridge.call(
+          {
+            cmd: "grab",
+            maxWidth: first.maxWidth,
+            quality: first.quality,
+            monitor: first.monitor,
+          },
+          // Ultra / large desktops need headroom; 5s caused silent black screens.
+          20,
+        );
         if (resp.ok && resp.changed && resp.packet) {
-          const packet = Buffer.from(resp.packet as Buffer | Uint8Array | string);
-          this.seq = (this.seq + 1) >>> 0;
-          // patch seq at offset 4 (little-endian u32 after magic)
-          if (packet.length >= 8) {
+          const raw = resp.packet;
+          const packet = Buffer.isBuffer(raw)
+            ? Buffer.from(raw)
+            : typeof raw === "string"
+              ? Buffer.from(raw, "base64")
+              : Buffer.from(raw as Uint8Array);
+          if (packet.length < 20) {
+            appendTrace("warn", `view grab: short packet ${packet.length}`, "view");
+          } else {
+            this.seq = (this.seq + 1) >>> 0;
+            // patch seq at offset 4 (little-endian u32 after magic)
             packet.writeUInt32LE(this.seq, 4);
-          }
-          this.bridge.screenW = Number(resp.sw || this.bridge.screenW);
-          this.bridge.screenH = Number(resp.sh || this.bridge.screenH);
-          if (resp.monitors) this.bridge.monitors = resp.monitors as unknown[];
-          this.bytesWindow += packet.length;
-          this.framesWindow += 1;
-          for (const c of this.clients.values()) {
-            try {
-              c.ws.send(packet);
-            } catch {
-              /* ignore */
+            this.bridge.screenW = Number(resp.sw || this.bridge.screenW);
+            this.bridge.screenH = Number(resp.sh || this.bridge.screenH);
+            if (resp.monitors) this.bridge.monitors = resp.monitors as unknown[];
+            this.bytesWindow += packet.length;
+            this.framesWindow += 1;
+            for (const c of this.clients.values()) {
+              try {
+                c.ws.send(packet);
+              } catch {
+                /* ignore */
+              }
             }
           }
         } else if (!resp.ok) {
           const err = String(resp.error || this.bridge.lastError);
+          appendTrace("warn", `view grab failed: ${err}`, "view");
           for (const c of this.clients.values()) {
             try {
               c.ws.send(JSON.stringify({ type: "error", error: err }));
@@ -613,7 +640,7 @@ class ViewHub {
         this.windowT0 = now;
       }
       const first = this.clients.values().next().value as ClientState | undefined;
-      const fps = Math.max(4, Math.min(20, first?.fps || 12));
+      const fps = Math.max(4, Math.min(24, first?.fps || 12));
       this.loop = setTimeout(() => void tick(), Math.floor(1000 / fps));
     };
     void tick();

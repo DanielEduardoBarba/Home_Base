@@ -20,7 +20,7 @@ const LS_QUALITY = 'hb-view-quality'
 const LS_HINT = 'hb-view-hint-v2'
 const DEFAULT_AUTO_WIDTH = 1280
 
-type QualityPreset = 'auto' | 'high' | 'medium' | 'low'
+type QualityPreset = 'auto' | 'ultra' | 'high' | 'medium' | 'low'
 type ControlMode = 'touch' | 'mouse'
 
 type MonitorInfo = {
@@ -34,12 +34,15 @@ type MonitorInfo = {
 
 const QUALITY_OPTIONS: { id: QualityPreset; label: string; title: string }[] = [
   { id: 'auto', label: 'Auto', title: 'Adaptive quality from link + zoom' },
+  { id: 'ultra', label: 'Ultra', title: 'Native screen pixels · heavy bandwidth' },
   { id: 'high', label: 'High', title: 'More detail · uses more bandwidth' },
   { id: 'medium', label: 'Med', title: 'Balanced quality and speed' },
   { id: 'low', label: 'Low', title: 'Less detail · smoother on slow VPN' },
 ]
 
 const PRESETS: Record<Exclude<QualityPreset, 'auto'>, { maxWidth: number; quality: number; fps: number }> = {
+  // Native-ish (server caps ~4K); keep encode under the worker IPC budget.
+  ultra: { maxWidth: 3840, quality: 85, fps: 12 },
   high: { maxWidth: 1680, quality: 72, fps: 18 },
   medium: { maxWidth: 1280, quality: 55, fps: 12 },
   low: { maxWidth: 960, quality: 36, fps: 8 },
@@ -83,7 +86,7 @@ function loadMonitor(): number {
 function loadQuality(): QualityPreset {
   try {
     const v = localStorage.getItem(LS_QUALITY)
-    if (v === 'auto' || v === 'high' || v === 'medium' || v === 'low') return v
+    if (v === 'auto' || v === 'ultra' || v === 'high' || v === 'medium' || v === 'low') return v
     // Legacy network-named presets
     if (v === 'lan') return 'high'
     if (v === 'vpn') return 'low'
@@ -193,6 +196,8 @@ export function ViewTab() {
   const [cursorOn, setCursorOn] = useState(false)
   const fpsCount = useRef(0)
   const fpsT0 = useRef(performance.now())
+  const gotFrameRef = useRef(false)
+  const frameWatchRef = useRef(0)
   presetRef.current = preset
   controlRef.current = control
   monitorRef.current = monitor
@@ -267,9 +272,27 @@ export function ViewTab() {
     schedulePaintRef.current()
   }, [monitor])
 
+  /** Live draw rect from current bitmap/zoom/pan — never trust a stale paintRect for input. */
+  function livePaintRect(): { x: number; y: number; w: number; h: number } | null {
+    const wrap = wrapRef.current
+    const bmp = bitmapRef.current
+    if (!wrap || !bmp || bmp.width < 1 || bmp.height < 1) return null
+    const cw = wrap.clientWidth
+    const ch = wrap.clientHeight
+    if (cw < 2 || ch < 2) return null
+    const z = zoomRef.current
+    const base = Math.min(cw / bmp.width, ch / bmp.height)
+    const scale = base * z
+    const dw = bmp.width * scale
+    const dh = bmp.height * scale
+    const pan = clampPan(z, panRef.current.x, panRef.current.y)
+    panRef.current = pan
+    return { x: (cw - dw) / 2 + pan.x, y: (ch - dh) / 2 + pan.y, w: dw, h: dh }
+  }
+
   function placeCursorEl() {
     const el = cursorElRef.current
-    const r = paintRectRef.current
+    const r = livePaintRect() || paintRectRef.current
     if (!el) return
     if (!cursorShowRef.current || r.w < 1) {
       el.style.display = 'none'
@@ -366,8 +389,8 @@ export function ViewTab() {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       ctx.fillStyle = '#0a0c10'
       ctx.fillRect(0, 0, cw, ch)
-      const base = Math.min(cw / bmp.width, ch / bmp.height)
       const z = zoomRef.current
+      const base = Math.min(cw / bmp.width, ch / bmp.height)
       const scale = base * z
       const dw = bmp.width * scale
       const dh = bmp.height * scale
@@ -417,10 +440,41 @@ export function ViewTab() {
           if (disposed) return
           ws.binaryType = 'arraybuffer'
           setError('')
+          gotFrameRef.current = false
+          if (frameWatchRef.current) window.clearTimeout(frameWatchRef.current)
+          frameWatchRef.current = window.setTimeout(() => {
+            if (disposed || gotFrameRef.current) return
+            if (presetRef.current === 'ultra') {
+              setPreset('high')
+              setError('Ultra was too heavy for this link — dropped to High.')
+              return
+            }
+            setError('No video frames yet — try High/Med quality, or Stop and Start again.')
+          }, 5000)
           const p = presetRef.current
-          const cfg: Record<string, unknown> = { type: 'config', monitor: monitorRef.current }
-          if (p !== 'auto') Object.assign(cfg, PRESETS[p])
+          // Prefer a safe first stream; Ultra can be selected after frames flow.
+          const cfg: Record<string, unknown> = {
+            type: 'config',
+            monitor: monitorRef.current,
+            ...(p === 'auto' ? {} : p === 'ultra' ? PRESETS.high : PRESETS[p]),
+          }
           ws.send(JSON.stringify(cfg))
+          if (p === 'ultra') {
+            // Apply Ultra after the worker is warm (avoids black screen on cold start).
+            window.setTimeout(() => {
+              if (disposed || !gotFrameRef.current) return
+              const sock = connRef.current?.getSocket()
+              if (sock && sock.readyState === WebSocket.OPEN) {
+                sock.send(
+                  JSON.stringify({
+                    type: 'config',
+                    ...PRESETS.ultra,
+                    monitor: monitorRef.current,
+                  }),
+                )
+              }
+            }, 1200)
+          }
         },
         onMessage: (ev) => {
           if (disposed) return
@@ -476,7 +530,12 @@ export function ViewTab() {
           }
           const data = ev.data as ArrayBuffer
           const header = parseHeader(data)
-          if (!header) return
+          if (!header) {
+            if (!gotFrameRef.current) {
+              setError('Got a bad video packet — try Stop, then Start.')
+            }
+            return
+          }
           const jpeg = new Uint8Array(data, HEADER_LEN)
           const tSend = performance.now()
           const ack = () => {
@@ -489,6 +548,12 @@ export function ViewTab() {
                 ack()
                 return
               }
+              gotFrameRef.current = true
+              if (frameWatchRef.current) {
+                window.clearTimeout(frameWatchRef.current)
+                frameWatchRef.current = 0
+              }
+              setError((e) => (e.startsWith('No video') || e.startsWith('Ultra was') ? '' : e))
               const prev = bitmapRef.current
               bitmapRef.current = bmp
               if (prev) prev.close()
@@ -510,7 +575,12 @@ export function ViewTab() {
               }
               ack()
             })
-            .catch(() => ack())
+            .catch(() => {
+              if (!gotFrameRef.current) {
+                setError('Could not decode video frame — try Med quality.')
+              }
+              ack()
+            })
         },
       })
     }
@@ -525,6 +595,7 @@ export function ViewTab() {
       window.removeEventListener('resize', onResize)
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
       if (longTimerRef.current) window.clearTimeout(longTimerRef.current)
+      if (frameWatchRef.current) window.clearTimeout(frameWatchRef.current)
       stopConn()
       bitmapRef.current?.close()
       bitmapRef.current = null
@@ -560,15 +631,31 @@ export function ViewTab() {
     }
   }
 
-  function normFromClient(clientX: number, clientY: number) {
+  function mapClientToRemote(clientX: number, clientY: number): {
+    nx: number
+    ny: number
+    px: number
+    py: number
+  } | null {
     const wrap = wrapRef.current
-    const rect = paintRectRef.current
-    if (!wrap || rect.w < 1 || rect.h < 1) return null
+    const rect = livePaintRect()
+    if (!wrap || !rect || rect.w < 1 || rect.h < 1) return null
     const bounds = wrap.getBoundingClientRect()
-    const lx = clientX - bounds.left
-    const ly = clientY - bounds.top
+    // Normalize against the same box used for hit-testing (CSS px, not device px).
+    const scaleX = bounds.width > 0 ? wrap.clientWidth / bounds.width : 1
+    const scaleY = bounds.height > 0 ? wrap.clientHeight / bounds.height : 1
+    const lx = (clientX - bounds.left) * scaleX
+    const ly = (clientY - bounds.top) * scaleY
     if (lx < rect.x || ly < rect.y || lx > rect.x + rect.w || ly > rect.y + rect.h) return null
-    return { x: (lx - rect.x) / rect.w, y: (ly - rect.y) / rect.h }
+    const sw = screenRef.current.w | 0
+    const sh = screenRef.current.h | 0
+    if (sw < 2 || sh < 2) return null
+    const nx = clamp((lx - rect.x) / rect.w, 0, 1)
+    const ny = clamp((ly - rect.y) / rect.h, 0, 1)
+    // Integer pixels inside the capture/monitor rect (matches XGetImage region).
+    const px = Math.round(nx * (sw - 1))
+    const py = Math.round(ny * (sh - 1))
+    return { nx, ny, px, py }
   }
 
   function sendWs(obj: Record<string, unknown>) {
@@ -579,21 +666,33 @@ export function ViewTab() {
 
   function sendAbs(action: string, clientX: number, clientY: number, button = 0, deltaY = 0) {
     if (!wanted) return
-    const n = normFromClient(clientX, clientY)
-    if (!n) return
+    const m = mapClientToRemote(clientX, clientY)
+    if (!m) return
     const now = performance.now()
     if (action === 'move' && now - lastPointerRef.current < 16) return
     lastPointerRef.current = now
-    sendWs({ type: 'pointer', mode: 'abs', action, x: n.x, y: n.y, button, deltaY })
-    setCursorNorm(n.x, n.y, true)
+    sendWs({
+      type: 'pointer',
+      mode: 'abs',
+      action,
+      x: m.nx,
+      y: m.ny,
+      px: m.px,
+      py: m.py,
+      screenW: screenRef.current.w,
+      screenH: screenRef.current.h,
+      button,
+      deltaY,
+    })
+    setCursorNorm(m.nx, m.ny, true)
   }
 
   function sendRel(dxPx: number, dyPx: number) {
     if (!wanted) return
-    const rect = paintRectRef.current
+    const rect = livePaintRect()
     const sw = screenRef.current.w || 1
     const sh = screenRef.current.h || 1
-    if (rect.w < 1 || rect.h < 1) return
+    if (!rect || rect.w < 1 || rect.h < 1) return
     const now = performance.now()
     if (now - lastPointerRef.current < 12) return
     lastPointerRef.current = now
