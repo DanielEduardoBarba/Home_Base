@@ -29,6 +29,8 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
   const [version, setVersion] = useState('')
   const [backup, setBackup] = useState(false)
   const [busy, setBusy] = useState('')
+  const [vpnUrl, setVpnUrl] = useState<string | null>(null)
+  const [lanUrl, setLanUrl] = useState<string | null>(null)
   const local = isLocalHostPage()
   const cacheCount = useMemo(() => listCacheKeys().length, [cacheMsg])
   const {
@@ -48,6 +50,8 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
       setWgId((prev) => prev || s.wireguard?.[0]?.id || '')
       setVersion(s.version || '')
       setBackup(!!s.backup)
+      setVpnUrl(s.urls?.vpn || null)
+      setLanUrl(s.urls?.lan || null)
     } catch {
       /* ignore */
     }
@@ -314,6 +318,27 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
         <section className="hb-surface p-3.5 space-y-2.5">
           <h2 className="hb-label">Services</h2>
           <p className="text-xs text-mute">Restart host services from your phone (needs root install).</p>
+
+          {(vpnUrl || lanUrl) && (
+            <div className="rounded-xl border border-line bg-panel-2/50 px-3 py-2.5 text-xs space-y-1.5">
+              <p className="text-mute leading-relaxed">
+                On phone VPN open the WireGuard URL — the Wi‑Fi address is only for the same LAN.
+              </p>
+              {vpnUrl && (
+                <p className="font-mono text-[12px] break-all">
+                  <span className="text-mute">VPN · </span>
+                  <a href={vpnUrl} className="text-sky underline-offset-2 hover:underline">
+                    {vpnUrl}
+                  </a>
+                </p>
+              )}
+              {lanUrl && (
+                <p className="font-mono text-[12px] break-all text-mute">
+                  LAN · {lanUrl}
+                </p>
+              )}
+            </div>
+          )}
 
           <div className="space-y-2">
             <div className="flex gap-2 items-center">

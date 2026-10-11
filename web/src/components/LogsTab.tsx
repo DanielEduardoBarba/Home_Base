@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../lib/api'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 import type { TraceLine } from '../lib/types'
+import { useVisibleInterval } from '../lib/visibility'
 
 const MAX = 300
 
@@ -67,11 +68,7 @@ export function LogsTab() {
 
   useSceneRefresh(load)
 
-  useEffect(() => {
-    void load()
-    const t = setInterval(() => void load(), filter === 'journald' ? 4000 : 2000)
-    return () => clearInterval(t)
-  }, [load, filter])
+  useVisibleInterval(() => void load(), filter === 'journald' ? 6_000 : 4_000)
 
   const visible =
     filter === 'journald'

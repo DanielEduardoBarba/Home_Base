@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { isBackupBinary, readVersion } from "./config";
+import { bindPort, isBackupBinary, readVersion } from "./config";
+import { accessHosts } from "./network";
 import { appendTrace } from "./trace";
 
 export function systemStatus(): Record<string, unknown> {
@@ -26,6 +27,7 @@ export function systemStatus(): Record<string, unknown> {
     homebasedUnit: "homebased.service",
     version: readVersion(),
     backup: isBackupBinary(),
+    ...accessHosts(bindPort()),
   };
 }
 

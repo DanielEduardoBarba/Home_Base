@@ -159,6 +159,43 @@ def advertise_host() -> Optional[str]:
     return None
 
 
+def lan_host() -> Optional[str]:
+    """Best non-VPN private IPv4 (Wi‑Fi / Ethernet), or None."""
+    addrs = [(i, ip) for i, ip in list_ipv4_interfaces() if not _is_skip_iface(i)]
+    lan = [
+        (iface, ip)
+        for iface, ip in addrs
+        if not _is_vpn_iface(iface)
+        and _is_usable_ipv4(ip)
+        and ipaddress.ip_address(ip).is_private
+    ]
+    lan.sort(key=lambda t: _lan_score(t[0], t[1]), reverse=True)
+    return lan[0][1] if lan else None
+
+
+def vpn_host() -> Optional[str]:
+    """First WireGuard / VPN iface IPv4 (phone clients should use this for :8888)."""
+    for iface, ip in list_ipv4_interfaces():
+        if _is_vpn_iface(iface) and _is_usable_ipv4(ip):
+            return ip
+    return None
+
+
+def access_hosts(port: int) -> dict:
+    lan = lan_host()
+    vpn = vpn_host()
+    return {
+        "lanHost": lan,
+        "vpnHost": vpn,
+        "advertiseHost": advertise_host(),
+        "port": port,
+        "urls": {
+            "lan": f"http://{lan}:{port}/" if lan else None,
+            "vpn": f"http://{vpn}:{port}/" if vpn else None,
+        },
+    }
+
+
 def project_lan_env(project_ports: list[tuple[str, int]]) -> dict[str, str]:
     """
     Env injected into run/expo PTYs so Next/Expo/API clients use a VPN-reachable host.

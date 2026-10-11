@@ -22,6 +22,7 @@ import {
 } from './notifyPrefs'
 import type { NotificationItem } from './types'
 import { uid } from './id'
+import { useVisibleInterval } from './visibility'
 
 export type ToastItem = {
   id: string
@@ -217,18 +218,7 @@ export function NotifyProvider({ children }: { children: ReactNode }) {
     [present],
   )
 
-  useEffect(() => {
-    void refresh()
-    const t = window.setInterval(() => void refresh(), 4000)
-    const onVis = () => {
-      if (document.visibilityState === 'visible') void refresh()
-    }
-    document.addEventListener('visibilitychange', onVis)
-    return () => {
-      window.clearInterval(t)
-      document.removeEventListener('visibilitychange', onVis)
-    }
-  }, [refresh])
+  useVisibleInterval(() => void refresh(), 8_000)
 
   const markOne = useCallback(
     async (id: string) => {

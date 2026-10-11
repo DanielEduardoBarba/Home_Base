@@ -185,6 +185,8 @@ class MarkReadBody(BaseModel):
 
 @app.get("/api/health")
 async def api_health():
+    from .network import access_hosts
+
     settings = get_settings()
     status = auth_public_status()
     ver = version_status()
@@ -196,6 +198,7 @@ async def api_health():
         "jwtTtlSec": status["jwtTtlSec"],
         "version": ver["version"],
         "backup": ver["backup"],
+        **access_hosts(int(settings.port)),
     }
 
 
@@ -206,14 +209,16 @@ async def api_version():
 
 @app.get("/api/system/status")
 async def api_system_status(_: None = Depends(require_auth)):
-    from .network import advertise_host, list_ipv4_interfaces
+    from .network import access_hosts, advertise_host, list_ipv4_interfaces
 
+    settings = get_settings()
     wg = list_wireguard()
     return {
         "wireguard": wg,
         "homebasedUnit": "homebased.service",
         "advertiseHost": advertise_host(),
         "interfaces": [{"iface": i, "ip": ip} for i, ip in list_ipv4_interfaces()],
+        **access_hosts(int(settings.port)),
         **version_status(),
     }
 

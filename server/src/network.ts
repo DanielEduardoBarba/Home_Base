@@ -113,6 +113,42 @@ export function advertiseHost(): string | null {
   );
 }
 
+/** Best non-VPN private IPv4 (Wi‑Fi / Ethernet), or null. */
+export function lanHost(): string | null {
+  const lan = listIpv4Interfaces()
+    .filter((a) => !isVpnIface(a.iface) && isPrivateIpv4(a.ip))
+    .sort((a, b) => lanScore(b.iface, b.ip) - lanScore(a.iface, a.ip));
+  return lan[0]?.ip ?? null;
+}
+
+/** First WireGuard / VPN iface IPv4 (phone clients should use this for :8888). */
+export function vpnHost(): string | null {
+  const vpn = listIpv4Interfaces().find((a) => isVpnIface(a.iface));
+  return vpn?.ip ?? null;
+}
+
+/** Access URLs for the control plane (health / Settings). */
+export function accessHosts(port: number): {
+  lanHost: string | null;
+  vpnHost: string | null;
+  advertiseHost: string | null;
+  port: number;
+  urls: { lan: string | null; vpn: string | null };
+} {
+  const lan = lanHost();
+  const vpn = vpnHost();
+  return {
+    lanHost: lan,
+    vpnHost: vpn,
+    advertiseHost: advertiseHost(),
+    port,
+    urls: {
+      lan: lan ? `http://${lan}:${port}/` : null,
+      vpn: vpn ? `http://${vpn}:${port}/` : null,
+    },
+  };
+}
+
 /** Env injected into run/expo PTYs (Metro QR + EXPO/NEXT public API). */
 export function projectLanEnv(
   projectPorts: { id: string; port: number }[],

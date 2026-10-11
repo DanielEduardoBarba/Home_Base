@@ -85,6 +85,11 @@ export const api = {
       jwtTtlSec: number
       version?: string
       backup?: boolean
+      lanHost?: string | null
+      vpnHost?: string | null
+      advertiseHost?: string | null
+      port?: number
+      urls?: { lan: string | null; vpn: string | null }
     }>('/api/health'),
   version: () => request<{ version: string; backup: boolean }>('/api/version'),
   viewStatus: () =>
@@ -113,6 +118,11 @@ export const api = {
       homebasedUnit: string
       version: string
       backup: boolean
+      lanHost?: string | null
+      vpnHost?: string | null
+      advertiseHost?: string | null
+      port?: number
+      urls?: { lan: string | null; vpn: string | null }
     }>('/api/system/status'),
   restartHomebased: () =>
     request<{ ok: boolean; unit: string; active: boolean }>('/api/system/restart/homebased', {

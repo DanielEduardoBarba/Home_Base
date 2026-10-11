@@ -20,7 +20,8 @@ import {
   setPolicy,
   verifySecret,
 } from "./approvals";
-import { isBackupBinary, loadProjects, readVersion } from "./config";
+import { bindPort, isBackupBinary, loadProjects, readVersion } from "./config";
+import { accessHosts } from "./network";
 import {
   cursorConfigured,
   getWorkspace,
@@ -62,8 +63,9 @@ export const app = new Hono();
 
 app.onError((err, c) => jsonError(c, err));
 
-app.get("/api/health", (c) =>
-  c.json({
+app.get("/api/health", (c) => {
+  const access = accessHosts(bindPort());
+  return c.json({
     ok: true,
     cursorConfigured: cursorConfigured(),
     passwordSet: passwordIsSet(),
@@ -72,8 +74,9 @@ app.get("/api/health", (c) =>
     version: readVersion(),
     backup: isBackupBinary(),
     runtime: "bun",
-  }),
-);
+    ...access,
+  });
+});
 
 app.get("/api/version", (c) =>
   c.json({ version: readVersion(), backup: isBackupBinary() }),

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { pickAdvertiseHost, projectLanEnv } from "../../src/network";
+import { accessHosts, pickAdvertiseHost, projectLanEnv } from "../../src/network";
 
 describe("advertiseHost", () => {
   test("prefers LAN 192.168 over WireGuard", () => {
@@ -41,6 +41,17 @@ describe("advertiseHost", () => {
     } finally {
       if (prev !== undefined) process.env.HOMEBASE_ADVERTISE_HOST = prev;
       else delete process.env.HOMEBASE_ADVERTISE_HOST;
+    }
+  });
+
+  test("accessHosts exposes separate LAN and VPN URLs", () => {
+    const access = accessHosts(8888);
+    expect(access.port).toBe(8888);
+    if (access.vpnHost) {
+      expect(access.urls.vpn).toBe(`http://${access.vpnHost}:8888/`);
+    }
+    if (access.lanHost) {
+      expect(access.urls.lan).toBe(`http://${access.lanHost}:8888/`);
     }
   });
 });

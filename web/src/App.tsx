@@ -25,6 +25,7 @@ import {
   writeLastProjectId,
   writeLastTab,
 } from './lib/uiPrefs'
+import { useVisibleInterval } from './lib/visibility'
 
 installClientLog()
 // Theme also applied in main.tsx before first paint; keep prefs + safe-area here
@@ -126,14 +127,12 @@ function AuthedApp() {
   const [cursorConfigured, setCursorConfigured] = useState(false)
   const [hostLabel, setHostLabel] = useState(() => location.hostname || 'host')
   const failStreak = useRef(0)
-  const {
-    unread,
-    inboxOpen,
-    toggleInbox,
-    closeInbox,
-    unlockAudio,
-    refresh: refreshNotify,
-  } = useNotify()
+  const { unread, inboxOpen, toggleInbox, closeInbox, unlockAudio } = useNotify()
+  const [viewVisited, setViewVisited] = useState(false)
+
+  useEffect(() => {
+    if (tab === 'view') setViewVisited(true)
+  }, [tab])
 
   const tabs = useMemo(() => TABS, [])
   const activeProject = projects.find((p) => p.id === selectedId) || projects[0]
@@ -186,7 +185,6 @@ function AuthedApp() {
           /* ignore */
         }
       }
-      void refreshNotify()
     } catch (e) {
       const err = e as Error & { status?: number }
       const msg = err.message || String(e)
@@ -202,7 +200,7 @@ function AuthedApp() {
           )
       }
     }
-  }, [selectedId, refreshNotify])
+  }, [selectedId])
 
   const refresh = useCallback(async () => {
     setRefreshing(true)
@@ -213,11 +211,8 @@ function AuthedApp() {
     }
   }, [refreshProjects])
 
-  useEffect(() => {
-    void refreshProjects()
-    const t = setInterval(() => void refreshProjects(), 10000)
-    return () => clearInterval(t)
-  }, [refreshProjects])
+  // Pause project polls while the phone screen is off / tab backgrounded (VPN savings).
+  useVisibleInterval(() => void refreshProjects(), 15_000)
 
   let body: ReactNode = null
   if (tab === 'apps') {
@@ -370,13 +365,15 @@ function AuthedApp() {
         )}
       </div>
       <main className="flex-1 min-h-0 overflow-hidden relative">
-        {/* Keep View mounted (hidden) so JWT WS + capture stay up across tab switches. */}
-        <div
-          className={tab === 'view' ? 'h-full' : 'hidden'}
-          aria-hidden={tab !== 'view'}
-        >
-          <ViewTab />
-        </div>
+        {/* Mount View on first visit; keep mounted (hidden) so capture survives tab switches. */}
+        {viewVisited && (
+          <div
+            className={tab === 'view' ? 'h-full' : 'hidden'}
+            aria-hidden={tab !== 'view'}
+          >
+            <ViewTab />
+          </div>
+        )}
         {tab !== 'view' && body}
       </main>
 

@@ -1343,6 +1343,12 @@ cmd_service() {
   if [[ -f "$ROOT/scripts/hb-vpn-access.sh" ]]; then
     echo "==> Installing VPN access helper → $INSTALL_SHARE/hb-vpn-access.sh"
     run_priv install -m 0755 "$ROOT/scripts/hb-vpn-access.sh" "$INSTALL_SHARE/hb-vpn-access.sh"
+    # Unit already has ExecStartPre; legacy drop-in doubled UFW apply (~8s per start).
+    if [[ -f /etc/systemd/system/homebased.service.d/vpn-access.conf ]]; then
+      echo "==> Removing duplicate vpn-access.conf ExecStartPre drop-in"
+      run_priv rm -f /etc/systemd/system/homebased.service.d/vpn-access.conf
+      run_priv systemctl daemon-reload
+    fi
   fi
 
   if ! restart_homebased_service; then

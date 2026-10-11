@@ -7,6 +7,7 @@ import {
   writeShellAttach,
 } from '../lib/shellAttach'
 import type { Project, Session } from '../lib/types'
+import { useVisibleInterval } from '../lib/visibility'
 import { HoldButton } from './HoldButton'
 import { IconBtn } from './IconBtn'
 import { ProjectSelect } from './ProjectSelect'
@@ -114,11 +115,9 @@ export function ShellTab({
 
   useSceneRefresh(refresh)
 
-  useEffect(() => {
-    refresh().catch(() => undefined)
-    const t = setInterval(() => refresh().catch(() => undefined), 4000)
-    return () => clearInterval(t)
-  }, [refresh])
+  useVisibleInterval(() => {
+    void refresh().catch(() => undefined)
+  }, 8_000)
 
   /** Detach UI only — does not kill or interrupt the PTY. */
   function leaveTerminal() {
