@@ -3,7 +3,7 @@ import { loadProjects, readVersion } from "./config";
 import { listNotifications, pushNotification } from "./notifications";
 import { projectPublic, runAction, stopProject, tailLogs } from "./process";
 import { listSessions } from "./pty";
-import { systemStatus } from "./system";
+import { restartHomebased, systemStatus } from "./system";
 
 const CONTEXT_MARKER = "[Home Base context]";
 
@@ -25,6 +25,9 @@ export function wrapPrompt(
     `UI=Home Base v${readVersion()} (not Cursor IDE) · ` +
     `project ${name} (${projectId}) @ ${path} · chat ${opts.chatId || "default"}${cwdBit}. ` +
     `For control-plane ops use homebase_* tools only; code/file work uses normal tools. ` +
+    `To redeploy this control plane from Chat, run ./build.sh --deploy in the Home Base ` +
+    `repo (it auto-schedules a detached systemd job so restart does not kill the deploy). ` +
+    `Prefer homebase_restart_homebased over a raw systemctl restart. ` +
     `Answer the user message below in a normal concise voice.\n---\n` +
     text
   );
@@ -145,6 +148,12 @@ export function buildHomebaseTools(
             category: "agent",
           }),
         ),
+    };
+    tools.homebase_restart_homebased = {
+      description:
+        "Schedule a detached restart of homebased.service (survives self-stop; do not use raw systemctl restart from inside Home Base)",
+      parameters: { type: "object", properties: {} },
+      execute: async () => json(restartHomebased()),
     };
   }
 

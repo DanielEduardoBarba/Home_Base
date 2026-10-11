@@ -13,6 +13,8 @@ DO_BIN=false
 DO_SERVICE=false
 DO_DEPLOY=false
 DO_HELP=false
+# Set when a detached systemd unit is already running deploy (avoid re-schedule loop).
+FROM_DETACHED=false
 # Default runtime is Bun (server/). Pass --python for FastAPI/Nuitka.
 USE_PYTHON=false
 ADD_PRESET=""
@@ -69,7 +71,12 @@ USAGE
   ./build.sh --service            Install homebased.service, daemon-reload, enable, restart
   ./build.sh --deploy             --bin → safe install under /usr/share + wrapper → --service
   ./build.sh --deploy --python    Deploy Nuitka Python binary instead of Bun
+  ./build.sh --deploy --from-detached
+                                  Internal: already scheduled outside homebased cgroup
   ./build.sh -h|--help
+
+Self-deploy: if --deploy runs inside homebased (e.g. Chat Shell), it schedules a
+detached systemd oneshot and returns — stop/restart cannot kill the deploy.
 
 Projects live in config/projects.json (gitignored). Presets are templates
 (actions/ports only) — always pass --path for where the repo lives.
@@ -93,6 +100,7 @@ while [[ $# -gt 0 ]]; do
     --bin) DO_BIN=true; shift ;;
     --service) DO_SERVICE=true; shift ;;
     --deploy) DO_DEPLOY=true; shift ;;
+    --from-detached|--detached) FROM_DETACHED=true; shift ;;
     --python) USE_PYTHON=true; shift ;;
     --add-project) shift ;;
     --preset) ADD_PRESET="${2:-}"; shift 2 ;;
@@ -1063,6 +1071,17 @@ restart_homebased_service() {
   run_priv timeout 15 systemctl daemon-reload || true
   run_priv timeout 15 systemctl enable "$SERVICE_NAME" || true
   run_priv timeout 10 systemctl reset-failed "$SERVICE_NAME" 2>/dev/null || true
+
+  # If somehow still inside the unit cgroup, never call systemctl restart in-process.
+  if under_homebased_service; then
+    if ! schedule_detached_restart; then
+      return 1
+    fi
+    HOMEBASED_UNIT_STOPPED=0
+    echo "==> Detached restart scheduled (skip sync wait — this process may die)"
+    return 0
+  fi
+
   if ! run_priv timeout 35 systemctl restart "$SERVICE_NAME"; then
     echo "Error: systemctl restart $SERVICE_NAME failed" >&2
     run_priv timeout 5 systemctl --no-pager --full status "$SERVICE_NAME" >&2 || true
@@ -1337,7 +1356,64 @@ cmd_service() {
   fi
 }
 
+# True when this shell is inside homebased.service's cgroup (Chat PTY / agent).
+under_homebased_service() {
+  [[ "${HOMEBASE_DETACHED_DEPLOY:-}" == "1" || "$FROM_DETACHED" == true ]] && return 1
+  [[ -r /proc/self/cgroup ]] || return 1
+  grep -qE 'homebased\.service' /proc/self/cgroup 2>/dev/null
+}
+
+# Schedule deploy outside homebased's KillMode=control-group so stop/restart
+# cannot abort the job mid-flight (chat-driven ./build.sh --deploy).
+schedule_detached_deploy() {
+  echo "==> Detected deploy inside homebased — scheduling detached systemd oneshot"
+  ensure_priv_session "homebased detached deploy"
+  local unit="homebased-self-deploy-$(date +%s%N)"
+  local cmd
+  cmd="cd $(printf %q "$ROOT") && export HOMEBASE_DETACHED_DEPLOY=1 && exec ./build.sh --deploy --from-detached"
+  if [[ "$USE_PYTHON" == true ]]; then
+    cmd+=" --python"
+  fi
+  if ! run_priv systemd-run \
+      --collect \
+      --unit="$unit" \
+      --property=Type=oneshot \
+      --property=TimeoutStartSec=900 \
+      --working-directory="$ROOT" \
+      /bin/bash -lc "$cmd"; then
+    echo "Error: systemd-run failed to schedule detached deploy" >&2
+    exit 1
+  fi
+  echo "==> Detached deploy started as unit: $unit"
+  echo "    Logs: journalctl -u $unit -f"
+  echo "    Home Base will stop/restart shortly; this Chat/Shell session may disconnect."
+  echo "    When back: curl -s http://127.0.0.1:${PROD_PORT}/api/version"
+}
+
+# Restart via transient timer outside this process tree (safe from inside the unit).
+schedule_detached_restart() {
+  local timer="homebased-self-restart-$(date +%s%N)"
+  echo "==> Scheduling detached restart ($timer)"
+  if ! run_priv systemd-run \
+      --collect \
+      --unit="$timer" \
+      --on-active=1s \
+      --timer-property=AccuracySec=100ms \
+      systemctl restart "$SERVICE_NAME"; then
+    echo "Error: systemd-run failed to schedule restart" >&2
+    return 1
+  fi
+  echo "    restart scheduled — unit will come back in ~1s"
+  return 0
+}
+
 cmd_deploy() {
+  # Chat/agent self-deploy: never stop homebased from inside its own cgroup.
+  if under_homebased_service; then
+    schedule_detached_deploy
+    return 0
+  fi
+
   echo "==> Deploy: build → install homebase binary → restart homebased.service"
   # Elevate before bin so reclaiming root-owned dist/web paths only prompts once.
   ensure_priv_session "homebased deploy"

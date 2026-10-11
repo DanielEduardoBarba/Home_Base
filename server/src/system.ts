@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { isBackupBinary, readVersion } from "./config";
+import { appendTrace } from "./trace";
 
 export function systemStatus(): Record<string, unknown> {
   const wireguard: { id: string; unit: string; conf: string }[] = [];
@@ -36,17 +37,66 @@ function systemctl(...args: string[]): { ok: boolean; out: string } {
   };
 }
 
+/**
+ * Restart via a transient systemd timer outside homebased's cgroup.
+ * A direct `systemctl restart` from inside the unit is killed with KillMode=control-group
+ * and can leave the service down (chat-driven deploy/restart).
+ */
 export function restartHomebased(): Record<string, unknown> {
   if (process.getuid?.() !== 0) {
-    return { ok: false, unit: "homebased.service", active: false, error: "root required" };
+    return {
+      ok: false,
+      unit: "homebased.service",
+      active: false,
+      error: "root required",
+    };
   }
-  const r = systemctl("restart", "homebased.service");
-  const active = systemctl("is-active", "homebased.service");
+  const timer = `homebased-self-restart-${process.hrtime.bigint()}`;
+  appendTrace("warn", `homebased restart scheduled via ${timer}`, "system");
+  const r = spawnSync(
+    "systemd-run",
+    [
+      "--collect",
+      `--unit=${timer}`,
+      "--on-active=1s",
+      "--timer-property=AccuracySec=100ms",
+      "systemctl",
+      "restart",
+      "homebased.service",
+    ],
+    { encoding: "utf8" },
+  );
+  if (r.status !== 0) {
+    const err = ((r.stderr || "") + (r.stdout || "")).trim();
+    appendTrace("warn", `systemd-run failed, falling back: ${err}`, "system");
+    const fallback = systemctl("restart", "homebased.service");
+    const active = systemctl("is-active", "homebased.service");
+    return {
+      ok: fallback.ok || active.out.trim() === "active",
+      unit: "homebased.service",
+      active: active.out.trim() === "active",
+      scheduled: false,
+      error: err || undefined,
+    };
+  }
   return {
-    ok: r.ok,
+    ok: true,
     unit: "homebased.service",
-    active: active.out.trim() === "active",
+    active: true,
+    scheduled: true,
+    timer,
+    stdout: (r.stdout || "").trim(),
   };
+}
+
+/** True when this process is in the homebased.service cgroup (self-deploy risk). */
+export function underHomebasedService(): boolean {
+  try {
+    const text = readFileSync("/proc/self/cgroup", "utf8");
+    return text.includes("homebased.service");
+  } catch {
+    return false;
+  }
 }
 
 export function restartWireguard(

@@ -133,8 +133,8 @@ function MessageCard({
 }) {
   if (m.role === 'user') {
     return (
-      <div className="ml-6">
-        <div className="hb-chat-user rounded-2xl px-3.5 py-3 text-sm leading-relaxed shadow-sm">
+      <div className="ml-6 min-w-0 max-w-full">
+        <div className="hb-chat-user rounded-2xl px-3.5 py-3 text-sm leading-relaxed shadow-sm whitespace-pre-wrap break-words">
           {m.text}
         </div>
         <MsgMeta at={m.at} align="end" />
@@ -145,12 +145,12 @@ function MessageCard({
     const body = m.streaming ? m.text || '' : polishThinking(m.text || '')
     return (
       <details
-        className={`hb-chat-thinking rounded-xl px-3 py-2 text-xs text-amber mr-8${
+        className={`hb-chat-thinking rounded-xl px-3 py-2 text-xs text-amber mr-8 min-w-0 max-w-full${
           m.streaming ? ' hb-chat-thinking-live open' : ''
         }`}
         open={m.streaming || undefined}
       >
-        <summary className="cursor-pointer select-none list-none flex items-center gap-2 flex-wrap">
+        <summary className="cursor-pointer select-none list-none flex items-center gap-2 flex-wrap min-w-0">
           <MsgPhaseBadge
             kind={m.streaming ? 'thinking' : 'done'}
             startedAt={m.at}
@@ -164,7 +164,7 @@ function MessageCard({
           )}
           <MsgMeta at={m.at} />
         </summary>
-        <div className="mt-1.5 whitespace-pre-wrap leading-relaxed opacity-95 hb-chat-thinking-body">
+        <div className="mt-1.5 whitespace-pre-wrap break-words leading-relaxed opacity-95 hb-chat-thinking-body">
           {body}
           {m.streaming && (
             <span className="hb-chat-caret" aria-hidden>
@@ -181,15 +181,15 @@ function MessageCard({
     const status = m.tool?.status || 'running'
     const running = status === 'running' || status === 'pending'
     return (
-      <div className="mr-6">
+      <div className="mr-6 min-w-0 max-w-full">
         <div className="hb-chat-tool rounded-xl px-3 py-2.5 text-xs">
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
             <MsgPhaseBadge
               kind={running ? 'busy' : 'done'}
               startedAt={m.at}
               live={running}
             />
-            <span className="text-violet font-semibold">{label}</span>
+            <span className="text-violet font-semibold break-words min-w-0">{label}</span>
             <span
               className={
                 status === 'completed'
@@ -204,7 +204,7 @@ function MessageCard({
             {hint && onPresent && (status === 'completed' || m.tool?.sessionId) && (
               <button
                 type="button"
-                className="ml-auto text-accent font-semibold hover:underline"
+                className="ml-auto text-accent font-semibold hover:underline shrink-0"
                 onClick={() => onPresent(hint)}
               >
                 {presentLabel(hint)}
@@ -221,10 +221,10 @@ function MessageCard({
   }
   if (m.role === 'file') {
     return (
-      <div className="mr-6">
+      <div className="mr-6 min-w-0 max-w-full">
         <div className="hb-chat-file rounded-xl px-3 py-2.5 text-xs shadow-sm">
-          <div className="flex items-center gap-2">
-            <span className="text-sky font-semibold uppercase text-[10px] tracking-wide">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-sky font-semibold uppercase text-[10px] tracking-wide shrink-0">
               {m.file?.action || 'file'}
             </span>
             <span className="text-text truncate flex-1 min-w-0 font-mono text-[11px]">
@@ -252,7 +252,7 @@ function MessageCard({
     const done = m.role === 'status' && /^done\b/i.test((m.text || '').trim())
     return (
       <div
-        className={`hb-chat-status flex items-baseline gap-2 px-1 ${
+        className={`hb-chat-status flex items-baseline gap-2 px-1 min-w-0 max-w-full ${
           err ? 'text-danger' : done ? 'text-mute' : 'text-mute'
         }`}
       >
@@ -264,7 +264,7 @@ function MessageCard({
     )
   }
   return (
-    <div className="mr-4">
+    <div className="mr-4 min-w-0 max-w-full">
       <div className="hb-chat-assistant rounded-2xl px-3.5 py-3 text-sm leading-relaxed shadow-sm">
         <div className="hb-msg-badge-row">
           <MsgPhaseBadge
@@ -1393,7 +1393,7 @@ export function ChatPanel({
   const messages = (
     <div
       ref={listRef}
-      className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 py-3 space-y-3"
+      className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-3 space-y-3"
       onScroll={(e) => {
         const el = e.currentTarget
         stickBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 72

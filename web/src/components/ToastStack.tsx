@@ -8,7 +8,7 @@ function levelDot(level: string): string {
 }
 
 export function ToastStack() {
-  const { toasts, dismissToast, openInbox } = useNotify()
+  const { toasts, dismissToast } = useNotify()
   if (!toasts.length) return null
 
   return (
@@ -18,12 +18,11 @@ export function ToastStack() {
           key={t.id}
           type="button"
           className="hb-toast"
-          aria-label={`${t.title}. Open alerts`}
-          title="Open alerts"
+          aria-label={`${t.title}. Dismiss`}
+          title="Dismiss"
           onClick={() => {
-            // Whole toast = dismiss (former X) + open notification center
+            // Toast only — keep the item in Alerts; do not open the inbox modal
             dismissToast(t.id)
-            openInbox()
           }}
         >
           <span className={`hb-toast-dot ${levelDot(t.level)}`} />
