@@ -5,7 +5,7 @@ Mobile-first control plane for projects on your laptop — run scripts, shells, 
 | Mode | URL | Process |
 |------|-----|---------|
 | **Production** | `http://<laptop>:8888/` | systemd `homebased` as **root** |
-| **Development** | Vite `http://localhost:3081` → API `:8081` | `./build.sh --run` (beside prod) |
+| **Development** | Next `http://localhost:3081` → API `:8081` | `./build.sh --run` (beside prod) |
 
 ## Prerequisites
 
@@ -26,7 +26,7 @@ Mobile-first control plane for projects on your laptop — run scripts, shells, 
 
 Open `http://localhost:3081` and **create a password** (localhost-loaded UI only). Later sign-ins get a **24h JWT** in `localStorage`. Dev ports (`:8081` / `:3081`) sit beside production `:8888` so both can run at once.
 
-Hotkeys while `--run`: `r` restart both · `a`/`q` API · `w` Vite · `h` help · Ctrl+C quit.
+Hotkeys while `--run`: `r` restart both · `a`/`q` API · `w` Next · `h` help · Ctrl+C quit.
 
 ## Daily use / production (VPN)
 
@@ -42,7 +42,7 @@ Stop / restart prod: `sudo systemctl stop|restart homebased`.
 
 ## Same-origin API
 
-Fetch and WebSocket clients always use relative `/api/...` and `/ws/...` against `location.host`. Dev (Vite proxy) and prod (FastAPI serves SPA + API) share the same client code. No open CORS — cross-origin browser API access is not supported.
+Fetch and WebSocket clients always use relative `/api/...` and `/ws/...` against `location.host`. Dev (Next proxy) and prod (Bun/Python serves SPA + API) share the same client code. No open CORS — cross-origin browser API access is not supported.
 
 ## Tabs
 
@@ -103,7 +103,7 @@ Copy [`.env.example`](.env.example). Never commit `.env` or `config/projects.jso
 | `HOMEBASE_JWT_SECRET` | Optional JWT HMAC override (else `.runtime/jwt_secret`) |
 | `CURSOR_API_KEY` | Local Cursor agents |
 | `CURSOR_MODEL` | Default model (`auto` = Cursor picks) |
-| `HOMEBASE_HOST` / `HOMEBASE_PORT` | Bind (dev `--run` forces `:8081` + Vite `:3081`; systemd forces `:8888`) |
+| `HOMEBASE_HOST` / `HOMEBASE_PORT` | Bind (dev `--run` forces `:8081` + Next `:3081`; systemd forces `:8888`) |
 
 Deploy also syncs those keys into `/var/lib/homebased/.env` and installs the Cursor SDK bridge beside the binary (Nuitka omits the Node bridge).
 

@@ -11,5 +11,5 @@
 - **Latest verification:** typecheck PASS; `bun test` 12 pass; view-worker ping+grab on `:0` (JPEG HBVF); self-test ok
 - **Next:** User exercises R-001 prod Bun deploy manually
 - **Blocked work:** none for View; R-001 left to operator
-- **VERSION:** 1.4.37
-- **Note:** VPN :8888 idempotent UFW + single ExecStartPre; SPA visibility-aware polls; health exposes lan/vpn URLs
+- **VERSION:** 1.4.38
+- **Note:** Next.js static export SPA (web/); tab code-splitting; Bun/Python .br/.gz + Cache-Control; Vite leftovers removed

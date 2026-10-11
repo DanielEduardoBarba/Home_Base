@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, extname } from "node:path";
-import { BUNDLE_ROOT } from "./config";
+import { bundleRoot } from "./config";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -11,13 +11,29 @@ const MIME: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
+  ".woff": "font/woff",
   ".woff2": "font/woff2",
   ".ico": "image/x-icon",
   ".map": "application/json",
+  ".txt": "text/plain; charset=utf-8",
+  ".webmanifest": "application/manifest+json",
 };
 
 export function distRoot(): string {
-  return join(BUNDLE_ROOT, "web", "dist");
+  // Resolve each request so HOMEBASE_BUNDLE_ROOT / install layout stay correct in tests.
+  return join(bundleRoot(), "web", "dist");
+}
+
+function cacheControl(rel: string, ext: string): string {
+  if (ext === ".html") return "no-cache";
+  // Next hashed chunks under /_next/static/
+  if (rel.includes("/_next/static/")) {
+    return "public, max-age=31536000, immutable";
+  }
+  if (ext === ".woff2" || ext === ".woff" || ext === ".svg" || ext === ".ico") {
+    return "public, max-age=86400";
+  }
+  return "public, max-age=3600";
 }
 
 export function tryServeStatic(
@@ -50,8 +66,12 @@ export function tryServeStatic(
   const ext = extname(filePath).toLowerCase();
   const headers: Record<string, string> = {
     "content-type": MIME[ext] || "application/octet-stream",
+    "cache-control": cacheControl(rel, ext),
   };
-  if (encoding) headers["content-encoding"] = encoding;
+  if (encoding) {
+    headers["content-encoding"] = encoding;
+    headers["vary"] = "Accept-Encoding";
+  }
   const data = readFileSync(bodyPath);
   return new Response(data, { status: 200, headers });
 }

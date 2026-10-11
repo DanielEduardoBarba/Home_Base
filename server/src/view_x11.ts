@@ -358,8 +358,23 @@ export class X11Session {
     if (!mons.length) {
       return { index: 0, label: "All displays", left: 0, top: 0, width: 0, height: 0 };
     }
-    const m = mons[index] ?? mons[0]!;
-    return m;
+    // Match by MonitorInfo.index (0 = virtual desktop), not array slot.
+    return mons.find((m) => m.index === index) ?? mons.find((m) => m.index === 0) ?? mons[0]!;
+  }
+
+  /** Warp pointer to the center of a monitor so relative/touch input stays in-bounds after a switch. */
+  centerPointer(monitor: number): void {
+    const rect = this.monitorRect(monitor);
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const desk = this.monitorRect(0);
+    this.deskLeft = desk.left;
+    this.deskTop = desk.top;
+    if (desk.width) this.width = desk.width;
+    if (desk.height) this.height = desk.height;
+    this.motion(
+      Math.trunc(rect.left + rect.width / 2),
+      Math.trunc(rect.top + rect.height / 2),
+    );
   }
 
   grabRgba(monitor: number): GrabPixels {

@@ -92,8 +92,8 @@ export function ViewTab() {
   const lastPointerRef = useRef(0)
   const rafRef = useRef(0)
   const presetRef = useRef<QualityPreset>('auto')
-  const controlRef = useRef<ControlMode>(loadControl())
-  const monitorRef = useRef(loadMonitor())
+  const controlRef = useRef<ControlMode>('touch')
+  const monitorRef = useRef(0)
   const zoomRef = useRef(1)
   const panRef = useRef({ x: 0, y: 0 })
   const screenRef = useRef({ w: 0, h: 0 })
@@ -143,8 +143,8 @@ export function ViewTab() {
   const [conn, setConn] = useState<WsConnState>('offline')
   const [error, setError] = useState('')
   const [preset, setPreset] = useState<QualityPreset>('auto')
-  const [control, setControl] = useState<ControlMode>(loadControl())
-  const [monitor, setMonitor] = useState(loadMonitor())
+  const [control, setControl] = useState<ControlMode>('touch')
+  const [monitor, setMonitor] = useState(0)
   const [monitors, setMonitors] = useState<MonitorInfo[]>([])
   const [zoom, setZoom] = useState(1)
   const [stats, setStats] = useState({ fps: 0, kbps: 0, quality: 0, screen: '' })
@@ -152,14 +152,22 @@ export function ViewTab() {
   const [maximized, setMaximized] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [probe, setProbe] = useState('')
-  const [hint, setHint] = useState(() => {
-    try {
-      return localStorage.getItem(LS_HINT) !== '1'
-    } catch {
-      return true
-    }
-  })
+  const [hint, setHint] = useState(true)
   const [holdPulse, setHoldPulse] = useState(false)
+
+  useEffect(() => {
+    const c = loadControl()
+    const m = loadMonitor()
+    controlRef.current = c
+    monitorRef.current = m
+    setControl(c)
+    setMonitor(m)
+    try {
+      setHint(localStorage.getItem(LS_HINT) !== '1')
+    } catch {
+      setHint(true)
+    }
+  }, [])
   const [cursorOn, setCursorOn] = useState(false)
   const fpsCount = useRef(0)
   const fpsT0 = useRef(performance.now())
@@ -201,6 +209,23 @@ export function ViewTab() {
     } catch {
       /* ignore */
     }
+    // Update input mapping immediately from monitor metadata (don't wait for next JPEG).
+    // Stale All-displays screenW/H makes touch deltas overshoot into the other screen.
+    const monMeta = monitorsRef.current.find((m) => m.index === monitor)
+    if (monMeta && monMeta.width > 0 && monMeta.height > 0) {
+      screenRef.current = { w: monMeta.width, h: monMeta.height }
+      setStats((s) => ({
+        ...s,
+        screen: `${monMeta.width}×${monMeta.height}`,
+      }))
+    }
+    // Drop previous capture so paintRect/aspect can't mismatch the new monitor.
+    if (bitmapRef.current) {
+      bitmapRef.current.close()
+      bitmapRef.current = null
+    }
+    paintRectRef.current = { x: 0, y: 0, w: 0, h: 0 }
+    cursorNormRef.current = { x: 0.5, y: 0.5 }
     const ws = connRef.current?.getSocket()
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'config', monitor }))
@@ -378,7 +403,12 @@ export function ViewTab() {
                   monitorsRef.current = mons
                   setMonitors(mons)
                 }
-                if (msg.screenW && msg.screenH) {
+                const cfgMon = Number(msg.monitor)
+                const monIdx = Number.isFinite(cfgMon) ? cfgMon : monitorRef.current
+                const monMeta = (mons || monitorsRef.current).find((m) => m.index === monIdx)
+                if (monMeta && monMeta.width > 0 && monMeta.height > 0) {
+                  screenRef.current = { w: monMeta.width, h: monMeta.height }
+                } else if (msg.screenW && msg.screenH) {
                   screenRef.current = { w: Number(msg.screenW), h: Number(msg.screenH) }
                 }
                 if (msg.type === 'hello') {

@@ -1,9 +1,8 @@
 @import 'tailwindcss';
-@import 'xterm/css/xterm.css';
 
 @theme {
-  --font-display: 'Syne', ui-sans-serif, system-ui, sans-serif;
-  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --font-display: var(--font-syne), 'Syne', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex), 'IBM Plex Mono', ui-monospace, monospace;
   --color-ink: var(--hb-ink);
   --color-panel: var(--hb-panel);
   --color-panel-2: var(--hb-panel-2);

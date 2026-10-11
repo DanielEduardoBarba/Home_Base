@@ -1,6 +1,6 @@
 # Home Base — agent guide
 
-Generic control plane. **Production `:8888`** (systemd as root). **Dev API `:8081`**, **Vite `:3081`** (proxies `/api` + `/ws`) — one off the usual defaults so `./build.sh --run` can sit beside prod. Projects are configured in **gitignored** `config/projects.json` — nothing is hardcoded until added via CLI.
+Generic control plane. **Production `:8888`** (systemd as root). **Dev API `:8081`**, **Next `:3081`** (proxies `/api` + `/ws`) — one off the usual defaults so `./build.sh --run` can sit beside prod. Projects are configured in **gitignored** `config/projects.json` — nothing is hardcoded until added via CLI.
 
 **Backend default is Bun** (`server/`). Python FastAPI (`server-py/` → package `server_py`) remains for rollback via `--python`.
 
@@ -10,17 +10,17 @@ Generic control plane. **Production `:8888`** (systemd as root). **Dev API `:808
 ./build.sh --setup                 # Bun server + web deps (no Python)
 ./build.sh --setup --python        # also Python venv (only if you need --python)
 ./build.sh --add-project --preset example --path /path/to/your-repo
-./build.sh --run                   # Bun API + Vite
-./build.sh --run --python          # Python uvicorn + Vite (rollback)
+./build.sh --run                   # Bun API + Next
+./build.sh --run --python          # Python uvicorn + Next (rollback)
 ```
 
 Presets never embed a default filesystem path — always pass `--path`.
 
-Open the UI at `http://localhost:3081` in dev (Vite). Production is `http://<host>:8888/`.
+Open the UI at `http://localhost:3081` in dev (Next). Production is `http://<host>:8888/`.
 
 ## Same-origin client API
 
-SPA fetch/WebSocket paths are always relative (`/api/...`, `/ws/...` via `location.host`). Dev and prod use the same client code — Vite proxies those paths to the API in development; the backend serves SPA + API together in production.
+SPA fetch/WebSocket paths are always relative (`/api/...`, `/ws/...` via `location.host`). Dev and prod use the same client code — Next proxies those paths to the API in development; the backend serves SPA + API together in production.
 
 ## UI tabs
 

@@ -264,6 +264,14 @@ export async function runViewWorker(): Promise<number> {
         if (mon !== lastMonitor) {
           lastHash.cur = Buffer.alloc(0);
           lastMonitor = mon;
+          try {
+            // Relative/touch deltas accumulate from the real cursor — park it in the
+            // selected display so D1↔All switches don't keep clicking the old desktop.
+            xin.open();
+            xin.centerPointer(mon);
+          } catch {
+            /* ignore */
+          }
         }
       }
       const resp = dispatch(msg, xin, lastHash);

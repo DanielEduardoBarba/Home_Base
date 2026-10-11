@@ -62,8 +62,8 @@ Home Base · build.sh
 USAGE
   ./build.sh --setup              Install Bun server + web deps, .env + JWT secret
   ./build.sh --setup --python     Also create Python venv (rollback / --python runs)
-  ./build.sh --run                Dev: Bun API + Vite (hotkeys r/a/w/q/h)
-  ./build.sh --run --python       Dev: Python uvicorn API + Vite (requires --setup --python)
+  ./build.sh --run                Dev: Bun API + Next (hotkeys r/a/w/q/h)
+  ./build.sh --run --python       Dev: Python uvicorn API + Next (requires --setup --python)
   ./build.sh --add-project --preset NAME --path /abs/or/rel/path
   ./build.sh --add-project --path /abs/or/rel/path [--id ID] [--name NAME]
   ./build.sh --bin                Bun compile → dist/homebase (default)
@@ -328,8 +328,8 @@ build_web_dist() {
   if [[ ! -d web/node_modules ]]; then
     (cd web && npm install)
   fi
-  # Prior sudo builds can leave root-owned web/dist; move it aside so vite can emptyOutDir.
-  if [[ -d web/dist ]] && [[ ! -w web/dist || ! -w web/dist/assets ]]; then
+  # Prior sudo builds can leave root-owned web/dist; move it aside so Next can write.
+  if [[ -d web/dist ]] && [[ ! -w web/dist || ( -d web/dist/_next && ! -w web/dist/_next ) ]]; then
     local stamped="web/dist.unwritable.$(date +%s)"
     echo "    web/dist not writable — moving aside → $stamped"
     mv web/dist "$stamped" 2>/dev/null \
@@ -339,12 +339,9 @@ build_web_dist() {
         exit 1
       }
   fi
-  # Vite 8's Rust tooling (oxc/rolldown) uses rayon; under memory pressure
-  # spawning a full CPU-count pool can fail with EAGAIN and abort the build.
-  # Cap threads so deploy still works on a busy laptop (Cursor/Firefox/swap).
+  # Cap worker threads under memory pressure so deploy still works on a busy laptop.
   (
     cd web
-    export RAYON_NUM_THREADS="${RAYON_NUM_THREADS:-2}"
     export UV_THREADPOOL_SIZE="${UV_THREADPOOL_SIZE:-2}"
     npm run build
   )
@@ -393,7 +390,7 @@ cmd_setup() {
   echo "  Open UI on localhost → create a password (only localhost can set/change it)."
   echo "  Sessions are JWT with 24h TTL. Share QR issues a one-time redeem code."
   echo "  Add projects:  ./build.sh --add-project --preset example --path /path/to/your-repo"
-  echo "  Dev console:   ./build.sh --run          (Bun API + vite)"
+  echo "  Dev console:   ./build.sh --run          (Bun API + Next)"
   echo "  Deploy:        ./build.sh --deploy       (Bun binary)"
   if [[ "$USE_PYTHON" == true ]]; then
     echo "  Dev Python:    ./build.sh --run --python"
@@ -540,11 +537,11 @@ print_hotkey_help() {
 ${C_BOLD}Dev console hotkeys:${C_RESET}
   ${C_WHITE}r${C_RESET}  restart api + web
   ${C_WHITE}a${C_RESET} / ${C_WHITE}q${C_RESET}  restart API only (uvicorn --reload)
-  ${C_WHITE}w${C_RESET}  restart web only (Vite)
+  ${C_WHITE}w${C_RESET}  restart web only (Next)
   ${C_WHITE}h${C_RESET}  show this help
   ${C_YELLOW}Ctrl+C${C_RESET}  quit (stop all processes)
 
-${C_DIM}API${C_RESET}  http://localhost:${HOMEBASE_PORT:-$DEV_API_PORT}   ${C_DIM}Vite${C_RESET}  http://localhost:${DEV_WEB_PORT}
+${C_DIM}API${C_RESET}  http://localhost:${HOMEBASE_PORT:-$DEV_API_PORT}   ${C_DIM}Next${C_RESET}  http://localhost:${DEV_WEB_PORT}
 EOF
 }
 
@@ -762,10 +759,10 @@ cmd_run() {
   echo ""
   echo "${C_BOLD}Home Base · dev${C_RESET}  ${C_DIM}(beside prod :${PROD_PORT} · ${runtime_label})${C_RESET}"
   echo "  ${C_CYAN}API${C_RESET}   http://localhost:${HOMEBASE_PORT}  (${runtime_label} --host ${HOMEBASE_HOST})"
-  echo "  ${C_GREEN}Vite${C_RESET}  http://localhost:${DEV_WEB_PORT}  (proxies /api + /ws → :${HOMEBASE_PORT})"
+  echo "  ${C_GREEN}Next${C_RESET}  http://localhost:${DEV_WEB_PORT}  (proxies /api + /ws → :${HOMEBASE_PORT})"
   if [[ -n "${lan_ips// }" ]]; then
     for ip in $lan_ips; do
-      echo "  ${C_GREEN}LAN${C_RESET}   http://${ip}:${DEV_WEB_PORT}  ${C_DIM}(phone / iPad — use Vite, not :${HOMEBASE_PORT})${C_RESET}"
+      echo "  ${C_GREEN}LAN${C_RESET}   http://${ip}:${DEV_WEB_PORT}  ${C_DIM}(phone / iPad — use Next, not :${HOMEBASE_PORT})${C_RESET}"
     done
   fi
   echo "  ${C_DIM}UI + API use same-origin /api and /ws · production remains :${PROD_PORT}${C_RESET}"

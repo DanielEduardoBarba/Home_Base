@@ -685,6 +685,28 @@ def run_view_worker() -> int:
                 if mon != last_monitor_holder[0]:
                     last_hash_holder[0] = b""
                     last_monitor_holder[0] = mon
+                    # Park host cursor in the selected display so relative/touch
+                    # deltas don't keep clicking the previous All/D* desktop.
+                    try:
+                        if sct_holder[0] is None:
+                            sct_holder[0] = mss.mss()
+                        xin.open()
+                        rect = _monitor_rect(sct_holder[0], mon)
+                        mw, mh = int(rect["width"]), int(rect["height"])
+                        if mw > 0 and mh > 0:
+                            desk = _monitor_rect(sct_holder[0], 0)
+                            xin._desk_left = int(desk.get("left") or 0)
+                            xin._desk_top = int(desk.get("top") or 0)
+                            if desk.get("width"):
+                                xin._width = int(desk["width"])
+                            if desk.get("height"):
+                                xin._height = int(desk["height"])
+                            xin.motion(
+                                int(rect["left"] + mw // 2),
+                                int(rect["top"] + mh // 2),
+                            )
+                    except Exception:
+                        pass
             resp = _dispatch_worker_cmd(
                 msg,
                 xin=xin,
@@ -1140,6 +1162,14 @@ class ViewHub:
                     client.monitor = max(0, int(msg.get("monitor")))
                 except (TypeError, ValueError):
                     pass
+            mons = list(self._bridge.monitors or [])
+            mon_meta = next((m for m in mons if int(m.get("index", -1)) == client.monitor), None)
+            screen_w = int((mon_meta or {}).get("width") or self._bridge.screen_w or 0)
+            screen_h = int((mon_meta or {}).get("height") or self._bridge.screen_h or 0)
+            if screen_w > 0:
+                self._bridge.screen_w = screen_w
+            if screen_h > 0:
+                self._bridge.screen_h = screen_h
             await client.ws.send_json(
                 {
                     "type": "config",
@@ -1147,7 +1177,9 @@ class ViewHub:
                     "quality": client.quality,
                     "fps": client.fps,
                     "monitor": client.monitor,
-                    "monitors": self._bridge.monitors,
+                    "monitors": mons,
+                    "screenW": screen_w,
+                    "screenH": screen_h,
                 }
             )
             return

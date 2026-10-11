@@ -1,16 +1,12 @@
+'use client'
+
+import dynamic from 'next/dynamic'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { AppsTab } from './components/AppsTab'
-import { CursorTab } from './components/CursorTab'
-import { FilesTab } from './components/FilesTab'
 import { Login } from './components/Login'
-import { LogsTab } from './components/LogsTab'
 import { NotificationCenter } from './components/NotificationCenter'
 import { PullToRefresh } from './components/PullToRefresh'
-import { SettingsTab } from './components/SettingsTab'
-import { ShellTab } from './components/ShellTab'
 import { ToastStack } from './components/ToastStack'
-import { ViewTab } from './components/ViewTab'
-import { WorkTab } from './components/WorkTab'
 import { api } from './lib/api'
 import { clearSession, isSessionValid, watchSessionExpiry } from './lib/auth'
 import type { PresentRequest } from './lib/chatTypes'
@@ -27,9 +23,38 @@ import {
 } from './lib/uiPrefs'
 import { useVisibleInterval } from './lib/visibility'
 
-installClientLog()
-// Theme also applied in main.tsx before first paint; keep prefs + safe-area here
-applyMobileSafeTop()
+const tabFallback = () => (
+  <div className="h-full flex items-center justify-center text-mute text-sm">Loading…</div>
+)
+
+const WorkTab = dynamic(() => import('./components/WorkTab').then((m) => m.WorkTab), {
+  ssr: false,
+  loading: tabFallback,
+})
+const CursorTab = dynamic(() => import('./components/CursorTab').then((m) => m.CursorTab), {
+  ssr: false,
+  loading: tabFallback,
+})
+const ShellTab = dynamic(() => import('./components/ShellTab').then((m) => m.ShellTab), {
+  ssr: false,
+  loading: tabFallback,
+})
+const FilesTab = dynamic(() => import('./components/FilesTab').then((m) => m.FilesTab), {
+  ssr: false,
+  loading: tabFallback,
+})
+const ViewTab = dynamic(() => import('./components/ViewTab').then((m) => m.ViewTab), {
+  ssr: false,
+  loading: tabFallback,
+})
+const LogsTab = dynamic(() => import('./components/LogsTab').then((m) => m.LogsTab), {
+  ssr: false,
+  loading: tabFallback,
+})
+const SettingsTab = dynamic(() => import('./components/SettingsTab').then((m) => m.SettingsTab), {
+  ssr: false,
+  loading: tabFallback,
+})
 
 /** Mobile-first: Apps · Work · Chat · Shell · Files · View · Logs · More (Alerts = status-bar bell) */
 const TABS: { id: Tab; label: string }[] = [
@@ -111,9 +136,9 @@ function TabIcon({ id }: { id: Tab }) {
 type HostLink = 'live' | 'reconnecting' | 'unreachable'
 
 function AuthedApp() {
-  const [tab, setTab] = useState<Tab>(() => readLastTab('apps'))
+  const [tab, setTab] = useState<Tab>('apps')
   const [projects, setProjects] = useState<Project[]>([])
-  const [selectedId, setSelectedId] = useState(() => readLastProjectId())
+  const [selectedId, setSelectedId] = useState('')
   const [attachSessionIds, setAttachSessionIds] = useState<string[] | null>(null)
   const [workPresent, setWorkPresent] = useState<PresentRequest | null>(null)
   /** Bumps so Work re-applies even if the same scene is requested twice. */
@@ -125,10 +150,16 @@ function AuthedApp() {
   const [refreshing, setRefreshing] = useState(false)
   const [hostLink, setHostLink] = useState<HostLink>('reconnecting')
   const [cursorConfigured, setCursorConfigured] = useState(false)
-  const [hostLabel, setHostLabel] = useState(() => location.hostname || 'host')
+  const [hostLabel, setHostLabel] = useState('host')
   const failStreak = useRef(0)
   const { unread, inboxOpen, toggleInbox, closeInbox, unlockAudio } = useNotify()
   const [viewVisited, setViewVisited] = useState(false)
+
+  useEffect(() => {
+    setTab(readLastTab('apps'))
+    setSelectedId(readLastProjectId())
+    setHostLabel(location.hostname || 'host')
+  }, [])
 
   useEffect(() => {
     if (tab === 'view') setViewVisited(true)
@@ -411,7 +442,15 @@ function AuthedApp() {
 }
 
 export default function App() {
-  const [authed, setAuthed] = useState(() => isSessionValid())
+  const [authed, setAuthed] = useState(false)
+  const [authReady, setAuthReady] = useState(false)
+
+  useEffect(() => {
+    installClientLog()
+    applyMobileSafeTop()
+    setAuthed(isSessionValid())
+    setAuthReady(true)
+  }, [])
 
   useEffect(() => {
     const onLost = () => setAuthed(false)
@@ -423,6 +462,10 @@ export default function App() {
     if (!authed) return
     return watchSessionExpiry()
   }, [authed])
+
+  if (!authReady) {
+    return <div className="min-h-dvh bg-panel" aria-busy="true" />
+  }
 
   if (!authed) {
     return <Login onAuthed={() => setAuthed(true)} />

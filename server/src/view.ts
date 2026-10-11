@@ -487,6 +487,18 @@ class ViewHub {
         if (msg.maxWidth != null) client.maxWidth = Number(msg.maxWidth);
         if (msg.quality != null) client.quality = Number(msg.quality);
         if (msg.fps != null) client.fps = Number(msg.fps);
+        // Prefer geometry for the selected monitor — stale bridge.screenW/H from the
+        // previous capture makes touch/rel mapping think All-displays is still active.
+        const mons = this.bridge.monitors as
+          | { index?: number; width?: number; height?: number }[]
+          | undefined;
+        const monMeta = Array.isArray(mons)
+          ? mons.find((m) => Number(m.index) === client.monitor)
+          : undefined;
+        const screenW = Number(monMeta?.width) || this.bridge.screenW;
+        const screenH = Number(monMeta?.height) || this.bridge.screenH;
+        if (screenW > 0) this.bridge.screenW = screenW;
+        if (screenH > 0) this.bridge.screenH = screenH;
         ws.send(
           JSON.stringify({
             type: "config",
@@ -494,8 +506,9 @@ class ViewHub {
             maxWidth: client.maxWidth,
             quality: client.quality,
             fps: client.fps,
-            screenW: this.bridge.screenW,
-            screenH: this.bridge.screenH,
+            screenW,
+            screenH,
+            monitors: this.bridge.monitors,
           }),
         );
         return;

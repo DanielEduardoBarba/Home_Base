@@ -3,8 +3,8 @@ import type { FsEntry, NotificationItem, Project, Session, TraceLine } from './t
 
 /**
  * Same-origin paths only — identical in dev and prod:
- * - prod: FastAPI serves SPA + API on :8888
- * - dev: Vite (:3081) proxies /api and /ws → uvicorn (:8081)
+ * - prod: Bun/Python serves SPA + API on :8888
+ * - dev: Next (:3081 via scripts/dev.mjs) proxies /api and /ws → API (:8081)
  * Never hardcode host/port here.
  */
 

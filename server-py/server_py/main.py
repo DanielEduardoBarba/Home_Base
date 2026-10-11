@@ -144,7 +144,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Home Base", version=APP_VERSION, lifespan=lifespan)
-# Same-origin SPA only (Vite proxies /api+/ws in dev; FastAPI serves both in prod).
+# Same-origin SPA only (Next proxies /api+/ws in dev; FastAPI serves both in prod).
 # No open CORS — the browser never needs cross-origin API access.
 # On-the-fly gzip for API JSON / HTML when no precompressed body is set
 app.add_middleware(GZipMiddleware, minimum_size=500)
@@ -1170,10 +1170,10 @@ async def ws_cursor(websocket: WebSocket):
         chat_workspace.unsubscribe(project_id, websocket)
 
 
-@app.get("/assets/{asset_path:path}")
-async def spa_assets(asset_path: str, request: Request):
-    """Serve hashed Vite assets, preferring build-time .br / .gz."""
-    root = (WEB_DIST / "assets").resolve()
+@app.get("/_next/{asset_path:path}")
+async def spa_next_static(asset_path: str, request: Request):
+    """Serve Next hashed assets under /_next/, preferring build-time .br / .gz."""
+    root = (WEB_DIST / "_next").resolve()
     target = (root / asset_path).resolve()
     if not str(target).startswith(str(root)) or not target.is_file():
         raise HTTPException(404)

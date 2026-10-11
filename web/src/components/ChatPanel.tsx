@@ -369,10 +369,16 @@ export function ChatPanel({
   const [sudoCallId, setSudoCallId] = useState<string | undefined>()
   const [sudoCachedTtl, setSudoCachedTtl] = useState(0)
   const [sudoBusy, setSudoBusy] = useState(false)
-  const [dockOpenLocal, setDockOpenLocal] = useState(() => readDockOpen())
+  const [dockOpenLocal, setDockOpenLocal] = useState(false)
   /** Keep dock mounted while exit animation plays. */
-  const [dockMounted, setDockMounted] = useState(() => readDockOpen())
+  const [dockMounted, setDockMounted] = useState(false)
   const [dockClosing, setDockClosing] = useState(false)
+
+  useEffect(() => {
+    const open = readDockOpen()
+    setDockOpenLocal(open)
+    setDockMounted(open)
+  }, [])
   const canSpeak = useMemo(() => speechSupported(), [])
 
   const dockOpen = dockOpenProp ?? dockOpenLocal
@@ -1050,6 +1056,28 @@ export function ChatPanel({
     wsRef.current?.send(JSON.stringify({ type: 'reset', chatId: active.id }))
   }
 
+  // Hooks must run before any early return (oxlint rules-of-hooks).
+  const statusPhasePre =
+    pendingApprovals.length > 0
+      ? 'approval'
+      : sudoOpen
+        ? 'sudo'
+        : connState === 'reconnecting' || connState === 'connecting'
+          ? 'starting'
+          : connState === 'offline'
+            ? 'error'
+            : agentPhase
+  const statusLivePre =
+    streaming ||
+    statusPhasePre === 'thinking' ||
+    statusPhasePre === 'busy' ||
+    statusPhasePre === 'streaming' ||
+    statusPhasePre === 'tool' ||
+    statusPhasePre === 'starting' ||
+    statusPhasePre === 'approval' ||
+    statusPhasePre === 'sudo'
+  const statusNow = useNowTick(statusLivePre)
+
   if (!project) {
     return (
       <div className={isDock ? 'hb-chat-dock-body' : 'h-full flex flex-col min-h-0 hb-with-nav'}>
@@ -1321,27 +1349,8 @@ export function ChatPanel({
     defaultModel ||
     'Auto'
 
-  const statusPhase =
-    pendingApprovals.length > 0
-      ? 'approval'
-      : sudoOpen
-        ? 'sudo'
-        : connState === 'reconnecting' || connState === 'connecting'
-          ? 'starting'
-          : connState === 'offline'
-            ? 'error'
-            : agentPhase
-
-  const statusLive =
-    streaming ||
-    statusPhase === 'thinking' ||
-    statusPhase === 'busy' ||
-    statusPhase === 'streaming' ||
-    statusPhase === 'tool' ||
-    statusPhase === 'starting' ||
-    statusPhase === 'approval' ||
-    statusPhase === 'sudo'
-  const statusNow = useNowTick(statusLive)
+  const statusPhase = statusPhasePre
+  const statusLive = statusLivePre
   const statusElapsedLabel = statusLive ? formatElapsed(statusNow - phaseSince) : ''
   const statusBadgeKind =
     statusPhase === 'done'
