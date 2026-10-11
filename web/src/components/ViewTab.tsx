@@ -142,6 +142,9 @@ export function ViewTab() {
   } | null>(null)
   const absFlushRafRef = useRef(0)
   const notifyRef = useRef<ReturnType<typeof useNotifyOptional>>(null)
+  /** While set, Home Base owns the pointer — ignore native cursor sync (stops rubber-banding). */
+  const hbControlUntilRef = useRef(0)
+  const lastNativeCursorRef = useRef({ x: -1, y: -1 })
 
   const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map())
   const gestureRef = useRef<{
@@ -323,6 +326,12 @@ export function ViewTab() {
 
   function tickCursorLerp() {
     cursorRafRef.current = 0
+    // While we are driving, stay snapped — no lag chasing our own target.
+    if (performance.now() < hbControlUntilRef.current) {
+      cursorDrawRef.current = { ...cursorNormRef.current }
+      placeCursorEl()
+      return
+    }
     const t = cursorNormRef.current
     const d = cursorDrawRef.current
     const dx = t.x - d.x
@@ -333,26 +342,54 @@ export function ViewTab() {
       placeCursorEl()
       return
     }
-    // Faster catch-up on big jumps (native mouse), softer on fine remote moves.
-    const a = dist > 0.08 ? 0.55 : dist > 0.02 ? 0.35 : 0.22
+    // Native laptop moves: light smoothing only.
+    const a = dist > 0.08 ? 0.5 : 0.28
     cursorDrawRef.current = { x: d.x + dx * a, y: d.y + dy * a }
     placeCursorEl()
     cursorRafRef.current = requestAnimationFrame(tickCursorLerp)
   }
 
-  function setCursorNorm(x: number, y: number, show = true) {
+  function markHbControl() {
+    hbControlUntilRef.current = performance.now() + 550
+  }
+
+  function setCursorNorm(x: number, y: number, show = true, snap = false) {
     cursorNormRef.current = { x: clamp(x, 0, 1), y: clamp(y, 0, 1) }
     cursorShowRef.current = show
     if (show && !cursorOn) setCursorOn(true)
     if (!show && cursorOn) setCursorOn(false)
+    if (snap || performance.now() < hbControlUntilRef.current) {
+      cursorDrawRef.current = { ...cursorNormRef.current }
+      placeCursorEl()
+      if (cursorRafRef.current) {
+        cancelAnimationFrame(cursorRafRef.current)
+        cursorRafRef.current = 0
+      }
+      return
+    }
     if (!cursorRafRef.current) {
       cursorRafRef.current = requestAnimationFrame(tickCursorLerp)
     }
   }
 
-  /** Map real X11 root coords → overlay on the selected capture/monitor. */
-  function applyRemoteCursor(cursorX: number, cursorY: number) {
+  /**
+   * Apply X11 root coords to the overlay.
+   * Home Base control wins while active; native laptop mouse wins when idle.
+   */
+  function applyRemoteCursor(
+    cursorX: number,
+    cursorY: number,
+    source: 'native' | 'remote' | 'hello' = 'native',
+  ) {
     if (!Number.isFinite(cursorX) || !Number.isFinite(cursorY) || cursorX < 0 || cursorY < 0) {
+      return
+    }
+    // Ignore echoes / native sync while the viewer is moving the pointer.
+    if (source !== 'hello' && performance.now() < hbControlUntilRef.current) {
+      return
+    }
+    if (source === 'remote') {
+      // Server echo of our own input — already mirrored locally; skip to avoid tug-of-war.
       return
     }
     const mon =
@@ -361,8 +398,12 @@ export function ViewTab() {
     if (!mon || mon.width < 1 || mon.height < 1) return
     const nx = (cursorX - mon.left) / mon.width
     const ny = (cursorY - mon.top) / mon.height
-    // Outside this display: park on the nearest edge so the overlay stays honest.
-    setCursorNorm(clamp(nx, 0, 1), clamp(ny, 0, 1), true)
+    const prev = lastNativeCursorRef.current
+    const moved =
+      prev.x < 0 || Math.hypot(cursorX - prev.x, cursorY - prev.y) >= 1
+    lastNativeCursorRef.current = { x: cursorX, y: cursorY }
+    if (!moved && source === 'native') return
+    setCursorNorm(clamp(nx, 0, 1), clamp(ny, 0, 1), true, source === 'hello')
   }
 
   function forceQualityLocal(preset: QualityPreset, reason: string, from?: string) {
@@ -583,13 +624,13 @@ export function ViewTab() {
                     screen: `${msg.screenW}×${msg.screenH}`,
                     quality: Number(msg.quality) || s.quality,
                   }))
-                  applyRemoteCursor(Number(msg.cursorX), Number(msg.cursorY))
+                  applyRemoteCursor(Number(msg.cursorX), Number(msg.cursorY), 'hello')
                 } else {
                   setStats((s) => ({ ...s, quality: Number(msg.quality) || s.quality }))
                 }
               } else if (msg.type === 'cursor') {
-                // Authoritative X11 pointer — laptop-native moves win over local estimate.
-                applyRemoteCursor(Number(msg.cursorX), Number(msg.cursorY))
+                const src = msg.source === 'remote' ? 'remote' : 'native'
+                applyRemoteCursor(Number(msg.cursorX), Number(msg.cursorY), src)
               } else if (msg.type === 'quality-forced') {
                 const p = String(msg.preset || '') as QualityPreset
                 if (p === 'ultra' || p === 'high' || p === 'medium' || p === 'low') {
@@ -753,6 +794,7 @@ export function ViewTab() {
     if (!pending || !wanted) return
     const m = mapClientToRemote(pending.clientX, pending.clientY)
     if (!m) return
+    markHbControl()
     lastPointerRef.current = performance.now()
     sendWs({
       type: 'pointer',
@@ -767,7 +809,7 @@ export function ViewTab() {
       button: pending.button,
       deltaY: pending.deltaY,
     })
-    setCursorNorm(m.nx, m.ny, true)
+    setCursorNorm(m.nx, m.ny, true, true)
   }
 
   function sendAbs(action: string, clientX: number, clientY: number, button = 0, deltaY = 0) {
@@ -788,6 +830,7 @@ export function ViewTab() {
     }
     const m = mapClientToRemote(clientX, clientY)
     if (!m) return
+    markHbControl()
     lastPointerRef.current = performance.now()
     sendWs({
       type: 'pointer',
@@ -802,7 +845,7 @@ export function ViewTab() {
       button,
       deltaY,
     })
-    setCursorNorm(m.nx, m.ny, true)
+    setCursorNorm(m.nx, m.ny, true, true)
   }
 
   function flushRelAccum() {
@@ -813,9 +856,10 @@ export function ViewTab() {
     if (Math.abs(dx) < 0.15 && Math.abs(dy) < 0.15) return
     const sw = screenRef.current.w || 1
     const sh = screenRef.current.h || 1
+    markHbControl()
     lastPointerRef.current = performance.now()
     sendWs({ type: 'pointer', mode: 'rel', action: 'move', dx, dy })
-    setCursorNorm(cursorNormRef.current.x + dx / sw, cursorNormRef.current.y + dy / sh, true)
+    setCursorNorm(cursorNormRef.current.x + dx / sw, cursorNormRef.current.y + dy / sh, true, true)
   }
 
   function sendRel(dxPx: number, dyPx: number) {
@@ -836,6 +880,7 @@ export function ViewTab() {
   }
 
   function sendClick(button: number) {
+    markHbControl()
     sendWs({ type: 'pointer', mode: 'rel', action: 'click', button })
     if (navigator.vibrate) {
       try {

@@ -455,22 +455,6 @@ export class X11Session {
     }
   }
 
-  /** Single absolute step (no path smoothing). */
-  private motionStep(cx: number, cy: number): void {
-    try {
-      // XTest only — Warp+XTest together made remote control look jumpy on the host.
-      xtst!.XTestFakeMotionEvent(this.dpy!, this.screen, cx, cy, 0n);
-      x11!.XFlush(this.dpy!);
-    } catch {
-      try {
-        x11!.XWarpPointer(this.dpy!, 0n, this.root, 0, 0, 0, 0, cx, cy);
-        x11!.XFlush(this.dpy!);
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-
   motion(x: number, y: number): void {
     if (!this.dpy && !this.open()) return;
     this.syncDeskBounds();
@@ -484,48 +468,28 @@ export class X11Session {
       cx = Math.max(left, Math.min(left + width - 1, cx));
       cy = Math.max(top, Math.min(top + height - 1, cy));
     }
-    // Ease long jumps so an observer on the laptop sees a glide, not a teleport.
-    const cur = this.queryPointer();
-    if (cur.x >= 0 && cur.y >= 0) {
-      const dist = Math.hypot(cx - cur.x, cy - cur.y);
-      if (dist > 18) {
-        const steps = Math.min(10, Math.max(2, Math.ceil(dist / 28)));
-        for (let i = 1; i <= steps; i++) {
-          const t = i / steps;
-          // ease-out
-          const e = 1 - (1 - t) * (1 - t);
-          this.motionStep(
-            Math.round(cur.x + (cx - cur.x) * e),
-            Math.round(cur.y + (cy - cur.y) * e),
-          );
-        }
-        return;
+    // One step only — multi-step easing fought continuous Home Base updates (rubber-band).
+    try {
+      xtst!.XTestFakeMotionEvent(this.dpy!, this.screen, cx, cy, 0n);
+      x11!.XFlush(this.dpy!);
+    } catch {
+      try {
+        x11!.XWarpPointer(this.dpy!, 0n, this.root, 0, 0, 0, 0, cx, cy);
+        x11!.XFlush(this.dpy!);
+      } catch {
+        /* ignore */
       }
     }
-    this.motionStep(cx, cy);
   }
 
   relativeMotion(dx: number, dy: number): void {
     if (!this.dpy && !this.open()) return;
-    let remX = Math.trunc(dx);
-    let remY = Math.trunc(dy);
-    if (!remX && !remY) return;
-    // Split large deltas so touch/trackpad drags don't snap across the desktop.
-    const MAX_STEP = 14;
-    while (remX !== 0 || remY !== 0) {
-      const sx =
-        remX > MAX_STEP ? MAX_STEP : remX < -MAX_STEP ? -MAX_STEP : remX;
-      const sy =
-        remY > MAX_STEP ? MAX_STEP : remY < -MAX_STEP ? -MAX_STEP : remY;
-      try {
-        xtst!.XTestFakeRelativeMotionEvent(this.dpy!, sx, sy, 0n);
-      } catch {
-        break;
-      }
-      remX -= sx;
-      remY -= sy;
-    }
+    dx = Math.trunc(dx);
+    dy = Math.trunc(dy);
+    if (!dx && !dy) return;
+    // Single relative event — client already coalesces per frame.
     try {
+      xtst!.XTestFakeRelativeMotionEvent(this.dpy!, dx, dy, 0n);
       x11!.XFlush(this.dpy!);
     } catch {
       /* ignore */

@@ -341,6 +341,8 @@ class ViewHub {
   private failGrabs = 0;
   /** Highest tier currently allowed (0=ultra … 3=low). Raised only by user config. */
   private maxAllowedTier = 0;
+  /** While Home Base is driving the pointer, suppress native-cursor echo that fights it. */
+  private remoteControlUntil = 0;
 
   status(): Record<string, unknown> {
     const { display, xauthority } = discoverX11Env();
@@ -554,6 +556,8 @@ class ViewHub {
         return;
       }
       if (msg.type === "pointer") {
+        // Home Base owns the pointer while the viewer is actively moving it.
+        this.remoteControlUntil = Date.now() + 600;
         const resp = await this.bridge.call({
           cmd: "pointer",
           mode: msg.mode,
@@ -568,8 +572,8 @@ class ViewHub {
           deltaY: msg.deltaY,
           monitor: client.monitor,
         });
-        // Echo real X11 pointer so the overlay can't drift from the laptop mouse.
-        this.broadcastCursor(resp);
+        // Echo as remote-owned so clients don't treat it as a native laptop move.
+        this.broadcastCursor(resp, false, "remote");
         return;
       }
       if (msg.type === "key") {
@@ -631,8 +635,10 @@ class ViewHub {
           if (resp.monitors) this.bridge.monitors = resp.monitors as unknown[];
           if (resp.sw) this.bridge.screenW = Number(resp.sw);
           if (resp.sh) this.bridge.screenH = Number(resp.sh);
-          // Always sync overlay to the real X11 pointer (laptop mouse wins).
-          this.broadcastCursor(resp, true);
+          // Native laptop mouse sync — skipped while Home Base is driving.
+          if (Date.now() >= this.remoteControlUntil) {
+            this.broadcastCursor(resp, true, "native");
+          }
         }
         if (resp.ok && resp.changed && resp.packet) {
           const raw = resp.packet;
@@ -703,8 +709,16 @@ class ViewHub {
     void tick();
   }
 
-  /** Push real root-pointer coords to every viewer (native laptop mouse is authoritative). */
-  private broadcastCursor(resp: Record<string, unknown>, onlyIfMoved = false): void {
+  /**
+   * Push real root-pointer coords.
+   * source=native → laptop mouse (only when remote is idle)
+   * source=remote → echo after Home Base input (optional; clients may ignore)
+   */
+  private broadcastCursor(
+    resp: Record<string, unknown>,
+    onlyIfMoved = false,
+    source: "native" | "remote" = "native",
+  ): void {
     const cx = Number(resp.cursorX);
     const cy = Number(resp.cursorY);
     if (!Number.isFinite(cx) || !Number.isFinite(cy) || cx < 0 || cy < 0) return;
@@ -717,7 +731,12 @@ class ViewHub {
     }
     this.lastCursorX = cx;
     this.lastCursorY = cy;
-    const payload = JSON.stringify({ type: "cursor", cursorX: cx, cursorY: cy });
+    const payload = JSON.stringify({
+      type: "cursor",
+      cursorX: cx,
+      cursorY: cy,
+      source,
+    });
     for (const c of this.clients.values()) {
       try {
         c.ws.send(payload);
