@@ -21,7 +21,7 @@ fi
 run_probe() {
   local target="$1"
   [[ -x "$target" ]] || return 1
-  # Probe never writes into /var/lib/homebased or /usr/share (Nuitka unpack + jwt).
+  # Probe never writes into /var/lib/homebased or /usr/share (self-test + jwt).
   local tmp out rc
   tmp="$(mktemp -d /tmp/homebased-probe.XXXXXX)"
   out="$tmp/probe.out"

@@ -2,7 +2,7 @@ import type { NextConfig } from 'next'
 
 /**
  * Static export → web/dist (via compress-export.mjs).
- * Prod: Bun/Python serve dist with precompressed .br/.gz.
+ * Prod: Bun serves dist with precompressed .br/.gz.
  * Dev: scripts/dev.mjs proxies /api + /ws to the API and UI to next dev.
  */
 const nextConfig: NextConfig = {

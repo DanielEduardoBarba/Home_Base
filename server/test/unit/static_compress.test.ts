@@ -36,7 +36,10 @@ describe("static precompress + cache", () => {
 
   test("serves Next _next/static JS with immutable cache", () => {
     const root = distRoot();
-    const jsAbs = firstJs(join(root, "_next", "static"));
+    // Prefer chunks/ (hashed bundles) — tiny Next manifests may skip precompress.
+    const jsAbs =
+      firstJs(join(root, "_next", "static", "chunks")) ??
+      firstJs(join(root, "_next", "static"));
     expect(jsAbs).toBeTruthy();
     const rel = "/" + jsAbs!.slice(root.length + 1);
     expect(existsSync(jsAbs! + ".br")).toBe(true);

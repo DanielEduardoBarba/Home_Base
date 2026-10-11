@@ -1,4 +1,9 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -127,6 +132,68 @@ function actionFromRaw(raw: Record<string, unknown>): ActionDef {
     env: Object.fromEntries(
       Object.entries(envRaw).map(([k, v]) => [String(k), String(v)]),
     ),
+  };
+}
+
+function presetsDir(): string {
+  const bundled = join(BUNDLE_ROOT, "config", "presets");
+  if (existsSync(bundled)) return bundled;
+  return join(CONFIG_DIR, "presets");
+}
+
+export function loadPreset(name: string): Record<string, unknown> {
+  const path = join(presetsDir(), `${name}.json`);
+  if (!existsSync(path)) {
+    throw new Error(`Unknown preset: ${name}`);
+  }
+  return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+}
+
+function ensureProjectsFile(): void {
+  ensureRuntimeDirs();
+  if (existsSync(PROJECTS_PATH)) return;
+  const example = join(BUNDLE_ROOT, "config", "projects.example.json");
+  const seed = existsSync(example)
+    ? readFileSync(example, "utf8")
+    : '{\n  "projects": []\n}\n';
+  writeFileSync(PROJECTS_PATH, seed.endsWith("\n") ? seed : `${seed}\n`);
+}
+
+/** Insert or replace a project raw object in config/projects.json. */
+export function upsertProject(raw: Record<string, unknown>): Project {
+  const id = String(raw.id || "").trim();
+  if (!id) throw new Error("project id required");
+  const path = String(raw.path || "").trim();
+  if (!path) throw new Error("project path required");
+  ensureProjectsFile();
+  const data = JSON.parse(readFileSync(PROJECTS_PATH, "utf8") || '{"projects":[]}') as {
+    projects?: Record<string, unknown>[];
+  };
+  const projects = Array.isArray(data.projects) ? [...data.projects] : [];
+  let replaced = false;
+  for (let i = 0; i < projects.length; i++) {
+    if (String(projects[i]?.id) === id) {
+      projects[i] = raw;
+      replaced = true;
+      break;
+    }
+  }
+  if (!replaced) projects.push(raw);
+  data.projects = projects;
+  writeFileSync(PROJECTS_PATH, `${JSON.stringify(data, null, 2)}\n`);
+  const ports = ((raw.ports as Record<string, unknown>[]) || []).map((p) => ({
+    id: String(p.id),
+    port: Number(p.port),
+    label: String(p.label || ""),
+    health: p.health != null ? String(p.health) : undefined,
+  }));
+  return {
+    id,
+    name: String(raw.name || id),
+    path,
+    ports,
+    actions: ((raw.actions as Record<string, unknown>[]) || []).map(actionFromRaw),
+    stateDir: String(raw.stateDir || raw.state_dir || ""),
   };
 }
 

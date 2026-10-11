@@ -10,28 +10,24 @@ config/presets/*
 .runtime/
 *.log
 
-# Python
+# Incidental local Python (hooks / one-liners — not the API server)
 .venv/
 venv/
 __pycache__/
 *.py[cod]
-*.egg-info/
 .pytest_cache/
-.mypy_cache/
 
-# Frontend
+# Frontend / Bun
 web/node_modules/
 server/node_modules/
 web/dist/
+web/out/
+web/.next/
 
-# Nuitka / packaged binary (copied to /usr/bin on --deploy)
-nuitka-crash-report.xml
+# Packaged binary (copied to /usr/share on --deploy)
 dist/
 dist.oldroot/
 *.bin
-homebase.build/
-homebase.dist/
-homebase.onefile-build/
 
 # OS / editor
 .DS_Store

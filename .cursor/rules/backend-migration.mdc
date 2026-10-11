@@ -1,12 +1,12 @@
 ---
-description: Autonomous Python-to-Bun migration with feature parity and durable progress
+description: Bun TypeScript server is the sole backend; Next.js is the sole SPA
 alwaysApply: true
 ---
 
-# Backend migration (Python → Bun)
+# Backend (Bun / TypeScript)
 
-On start or resume: read `docs/migration/STATUS.md`, then relevant `TASKS.md` / `PARITY.md` entries. Inspect the repo before trusting old completion claims.
+Home Base’s control-plane API is **Bun only** (`server/`). The SPA is **Next.js** static export (`web/` → `web/dist` with `.br`/`.gz`).
 
-Preserve API, auth, and persistent-data parity with `server-py/` (`server_py`). Do not delete the Python baseline. Do not weaken auth/CORS/TTL. Do not mark stubs or Python bridges as complete.
+Do not add a second server runtime, Python FastAPI tree, uvicorn, Nuitka, or `--python` flags.
 
-Bun is the default runtime for `./build.sh --run` and deploy; use `--python` for the FastAPI path. Record blockers in `REVIEW_REQUIRED.md`. Continue every independent unblocked task. Update STATUS, PARITY, TASKS, and VERIFICATION after each slice.
+Preserve auth, CORS, JWT TTL, and persistent-data behavior. Prefer `docs/migration/STATUS.md` for cutover history. Update STATUS / VERIFICATION when shipping meaningful server or SPA changes.

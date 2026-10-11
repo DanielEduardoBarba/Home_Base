@@ -1,5 +1,5 @@
 ---
-description: Home Base architecture and operational constraints
+description: Home Base product rules — Bun server + Next SPA
 alwaysApply: true
 ---
 
@@ -24,6 +24,7 @@ Generic control plane: systemd **`homebased`**, binary **`homebase`**. Productio
 
 ## Entry points
 
-- `./build.sh --setup` (Bun+web deps; `--setup --python` for venv) / `--run` (Bun) / `--run --python` (rollback) / `--add-project --preset …`
-- Default backend: Bun `server/src/entry.ts`; Python `server_py.main` via `--python` (`PYTHONPATH=server-py`)
-- Deploy default: Bun compile; `--deploy --python` for Nuitka
+- `./build.sh --setup` (Bun + Next deps) / `--clean` (Python/Nuitka leftovers + `.runtime` + setup/build caches) / `--run` (Bun API + Next) / `--add-project --preset …`
+- Backend: Bun `server/src/entry.ts`
+- Frontend: Next.js static export `web/` → `web/dist` (brotli/gzip siblings)
+- Deploy: `./build.sh --deploy` → Bun compile → `/usr/share/homebased` + wrapper + systemd

@@ -19,7 +19,7 @@ export type SessionInfo = {
   cmdline?: string[];
 };
 
-/** SPA-facing session row (matches Python pty_manager._public). */
+/** SPA-facing session row for the client session list. */
 export type SessionPublic = SessionInfo & {
   alive: boolean;
   label: string;

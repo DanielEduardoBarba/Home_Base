@@ -30,7 +30,7 @@ if ! sudo -n true 2>/dev/null; then
   sudo -v
 fi
 
-# Refresh credential cache while the child runs (Nuitka/deploy can take minutes).
+# Refresh credential cache while the child runs (deploy can take minutes).
 (
   while true; do
     sleep 50

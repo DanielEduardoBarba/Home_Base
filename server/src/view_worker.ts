@@ -1,6 +1,6 @@
 /**
  * Seat-user View worker: JSON length-prefixed IPC on stdin/stdout.
- * Capture/input via bun:ffi (libX11 + libXtst) — no Python.
+ * Capture/input via bun:ffi (libX11 + libXtst).
  */
 import { createHash } from "node:crypto";
 import jpeg from "jpeg-js";

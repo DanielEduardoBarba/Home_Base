@@ -27,7 +27,7 @@
       "args": ["--bin"],
       "kind": "ship",
       "group": "ship",
-      "hint": "Nuitka only — no install"
+      "hint": "Bun compile — ./build.sh --bin"
     },
     {
       "id": "run_dev",

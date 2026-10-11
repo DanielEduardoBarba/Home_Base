@@ -4,20 +4,24 @@ Mobile-first control plane for projects on your laptop — run scripts, shells, 
 
 | Mode | URL | Process |
 |------|-----|---------|
-| **Production** | `http://<laptop>:8888/` | systemd `homebased` as **root** |
-| **Development** | Next `http://localhost:3081` → API `:8081` | `./build.sh --run` (beside prod) |
+| **Production** | `http://<laptop>:8888/` | systemd `homebased` as **root** (Bun binary) |
+| **Development** | Next `http://localhost:3081` → Bun API `:8081` | `./build.sh --run` (beside prod) |
+
+**Stack:** Bun TypeScript server (`server/`) + Next.js static SPA (`web/`).
 
 ## Prerequisites
 
-- Python 3.11+ (venv via `--setup`)
-- Node.js + npm (SPA)
-- For `--bin` / `--deploy`: `gcc`/`cc`, Nuitka (installed by setup as needed), **sudo** for systemd install
+- [Bun](https://bun.sh) (API + compile)
+- Node.js + npm (Next SPA build)
+- **sudo** for systemd install (`--deploy` / `--service`)
 - Optional: `CURSOR_API_KEY` in `.env` for Chat
 
 ## Quick start (dev)
 
 ```bash
-./build.sh --setup          # venv, npm, UI build, JWT signing key, seed config
+./build.sh --setup          # Bun + Next deps, JWT signing key, seed config
+# Optional: wipe Python/Nuitka leftovers, .runtime, node_modules, build caches
+# ./build.sh --clean --setup
 # Presets are templates only — always pass --path
 ./build.sh --add-project --preset example --path /path/to/your-repo
 # Put CURSOR_API_KEY in .env if you want Chat
@@ -30,7 +34,7 @@ Hotkeys while `--run`: `r` restart both · `a`/`q` API · `w` Next · `h` help �
 
 ## Daily use / production (VPN)
 
-1. Deploy once: `./build.sh --deploy` (builds Nuitka binary, installs unit, syncs env/projects).
+1. Deploy once: `./build.sh --deploy` (Bun compile, installs unit, syncs env/projects + SPA).
 2. Ensure WireGuard (or your VPN) can reach the laptop.
 3. On phone/iPad/desktop: open `http://<laptop-vpn-ip>:8888/` (or hostname).
 4. Sign in with the password (or scan Share QR from a localhost session).
@@ -42,7 +46,7 @@ Stop / restart prod: `sudo systemctl stop|restart homebased`.
 
 ## Same-origin API
 
-Fetch and WebSocket clients always use relative `/api/...` and `/ws/...` against `location.host`. Dev (Next proxy) and prod (Bun/Python serves SPA + API) share the same client code. No open CORS — cross-origin browser API access is not supported.
+Fetch and WebSocket clients always use relative `/api/...` and `/ws/...` against `location.host`. Dev (Next proxy) and prod (Bun serves SPA + API) share the same client code. No open CORS — cross-origin browser API access is not supported.
 
 ## Tabs
 
@@ -75,7 +79,7 @@ Action `type` values: `script` (default), `stop`, `restart` (with `restartAction
 
 | Capability | How |
 |------------|-----|
-| Local Cursor agents | `cursor-sdk` bridge + `/ws/cursor` (needs `CURSOR_API_KEY` + bridge install on deploy) |
+| Local Cursor agents | In-process `@cursor/sdk` + `/ws/cursor` (needs `CURSOR_API_KEY`) |
 | Project scripts / ports | Config-driven actions; Stop kills PTYs, pidfiles, and listeners |
 | Shell | JWT-gated PTY scoped to project cwd; phone Ctrl/Esc/Tab bar |
 | Files | REST read/write; relative paths under project; absolute `/…` = host browse (JWT) |
@@ -105,13 +109,13 @@ Copy [`.env.example`](.env.example). Never commit `.env` or `config/projects.jso
 | `CURSOR_MODEL` | Default model (`auto` = Cursor picks) |
 | `HOMEBASE_HOST` / `HOMEBASE_PORT` | Bind (dev `--run` forces `:8081` + Next `:3081`; systemd forces `:8888`) |
 
-Deploy also syncs those keys into `/var/lib/homebased/.env` and installs the Cursor SDK bridge beside the binary (Nuitka omits the Node bridge).
+Deploy also syncs those keys into `/var/lib/homebased/.env`.
 
 ## Binary + systemd
 
 ```bash
-./build.sh --bin                 # Nuitka → dist/homebase
-./build.sh --service             # install unit + binary + bridge
+./build.sh --bin                 # Bun compile → dist/homebase
+./build.sh --service             # install unit + binary + SPA
 ./build.sh --deploy              # --bin then --service
 ```
 
@@ -119,15 +123,16 @@ Deploy also syncs those keys into `/var/lib/homebased/.env` and installs the Cur
 - Wrapper `/usr/bin/homebase` self-tests; on failure runs `.bak` with `HOMEBASE_RUNNING_BACKUP=1`
 - State: `/var/lib/homebased` (`HOMEBASE_HOME`)
 - Unit: [`packaging/homebased.service`](packaging/homebased.service)
+- SPA: `/usr/share/homebased/web/dist` (precompressed `.br` / `.gz`)
 
 ## Connection problems
 
 | Symptom | Try |
 |---------|-----|
-| Unreachable in status bar | VPN up? `systemctl status homebased`? laptop awake? |
+| Unreachable in status bar | VPN up? `systemctl status homebased`? laptop awake? Prefer `http://<wg-ip>:8888/` on VPN |
 | Chat/Shell “Reconnecting” | Wait for backoff, or tap the badge; pull-to-refresh hard reload if stuck |
 | Session expired / Sign in | Password changed, or 24h TTL ended — sign in again |
-| Chat: Cursor key missing | Set `CURSOR_API_KEY`, redeploy or sync `/var/lib/homebased/.env`, ensure bridge installed |
+| Chat: Cursor key missing | Set `CURSOR_API_KEY`, redeploy or sync `/var/lib/homebased/.env` |
 | Share link fails | Redeem within 20s; reveal again from localhost More → Share |
 
 ## Known limitations
@@ -142,8 +147,7 @@ Deploy also syncs those keys into `/var/lib/homebased/.env` and installs the Cur
 ## Tests
 
 ```bash
-PYTHONPATH=server-py .venv/bin/pytest tests/ -q
-HOMEBASE_SELF_TEST=1 .venv/bin/python homebase_entry.py
 cd server && bun run typecheck && bun test
-cd web && npm run lint && npm run build
+HOMEBASE_SELF_TEST=1 bun run server/src/entry.ts
+cd web && npm run typecheck && npm run build
 ```

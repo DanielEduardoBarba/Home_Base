@@ -12,11 +12,11 @@ DO_RUN=false
 DO_BIN=false
 DO_SERVICE=false
 DO_DEPLOY=false
+DO_CLEAN=false
 DO_HELP=false
 # Set when a detached systemd unit is already running deploy (avoid re-schedule loop).
 FROM_DETACHED=false
-# Default runtime is Bun (server/). Pass --python for FastAPI/Nuitka.
-USE_PYTHON=false
+# Runtime: Bun TypeScript server (server/) + Next.js static SPA (web/).
 ADD_PRESET=""
 ADD_PATH=""
 ADD_ID=""
@@ -60,20 +60,20 @@ usage() {
 Home Base · build.sh
 
 USAGE
-  ./build.sh --setup              Install Bun server + web deps, .env + JWT secret
-  ./build.sh --setup --python     Also create Python venv (rollback / --python runs)
+  ./build.sh --setup              Install Bun server + web (Next) deps, .env + JWT secret
+  ./build.sh --clean              Remove Python/Nuitka leftovers, .runtime, build + setup caches
   ./build.sh --run                Dev: Bun API + Next (hotkeys r/a/w/q/h)
-  ./build.sh --run --python       Dev: Python uvicorn API + Next (requires --setup --python)
   ./build.sh --add-project --preset NAME --path /abs/or/rel/path
   ./build.sh --add-project --path /abs/or/rel/path [--id ID] [--name NAME]
-  ./build.sh --bin                Bun compile → dist/homebase (default)
-  ./build.sh --bin --python       Nuitka one-file standalone → dist/homebase
+  ./build.sh --bin                Bun compile → dist/homebase
   ./build.sh --service            Install homebased.service, daemon-reload, enable, restart
   ./build.sh --deploy             --bin → safe install under /usr/share + wrapper → --service
-  ./build.sh --deploy --python    Deploy Nuitka Python binary instead of Bun
   ./build.sh --deploy --from-detached
                                   Internal: already scheduled outside homebased cgroup
   ./build.sh -h|--help
+
+  --clean keeps .env and config/projects.json. Pair with --setup to rebuild deps:
+    ./build.sh --clean --setup
 
 Self-deploy: if --deploy runs inside homebased (e.g. Chat Shell), it schedules a
 detached systemd oneshot and returns — stop/restart cannot kill the deploy.
@@ -96,12 +96,12 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --setup) DO_SETUP=true; shift ;;
+    --clean) DO_CLEAN=true; shift ;;
     --run) DO_RUN=true; shift ;;
     --bin) DO_BIN=true; shift ;;
     --service) DO_SERVICE=true; shift ;;
     --deploy) DO_DEPLOY=true; shift ;;
     --from-detached|--detached) FROM_DETACHED=true; shift ;;
-    --python) USE_PYTHON=true; shift ;;
     --add-project) shift ;;
     --preset) ADD_PRESET="${2:-}"; shift 2 ;;
     --path) ADD_PATH="${2:-}"; shift 2 ;;
@@ -118,7 +118,8 @@ done
 
 # If only --preset/--path without other actions, treat as add-project
 if [[ "$DO_SETUP" == false && "$DO_RUN" == false && "$DO_HELP" == false \
-   && "$DO_BIN" == false && "$DO_SERVICE" == false && "$DO_DEPLOY" == false ]]; then
+   && "$DO_BIN" == false && "$DO_SERVICE" == false && "$DO_DEPLOY" == false \
+   && "$DO_CLEAN" == false ]]; then
   if [[ -n "$ADD_PRESET" || -n "$ADD_PATH" ]]; then
     :
   else
@@ -284,7 +285,7 @@ secure_var_ownership() {
 }
 
 # Probe must work as the invoking user (sudo deploy) or as root. Temp HOME + TMPDIR
-# keep jwt/runtime and Nuitka onefile unpack off /var/lib and /usr/share.
+# keep jwt/runtime and binary self-test unpack off /var/lib and /usr/share.
 probe_bin() {
   local target="$1"
   local tmp rc
@@ -305,15 +306,6 @@ probe_bin() {
   fi
   rm -rf "$tmp" 2>/dev/null || true
   return "$rc"
-}
-
-ensure_venv() {
-  if [[ ! -d .venv ]]; then
-    python3 -m venv .venv
-  fi
-  # shellcheck disable=SC1091
-  source .venv/bin/activate
-  pip install -q -r requirements.txt
 }
 
 ensure_web_dist() {
@@ -347,14 +339,118 @@ build_web_dist() {
   )
 }
 
+# Soft sudo for --clean (do not abort the whole clean if the user skips the password).
+try_priv_for_clean() {
+  if [[ "${PRIV_MODE}" == "root" || "${PRIV_MODE}" == "sudo" || "$(id -u)" -eq 0 ]]; then
+    [[ "$(id -u)" -eq 0 ]] && PRIV_MODE="root"
+    return 0
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    return 1
+  fi
+  if sudo -n true 2>/dev/null; then
+    PRIV_MODE="sudo"
+    return 0
+  fi
+  if [[ ! -t 0 ]]; then
+    return 1
+  fi
+  echo "==> Elevating once for homebased clean (single sudo password; cached for this run)"
+  if sudo -v; then
+    PRIV_MODE="sudo"
+    (
+      while true; do
+        sleep 50
+        sudo -n true 2>/dev/null || exit 0
+      done
+    ) &
+    _SUDO_KEEPALIVE_PID=$!
+    return 0
+  fi
+  return 1
+}
+
+# Remove path if present. Elevates once if root-owned leftovers block rm.
+clean_rm() {
+  local p="$1"
+  local elevate="${2:-auto}" # auto | priv
+  if [[ ! -e "$p" && ! -L "$p" ]]; then
+    return 0
+  fi
+  if [[ "$elevate" != "priv" ]]; then
+    if rm -rf "$p" 2>/dev/null; then
+      echo "  removed $p"
+      return 0
+    fi
+  fi
+  if try_priv_for_clean && run_priv rm -rf "$p"; then
+    echo "  removed $p"
+    return 0
+  fi
+  echo "  warn: could not remove $p (re-run: sudo ./build.sh --clean)" >&2
+  return 1
+}
+
+cmd_clean() {
+  echo "==> Clean: Python/Nuitka leftovers, local runtime, setup/build caches"
+  echo "    (keeps .env and config/projects.json)"
+  local warned=0
+
+  # Legacy Python API tree + tooling
+  clean_rm "$ROOT/.venv" || warned=1
+  clean_rm "$ROOT/venv" || warned=1
+  clean_rm "$ROOT/server-py" || warned=1
+  clean_rm "$ROOT/homebase_entry.py" || warned=1
+  clean_rm "$ROOT/requirements.txt" || warned=1
+  clean_rm "$ROOT/requirements-dev.txt" || warned=1
+  clean_rm "$ROOT/.pytest_cache" || warned=1
+  clean_rm "$ROOT/.mypy_cache" || warned=1
+  clean_rm "$ROOT/nuitka-crash-report.xml" || warned=1
+  clean_rm "$ROOT/homebase.build" || warned=1
+  clean_rm "$ROOT/homebase.dist" || warned=1
+  clean_rm "$ROOT/homebase.onefile-build" || warned=1
+  clean_rm "$ROOT/dist.oldroot" || warned=1
+  # Old pytest suite lived at repo-root tests/ (Bun tests are server/test/)
+  if [[ -d "$ROOT/tests" ]] && [[ -f "$ROOT/tests/conftest.py" || -f "$ROOT/tests/test_auth.py" ]]; then
+    clean_rm "$ROOT/tests" || warned=1
+  fi
+
+  # Nested Python caches under the repo (skip node_modules / .git)
+  while IFS= read -r -d '' d; do
+    clean_rm "$d" || warned=1
+  done < <(find "$ROOT" \
+    \( -path "$ROOT/.git" -o -path "$ROOT/web/node_modules" -o -path "$ROOT/server/node_modules" \) -prune \
+    -o \( -type d \( -name '__pycache__' -o -name '*.egg-info' \) -print0 \) 2>/dev/null)
+
+  # Local runtime + regenerable setup/build outputs
+  clean_rm "$ROOT/.runtime" || warned=1
+  clean_rm "$ROOT/dist" || warned=1
+  clean_rm "$ROOT/web/dist" || warned=1
+  clean_rm "$ROOT/web/out" || warned=1
+  clean_rm "$ROOT/web/.next" || warned=1
+  clean_rm "$ROOT/web/tsconfig.tsbuildinfo" || warned=1
+  clean_rm "$ROOT/server/node_modules" || warned=1
+  clean_rm "$ROOT/web/node_modules" || warned=1
+
+  # Installed leftovers from the Python/Nuitka era
+  clean_rm "$LEGACY_VAR" priv || warned=1
+  clean_rm "$INSTALL_SHARE/cursor-sdk-bridge" priv || warned=1
+  if compgen -G "/tmp/onefile_*" >/dev/null 2>&1; then
+    for d in /tmp/onefile_*; do
+      clean_rm "$d" priv || warned=1
+    done
+  fi
+
+  if [[ "$warned" -ne 0 ]]; then
+    echo "==> Clean finished with leftovers (sudo needed for some paths)."
+  else
+    echo "==> Clean complete. Run ./build.sh --setup to restore deps."
+  fi
+}
+
 cmd_setup() {
   echo "==> Bun server deps"
   ensure_bun_server
-
-  if [[ "$USE_PYTHON" == true ]]; then
-    echo "==> Python venv + deps (--python)"
-    ensure_venv
-  fi
 
   echo "==> Frontend deps"
   if [[ ! -d web/node_modules ]]; then
@@ -391,13 +487,7 @@ cmd_setup() {
   echo "  Sessions are JWT with 24h TTL. Share QR issues a one-time redeem code."
   echo "  Add projects:  ./build.sh --add-project --preset example --path /path/to/your-repo"
   echo "  Dev console:   ./build.sh --run          (Bun API + Next)"
-  echo "  Deploy:        ./build.sh --deploy       (Bun binary)"
-  if [[ "$USE_PYTHON" == true ]]; then
-    echo "  Dev Python:    ./build.sh --run --python"
-    echo "  Deploy Python: ./build.sh --deploy --python"
-  else
-    echo "  Python rollback deps: ./build.sh --setup --python"
-  fi
+  echo "  Deploy:        ./build.sh --deploy       (Bun binary + Next SPA)"
 }
 
 cmd_add_project() {
@@ -421,47 +511,14 @@ cmd_add_project() {
     exit 1
   fi
 
-  local resolved id name
+  ensure_bun_server
+  local resolved
   resolved="$(cd "$ADD_PATH" && pwd)"
-
-  if [[ -n "$ADD_PRESET" ]]; then
-    ADD_PRESET="$ADD_PRESET" ADD_PATH="$resolved" ADD_ID="${ADD_ID:-}" ADD_NAME="${ADD_NAME:-}" python3 - <<'PY'
-import os, sys
-from pathlib import Path
-sys.path.insert(0, "server-py")
-from server_py.config import load_preset, upsert_project
-raw = load_preset(os.environ["ADD_PRESET"])
-raw.pop("path", None)
-raw["path"] = str(Path(os.environ["ADD_PATH"]).resolve())
-if os.environ.get("ADD_ID"):
-    raw["id"] = os.environ["ADD_ID"]
-if os.environ.get("ADD_NAME"):
-    raw["name"] = os.environ["ADD_NAME"]
-upsert_project(raw)
-print(f"Added preset '{os.environ['ADD_PRESET']}': {raw['id']} → {raw['path']}")
-PY
-    return
-  fi
-
-  id="${ADD_ID:-$(basename "$resolved" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')}"
-  name="${ADD_NAME:-$(basename "$resolved")}"
-
-  ADD_ID="$id" ADD_NAME="$name" ADD_PATH="$resolved" python3 - <<'PY'
-import os, sys
-from pathlib import Path
-sys.path.insert(0, "server-py")
-from server_py.config import upsert_project
-raw = {
-  "id": os.environ["ADD_ID"],
-  "name": os.environ["ADD_NAME"],
-  "path": str(Path(os.environ["ADD_PATH"]).resolve()),
-  "ports": [],
-  "actions": [],
-}
-upsert_project(raw)
-print(f"Added project: {raw['id']} → {raw['path']}")
-print("Edit config/projects.json to add button → script → args actions.")
-PY
+  local args=(--path "$resolved")
+  [[ -n "$ADD_PRESET" ]] && args+=(--preset "$ADD_PRESET")
+  [[ -n "$ADD_ID" ]] && args+=(--id "$ADD_ID")
+  [[ -n "$ADD_NAME" ]] && args+=(--name "$ADD_NAME")
+  (cd "$(bun_server_dir)" && bun run src/cli_add_project.ts "${args[@]}")
 }
 
 # ----- --run dev console (concurrently + hotkeys) -----
@@ -536,7 +593,7 @@ print_hotkey_help() {
 
 ${C_BOLD}Dev console hotkeys:${C_RESET}
   ${C_WHITE}r${C_RESET}  restart api + web
-  ${C_WHITE}a${C_RESET} / ${C_WHITE}q${C_RESET}  restart API only (uvicorn --reload)
+  ${C_WHITE}a${C_RESET} / ${C_WHITE}q${C_RESET}  restart API only (Bun watch)
   ${C_WHITE}w${C_RESET}  restart web only (Next)
   ${C_WHITE}h${C_RESET}  show this help
   ${C_YELLOW}Ctrl+C${C_RESET}  quit (stop all processes)
@@ -572,16 +629,8 @@ ensure_bun_server() {
 }
 
 api_cmd() {
-  local host="${HOMEBASE_HOST:-0.0.0.0}"
-  local port="${HOMEBASE_PORT:-$DEV_API_PORT}"
-  # bash -lc: concurrently defaults to /bin/sh (no `source`)
-  if [[ "$USE_PYTHON" == true ]]; then
-    printf 'bash -lc %q' \
-      "cd $(printf %q "$ROOT") && . .venv/bin/activate && PYTHONPATH=server-py exec python -m uvicorn server_py.main:app --host $(printf %q "$host") --port $(printf %q "$port") --reload"
-  else
-    printf 'bash -lc %q' \
-      "cd $(printf %q "$(bun_server_dir)") && exec bun run --watch src/entry.ts"
-  fi
+  printf 'bash -lc %q' \
+    "cd $(printf %q "$(bun_server_dir)") && exec bun run --watch src/entry.ts"
 }
 
 web_cmd() {
@@ -720,11 +769,7 @@ install_session_traps() {
 }
 
 cmd_run() {
-  if [[ "$USE_PYTHON" == true ]]; then
-    ensure_venv
-  else
-    ensure_bun_server
-  fi
+  ensure_bun_server
   if [[ ! -f .env ]]; then
     echo "Missing .env — run ./build.sh --setup first" >&2
     exit 1
@@ -752,9 +797,6 @@ cmd_run() {
   fi
 
   local runtime_label="Bun server"
-  if [[ "$USE_PYTHON" == true ]]; then
-    runtime_label="Python uvicorn"
-  fi
 
   echo ""
   echo "${C_BOLD}Home Base · dev${C_RESET}  ${C_DIM}(beside prod :${PROD_PORT} · ${runtime_label})${C_RESET}"
@@ -779,73 +821,6 @@ cmd_run() {
   else
     wait "$HOMEBASE_APPS_PID"
   fi
-}
-
-cmd_bin_python() {
-  echo "==> Building Nuitka one-file binary → $BIN_PATH"
-  ensure_venv
-  build_web_dist
-  pip install -q "nuitka>=2.4" ordered-set zstandard
-
-  if ! command -v gcc >/dev/null 2>&1 && ! command -v cc >/dev/null 2>&1; then
-    echo "Error: gcc/cc required for Nuitka" >&2
-    exit 1
-  fi
-
-  ensure_dist_writable
-  mkdir -p "$BIN_OUT_DIR"
-  rm -f "$BIN_PATH"
-
-  # Onefile standalone; bundle SPA + preset templates.
-  PYTHONPATH="${ROOT}/server-py${PYTHONPATH:+:$PYTHONPATH}" python -m nuitka \
-    --onefile \
-    --standalone \
-    --assume-yes-for-downloads \
-    --remove-output \
-    --jobs="${HOMEBASE_NUITKA_JOBS:-1}" \
-    --output-dir="$BIN_OUT_DIR" \
-    --output-filename="$BIN_NAME" \
-    --include-package=server_py \
-    --include-package=fastapi \
-    --include-package=uvicorn \
-    --include-package=starlette \
-    --include-package=pydantic \
-    --include-package=httpx \
-    --include-package=dotenv \
-    --include-package=ptyprocess \
-    --include-package=websockets \
-    --include-package=cursor_sdk \
-    --include-package=mss \
-    --include-package=PIL \
-    --include-data-dir=web/dist=web/dist \
-    --include-data-dir=config/presets=config/presets \
-    --include-data-files=config/projects.example.json=config/projects.example.json \
-    --include-data-files=VERSION=VERSION \
-    --include-data-files=scripts/hb-hook-approve=hb-hook-approve \
-    --follow-imports \
-    --nofollow-import-to=nuitka \
-    --nofollow-import-to=tkinter \
-    --nofollow-import-to=unittest \
-    homebase_entry.py
-
-  if [[ ! -x "$BIN_PATH" ]]; then
-    # Some Nuitka versions nest output
-    if [[ -x "$BIN_OUT_DIR/homebase_entry.bin" ]]; then
-      mv "$BIN_OUT_DIR/homebase_entry.bin" "$BIN_PATH"
-    elif [[ -x "$BIN_OUT_DIR/homebase_entry" ]]; then
-      mv "$BIN_OUT_DIR/homebase_entry" "$BIN_PATH"
-    fi
-  fi
-
-  if [[ ! -x "$BIN_PATH" ]]; then
-    echo "Error: binary not found at $BIN_PATH" >&2
-    ls -la "$BIN_OUT_DIR" >&2 || true
-    exit 1
-  fi
-
-  chmod +x "$BIN_PATH" 2>/dev/null || run_priv chmod +x "$BIN_PATH"
-  claim_dist_to_workspace
-  echo "==> Binary ready: $BIN_PATH ($(du -h "$BIN_PATH" | cut -f1)) [$(workspace_owner):$(workspace_group)]"
 }
 
 cmd_bin_bun() {
@@ -880,11 +855,7 @@ cmd_bin_bun() {
 }
 
 cmd_bin() {
-  if [[ "$USE_PYTHON" == true ]]; then
-    cmd_bin_python
-  else
-    cmd_bin_bun
-  fi
+  cmd_bin_bun
 }
 
 force_prod_port_in_env() {
@@ -1181,23 +1152,21 @@ install_binary() {
   run_priv rm -f "$INSTALL_SHARE/.running-backup"
 
   # Bun compile does not embed SPA — install web/dist + presets beside the binary.
-  if [[ "$USE_PYTHON" != true ]]; then
-    if [[ -d "$BIN_OUT_DIR/web/dist" ]]; then
-      echo "    installing SPA → $INSTALL_SHARE/web/dist"
-      run_priv mkdir -p "$INSTALL_SHARE/web"
-      run_priv rm -rf "$INSTALL_SHARE/web/dist"
-      run_priv cp -a "$BIN_OUT_DIR/web/dist" "$INSTALL_SHARE/web/dist"
-    elif [[ -d "$ROOT/web/dist" ]]; then
-      echo "    installing SPA from repo → $INSTALL_SHARE/web/dist"
-      run_priv mkdir -p "$INSTALL_SHARE/web"
-      run_priv rm -rf "$INSTALL_SHARE/web/dist"
-      run_priv cp -a "$ROOT/web/dist" "$INSTALL_SHARE/web/dist"
-    fi
-    if [[ -d "$ROOT/config/presets" ]]; then
-      run_priv mkdir -p "$INSTALL_SHARE/config"
-      run_priv rm -rf "$INSTALL_SHARE/config/presets"
-      run_priv cp -a "$ROOT/config/presets" "$INSTALL_SHARE/config/presets"
-    fi
+  if [[ -d "$BIN_OUT_DIR/web/dist" ]]; then
+    echo "    installing SPA → $INSTALL_SHARE/web/dist"
+    run_priv mkdir -p "$INSTALL_SHARE/web"
+    run_priv rm -rf "$INSTALL_SHARE/web/dist"
+    run_priv cp -a "$BIN_OUT_DIR/web/dist" "$INSTALL_SHARE/web/dist"
+  elif [[ -d "$ROOT/web/dist" ]]; then
+    echo "    installing SPA from repo → $INSTALL_SHARE/web/dist"
+    run_priv mkdir -p "$INSTALL_SHARE/web"
+    run_priv rm -rf "$INSTALL_SHARE/web/dist"
+    run_priv cp -a "$ROOT/web/dist" "$INSTALL_SHARE/web/dist"
+  fi
+  if [[ -d "$ROOT/config/presets" ]]; then
+    run_priv mkdir -p "$INSTALL_SHARE/config"
+    run_priv rm -rf "$INSTALL_SHARE/config/presets"
+    run_priv cp -a "$ROOT/config/presets" "$INSTALL_SHARE/config/presets"
   fi
 
   # Install / refresh wrapper at /usr/bin/homebase; drop old /usr/bin/homebased name
@@ -1264,51 +1233,6 @@ wait_for_listen() {
   done
   return 1
 }
-
-# Nuitka omits cursor_sdk/_vendor/bridge (~180MB node tree). Copy it next to the
-# binary and point CURSOR_SDK_BRIDGE_BIN at the launcher for prod Cursor chat.
-# Bun path uses in-process @cursor/sdk — no Python bridge. Never abort deploy.
-install_cursor_bridge() {
-  local src="" dest launcher env_file
-  if [[ "$USE_PYTHON" != true ]]; then
-    return 0
-  fi
-  dest="$INSTALL_SHARE/cursor-sdk-bridge"
-  launcher="$dest/bin/cursor-sdk-bridge"
-  if [[ -d .venv/lib ]]; then
-    src="$(find .venv/lib -path '*/cursor_sdk/_vendor/bridge' -type d 2>/dev/null | head -n1 || true)"
-  fi
-  if [[ -z "$src" || ! -f "$src/bin/cursor-sdk-bridge" ]]; then
-    echo "    warning: cursor-sdk bridge not in .venv — Cursor chat may fail until ./build.sh --setup --python" >&2
-    return 0
-  fi
-  echo "==> Installing cursor-sdk bridge → $dest"
-  set +e
-  run_priv rm -rf "$dest"
-  run_priv mkdir -p "$INSTALL_SHARE"
-  run_priv cp -a "$src" "$dest"
-  local rc=$?
-  run_priv chmod 755 "$dest/bin/cursor-sdk-bridge" 2>/dev/null
-  run_priv chmod 755 "$dest/bin/node" 2>/dev/null
-  set -e
-  if [[ "$rc" -ne 0 || ! -f "$launcher" ]]; then
-    echo "    warning: bridge install failed — continuing so $SERVICE_NAME still restarts" >&2
-    return 0
-  fi
-  env_file="$HOMEBASE_VAR/.env"
-  run_priv mkdir -p "$HOMEBASE_VAR"
-  if [[ ! -f "$env_file" ]]; then
-    run_priv touch "$env_file"
-    run_priv chmod 600 "$env_file"
-  fi
-  if run_priv grep -qE '^CURSOR_SDK_BRIDGE_BIN=' "$env_file" 2>/dev/null; then
-    run_priv sed -i "s|^CURSOR_SDK_BRIDGE_BIN=.*|CURSOR_SDK_BRIDGE_BIN=${launcher}|" "$env_file"
-  else
-    run_priv bash -c "printf 'CURSOR_SDK_BRIDGE_BIN=%s\n' $(printf %q "$launcher") >> $(printf %q "$env_file")"
-  fi
-  echo "    CURSOR_SDK_BRIDGE_BIN=$launcher"
-}
-
 cmd_service() {
   echo "==> Installing $SERVICE_NAME"
   if [[ ! -f "$SERVICE_SRC" ]]; then
@@ -1332,7 +1256,6 @@ cmd_service() {
   remove_legacy_install
   free_prod_port
   prepare_var_lib
-  install_cursor_bridge
   if [[ -f "$ROOT/scripts/hb-hook-approve" ]]; then
     echo "==> Installing approval hook → $INSTALL_SHARE/hb-hook-approve"
     run_priv install -m 0755 "$ROOT/scripts/hb-hook-approve" "$INSTALL_SHARE/hb-hook-approve"
@@ -1374,9 +1297,6 @@ schedule_detached_deploy() {
   local unit="homebased-self-deploy-$(date +%s%N)"
   local cmd
   cmd="cd $(printf %q "$ROOT") && export HOMEBASE_DETACHED_DEPLOY=1 && exec ./build.sh --deploy --from-detached"
-  if [[ "$USE_PYTHON" == true ]]; then
-    cmd+=" --python"
-  fi
   if ! run_priv systemd-run \
       --collect \
       --unit="$unit" \
@@ -1426,6 +1346,10 @@ cmd_deploy() {
   cmd_service
   echo "==> Deploy complete → http://0.0.0.0:${PROD_PORT}/ ($SERVICE_NAME)"
 }
+
+if [[ "$DO_CLEAN" == true ]]; then
+  cmd_clean
+fi
 
 if [[ "$DO_SETUP" == true ]]; then
   cmd_setup

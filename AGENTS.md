@@ -2,16 +2,15 @@
 
 Generic control plane. **Production `:8888`** (systemd as root). **Dev API `:8081`**, **Next `:3081`** (proxies `/api` + `/ws`) — one off the usual defaults so `./build.sh --run` can sit beside prod. Projects are configured in **gitignored** `config/projects.json` — nothing is hardcoded until added via CLI.
 
-**Backend default is Bun** (`server/`). Python FastAPI (`server-py/` → package `server_py`) remains for rollback via `--python`.
+**Backend is Bun** (`server/`). **Frontend is Next.js** static export (`web/` → `web/dist`).
 
 ## Setup
 
 ```bash
-./build.sh --setup                 # Bun server + web deps (no Python)
-./build.sh --setup --python        # also Python venv (only if you need --python)
+./build.sh --setup                 # Bun server + Next web deps
+./build.sh --clean                 # Drop Python/Nuitka leftovers, .runtime, setup/build caches
 ./build.sh --add-project --preset example --path /path/to/your-repo
-./build.sh --run                   # Bun API + Next
-./build.sh --run --python          # Python uvicorn + Next (rollback)
+./build.sh --run                   # Bun API + Next (proxied on :3081)
 ```
 
 Presets never embed a default filesystem path — always pass `--path`.
@@ -20,7 +19,7 @@ Open the UI at `http://localhost:3081` in dev (Next). Production is `http://<hos
 
 ## Same-origin client API
 
-SPA fetch/WebSocket paths are always relative (`/api/...`, `/ws/...` via `location.host`). Dev and prod use the same client code — Next proxies those paths to the API in development; the backend serves SPA + API together in production.
+SPA fetch/WebSocket paths are always relative (`/api/...`, `/ws/...` via `location.host`). Dev and prod use the same client code — Next’s `scripts/dev.mjs` proxies those paths to the API in development; the Bun backend serves SPA + API together in production.
 
 ## UI tabs
 
@@ -29,7 +28,7 @@ Apps · **Work** · Chat · Shell · Files · **View** · Logs · **More/Setting
 - **Work** — switch Apps / Shell / Files in one workspace with a bottom-right chat dock (Cursor-like). Chat can present a shell or file into the scene.
 - **Chat** — full-page agent; same engine as the Work dock; can jump into Work to show Apps/Shell/Files.
 - **Shell** — standalone PTY + session attach. Under systemd root, Shell/Run/Expo PTYs `setpriv` to the seat user and load that user’s login+interactive env (nvm/pnpm/cargo) so they match a native laptop terminal.
-- **View** — JWT-gated live laptop screen (`/ws/view`) with pointer/keyboard; Bun path uses a seat-user `--view-worker` (libX11 `XGetImage` + XTest via `bun:ffi`); Python `--python` path still uses mss. Root systemd uses setpriv/runuser to the seat owner (cannot open the user display as root). Explicit Connect/Disconnect; maximize mode; adaptive JPEG. Capture runs only while connected.
+- **View** — JWT-gated live laptop screen (`/ws/view`) with pointer/keyboard; Bun seat-user `--view-worker` (libX11 `XGetImage` + XTest via `bun:ffi`). Root systemd uses setpriv/runuser to the seat owner (cannot open the user display as root). Explicit Connect/Disconnect; maximize mode; adaptive JPEG. Capture runs only while connected.
 - Alerts bell in the thin top status bar opens a top→bottom near-full inbox; History is a right drawer. Chat supports English speech→text; Cursor done pings toast/sound and optional browser notifications. Theme, notification prefs, cache clear, sign-out, and localhost Share/password live under More.
 
 ## Config model
@@ -70,14 +69,14 @@ Committed presets: `config/presets/example.json` and `config/presets/homebase.js
 ## Deploy
 
 ```bash
-./build.sh --deploy # Nuitka → dist/homebase → /usr/share/homebased + wrapper + systemd
+./build.sh --deploy # Bun compile → dist/homebase → /usr/share/homebased + wrapper + systemd
 ```
 
 - Active binary: `/usr/share/homebased/homebase` (previous known-good → `homebase.bak`)
 - Wrapper `/usr/bin/homebase` (unit `homebased.service`) self-tests, then exec; on failure runs `.bak` with `HOMEBASE_RUNNING_BACKUP=1`
 - Deploy syncs `CURSOR_API_KEY` from repo `.env` → `/var/lib/homebased/.env` (VPN/prod uses the latter)
 - Version: repo `VERSION` file; status bar + `/api/version`. **Always increment** on code/behavior changes (patch by default).
-- Deploy also syncs `CURSOR_MODEL` / `HOMEBASE_JWT_SECRET` and installs the cursor-sdk Node bridge (omitted from Nuitka onefile)
+- Deploy also syncs `CURSOR_MODEL` / `HOMEBASE_JWT_SECRET`. Cursor chat uses in-process `@cursor/sdk` (no separate Node bridge).
 
 Writable state: `/var/lib/homebased` (`HOMEBASE_HOME`). Unit **homebased** runs as **root** on **port 8888**.
 
