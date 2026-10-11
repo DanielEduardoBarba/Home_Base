@@ -16,10 +16,11 @@ const LONG_MS = 480
 const MOVE_PX = 12
 const LS_CONTROL = 'hb-view-control'
 const LS_MONITOR = 'hb-view-monitor'
+const LS_QUALITY = 'hb-view-quality'
 const LS_HINT = 'hb-view-hint-v2'
 const DEFAULT_AUTO_WIDTH = 1280
 
-type QualityPreset = 'auto' | 'lan' | 'vpn'
+type QualityPreset = 'auto' | 'high' | 'medium' | 'low'
 type ControlMode = 'touch' | 'mouse'
 
 type MonitorInfo = {
@@ -31,9 +32,17 @@ type MonitorInfo = {
   height: number
 }
 
+const QUALITY_OPTIONS: { id: QualityPreset; label: string; title: string }[] = [
+  { id: 'auto', label: 'Auto', title: 'Adaptive quality from link + zoom' },
+  { id: 'high', label: 'High', title: 'More detail · uses more bandwidth' },
+  { id: 'medium', label: 'Med', title: 'Balanced quality and speed' },
+  { id: 'low', label: 'Low', title: 'Less detail · smoother on slow VPN' },
+]
+
 const PRESETS: Record<Exclude<QualityPreset, 'auto'>, { maxWidth: number; quality: number; fps: number }> = {
-  lan: { maxWidth: 1600, quality: 62, fps: 16 },
-  vpn: { maxWidth: 1024, quality: 42, fps: 8 },
+  high: { maxWidth: 1680, quality: 72, fps: 18 },
+  medium: { maxWidth: 1280, quality: 55, fps: 12 },
+  low: { maxWidth: 960, quality: 36, fps: 8 },
 }
 
 function parseHeader(buf: ArrayBuffer) {
@@ -69,6 +78,19 @@ function loadMonitor(): number {
     /* ignore */
   }
   return 0
+}
+
+function loadQuality(): QualityPreset {
+  try {
+    const v = localStorage.getItem(LS_QUALITY)
+    if (v === 'auto' || v === 'high' || v === 'medium' || v === 'low') return v
+    // Legacy network-named presets
+    if (v === 'lan') return 'high'
+    if (v === 'vpn') return 'low'
+  } catch {
+    /* ignore */
+  }
+  return 'auto'
 }
 
 function clamp(n: number, lo: number, hi: number) {
@@ -142,7 +164,7 @@ export function ViewTab() {
   const [wanted, setWanted] = useState(false)
   const [conn, setConn] = useState<WsConnState>('offline')
   const [error, setError] = useState('')
-  const [preset, setPreset] = useState<QualityPreset>('auto')
+  const [preset, setPreset] = useState<QualityPreset>(() => loadQuality())
   const [control, setControl] = useState<ControlMode>('touch')
   const [monitor, setMonitor] = useState(0)
   const [monitors, setMonitors] = useState<MonitorInfo[]>([])
@@ -202,6 +224,14 @@ export function ViewTab() {
       /* ignore */
     }
   }, [control])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_QUALITY, preset)
+    } catch {
+      /* ignore */
+    }
+  }, [preset])
 
   useEffect(() => {
     try {
@@ -893,16 +923,20 @@ export function ViewTab() {
           Mouse
         </button>
       </div>
-      <select
-        className="hb-select hb-select-sm"
-        aria-label="Quality"
-        value={preset}
-        onChange={(e) => setPreset(e.target.value as QualityPreset)}
-      >
-        <option value="auto">Auto</option>
-        <option value="lan">LAN</option>
-        <option value="vpn">VPN</option>
-      </select>
+      <div className="hb-view-mode" role="group" aria-label="Stream quality">
+        {QUALITY_OPTIONS.map((q) => (
+          <button
+            key={q.id}
+            type="button"
+            className={`hb-view-mode-btn ${preset === q.id ? 'on' : ''}`}
+            aria-pressed={preset === q.id}
+            title={q.title}
+            onClick={() => setPreset(q.id)}
+          >
+            {q.label}
+          </button>
+        ))}
+      </div>
       {wanted ? (
         <>
           {!maximized && (
@@ -944,6 +978,7 @@ export function ViewTab() {
                       <span className={link}>{connStateLabel(conn)}</span>
                       {stats.screen ? ` · ${stats.screen}` : ''}
                       {stats.fps > 0 ? ` · ${Math.round(stats.fps)}fps` : ''}
+                      {` · ${QUALITY_OPTIONS.find((q) => q.id === preset)?.label || 'Auto'}`}
                       {zoom > 1.05 ? ` · ${zoom.toFixed(1)}×` : ''}
                     </>
                   ) : (
@@ -974,6 +1009,7 @@ export function ViewTab() {
               <p className="text-[0.65rem] text-mute truncate">
                 <span className={link}>{connStateLabel(conn)}</span>
                 {stats.screen ? ` · ${stats.screen}` : ''}
+                {` · ${QUALITY_OPTIONS.find((q) => q.id === preset)?.label || 'Auto'}`}
                 {zoom > 1.05 ? ` · ${zoom.toFixed(1)}×` : ''}
               </p>
               {error && <p className="text-[0.65rem] text-danger">{error}</p>}

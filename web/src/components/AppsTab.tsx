@@ -241,16 +241,27 @@ export function AppsTab({
                   </option>
                 ))}
               </select>
-              <button
-                type="button"
-                disabled={!!busy || (!running && !selectedRun)}
-                onClick={() => void toggleRun()}
-                className={`hb-btn !min-h-10 !px-4 text-sm shrink-0 ${
-                  running ? 'hb-btn-danger' : 'hb-btn-primary'
-                }`}
-              >
-                {busy ? '…' : running ? 'Stop' : 'Start'}
-              </button>
+              {running ? (
+                <HoldButton
+                  label={busy ? '…' : 'Stop'}
+                  holdLabel="Hold…"
+                  holdMs={1200}
+                  tone="danger"
+                  disabled={!!busy}
+                  className="!min-h-10 !px-4 text-sm shrink-0"
+                  title="Hold to stop project"
+                  onConfirm={() => void toggleRun()}
+                />
+              ) : (
+                <button
+                  type="button"
+                  disabled={!!busy || !selectedRun}
+                  onClick={() => void toggleRun()}
+                  className="hb-btn hb-btn-primary !min-h-10 !px-4 text-sm shrink-0"
+                >
+                  {busy ? '…' : 'Start'}
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -274,8 +285,9 @@ export function AppsTab({
               <HoldButton
                 label={busy ? '…' : 'Ship'}
                 holdLabel="Hold…"
+                tone="ship"
                 disabled={!!busy || !selectedShip}
-                className="hb-btn hb-btn-ship !min-h-10 !px-4 text-sm shrink-0"
+                className="!min-h-10 !px-4 text-sm shrink-0"
                 title={selectedShip?.hint || selectedShip?.label}
                 onConfirm={async () => {
                   if (!selectedShip) return
@@ -330,21 +342,38 @@ export function AppsTab({
               </button>
             </div>
             <div className="grid grid-cols-2 gap-2">
-              {hotkeys.map((a) => (
-                <button
-                  key={a.id}
-                  type="button"
-                  disabled={!!busy}
-                  title={a.hint || a.label}
-                  onClick={() => {
-                    setHotkeysOpen(false)
-                    void (a.type === 'stop' ? doStop() : doRun(a))
-                  }}
-                  className="hb-btn hb-btn-ghost !min-h-11 text-sm"
-                >
-                  {a.label}
-                </button>
-              ))}
+              {hotkeys.map((a) =>
+                a.type === 'stop' || /restart/i.test(a.label) ? (
+                  <HoldButton
+                    key={a.id}
+                    label={a.label}
+                    holdLabel="Hold…"
+                    holdMs={1200}
+                    tone={a.type === 'stop' ? 'danger' : 'warn'}
+                    disabled={!!busy}
+                    className="!min-h-11 text-sm"
+                    title={a.hint || `Hold to ${a.label}`}
+                    onConfirm={() => {
+                      setHotkeysOpen(false)
+                      void (a.type === 'stop' ? doStop() : doRun(a))
+                    }}
+                  />
+                ) : (
+                  <button
+                    key={a.id}
+                    type="button"
+                    disabled={!!busy}
+                    title={a.hint || a.label}
+                    onClick={() => {
+                      setHotkeysOpen(false)
+                      void doRun(a)
+                    }}
+                    className="hb-btn hb-btn-ghost !min-h-11 text-sm"
+                  >
+                    {a.label}
+                  </button>
+                ),
+              )}
             </div>
           </div>
         </div>

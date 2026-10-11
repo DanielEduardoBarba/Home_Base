@@ -486,6 +486,29 @@ html[data-safe-top='1'] {
   color: var(--hb-danger-fg);
 }
 
+.hb-btn-warn {
+  background: color-mix(in srgb, var(--hb-amber) 14%, var(--hb-panel));
+  border-color: color-mix(in srgb, var(--hb-warn) 50%, transparent);
+  color: var(--hb-warn);
+}
+
+.hb-hold-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.hb-hold-fill {
+  background: color-mix(in srgb, var(--hb-accent) 28%, transparent);
+}
+
+.hb-hold-fill-danger {
+  background: color-mix(in srgb, var(--hb-danger) 38%, transparent);
+}
+
+.hb-hold-fill-warn {
+  background: color-mix(in srgb, var(--hb-amber) 40%, transparent);
+}
+
 .hb-btn-ghost {
   background: var(--hb-panel-2);
   border-color: var(--hb-line);

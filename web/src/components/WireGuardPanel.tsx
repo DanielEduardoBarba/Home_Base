@@ -399,24 +399,29 @@ export function WireGuardPanel() {
             >
               {busy === 'start' ? '…' : 'Start'}
             </button>
-            <button
-              type="button"
-              className="hb-btn hb-btn-ghost text-sm !min-h-10"
+            <HoldButton
+              label={busy === 'stop' ? '…' : 'Stop'}
+              holdLabel="Hold…"
+              holdMs={1600}
+              tone="danger"
               disabled={!!busy || !active || !status.root}
-              onClick={() =>
+              className="text-sm !min-h-10"
+              title="Hold to stop VPN — drops phone tunnels"
+              onConfirm={() =>
                 void run('stop', async () => {
                   await api.wireguardStop(status.iface)
                   setMsg('VPN stopped')
                 })
               }
-            >
-              {busy === 'stop' ? '…' : 'Stop'}
-            </button>
+            />
             <HoldButton
               label={busy === 'restart' ? '…' : 'Restart'}
               holdLabel="Hold…"
+              holdMs={1400}
+              tone="warn"
               disabled={!!busy || !status.root}
-              className="hb-btn hb-btn-ghost text-sm !min-h-10"
+              className="text-sm !min-h-10"
+              title="Hold to restart VPN — brief disconnect"
               onConfirm={() =>
                 void run('restart', async () => {
                   await api.wireguardRestartIface(status.iface)
@@ -425,6 +430,9 @@ export function WireGuardPanel() {
               }
             />
           </div>
+          <p className="text-[10px] text-mute leading-snug">
+            Hold Stop / Restart — a tap alone won’t drop your tunnel.
+          </p>
 
           {!managed && (
             <button
@@ -481,8 +489,11 @@ export function WireGuardPanel() {
                     <HoldButton
                       label="Rotate"
                       holdLabel="Hold…"
+                      holdMs={1200}
+                      tone="warn"
                       disabled={!!busy || !status.root}
-                      className="hb-btn hb-btn-ghost text-xs !min-h-9"
+                      className="text-xs !min-h-9"
+                      title={`Hold to rotate keys for ${c.name}`}
                       onConfirm={() =>
                         void run(`rot-${c.id}`, async () => {
                           const r = await api.wireguardAddClient({
@@ -498,8 +509,11 @@ export function WireGuardPanel() {
                   <HoldButton
                     label="Remove"
                     holdLabel="Hold…"
+                    holdMs={1600}
+                    tone="danger"
                     disabled={!!busy || !status.root}
-                    className="hb-btn hb-btn-danger text-xs !min-h-9"
+                    className="text-xs !min-h-9"
+                    title={`Hold to remove ${c.name} from VPN`}
                     onConfirm={() =>
                       void run(`rm-${c.id}`, async () => {
                         await api.wireguardRemoveClient(c.id)
@@ -624,8 +638,11 @@ export function WireGuardPanel() {
                   <HoldButton
                     label={busy === 'uninstall' ? '…' : 'Uninstall'}
                     holdLabel="Hold…"
+                    holdMs={2000}
+                    tone="danger"
                     disabled={!!busy || !status.root}
-                    className="hb-btn hb-btn-danger text-sm !min-h-10 flex-1"
+                    className="text-sm !min-h-10 flex-1"
+                    title="Hold to remove WireGuard entirely"
                     onConfirm={() =>
                       void run('uninstall', async () => {
                         await api.wireguardUninstall({ removePackages: removePkgs })

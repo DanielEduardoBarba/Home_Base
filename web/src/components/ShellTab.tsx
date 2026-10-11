@@ -197,7 +197,8 @@ export function ShellTab({
             label="Kill all"
             holdLabel="…"
             holdMs={2000}
-            className="hb-btn hb-btn-danger text-[11px] !min-h-8 !px-2.5"
+            tone="danger"
+            className="text-[11px] !min-h-8 !px-2.5"
             onConfirm={() => void killAttached()}
           />
         )}
@@ -206,8 +207,9 @@ export function ShellTab({
             label="Exit"
             holdLabel="…"
             holdMs={1000}
+            tone="warn"
             title="Hold 1s — send Ctrl+C twice"
-            className="hb-btn hb-btn-ghost text-[11px] !min-h-8 !px-2.5"
+            className="text-[11px] !min-h-8 !px-2.5"
             onConfirm={() => void exitSession(sessionId)}
           />
         )}
@@ -216,8 +218,9 @@ export function ShellTab({
             label="Kill"
             holdLabel="…"
             holdMs={2000}
+            tone="danger"
             title="Hold 2s — kill process"
-            className="hb-btn hb-btn-danger text-[11px] !min-h-8 !px-2.5"
+            className="text-[11px] !min-h-8 !px-2.5"
             onConfirm={() => void killSession(sessionId)}
           />
         )}
@@ -389,16 +392,18 @@ export function ShellTab({
                       label="Exit"
                       holdLabel="…"
                       holdMs={1000}
+                      tone="warn"
                       title="Hold 1s — send Ctrl+C twice"
-                      className="hb-btn hb-btn-ghost text-xs !min-h-9 px-3"
+                      className="text-xs !min-h-9 px-3"
                       onConfirm={() => void exitSession(s.id)}
                     />
                     <HoldButton
                       label="Kill"
                       holdLabel="…"
                       holdMs={2000}
+                      tone="danger"
                       title="Hold 2s — kill process"
-                      className="hb-btn hb-btn-danger text-xs !min-h-9 px-3"
+                      className="text-xs !min-h-9 px-3"
                       onConfirm={() => void killSession(s.id)}
                     />
                   </>

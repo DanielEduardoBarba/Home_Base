@@ -330,10 +330,14 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
           <HoldButton
             label={busy === 'homebased' ? '…' : 'Restart Home Base'}
             holdLabel="Hold…"
+            holdMs={1600}
+            tone="warn"
             disabled={!!busy}
-            className="hb-btn hb-btn-ghost !min-h-10 text-sm w-full"
+            className="!min-h-10 text-sm w-full"
+            title="Hold to restart Home Base — brief disconnect"
             onConfirm={() => void restartHb()}
           />
+          <p className="text-[10px] text-mute">Hold to confirm — won’t fire on a tap.</p>
           {sysMsg && <p className="text-xs text-sky">{sysMsg}</p>}
         </section>
 
