@@ -59,7 +59,7 @@ Committed presets: `config/presets/example.json` and `config/presets/homebase.js
 - In-memory Logs tab ring (`/api/trace`) capped at 300 lines — server + web console
 - Stop kills PTY sessions, pidfile PIDs, **and** listeners on configured project ports
 - Intended access model: VPN to laptop; do not public-port-forward
-- Run/Expo PTYs inject `HOMEBASE_ADVERTISE_HOST` / `REACT_NATIVE_PACKAGER_HOSTNAME` plus `EXPO_PUBLIC_API_URL` / `NEXT_PUBLIC_API_URL` (WireGuard iface preferred) so preset apps are reachable from VPN clients, not only localhost
+- Run/Expo PTYs inject `HOMEBASE_ADVERTISE_HOST` / `REACT_NATIVE_PACKAGER_HOSTNAME` plus `EXPO_PUBLIC_API_URL` / `NEXT_PUBLIC_API_URL` (native LAN / `192.168.x` preferred over WireGuard `10.x`) so Expo Go on Wi‑Fi hits the laptop; set `HOMEBASE_ADVERTISE_HOST` to force VPN if needed
 
 ## Files API
 

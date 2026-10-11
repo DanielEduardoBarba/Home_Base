@@ -15,9 +15,15 @@ function Dot({ up }: { up?: boolean }) {
   )
 }
 
+function portUp(p: { up?: boolean; listening?: boolean }): boolean {
+  return Boolean(p.up ?? p.listening)
+}
+
 function isRunning(project: Project): boolean {
   const ports = project.portsStatus || []
-  if (ports.some((p) => p.up)) return true
+  if (ports.some((p) => portUp(p as { up?: boolean; listening?: boolean }))) {
+    return true
+  }
   return (project.sessions || []).some(
     (s) => s.alive && (s.kind === 'run' || s.kind === 'expo'),
   )
@@ -204,10 +210,10 @@ export function AppsTab({
                   rel="noreferrer"
                   title={href}
                   className="hb-port !py-1.5 block no-underline"
-                  data-up={ps.up}
+                  data-up={portUp(ps) ? '1' : '0'}
                 >
                   <div className="flex items-center justify-center gap-1">
-                    <Dot up={ps.up} />
+                    <Dot up={portUp(ps)} />
                     <span>:{ps.port}</span>
                   </div>
                   <div className="mt-0.5 truncate text-[10px] opacity-90">

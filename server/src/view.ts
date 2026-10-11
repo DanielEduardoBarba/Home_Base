@@ -76,15 +76,44 @@ class X11Bridge {
   screenH = 0;
   monitors: unknown[] = [];
   uid = 0;
-  private queueChain: Promise<unknown> = Promise.resolve();
+  private queueChain: Promise<Record<string, unknown>> = Promise.resolve({
+    ok: true,
+  });
+  private starting = false;
 
   get alive(): boolean {
-    return Boolean(this.proc && !this.proc.killed && this.stdin && this.stdout);
+    return Boolean(
+      this.proc &&
+        !this.proc.killed &&
+        this.proc.exitCode === null &&
+        this.stdin &&
+        this.reader,
+    );
+  }
+
+  /** Drop IPC handles without throwing — safe after worker death. */
+  private markDead(reason?: string): void {
+    if (reason) this.lastError = reason;
+    const proc = this.proc;
+    this.proc = null;
+    this.stdin = null;
+    this.stdout = null;
+    this.reader = null;
+    this.buf = new Uint8Array(0);
+    this.starting = false;
+    if (proc && proc.exitCode === null && !proc.killed) {
+      try {
+        proc.kill();
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   start(): void {
-    if (this.alive) return;
-    this.stop();
+    if (this.alive || this.starting) return;
+    this.markDead();
+    this.starting = true;
     const { display, xauthority } = discoverX11Env();
     const { uid, gid } = displayOwnerIds(display);
     this.uid = uid;
@@ -100,96 +129,99 @@ class X11Bridge {
       /* ignore */
     }
 
-    const inner = resolveViewWorkerCmd();
+    try {
+      const inner = resolveViewWorkerCmd();
 
-    let cmd = inner;
-    if (process.getuid?.() === 0 && uid !== 0) {
-      const setpriv = Bun.which("setpriv");
-      if (setpriv) {
-        cmd = [
-          setpriv,
-          `--reuid=${uid}`,
-          `--regid=${gid}`,
-          "--init-groups",
-          "--",
-          ...inner,
-        ];
-      } else {
-        const runuser = Bun.which("runuser");
-        if (!runuser) throw new Error("setpriv/runuser required for View as root");
-        cmd = [runuser, "-u", seat.name, "--", ...inner];
-      }
-    }
-
-    const env: Record<string, string> = {
-      ...(process.env as Record<string, string>),
-      DISPLAY: display,
-      XAUTHORITY: xauthority,
-      HOME: seat.home,
-      USER: seat.name,
-      LOGNAME: seat.name,
-      HOMEBASE_VIEW_WORKER: "1",
-      HOMEBASE_HOME: scratch,
-      HOMEBASE_RUNTIME: join(scratch, ".runtime"),
-      TMPDIR: scratch,
-    };
-    delete env.HOMEBASE_SELF_TEST;
-
-    const proc = spawn(cmd, {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-      env,
-    });
-    this.proc = proc;
-    this.stdin = proc.stdin as unknown as FileSink;
-    this.stdout = proc.stdout as ReadableStream<Uint8Array>;
-    this.reader = this.stdout.getReader() as ReadableStreamDefaultReader<Uint8Array>;
-    this.buf = new Uint8Array(0);
-
-    void (async () => {
-      const err = proc.stderr;
-      if (err && typeof err !== "number") {
-        const r = (err as ReadableStream<Uint8Array>).getReader();
-        const dec = new TextDecoder();
-        for (;;) {
-          const { done, value } = await r.read();
-          if (done) break;
-          const line = dec.decode(value).trim();
-          if (line) appendTrace("info", `view-worker: ${line}`, "view");
+      let cmd = inner;
+      if (process.getuid?.() === 0 && uid !== 0) {
+        const setpriv = Bun.which("setpriv");
+        if (setpriv) {
+          cmd = [
+            setpriv,
+            `--reuid=${uid}`,
+            `--regid=${gid}`,
+            "--init-groups",
+            "--",
+            ...inner,
+          ];
+        } else {
+          const runuser = Bun.which("runuser");
+          if (!runuser) {
+            throw new Error("setpriv/runuser required for View as root");
+          }
+          cmd = [runuser, "-u", seat.name, "--", ...inner];
         }
       }
-    })();
 
-    appendTrace("info", `view worker started uid=${uid} display=${display}`, "view");
+      const env: Record<string, string> = {
+        ...(process.env as Record<string, string>),
+        DISPLAY: display,
+        XAUTHORITY: xauthority,
+        HOME: seat.home,
+        USER: seat.name,
+        LOGNAME: seat.name,
+        HOMEBASE_VIEW_WORKER: "1",
+        HOMEBASE_HOME: scratch,
+        HOMEBASE_RUNTIME: join(scratch, ".runtime"),
+        TMPDIR: scratch,
+      };
+      delete env.HOMEBASE_SELF_TEST;
+
+      const proc = spawn(cmd, {
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+        env,
+      });
+      this.proc = proc;
+      this.stdin = proc.stdin as unknown as FileSink;
+      this.stdout = proc.stdout as ReadableStream<Uint8Array>;
+      this.reader = this.stdout.getReader() as ReadableStreamDefaultReader<Uint8Array>;
+      this.buf = new Uint8Array(0);
+
+      void proc.exited.then((code) => {
+        if (this.proc === proc) {
+          this.markDead(`view-worker exited (${code ?? "?"})`);
+          appendTrace("warn", this.lastError, "view");
+        }
+      });
+
+      void (async () => {
+        const err = proc.stderr;
+        if (err && typeof err !== "number") {
+          const r = (err as ReadableStream<Uint8Array>).getReader();
+          const dec = new TextDecoder();
+          for (;;) {
+            const { done, value } = await r.read();
+            if (done) break;
+            const line = dec.decode(value).trim();
+            if (line) appendTrace("info", `view-worker: ${line}`, "view");
+          }
+        }
+      })();
+
+      appendTrace(
+        "info",
+        `view worker started uid=${uid} display=${display} cmd=${cmd.join(" ")}`,
+        "view",
+      );
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      this.markDead(err);
+      appendTrace("error", `view worker start failed: ${err}`, "view");
+    } finally {
+      this.starting = false;
+    }
   }
 
   stop(): void {
-    const proc = this.proc;
-    this.proc = null;
-    this.stdin = null;
-    this.stdout = null;
-    try {
-      this.reader?.cancel();
-    } catch {
-      /* ignore */
-    }
-    this.reader = null;
-    if (!proc) return;
-    try {
-      void this.call({ cmd: "stop" }, 1);
-    } catch {
-      /* ignore */
-    }
-    try {
-      proc.kill();
-    } catch {
-      /* ignore */
-    }
+    // Never await IPC here — a dead worker used to reject and crash the API.
+    this.markDead();
   }
 
-  private async readExact(n: number): Promise<Uint8Array> {
+  private async readExact(n: number, deadlineMs: number): Promise<Uint8Array> {
     while (this.buf.length < n) {
+      if (Date.now() > deadlineMs) throw new Error("X11 worker timeout");
       if (!this.reader) throw new Error("worker closed");
       const { done, value } = await this.reader.read();
       if (done || !value) throw new Error("worker closed");
@@ -203,63 +235,73 @@ class X11Bridge {
     return out;
   }
 
+  /**
+   * Send one worker command. Never rejects — worker death returns `{ ok: false }`
+   * so View cannot take down the Bun API process (systemd would restart).
+   */
   async call(
     msg: Record<string, unknown>,
     timeoutSec = 5,
   ): Promise<Record<string, unknown>> {
     const run = async (): Promise<Record<string, unknown>> => {
-      if (!this.alive) this.start();
-      if (!this.stdin || !this.reader) {
-        this.lastError = "X11 worker not running";
-        return { ok: false, error: this.lastError };
-      }
-      const body = Buffer.from(JSON.stringify(msg), "utf8");
-      const hdr = Buffer.alloc(4);
-      hdr.writeUInt32BE(body.length, 0);
-      this.stdin.write(hdr);
-      this.stdin.write(body);
       try {
-        (this.stdin as { flush?: () => void }).flush?.();
-      } catch {
-        /* ignore */
-      }
+        if (!this.alive) this.start();
+        if (!this.stdin || !this.reader) {
+          this.lastError = this.lastError || "X11 worker not running";
+          return { ok: false, error: this.lastError };
+        }
+        const body = Buffer.from(JSON.stringify(msg), "utf8");
+        const hdr = Buffer.alloc(4);
+        hdr.writeUInt32BE(body.length, 0);
+        this.stdin.write(hdr);
+        this.stdin.write(body);
+        try {
+          (this.stdin as { flush?: () => void }).flush?.();
+        } catch {
+          /* ignore */
+        }
 
-      const deadline = Date.now() + timeoutSec * 1000;
-      const hdrBuf = await Promise.race([
-        this.readExact(4),
-        sleepReject(Math.max(0, deadline - Date.now()), "X11 worker timeout"),
-      ]);
-      const n = new DataView(
-        hdrBuf.buffer,
-        hdrBuf.byteOffset,
-        hdrBuf.byteLength,
-      ).getUint32(0, false);
-      if (n <= 0 || n > 64 * 1024 * 1024) throw new Error(`bad worker size ${n}`);
-      const data = await Promise.race([
-        this.readExact(n),
-        sleepReject(Math.max(0, deadline - Date.now()), "X11 worker timeout"),
-      ]);
-      const obj = JSON.parse(Buffer.from(data).toString("utf8")) as Record<
-        string,
-        unknown
-      >;
-      if (obj.packetEncoding === "base64" && typeof obj.packet === "string") {
-        obj.packet = Buffer.from(obj.packet, "base64");
-        delete obj.packetEncoding;
+        const deadline = Date.now() + timeoutSec * 1000;
+        const hdrBuf = await this.readExact(4, deadline);
+        const n = new DataView(
+          hdrBuf.buffer,
+          hdrBuf.byteOffset,
+          hdrBuf.byteLength,
+        ).getUint32(0, false);
+        if (n <= 0 || n > 64 * 1024 * 1024) {
+          throw new Error(`bad worker size ${n}`);
+        }
+        const data = await this.readExact(n, deadline);
+        const obj = JSON.parse(Buffer.from(data).toString("utf8")) as Record<
+          string,
+          unknown
+        >;
+        if (obj.packetEncoding === "base64" && typeof obj.packet === "string") {
+          obj.packet = Buffer.from(obj.packet, "base64");
+          delete obj.packetEncoding;
+        }
+        if (!obj.ok) this.lastError = String(obj.error || "X11 error");
+        return obj;
+      } catch (e) {
+        const err = e instanceof Error ? e.message : String(e);
+        this.markDead(err);
+        return { ok: false, error: err };
       }
-      if (!obj.ok) this.lastError = String(obj.error || "X11 error");
-      return obj;
     };
 
-    this.queueChain = this.queueChain.then(run, run);
-    return this.queueChain as Promise<Record<string, unknown>>;
+    // Keep the chain settled forever so a failed call cannot become an
+    // unhandledRejection (Bun exits the process on those in this build).
+    const next = this.queueChain.then(run, run);
+    this.queueChain = next.then(
+      (v) => v,
+      (e) => {
+        const err = e instanceof Error ? e.message : String(e);
+        this.markDead(err);
+        return { ok: false, error: err };
+      },
+    );
+    return this.queueChain;
   }
-}
-
-function sleepReject(ms: number, msg: string): Promise<never> {
-  return new Promise((_, reject) => {
-    setTimeout(() => reject(new Error(msg)), ms);
-  });
 }
 
 type FileSink = {
@@ -436,49 +478,57 @@ class ViewHub {
     ws: ClientState["ws"],
     msg: Record<string, unknown>,
   ): Promise<void> {
-    const id = (ws as { __viewId?: number }).__viewId;
-    const client = id != null ? this.clients.get(id) : undefined;
-    if (!client) return;
-    if (msg.type === "config") {
-      if (msg.monitor != null) client.monitor = Number(msg.monitor);
-      if (msg.maxWidth != null) client.maxWidth = Number(msg.maxWidth);
-      if (msg.quality != null) client.quality = Number(msg.quality);
-      if (msg.fps != null) client.fps = Number(msg.fps);
-      ws.send(
-        JSON.stringify({
-          type: "config",
+    try {
+      const id = (ws as { __viewId?: number }).__viewId;
+      const client = id != null ? this.clients.get(id) : undefined;
+      if (!client) return;
+      if (msg.type === "config") {
+        if (msg.monitor != null) client.monitor = Number(msg.monitor);
+        if (msg.maxWidth != null) client.maxWidth = Number(msg.maxWidth);
+        if (msg.quality != null) client.quality = Number(msg.quality);
+        if (msg.fps != null) client.fps = Number(msg.fps);
+        ws.send(
+          JSON.stringify({
+            type: "config",
+            monitor: client.monitor,
+            maxWidth: client.maxWidth,
+            quality: client.quality,
+            fps: client.fps,
+            screenW: this.bridge.screenW,
+            screenH: this.bridge.screenH,
+          }),
+        );
+        return;
+      }
+      if (msg.type === "pointer") {
+        await this.bridge.call({
+          cmd: "pointer",
+          mode: msg.mode,
+          action: msg.action,
+          x: msg.x,
+          y: msg.y,
+          dx: msg.dx,
+          dy: msg.dy,
+          button: msg.button,
+          deltaY: msg.deltaY,
           monitor: client.monitor,
-          maxWidth: client.maxWidth,
-          quality: client.quality,
-          fps: client.fps,
-          screenW: this.bridge.screenW,
-          screenH: this.bridge.screenH,
-        }),
+        });
+        return;
+      }
+      if (msg.type === "key") {
+        await this.bridge.call({
+          cmd: "key",
+          action: msg.action,
+          key: msg.key,
+          code: msg.code,
+        });
+      }
+    } catch (e) {
+      appendTrace(
+        "warn",
+        `view handleMessage: ${e instanceof Error ? e.message : String(e)}`,
+        "view",
       );
-      return;
-    }
-    if (msg.type === "pointer") {
-      await this.bridge.call({
-        cmd: "pointer",
-        mode: msg.mode,
-        action: msg.action,
-        x: msg.x,
-        y: msg.y,
-        dx: msg.dx,
-        dy: msg.dy,
-        button: msg.button,
-        deltaY: msg.deltaY,
-        monitor: client.monitor,
-      });
-      return;
-    }
-    if (msg.type === "key") {
-      await this.bridge.call({
-        cmd: "key",
-        action: msg.action,
-        key: msg.key,
-        code: msg.code,
-      });
     }
   }
 

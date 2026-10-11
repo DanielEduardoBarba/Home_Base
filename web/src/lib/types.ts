@@ -34,6 +34,8 @@ export interface PortStatus {
   label: string
   port: number
   up: boolean
+  /** Bun compat alias — prefer `up`. */
+  listening?: boolean
   health?: { ok: boolean; url: string; status?: number | null } | null
 }
 

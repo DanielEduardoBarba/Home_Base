@@ -212,6 +212,18 @@ const server = Bun.serve<WsData>({
   },
 });
 
+// View IPC used to surface unhandledRejections ("worker closed") that exited
+// the process and bounced systemd — keep the API up even if a subsystem faults.
+process.on("unhandledRejection", (reason) => {
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  appendTrace("error", `unhandledRejection: ${msg}`, "boot");
+  console.error("unhandledRejection:", msg);
+});
+process.on("uncaughtException", (err) => {
+  appendTrace("error", `uncaughtException: ${err.message}`, "boot");
+  console.error("uncaughtException:", err);
+});
+
 appendTrace("info", `Home Base Bun listening on ${hostname}:${port}`, "boot");
 console.log(`Home Base Bun · http://${hostname}:${port} · v${readVersion()}`);
 void server;

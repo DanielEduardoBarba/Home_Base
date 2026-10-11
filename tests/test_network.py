@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from server import network
+from server_py import network
 
 
 def test_advertise_host_prefers_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -17,12 +17,24 @@ def test_advertise_host_prefers_override(monkeypatch: pytest.MonkeyPatch) -> Non
     assert network.advertise_host() == "10.8.0.1"
 
 
-def test_advertise_host_prefers_wireguard(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_advertise_host_prefers_lan_over_wireguard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("HOMEBASE_ADVERTISE_HOST", raising=False)
     monkeypatch.setattr(
         network,
         "list_ipv4_interfaces",
         lambda: [("wlp1s0", "192.168.1.50"), ("wg0", "10.8.0.1")],
+    )
+    assert network.advertise_host() == "192.168.1.50"
+
+
+def test_advertise_host_falls_back_to_vpn(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HOMEBASE_ADVERTISE_HOST", raising=False)
+    monkeypatch.setattr(
+        network,
+        "list_ipv4_interfaces",
+        lambda: [("wg0", "10.8.0.1")],
     )
     assert network.advertise_host() == "10.8.0.1"
 

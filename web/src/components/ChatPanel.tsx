@@ -514,6 +514,16 @@ export function ChatPanel({
     }
   }, [isDock, dockOpen])
 
+  // Force-unmount if animationend never fires (keeps FAB reachable; clears blank overlay)
+  useEffect(() => {
+    if (!isDock || !dockClosing) return
+    const t = window.setTimeout(() => {
+      setDockMounted(false)
+      setDockClosing(false)
+    }, 450)
+    return () => clearTimeout(t)
+  }, [isDock, dockClosing])
+
   // Work dock: click outside → minimize (debounce so open-click / near-miss don't bounce)
   useEffect(() => {
     if (!isDock || !dockOpen || dockClosing) return

@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../lib/api'
 import { useSceneRefresh } from '../lib/sceneRefresh'
+import {
+  clearShellAttach,
+  readShellAttach,
+  writeShellAttach,
+} from '../lib/shellAttach'
 import type { Project, Session } from '../lib/types'
 import { HoldButton } from './HoldButton'
 import { IconBtn } from './IconBtn'
@@ -51,7 +56,37 @@ export function ShellTab({
     setInteractive(false)
     setInteractiveId('')
     setError('')
-  }, [attachKey])
+    if (project?.id) writeShellAttach(project.id, ids)
+  }, [attachKey, project?.id])
+
+  // Reattach after reload if PTYs are still alive on the server.
+  useEffect(() => {
+    if (attachKey || !project?.id) return
+    const saved = readShellAttach(project.id)
+    if (!saved?.length) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const { sessions: live } = await api.sessions(project.id)
+        const alive = new Set(live.filter((s) => s.alive).map((s) => s.id))
+        const ids = saved.filter((id) => alive.has(id))
+        if (cancelled) return
+        if (ids.length) {
+          setAttach(ids)
+          setActiveTab(0)
+          setInteractive(false)
+          writeShellAttach(project.id, ids)
+        } else {
+          clearShellAttach()
+        }
+      } catch {
+        /* ignore */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [project?.id, attachKey])
 
   useEffect(() => {
     if (!startShellKey || startShellKey === lastStartKey.current) return
@@ -90,6 +125,7 @@ export function ShellTab({
     setAttach([])
     setInteractive(false)
     setInteractiveId('')
+    clearShellAttach()
     onClearAttach?.()
     void refresh()
   }

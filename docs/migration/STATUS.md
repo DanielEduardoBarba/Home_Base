@@ -11,4 +11,5 @@
 - **Latest verification:** typecheck PASS; `bun test` 12 pass; view-worker ping+grab on `:0` (JPEG HBVF); self-test ok
 - **Next:** User exercises R-001 prod Bun deploy manually
 - **Blocked work:** none for View; R-001 left to operator
-- **VERSION:** 1.4.31 (View JPEG was RGB→jpeg-js; fixed to RGBA)
+- **VERSION:** 1.4.34
+- **Note:** Session/port SPA parity + compose gate; Work dock blank-UI harden; Shell reattach via sessionStorage

@@ -9,8 +9,9 @@ import subprocess
 from typing import Optional
 
 
-# Prefer tunnel/VPN faces so phones on WireGuard get a routable packager/API host.
+# VPN/tunnel faces — used only as fallback. Expo phones on Wi‑Fi need LAN 192.168.x.
 _VPN_PREFIXES = ("wg", "tun", "tailscale", "zt", "nebula", "ipsec")
+_SKIP_IFACE_PREFIXES = ("docker", "br-", "veth", "virbr", "lxc", "cni", "flannel")
 
 
 def _is_usable_ipv4(ip: str) -> bool:
@@ -90,12 +91,36 @@ def _is_vpn_iface(iface: str) -> bool:
     return any(name == p or name.startswith(p) for p in _VPN_PREFIXES)
 
 
+def _is_skip_iface(iface: str) -> bool:
+    name = iface.lower()
+    if name == "lo" or name.startswith("lo"):
+        return True
+    return any(name == p or name.startswith(p) for p in _SKIP_IFACE_PREFIXES)
+
+
+def _lan_score(iface: str, ip: str) -> int:
+    """Higher = better for Expo Go on the same Wi‑Fi as the Home Base laptop."""
+    name = iface.lower()
+    score = 0
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return -1
+    if addr.packed[0:2] == bytes((192, 168)):
+        score += 100
+    elif addr.is_private:
+        score += 40
+    if name.startswith(("wl", "wlan", "en", "eth", "em")):
+        score += 50
+    return score
+
+
 def advertise_host() -> Optional[str]:
     """
-    IPv4 that VPN/LAN clients should use for Metro + project APIs.
+    IPv4 Expo Go / Metro / project APIs should advertise.
 
-    Order: HOMEBASE_ADVERTISE_HOST override → WireGuard/tunnel iface →
-    first private RFC1918 → any other usable IPv4.
+    Order: HOMEBASE_ADVERTISE_HOST override → native LAN (prefer 192.168.x on
+    wifi/ethernet) → WireGuard/tunnel → any other usable IPv4.
     """
     override = (os.environ.get("HOMEBASE_ADVERTISE_HOST") or "").strip()
     if override and _is_usable_ipv4(override):
@@ -105,7 +130,19 @@ def advertise_host() -> Optional[str]:
         if override and override.lower() not in {"localhost", "0.0.0.0"}:
             return override
 
-    addrs = list_ipv4_interfaces()
+    addrs = [(i, ip) for i, ip in list_ipv4_interfaces() if not _is_skip_iface(i)]
+
+    lan = [
+        (iface, ip)
+        for iface, ip in addrs
+        if not _is_vpn_iface(iface)
+        and _is_usable_ipv4(ip)
+        and ipaddress.ip_address(ip).is_private
+    ]
+    lan.sort(key=lambda t: _lan_score(t[0], t[1]), reverse=True)
+    if lan:
+        return lan[0][1]
+
     for iface, ip in addrs:
         if _is_vpn_iface(iface):
             return ip
@@ -137,7 +174,7 @@ def project_lan_env(project_ports: list[tuple[str, int]]) -> dict[str, str]:
         return env
 
     env["HOMEBASE_ADVERTISE_HOST"] = host
-    # Expo / Metro: QR + hostUri must be the VPN/LAN IP, not Wi‑Fi-only guess
+    # Expo / Metro: QR + hostUri — native Wi‑Fi LAN preferred (not WireGuard)
     env["REACT_NATIVE_PACKAGER_HOSTNAME"] = host
 
     ports = {pid: port for pid, port in project_ports}

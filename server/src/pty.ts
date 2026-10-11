@@ -16,6 +16,14 @@ export type SessionInfo = {
   createdAt: number;
   title: string;
   mode: "pty" | "pipe";
+  cmdline?: string[];
+};
+
+/** SPA-facing session row (matches Python pty_manager._public). */
+export type SessionPublic = SessionInfo & {
+  alive: boolean;
+  label: string;
+  cmdline: string[];
 };
 
 type Subscriber = {
@@ -189,12 +197,41 @@ function makePtyBackend(
   }
 }
 
-export function listSessions(projectId?: string): SessionInfo[] {
-  const out: SessionInfo[] = [];
+export function toPublic(s: PtySession): SessionPublic {
+  return {
+    ...s.info,
+    alive: !s.exited,
+    label: s.info.title,
+    cmdline: s.info.cmdline || [],
+  };
+}
+
+export function listSessions(projectId?: string): SessionPublic[] {
+  const out: SessionPublic[] = [];
   for (const s of sessions.values()) {
-    if (!projectId || s.info.projectId === projectId) out.push(s.info);
+    if (s.exited) continue;
+    if (projectId && s.info.projectId !== projectId) continue;
+    out.push(toPublic(s));
   }
   return out;
+}
+
+/** Kill managed sessions for a project (optional kind filter). Interactive shells omitted unless kinds includes "shell". */
+export function killByProject(
+  projectId: string,
+  kinds?: Set<string>,
+): string[] {
+  const ids: string[] = [];
+  for (const [id, s] of sessions) {
+    if (s.info.projectId !== projectId) continue;
+    if (kinds && !kinds.has(s.info.kind)) continue;
+    ids.push(id);
+  }
+  const killed: string[] = [];
+  for (const id of ids) {
+    if (killSession(id)) killed.push(id);
+  }
+  return killed;
 }
 
 export function getSession(id: string): PtySession | undefined {
@@ -256,6 +293,7 @@ export function spawnShell(opts: {
     createdAt: Date.now() / 1000,
     title: opts.title || "shell",
     mode: backend.mode,
+    cmdline: opts.command ? [...opts.command] : [shell, "-l"],
   };
 
   session = {

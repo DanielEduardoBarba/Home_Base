@@ -163,14 +163,17 @@ app.get("/api/share/hostname", async (c) => {
 
 app.get("/api/projects", async (c) => {
   await requireAuth(c);
-  return c.json({ projects: [...loadProjects().values()].map(projectPublic) });
+  const projects = await Promise.all(
+    [...loadProjects().values()].map((p) => projectPublic(p)),
+  );
+  return c.json({ projects });
 });
 
 app.get("/api/projects/:projectId", async (c) => {
   await requireAuth(c);
   const p = loadProjects().get(c.req.param("projectId"));
   if (!p) throw new HttpError(404, "Project not found");
-  return c.json(projectPublic(p));
+  return c.json(await projectPublic(p));
 });
 
 app.post("/api/projects/:projectId/action", async (c) => {
@@ -183,7 +186,7 @@ app.post("/api/projects/:projectId/action", async (c) => {
       extraArgs: z.array(z.string()).optional(),
     })
     .parse(await readJson(c));
-  return c.json(runAction(p, body.actionId, body.extraArgs || []));
+  return c.json(await runAction(p, body.actionId, body.extraArgs || []));
 });
 
 app.post("/api/projects/:projectId/stop", async (c) => {

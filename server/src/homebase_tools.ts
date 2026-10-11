@@ -51,10 +51,12 @@ export function buildHomebaseTools(
       description: "List Home Base projects with ports and sessions",
       parameters: { type: "object", properties: {} },
       execute: async () => {
-        const projects = [...loadProjects().values()].map((p) => ({
-          ...projectPublic(p),
-          active: p.id === projectId,
-        }));
+        const projects = await Promise.all(
+          [...loadProjects().values()].map(async (p) => ({
+            ...(await projectPublic(p)),
+            active: p.id === projectId,
+          })),
+        );
         return json({ projects, activeProjectId: projectId });
       },
     },
@@ -72,7 +74,7 @@ export function buildHomebaseTools(
         const p = loadProjects().get(pid);
         if (!p) return json({ error: "project not found" });
         return json({
-          ...projectPublic(p),
+          ...(await projectPublic(p)),
           logs: tailLogs(p, Number(args.logLines || 40)),
         });
       },
@@ -109,7 +111,7 @@ export function buildHomebaseTools(
         const p = loadProjects().get(pid);
         if (!p) return json({ error: "project not found" });
         const actionId = String(args.actionId || "");
-        return json(runAction(p, actionId));
+        return json(await runAction(p, actionId));
       },
     };
     tools.homebase_stop_project = {

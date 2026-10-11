@@ -1264,13 +1264,14 @@ html[data-hb-fullscreen] body {
   opacity: 0.4;
 }
 
-.hb-work-body:has(.hb-chat-dock) .hb-work-main {
+/* Only while the dock is open — a closing/stuck dock must not collapse the scene */
+.hb-work-body:has(.hb-chat-dock[data-open='1']) .hb-work-main {
   /* Match tall mobile dock (nearly full height under status/safe area) */
   padding-bottom: 98vh;
 }
 
 @media (min-width: 768px) {
-  .hb-work-body:has(.hb-chat-dock) .hb-work-main {
+  .hb-work-body:has(.hb-chat-dock[data-open='1']) .hb-work-main {
     padding-bottom: 0;
     padding-right: min(26rem, 42%);
   }
