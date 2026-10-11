@@ -12,10 +12,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 export function bundleRoot(): string {
   const override = (process.env.HOMEBASE_BUNDLE_ROOT || "").trim();
   if (override) return resolve(override);
-  // Source tree: server/src → repo root. Installed Bun binary: prefer share dir.
+  // Source tree: server/src → repo root. Prefer the checkout when present so
+  // ./build.sh --setup/--run never pick /usr/share just because prod is installed.
+  const sourceRoot = resolve(here, "../..");
+  if (existsSync(join(sourceRoot, "build.sh"))) return sourceRoot;
   const share = "/usr/share/homebased";
   if (existsSync(join(share, "web", "dist", "index.html"))) return share;
-  return resolve(here, "../..");
+  return sourceRoot;
 }
 
 export function homeRoot(): string {

@@ -469,6 +469,11 @@ cmd_setup() {
     cp .env.example .env
   fi
 
+  # Pin checkout paths so an installed prod share cannot steal HOME / JWT writes.
+  export HOMEBASE_HOME="${HOMEBASE_HOME:-$ROOT}"
+  export HOMEBASE_BUNDLE_ROOT="${HOMEBASE_BUNDLE_ROOT:-$ROOT}"
+  export HOMEBASE_RUNTIME="${HOMEBASE_RUNTIME:-$ROOT/.runtime}"
+
   # Ensure JWT signing material exists (password is set later via localhost UI)
   (
     cd "$(bun_server_dir)"
@@ -790,6 +795,8 @@ cmd_run() {
   export HOMEBASE_PORT="$DEV_API_PORT"
   export DEV_WEB_PORT
   export HOMEBASE_HOME="${HOMEBASE_HOME:-$ROOT}"
+  export HOMEBASE_BUNDLE_ROOT="${HOMEBASE_BUNDLE_ROOT:-$ROOT}"
+  export HOMEBASE_RUNTIME="${HOMEBASE_RUNTIME:-$ROOT/.runtime}"
 
   local lan_ips=""
   if command -v hostname >/dev/null 2>&1; then
