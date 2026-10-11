@@ -9,4 +9,4 @@ Home Base’s control-plane API is **Bun only** (`server/`). The SPA is **Next.j
 
 Do not add a second server runtime, Python FastAPI tree, uvicorn, Nuitka, or `--python` flags.
 
-Preserve auth, CORS, JWT TTL, and persistent-data behavior. Prefer `docs/migration/STATUS.md` for cutover history. Update STATUS / VERIFICATION when shipping meaningful server or SPA changes.
+Preserve auth, CORS, JWT TTL, and persistent-data behavior.
