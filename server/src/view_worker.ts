@@ -65,11 +65,21 @@ function grabJpeg(
   maxWidth: number,
   quality: number,
   monitor: number,
-): { packet: Buffer; sw: number; sh: number; changed: boolean; digest: Buffer; monitors: MonitorInfo[] } {
+): {
+  packet: Buffer;
+  sw: number;
+  sh: number;
+  changed: boolean;
+  digest: Buffer;
+  monitors: MonitorInfo[];
+  cursorX: number;
+  cursorY: number;
+} {
   const shot = xin.grabRgba(monitor);
   let { width, height, rgba } = shot;
   const sw = shot.screenW;
   const sh = shot.screenH;
+  const cursor = xin.queryPointer();
 
   // Ultra may ask for native pixels, but jpeg-js encode of huge desktops blocks the
   // worker past the IPC timeout → black screen. Cap width and total megapixels.
@@ -109,6 +119,8 @@ function grabJpeg(
       changed: false,
       digest: lastHash,
       monitors,
+      cursorX: cursor.x,
+      cursorY: cursor.y,
     };
   }
 
@@ -122,6 +134,8 @@ function grabJpeg(
     changed: true,
     digest,
     monitors,
+    cursorX: cursor.x,
+    cursorY: cursor.y,
   };
 }
 
@@ -176,6 +190,8 @@ function dispatch(
         sh: result.sh,
         changed: result.changed,
         monitors: result.monitors,
+        cursorX: result.cursorX,
+        cursorY: result.cursorY,
       };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };

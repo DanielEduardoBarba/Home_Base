@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type WheelEvent } from 'react'
 import { api, wsUrl } from '../lib/api'
+import { useNotifyOptional } from '../lib/NotifyContext'
 import {
   connStateLabel,
   connectWithReconnect,
@@ -124,9 +125,23 @@ export function ViewTab() {
   const screenRef = useRef({ w: 0, h: 0 })
   const monitorsRef = useRef<MonitorInfo[]>([])
   const cursorNormRef = useRef({ x: 0.5, y: 0.5 })
+  /** Displayed overlay pos (lerped toward cursorNorm for less jarring motion). */
+  const cursorDrawRef = useRef({ x: 0.5, y: 0.5 })
   const cursorShowRef = useRef(false)
+  const cursorRafRef = useRef(0)
   const schedulePaintRef = useRef<() => void>(() => {})
   const bumpZoomRef = useRef<(z: number) => void>(() => {})
+  const relAccumRef = useRef({ dx: 0, dy: 0 })
+  const relFlushRafRef = useRef(0)
+  const absPendingRef = useRef<{
+    action: string
+    clientX: number
+    clientY: number
+    button: number
+    deltaY: number
+  } | null>(null)
+  const absFlushRafRef = useRef(0)
+  const notifyRef = useRef<ReturnType<typeof useNotifyOptional>>(null)
 
   const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map())
   const gestureRef = useRef<{
@@ -179,6 +194,8 @@ export function ViewTab() {
   const [probe, setProbe] = useState('')
   const [hint, setHint] = useState(true)
   const [holdPulse, setHoldPulse] = useState(false)
+  const notify = useNotifyOptional()
+  notifyRef.current = notify
 
   useEffect(() => {
     const c = loadControl()
@@ -298,10 +315,29 @@ export function ViewTab() {
       el.style.display = 'none'
       return
     }
-    const n = cursorNormRef.current
+    const n = cursorDrawRef.current
     el.style.display = 'block'
     el.style.left = `${r.x + n.x * r.w}px`
     el.style.top = `${r.y + n.y * r.h}px`
+  }
+
+  function tickCursorLerp() {
+    cursorRafRef.current = 0
+    const t = cursorNormRef.current
+    const d = cursorDrawRef.current
+    const dx = t.x - d.x
+    const dy = t.y - d.y
+    const dist = Math.hypot(dx, dy)
+    if (dist < 0.0008) {
+      cursorDrawRef.current = { x: t.x, y: t.y }
+      placeCursorEl()
+      return
+    }
+    // Faster catch-up on big jumps (native mouse), softer on fine remote moves.
+    const a = dist > 0.08 ? 0.55 : dist > 0.02 ? 0.35 : 0.22
+    cursorDrawRef.current = { x: d.x + dx * a, y: d.y + dy * a }
+    placeCursorEl()
+    cursorRafRef.current = requestAnimationFrame(tickCursorLerp)
   }
 
   function setCursorNorm(x: number, y: number, show = true) {
@@ -309,7 +345,38 @@ export function ViewTab() {
     cursorShowRef.current = show
     if (show && !cursorOn) setCursorOn(true)
     if (!show && cursorOn) setCursorOn(false)
-    placeCursorEl()
+    if (!cursorRafRef.current) {
+      cursorRafRef.current = requestAnimationFrame(tickCursorLerp)
+    }
+  }
+
+  /** Map real X11 root coords → overlay on the selected capture/monitor. */
+  function applyRemoteCursor(cursorX: number, cursorY: number) {
+    if (!Number.isFinite(cursorX) || !Number.isFinite(cursorY) || cursorX < 0 || cursorY < 0) {
+      return
+    }
+    const mon =
+      monitorsRef.current.find((m) => m.index === monitorRef.current) ||
+      monitorsRef.current.find((m) => m.index === 0)
+    if (!mon || mon.width < 1 || mon.height < 1) return
+    const nx = (cursorX - mon.left) / mon.width
+    const ny = (cursorY - mon.top) / mon.height
+    // Outside this display: park on the nearest edge so the overlay stays honest.
+    setCursorNorm(clamp(nx, 0, 1), clamp(ny, 0, 1), true)
+  }
+
+  function forceQualityLocal(preset: QualityPreset, reason: string, from?: string) {
+    if (preset === 'auto') return
+    presetRef.current = preset
+    setPreset(preset)
+    notifyRef.current?.ping({
+      title: 'View quality lowered',
+      body:
+        reason ||
+        `Server switched${from ? ` from ${from}` : ''} to ${preset} for performance.`,
+      level: 'warn',
+      category: 'view-quality',
+    })
   }
 
   function clampPan(zoomMul: number, panX: number, panY: number) {
@@ -444,12 +511,27 @@ export function ViewTab() {
           if (frameWatchRef.current) window.clearTimeout(frameWatchRef.current)
           frameWatchRef.current = window.setTimeout(() => {
             if (disposed || gotFrameRef.current) return
-            if (presetRef.current === 'ultra') {
-              setPreset('high')
-              setError('Ultra was too heavy for this link — dropped to High.')
+            if (presetRef.current === 'ultra' || presetRef.current === 'high') {
+              const from = presetRef.current
+              const next: QualityPreset = from === 'ultra' ? 'high' : 'medium'
+              forceQualityLocal(
+                next,
+                `No frames at ${from} — switched to ${next} for performance.`,
+                from,
+              )
+              const sock = connRef.current?.getSocket()
+              if (sock && sock.readyState === WebSocket.OPEN) {
+                sock.send(
+                  JSON.stringify({
+                    type: 'config',
+                    ...PRESETS[next],
+                    monitor: monitorRef.current,
+                  }),
+                )
+              }
               return
             }
-            setError('No video frames yet — try High/Med quality, or Stop and Start again.')
+            setError('No video frames yet — try Med/Low quality, or Stop and Start again.')
           }, 5000)
           const p = presetRef.current
           // Prefer a safe first stream; Ultra can be selected after frames flow.
@@ -501,24 +583,21 @@ export function ViewTab() {
                     screen: `${msg.screenW}×${msg.screenH}`,
                     quality: Number(msg.quality) || s.quality,
                   }))
-                  const cx = Number(msg.cursorX)
-                  const cy = Number(msg.cursorY)
-                  if (Number.isFinite(cx) && Number.isFinite(cy) && cx >= 0 && cy >= 0) {
-                    const mon =
-                      monitorsRef.current.find((m) => m.index === monitorRef.current) ||
-                      monitorsRef.current[0]
-                    if (mon && mon.width > 0 && mon.height > 0) {
-                      cursorNormRef.current = {
-                        x: clamp((cx - mon.left) / mon.width, 0, 1),
-                        y: clamp((cy - mon.top) / mon.height, 0, 1),
-                      }
-                    }
-                  }
-                  cursorShowRef.current = true
-                  setCursorOn(true)
-                  placeCursorEl()
+                  applyRemoteCursor(Number(msg.cursorX), Number(msg.cursorY))
                 } else {
                   setStats((s) => ({ ...s, quality: Number(msg.quality) || s.quality }))
+                }
+              } else if (msg.type === 'cursor') {
+                // Authoritative X11 pointer — laptop-native moves win over local estimate.
+                applyRemoteCursor(Number(msg.cursorX), Number(msg.cursorY))
+              } else if (msg.type === 'quality-forced') {
+                const p = String(msg.preset || '') as QualityPreset
+                if (p === 'ultra' || p === 'high' || p === 'medium' || p === 'low') {
+                  forceQualityLocal(
+                    p,
+                    String(msg.reason || 'Server lowered quality for performance.'),
+                    String(msg.from || ''),
+                  )
                 }
               } else if (msg.type === 'error') {
                 setError(String(msg.error || 'View error'))
@@ -596,6 +675,9 @@ export function ViewTab() {
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
       if (longTimerRef.current) window.clearTimeout(longTimerRef.current)
       if (frameWatchRef.current) window.clearTimeout(frameWatchRef.current)
+      if (cursorRafRef.current) cancelAnimationFrame(cursorRafRef.current)
+      if (relFlushRafRef.current) cancelAnimationFrame(relFlushRafRef.current)
+      if (absFlushRafRef.current) cancelAnimationFrame(absFlushRafRef.current)
       stopConn()
       bitmapRef.current?.close()
       bitmapRef.current = null
@@ -664,13 +746,49 @@ export function ViewTab() {
     ws.send(JSON.stringify(obj))
   }
 
+  function flushAbsPending() {
+    absFlushRafRef.current = 0
+    const pending = absPendingRef.current
+    absPendingRef.current = null
+    if (!pending || !wanted) return
+    const m = mapClientToRemote(pending.clientX, pending.clientY)
+    if (!m) return
+    lastPointerRef.current = performance.now()
+    sendWs({
+      type: 'pointer',
+      mode: 'abs',
+      action: pending.action,
+      x: m.nx,
+      y: m.ny,
+      px: m.px,
+      py: m.py,
+      screenW: screenRef.current.w,
+      screenH: screenRef.current.h,
+      button: pending.button,
+      deltaY: pending.deltaY,
+    })
+    setCursorNorm(m.nx, m.ny, true)
+  }
+
   function sendAbs(action: string, clientX: number, clientY: number, button = 0, deltaY = 0) {
     if (!wanted) return
+    // Coalesce move samples to one per animation frame — smoother on the host.
+    if (action === 'move') {
+      absPendingRef.current = { action, clientX, clientY, button, deltaY }
+      if (!absFlushRafRef.current) {
+        absFlushRafRef.current = requestAnimationFrame(flushAbsPending)
+      }
+      return
+    }
+    // down/up/wheel: flush any pending move first, then send immediately
+    if (absFlushRafRef.current) {
+      cancelAnimationFrame(absFlushRafRef.current)
+      absFlushRafRef.current = 0
+      flushAbsPending()
+    }
     const m = mapClientToRemote(clientX, clientY)
     if (!m) return
-    const now = performance.now()
-    if (action === 'move' && now - lastPointerRef.current < 16) return
-    lastPointerRef.current = now
+    lastPointerRef.current = performance.now()
     sendWs({
       type: 'pointer',
       mode: 'abs',
@@ -687,21 +805,34 @@ export function ViewTab() {
     setCursorNorm(m.nx, m.ny, true)
   }
 
+  function flushRelAccum() {
+    relFlushRafRef.current = 0
+    const { dx, dy } = relAccumRef.current
+    relAccumRef.current = { dx: 0, dy: 0 }
+    if (!wanted) return
+    if (Math.abs(dx) < 0.15 && Math.abs(dy) < 0.15) return
+    const sw = screenRef.current.w || 1
+    const sh = screenRef.current.h || 1
+    lastPointerRef.current = performance.now()
+    sendWs({ type: 'pointer', mode: 'rel', action: 'move', dx, dy })
+    setCursorNorm(cursorNormRef.current.x + dx / sw, cursorNormRef.current.y + dy / sh, true)
+  }
+
   function sendRel(dxPx: number, dyPx: number) {
     if (!wanted) return
     const rect = livePaintRect()
     const sw = screenRef.current.w || 1
     const sh = screenRef.current.h || 1
     if (!rect || rect.w < 1 || rect.h < 1) return
-    const now = performance.now()
-    if (now - lastPointerRef.current < 12) return
-    lastPointerRef.current = now
-    // 1:1 with on-screen remote pixels (zoom makes fine control natural)
+    // 1:1 with on-screen remote pixels; accumulate + flush per frame for smoothness.
     const dx = (dxPx * sw) / rect.w
     const dy = (dyPx * sh) / rect.h
-    if (Math.abs(dx) < 0.2 && Math.abs(dy) < 0.2) return
-    sendWs({ type: 'pointer', mode: 'rel', action: 'move', dx, dy })
-    setCursorNorm(cursorNormRef.current.x + dx / sw, cursorNormRef.current.y + dy / sh, true)
+    if (Math.abs(dx) < 0.05 && Math.abs(dy) < 0.05) return
+    relAccumRef.current.dx += dx
+    relAccumRef.current.dy += dy
+    if (!relFlushRafRef.current) {
+      relFlushRafRef.current = requestAnimationFrame(flushRelAccum)
+    }
   }
 
   function sendClick(button: number) {

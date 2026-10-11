@@ -64,6 +64,21 @@ type ClientState = {
   fps: number;
 };
 
+/** Matches SPA View quality chips — server may force a lower rung for stability. */
+const QUALITY_LADDER = [
+  { preset: "ultra", maxWidth: 3840, quality: 85, fps: 12 },
+  { preset: "high", maxWidth: 1680, quality: 72, fps: 18 },
+  { preset: "medium", maxWidth: 1280, quality: 55, fps: 12 },
+  { preset: "low", maxWidth: 960, quality: 36, fps: 8 },
+] as const;
+
+function tierFromSettings(maxWidth: number, quality: number): number {
+  if (maxWidth >= 2800 || quality >= 80) return 0;
+  if (maxWidth >= 1500 || quality >= 65) return 1;
+  if (maxWidth >= 1100 || quality >= 45) return 2;
+  return 3;
+}
+
 class X11Bridge {
   private proc: Subprocess | null = null;
   private stdin: FileSink | null = null;
@@ -317,9 +332,15 @@ class ViewHub {
   private seq = 0;
   private stats = { fps: 0, kbps: 0, clients: 0 };
   private bytesWindow = 0;
+  private lastCursorX = Number.NaN;
+  private lastCursorY = Number.NaN;
   private framesWindow = 0;
   private windowT0 = Date.now();
   private nextId = 1;
+  private slowGrabs = 0;
+  private failGrabs = 0;
+  /** Highest tier currently allowed (0=ultra … 3=low). Raised only by user config. */
+  private maxAllowedTier = 0;
 
   status(): Record<string, unknown> {
     const { display, xauthority } = discoverX11Env();
@@ -502,6 +523,10 @@ class ViewHub {
             client.fps = Math.max(4, Math.min(24, Math.floor(f)));
           }
         }
+        // User explicitly picked a tier — allow retry (safety may force down again).
+        this.maxAllowedTier = tierFromSettings(client.maxWidth, client.quality);
+        this.slowGrabs = 0;
+        this.failGrabs = 0;
         // Prefer geometry for the selected monitor — stale bridge.screenW/H from the
         // previous capture makes touch/rel mapping think All-displays is still active.
         const mons = this.bridge.monitors as
@@ -529,18 +554,22 @@ class ViewHub {
         return;
       }
       if (msg.type === "pointer") {
-        await this.bridge.call({
+        const resp = await this.bridge.call({
           cmd: "pointer",
           mode: msg.mode,
           action: msg.action,
           x: msg.x,
           y: msg.y,
+          px: msg.px,
+          py: msg.py,
           dx: msg.dx,
           dy: msg.dy,
           button: msg.button,
           deltaY: msg.deltaY,
           monitor: client.monitor,
         });
+        // Echo real X11 pointer so the overlay can't drift from the laptop mouse.
+        this.broadcastCursor(resp);
         return;
       }
       if (msg.type === "key") {
@@ -574,6 +603,7 @@ class ViewHub {
           this.loop = null;
           return;
         }
+        const grabT0 = Date.now();
         const resp = await this.bridge.call(
           {
             cmd: "grab",
@@ -582,8 +612,28 @@ class ViewHub {
             monitor: first.monitor,
           },
           // Ultra / large desktops need headroom; 5s caused silent black screens.
-          20,
+          12,
         );
+        const grabMs = Date.now() - grabT0;
+        if (resp.ok) {
+          this.failGrabs = 0;
+          if (grabMs > 2200) {
+            this.slowGrabs += 1;
+            if (this.slowGrabs >= 2) {
+              this.forceLowerQuality(
+                `Capture was too slow (${Math.round(grabMs)}ms) — lowered quality for stability.`,
+              );
+              this.slowGrabs = 0;
+            }
+          } else if (grabMs < 900) {
+            this.slowGrabs = 0;
+          }
+          if (resp.monitors) this.bridge.monitors = resp.monitors as unknown[];
+          if (resp.sw) this.bridge.screenW = Number(resp.sw);
+          if (resp.sh) this.bridge.screenH = Number(resp.sh);
+          // Always sync overlay to the real X11 pointer (laptop mouse wins).
+          this.broadcastCursor(resp, true);
+        }
         if (resp.ok && resp.changed && resp.packet) {
           const raw = resp.packet;
           const packet = Buffer.isBuffer(raw)
@@ -597,9 +647,6 @@ class ViewHub {
             this.seq = (this.seq + 1) >>> 0;
             // patch seq at offset 4 (little-endian u32 after magic)
             packet.writeUInt32LE(this.seq, 4);
-            this.bridge.screenW = Number(resp.sw || this.bridge.screenW);
-            this.bridge.screenH = Number(resp.sh || this.bridge.screenH);
-            if (resp.monitors) this.bridge.monitors = resp.monitors as unknown[];
             this.bytesWindow += packet.length;
             this.framesWindow += 1;
             for (const c of this.clients.values()) {
@@ -613,6 +660,16 @@ class ViewHub {
         } else if (!resp.ok) {
           const err = String(resp.error || this.bridge.lastError);
           appendTrace("warn", `view grab failed: ${err}`, "view");
+          this.failGrabs += 1;
+          const timedOut = /timeout/i.test(err);
+          if (this.failGrabs >= (timedOut ? 1 : 2)) {
+            this.forceLowerQuality(
+              timedOut
+                ? "Capture timed out — lowered quality so View can keep streaming."
+                : `Capture failed (${err.slice(0, 80)}) — lowered quality for stability.`,
+            );
+            this.failGrabs = 0;
+          }
           for (const c of this.clients.values()) {
             try {
               c.ws.send(JSON.stringify({ type: "error", error: err }));
@@ -644,6 +701,75 @@ class ViewHub {
       this.loop = setTimeout(() => void tick(), Math.floor(1000 / fps));
     };
     void tick();
+  }
+
+  /** Push real root-pointer coords to every viewer (native laptop mouse is authoritative). */
+  private broadcastCursor(resp: Record<string, unknown>, onlyIfMoved = false): void {
+    const cx = Number(resp.cursorX);
+    const cy = Number(resp.cursorY);
+    if (!Number.isFinite(cx) || !Number.isFinite(cy) || cx < 0 || cy < 0) return;
+    if (
+      onlyIfMoved &&
+      Math.abs(cx - this.lastCursorX) < 0.5 &&
+      Math.abs(cy - this.lastCursorY) < 0.5
+    ) {
+      return;
+    }
+    this.lastCursorX = cx;
+    this.lastCursorY = cy;
+    const payload = JSON.stringify({ type: "cursor", cursorX: cx, cursorY: cy });
+    for (const c of this.clients.values()) {
+      try {
+        c.ws.send(payload);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  private forceLowerQuality(reason: string): void {
+    const first = this.clients.values().next().value as ClientState | undefined;
+    if (!first) return;
+    const cur = tierFromSettings(first.maxWidth, first.quality);
+    if (cur >= 3) return;
+    this.applyForcedTier(cur + 1, reason);
+  }
+
+  private applyForcedTier(tier: number, reason: string): void {
+    const t = QUALITY_LADDER[Math.min(3, Math.max(0, tier))]!;
+    const prev = this.clients.values().next().value as ClientState | undefined;
+    const from =
+      prev != null
+        ? QUALITY_LADDER[tierFromSettings(prev.maxWidth, prev.quality)]!.preset
+        : "?";
+    if (from === t.preset) return;
+    this.maxAllowedTier = tier;
+    for (const c of this.clients.values()) {
+      c.maxWidth = t.maxWidth;
+      c.quality = t.quality;
+      c.fps = t.fps;
+    }
+    appendTrace(
+      "warn",
+      `view quality forced ${from} → ${t.preset}: ${reason}`,
+      "view",
+    );
+    const payload = JSON.stringify({
+      type: "quality-forced",
+      from,
+      preset: t.preset,
+      maxWidth: t.maxWidth,
+      quality: t.quality,
+      fps: t.fps,
+      reason,
+    });
+    for (const c of this.clients.values()) {
+      try {
+        c.ws.send(payload);
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }
 
