@@ -15,6 +15,7 @@ import {
 import { isLocalHostPage } from '../lib/types'
 import { HoldButton } from './HoldButton'
 import { SharingTab } from './SharingTab'
+import { WireGuardPanel } from './WireGuardPanel'
 
 export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
   const [theme, setThemeState] = useState<ThemeMode>(() => getStoredTheme())
@@ -24,8 +25,6 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
   const [notifyMsg, setNotifyMsg] = useState('')
   const [confirmCache, setConfirmCache] = useState(false)
   const [confirmSignOut, setConfirmSignOut] = useState(false)
-  const [wgList, setWgList] = useState<{ id: string; unit: string }[]>([])
-  const [wgId, setWgId] = useState('')
   const [version, setVersion] = useState('')
   const [backup, setBackup] = useState(false)
   const [busy, setBusy] = useState('')
@@ -46,8 +45,6 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
   const loadSystem = useCallback(async () => {
     try {
       const s = await api.systemStatus()
-      setWgList(s.wireguard || [])
-      setWgId((prev) => prev || s.wireguard?.[0]?.id || '')
       setVersion(s.version || '')
       setBackup(!!s.backup)
       setVpnUrl(s.urls?.vpn || null)
@@ -115,20 +112,6 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
     try {
       const r = await api.restartHomebased()
       setSysMsg(r.ok ? 'Home Base restarting…' : 'Restart may have failed — check host')
-    } catch (e) {
-      setSysMsg(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy('')
-    }
-  }
-
-  async function restartWg() {
-    setBusy('vpn')
-    setSysMsg('')
-    try {
-      const r = await api.restartWireguard(wgId || undefined)
-      setSysMsg(r.ok ? 'VPN restarted' : 'VPN restart failed')
-      void loadSystem()
     } catch (e) {
       setSysMsg(e instanceof Error ? e.message : String(e))
     } finally {
@@ -315,9 +298,13 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
           </button>
         </section>
 
+        <WireGuardPanel />
+
         <section className="hb-surface p-3.5 space-y-2.5">
           <h2 className="hb-label">Services</h2>
-          <p className="text-xs text-mute">Restart host services from your phone (needs root install).</p>
+          <p className="text-xs text-mute">
+            Restart Home Base from your phone (needs root install). VPN controls are above.
+          </p>
 
           {(vpnUrl || lanUrl) && (
             <div className="rounded-xl border border-line bg-panel-2/50 px-3 py-2.5 text-xs space-y-1.5">
@@ -340,41 +327,13 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
             </div>
           )}
 
-          <div className="space-y-2">
-            <div className="flex gap-2 items-center">
-              {wgList.length > 1 && (
-                <select
-                  value={wgId}
-                  onChange={(e) => setWgId(e.target.value)}
-                  className="hb-select flex-1 !min-h-10 !py-2 text-sm"
-                >
-                  {wgList.map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {w.id}
-                    </option>
-                  ))}
-                </select>
-              )}
-              <HoldButton
-                label={busy === 'vpn' ? '…' : 'Restart VPN'}
-                holdLabel="Hold…"
-                disabled={!!busy || wgList.length === 0}
-                className="hb-btn hb-btn-ghost !min-h-10 text-sm flex-1"
-                onConfirm={() => void restartWg()}
-              />
-            </div>
-            {wgList.length === 0 && (
-              <p className="text-[11px] text-mute">No WireGuard configs found in /etc/wireguard</p>
-            )}
-
-            <HoldButton
-              label={busy === 'homebased' ? '…' : 'Restart Home Base'}
-              holdLabel="Hold…"
-              disabled={!!busy}
-              className="hb-btn hb-btn-ghost !min-h-10 text-sm w-full"
-              onConfirm={() => void restartHb()}
-            />
-          </div>
+          <HoldButton
+            label={busy === 'homebased' ? '…' : 'Restart Home Base'}
+            holdLabel="Hold…"
+            disabled={!!busy}
+            className="hb-btn hb-btn-ghost !min-h-10 text-sm w-full"
+            onConfirm={() => void restartHb()}
+          />
           {sysMsg && <p className="text-xs text-sky">{sysMsg}</p>}
         </section>
 

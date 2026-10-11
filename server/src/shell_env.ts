@@ -117,6 +117,26 @@ export function wrapArgvForSeat(argv: string[]): string[] {
   return [...prefix, ...argv];
 }
 
+/** Interactive PTY needs UTF-8 + a real TERM (systemd/root often has LANG=C, TERM=dumb). */
+export function enrichPtyEnv(env: Record<string, string>): Record<string, string> {
+  const out = { ...env };
+  const isUtf8 = (v: string | undefined) => !!v && /utf-?8/i.test(v);
+  if (!isUtf8(out.LC_ALL) && !isUtf8(out.LC_CTYPE) && !isUtf8(out.LANG)) {
+    // C.UTF-8 is always available on modern glibc; matches locale -a "C.utf8".
+    out.LANG = "C.UTF-8";
+    out.LC_CTYPE = "C.UTF-8";
+  } else if (!out.LC_ALL && !isUtf8(out.LC_CTYPE)) {
+    out.LC_CTYPE = isUtf8(out.LANG) ? out.LANG! : "C.UTF-8";
+  }
+  if (!out.TERM || out.TERM === "dumb") {
+    out.TERM = "xterm-256color";
+  }
+  if (!out.COLORTERM) {
+    out.COLORTERM = "truecolor";
+  }
+  return out;
+}
+
 export function loginEnvForSeat(): Record<string, string> {
   const seat = detectSeatUser();
   const env: Record<string, string> = {
@@ -148,5 +168,5 @@ export function loginEnvForSeat(): Record<string, string> {
   for (const extra of [`${seat.home}/.bun/bin`, `${seat.home}/.local/bin`]) {
     if (existsSync(extra)) env.PATH = `${extra}:${env.PATH || ""}`;
   }
-  return env;
+  return enrichPtyEnv(env);
 }

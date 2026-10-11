@@ -22,6 +22,28 @@ describe("session public shape", () => {
     }
   });
 
+  test("exited sessions stay listed until removed", async () => {
+    const info = spawnShell({
+      projectId: "exit-proj",
+      cwd: process.cwd(),
+      kind: "shell",
+      title: "Shell",
+      command: ["bash", "-c", "exit 0"],
+    });
+    for (let i = 0; i < 40; i++) {
+      const row = listSessions("exit-proj").find((s) => s.id === info.id);
+      if (row && !row.alive) {
+        expect(row.label).toBe("Shell");
+        expect(killSession(info.id)).toBe(true);
+        expect(listSessions("exit-proj").some((s) => s.id === info.id)).toBe(false);
+        return;
+      }
+      await Bun.sleep(50);
+    }
+    killSession(info.id);
+    throw new Error("session did not exit in time");
+  });
+
   test("killByProject only hits matching kinds", () => {
     const run = spawnShell({
       projectId: "kill-proj",

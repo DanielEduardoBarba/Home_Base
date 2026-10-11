@@ -1,3 +1,5 @@
+import { coerceLevel, log } from "./console_log";
+
 export type TraceLine = {
   id: number;
   ts: number;
@@ -9,6 +11,13 @@ export type TraceLine = {
 const MAX = 300;
 let nextId = 1;
 const ring: TraceLine[] = [];
+
+/** When false, ring-only (tests). Default mirrors every line to journal stdout. */
+let mirrorConsole = true;
+
+export function setTraceMirrorConsole(enabled: boolean): void {
+  mirrorConsole = enabled;
+}
 
 export function appendTrace(
   level: string,
@@ -24,6 +33,9 @@ export function appendTrace(
   };
   ring.push(line);
   while (ring.length > MAX) ring.shift();
+  if (mirrorConsole) {
+    log(coerceLevel(level), message, { source });
+  }
   return line;
 }
 

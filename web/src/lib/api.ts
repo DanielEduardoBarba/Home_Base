@@ -90,6 +90,13 @@ export const api = {
       advertiseHost?: string | null
       port?: number
       urls?: { lan: string | null; vpn: string | null }
+      wireguard?: {
+        installed: boolean
+        configured: boolean
+        active: boolean
+        iface: string | null
+        host: string | null
+      }
     }>('/api/health'),
   version: () => request<{ version: string; backup: boolean }>('/api/version'),
   viewStatus: () =>
@@ -134,6 +141,141 @@ export const api = {
       '/api/system/restart/wireguard',
       { method: 'POST', body: JSON.stringify({ iface: iface || null }) },
     ),
+  wireguardStatus: () =>
+    request<{
+      installed: boolean
+      configured: boolean
+      active: boolean
+      root: boolean
+      managedByHomebase: boolean
+      iface: string
+      tools: { wg: boolean; wgQuick: boolean; iptables: boolean }
+      state: {
+        iface: string
+        listenPort: number
+        endpoint: string
+        lanHost: string
+        lanCidr: string
+        dns: string
+        vpnCidr: string
+        serverAddress: string
+      } | null
+      clients: {
+        id: string
+        name: string
+        address: string
+        publicKey: string
+        createdAt: number
+        hasConfig: boolean
+      }[]
+      access: {
+        lanHost: string | null
+        vpnHost: string | null
+        publicIp: string | null
+        suggestedEndpoint: string | null
+        outboundIface: string | null
+        lanCidr: string | null
+        dns: string
+      }
+      portForward: {
+        proto: string
+        wanPort: number
+        lanIp: string | null
+        lanPort: number
+      }
+      appStore: { ios: string; android: string }
+      defaults: {
+        iface: string
+        listenPort: number
+        vpnCidr: string
+        serverAddress: string
+      }
+      interfaces: {
+        id: string
+        configured: boolean
+        active: boolean
+        enabled: boolean
+        peersLive: {
+          publicKey: string
+          endpoint: string | null
+          latestHandshake: string | null
+          transfer: string | null
+        }[]
+      }[]
+    }>('/api/wireguard/status'),
+  wireguardInstall: () =>
+    request<{ ok: boolean; tools: { wg: boolean; wgQuick: boolean } }>(
+      '/api/wireguard/install',
+      { method: 'POST', body: '{}' },
+    ),
+  wireguardSetup: (body: {
+    endpoint?: string
+    listenPort?: number
+    clientName?: string
+    force?: boolean
+  }) =>
+    request<{
+      ok: boolean
+      active: boolean
+      message?: string
+      client?: { id: string; name: string; address: string; config: string }
+      portForward?: {
+        proto: string
+        wanPort: number
+        lanIp: string
+        lanPort: number
+      }
+    }>('/api/wireguard/setup', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  wireguardAdopt: (body: { iface?: string; endpoint?: string } = {}) =>
+    request<{ ok: boolean }>('/api/wireguard/adopt', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  wireguardStart: (iface?: string) =>
+    request<{ ok: boolean; active: boolean }>('/api/wireguard/start', {
+      method: 'POST',
+      body: JSON.stringify({ iface }),
+    }),
+  wireguardStop: (iface?: string) =>
+    request<{ ok: boolean; active: boolean }>('/api/wireguard/stop', {
+      method: 'POST',
+      body: JSON.stringify({ iface }),
+    }),
+  wireguardRestartIface: (iface?: string) =>
+    request<{ ok: boolean; active: boolean }>('/api/wireguard/restart', {
+      method: 'POST',
+      body: JSON.stringify({ iface }),
+    }),
+  wireguardAddClient: (body: { name?: string; rotateId?: string } = {}) =>
+    request<{
+      ok: boolean
+      client: { id: string; name: string; address: string; config: string }
+    }>('/api/wireguard/clients', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  wireguardClientConfig: (id: string) =>
+    request<{
+      ok: boolean
+      client: { id: string; name: string; address: string; config: string }
+    }>(`/api/wireguard/clients/${encodeURIComponent(id)}/config`),
+  wireguardRemoveClient: (id: string) =>
+    request<{ ok: boolean }>(`/api/wireguard/clients/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  wireguardEndpoint: (endpoint: string) =>
+    request<{ ok: boolean }>('/api/wireguard/endpoint', {
+      method: 'POST',
+      body: JSON.stringify({ endpoint }),
+    }),
+  wireguardUninstall: (opts: { removePackages?: boolean } = {}) =>
+    request<{ ok: boolean }>('/api/wireguard/uninstall', {
+      method: 'POST',
+      body: JSON.stringify({ confirm: true, ...opts }),
+    }),
   authStatus: () =>
     request<{
       passwordSet: boolean

@@ -4,7 +4,12 @@
  */
 import { randomBytes } from "node:crypto";
 import type { Subprocess, Terminal } from "bun";
-import { detectSeatUser, loginEnvForSeat, wrapArgvForSeat } from "./shell_env";
+import {
+  detectSeatUser,
+  enrichPtyEnv,
+  loginEnvForSeat,
+  wrapArgvForSeat,
+} from "./shell_env";
 import { appendTrace } from "./trace";
 
 export type SessionInfo = {
@@ -82,30 +87,23 @@ function makePipeBackend(
     stdin: { write: (d: string | Buffer) => number };
   };
 
-  void (async () => {
-    const out = proc.stdout;
-    if (out && typeof out !== "number") {
-      const reader = (out as ReadableStream<Uint8Array>).getReader();
-      const dec = new TextDecoder();
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        onData(dec.decode(value));
+  const pump = async (stream: unknown) => {
+    if (!stream || typeof stream === "number") return;
+    const reader = (stream as ReadableStream<Uint8Array>).getReader();
+    // stream:true — chunks often split mid multi-byte UTF-8 (zsh ➜ etc.)
+    const dec = new TextDecoder("utf-8", { fatal: false });
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        const tail = dec.decode();
+        if (tail) onData(tail);
+        break;
       }
+      if (value?.byteLength) onData(dec.decode(value, { stream: true }));
     }
-  })();
-  void (async () => {
-    const err = proc.stderr;
-    if (err && typeof err !== "number") {
-      const reader = (err as ReadableStream<Uint8Array>).getReader();
-      const dec = new TextDecoder();
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        onData(dec.decode(value));
-      }
-    }
-  })();
+  };
+  void pump(proc.stdout);
+  void pump(proc.stderr);
   void proc.exited.then((code) => onExit(code ?? 0));
 
   return {
@@ -141,6 +139,7 @@ function makePtyBackend(
 ): PtyBackend | null {
   try {
     let term: Terminal | undefined;
+    const dec = new TextDecoder("utf-8", { fatal: false });
     const proc = Bun.spawn([file, ...args], {
       cwd,
       env,
@@ -148,15 +147,21 @@ function makePtyBackend(
         cols,
         rows,
         data(_t, data) {
-          const text =
-            typeof data === "string" ? data : new TextDecoder().decode(data);
-          onData(text);
+          if (typeof data === "string") {
+            onData(data);
+            return;
+          }
+          onData(dec.decode(data, { stream: true }));
         },
       },
     });
     term = proc.terminal;
     if (!term) return null;
-    void proc.exited.then((code) => onExit(code ?? 0));
+    void proc.exited.then((code) => {
+      const tail = dec.decode();
+      if (tail) onData(tail);
+      onExit(code ?? 0);
+    });
     return {
       pid: proc.pid,
       mode: "pty",
@@ -209,10 +214,14 @@ export function toPublic(s: PtySession): SessionPublic {
 export function listSessions(projectId?: string): SessionPublic[] {
   const out: SessionPublic[] = [];
   for (const s of sessions.values()) {
-    if (s.exited) continue;
     if (projectId && s.info.projectId !== projectId) continue;
     out.push(toPublic(s));
   }
+  // Alive first, then most recently created dead rows.
+  out.sort((a, b) => {
+    if (a.alive !== b.alive) return a.alive ? -1 : 1;
+    return b.createdAt - a.createdAt;
+  });
   return out;
 }
 
@@ -250,7 +259,7 @@ export function spawnShell(opts: {
 }): SessionInfo {
   const id = randomBytes(8).toString("hex");
   const seat = detectSeatUser();
-  const baseEnv = { ...loginEnvForSeat(), ...(opts.env || {}) };
+  const baseEnv = enrichPtyEnv({ ...loginEnvForSeat(), ...(opts.env || {}) });
   const shell = seat.shell || "/bin/bash";
   let file = shell;
   let args = ["-l"];
@@ -277,7 +286,7 @@ export function spawnShell(opts: {
     session.exited = true;
     broadcast(session, JSON.stringify({ type: "exit", code: exitCode }));
     appendTrace("info", `pty exit ${id} code=${exitCode}`, "pty");
-    sessions.delete(id);
+    // Keep the row so the SPA can show dead + dismiss (X); DELETE removes it.
   };
 
   let backend =

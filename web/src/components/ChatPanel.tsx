@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import ReactMarkdown from 'react-markdown'
 import { api, wsUrl } from '../lib/api'
+import { ChatMarkdown, copyText } from './ChatMarkdown'
 import { clearLocalChats, loadLocalChatsForImport } from '../lib/chatTabs'
 import type {
   ApprovalPolicy,
+  ChatImage,
   ChatMode,
   ChatMsg,
   ChatTab,
   PendingApproval,
   PresentRequest,
 } from '../lib/chatTypes'
+import { fileToCompressedChatImage, formatMb } from '../lib/chatImageCompress'
+import { chatImageSrc } from '../lib/chatTypes'
 import { useNotifyOptional } from '../lib/NotifyContext'
 import { presentFromTool, presentLabel } from '../lib/present'
 import { useSceneRefresh } from '../lib/sceneRefresh'
@@ -22,8 +25,11 @@ import {
   type WsConnState,
   type WsReconnectHandle,
 } from '../lib/wsReconnect'
+import { AtMentionPicker, detectAtMention, type AtPick } from './AtMentionPicker'
 import { IconBtn } from './IconBtn'
 import { ProjectSelect } from './ProjectSelect'
+
+const MAX_DRAFT_CONTEXT = 12
 
 const MODEL_STORAGE_KEY = 'hb-cursor-model'
 const MODE_STORAGE_KEY = 'hb-cursor-mode'
@@ -124,20 +130,94 @@ function MsgPhaseBadge({
   )
 }
 
+function MsgActions({
+  actions,
+}: {
+  actions: { label: string; onClick: () => void; title?: string }[]
+}) {
+  if (!actions.length) return null
+  return (
+    <div className="hb-msg-actions">
+      {actions.map((a) => (
+        <button key={a.label} type="button" className="hb-msg-action" title={a.title} onClick={a.onClick}>
+          {a.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function contextChipLabel(path: string): string {
+  const parts = path.replace(/\/$/, '').split('/')
+  return parts[parts.length - 1] || path
+}
+
 function MessageCard({
   m,
   onPresent,
+  onCopy,
+  onEdit,
+  onRegenerate,
+  canEdit,
+  canRegenerate,
 }: {
   m: ChatMsg
   onPresent?: (req: PresentRequest) => void
+  onCopy?: (text: string) => void
+  onEdit?: (text: string, contextPaths?: string[]) => void
+  onRegenerate?: () => void
+  canEdit?: boolean
+  canRegenerate?: boolean
 }) {
   if (m.role === 'user') {
     return (
       <div className="ml-6 min-w-0 max-w-full">
         <div className="hb-chat-user rounded-2xl px-3.5 py-3 text-sm leading-relaxed shadow-sm whitespace-pre-wrap break-words">
+          {!!m.contextPaths?.length && (
+            <div className="hb-chat-ctx-row mb-2">
+              {m.contextPaths.map((p) => (
+                <span key={p} className="hb-chat-ctx-chip" title={p}>
+                  @{contextChipLabel(p)}
+                </span>
+              ))}
+            </div>
+          )}
+          {!!m.images?.length && (
+            <div className="hb-chat-img-row mb-2">
+              {m.images.map((img, i) => (
+                <a
+                  key={`${img.name || 'img'}-${i}`}
+                  href={chatImageSrc(img)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="hb-chat-img-thumb"
+                  title={img.name || 'Attached image'}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={chatImageSrc(img)} alt={img.name || 'attachment'} />
+                </a>
+              ))}
+            </div>
+          )}
           {m.text}
         </div>
         <MsgMeta at={m.at} align="end" />
+        <MsgActions
+          actions={[
+            ...(m.text && onCopy
+              ? [{ label: 'Copy', onClick: () => onCopy(m.text || ''), title: 'Copy message' }]
+              : []),
+            ...(canEdit && onEdit && (m.text || m.contextPaths?.length)
+              ? [
+                  {
+                    label: 'Edit',
+                    onClick: () => onEdit(m.text || '', m.contextPaths),
+                    title: 'Edit & resend',
+                  },
+                ]
+              : []),
+          ]}
+        />
       </div>
     )
   }
@@ -281,12 +361,22 @@ function MessageCard({
             </span>
           </div>
         ) : (
-          <div className="markdown-body">
-            <ReactMarkdown>{m.text || ''}</ReactMarkdown>
-          </div>
+          <ChatMarkdown text={m.text || ''} />
         )}
       </div>
       <MsgMeta at={m.at} />
+      {!m.streaming && (
+        <MsgActions
+          actions={[
+            ...(m.text && onCopy
+              ? [{ label: 'Copy', onClick: () => onCopy(m.text || ''), title: 'Copy message' }]
+              : []),
+            ...(canRegenerate && onRegenerate
+              ? [{ label: 'Retry', onClick: onRegenerate, title: 'Regenerate response' }]
+              : []),
+          ]}
+        />
+      )}
     </div>
   )
 }
@@ -319,6 +409,17 @@ export function ChatPanel({
   const connStateRef = useRef<WsConnState>('connecting')
   const connected = connState === 'live'
   const [streaming, setStreaming] = useState(false)
+  const [queuedCount, setQueuedCount] = useState(0)
+  const [showJump, setShowJump] = useState(false)
+  const [agentId, setAgentId] = useState<string | null>(null)
+  const [editingLast, setEditingLast] = useState(false)
+  const [draftImages, setDraftImages] = useState<ChatImage[]>([])
+  const [draftContext, setDraftContext] = useState<string[]>([])
+  const [atMention, setAtMention] = useState<{ start: number; query: string } | null>(null)
+  const imageInputRef = useRef<HTMLInputElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const MAX_DRAFT_IMAGES = 4
+  const MAX_DRAFT_IMAGE_BYTES = 4 * 1024 * 1024
   const [error, setError] = useState('')
   const [models, setModels] = useState<CursorModel[]>([])
   const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([])
@@ -699,11 +800,123 @@ export function ChatPanel({
               window.clearTimeout(doneClearTimer.current)
               doneClearTimer.current = null
             }
-          } else if (msg.type === 'text-delta' || msg.type === 'text') {
-            if (forActive && String(msg.text || '')) setPhase('streaming', 'writing…')
-          } else if (msg.type === 'thinking-delta') {
-            if (forActive && String(msg.text || '')) setPhase('thinking', 'thinking…')
+          } else if (
+            msg.type === 'text-delta' ||
+            msg.type === 'text' ||
+            msg.type === 'text-snapshot'
+          ) {
+            const chunk = String(msg.text || '')
+            if (!chunk) return
+            const cid = chatId || activeIdRef.current
+            if (!cid) return
+            if (forActive) {
+              setStreaming(true)
+              setPhase('streaming', 'writing…')
+            }
+            const replace = msg.type === 'text-snapshot'
+            setTabs((prev) =>
+              prev.map((t) => {
+                if (t.id !== cid) return t
+                const messages = t.messages.slice()
+                for (let i = messages.length - 1; i >= 0; i--) {
+                  const m = messages[i]!
+                  if (m.role === 'thinking' && m.streaming) {
+                    messages[i] = { ...m, streaming: false }
+                    break
+                  }
+                }
+                let idx = -1
+                for (let i = messages.length - 1; i >= 0; i--) {
+                  if (messages[i]!.role === 'assistant' && messages[i]!.streaming) {
+                    idx = i
+                    break
+                  }
+                }
+                if (idx < 0) {
+                  messages.push({
+                    id: `a-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+                    role: 'assistant',
+                    text: chunk,
+                    streaming: true,
+                    at: Date.now(),
+                  })
+                } else {
+                  const cur = messages[idx]!
+                  messages[idx] = {
+                    ...cur,
+                    text: replace ? chunk : `${cur.text || ''}${chunk}`,
+                    streaming: true,
+                  }
+                }
+                return { ...t, messages, running: true }
+              }),
+            )
+          } else if (
+            msg.type === 'thinking-delta' ||
+            msg.type === 'thinking-snapshot'
+          ) {
+            const chunk = String(msg.text || '')
+            if (!chunk) return
+            const cid = chatId || activeIdRef.current
+            if (!cid) return
+            if (forActive) {
+              setStreaming(true)
+              setPhase('thinking', 'thinking…')
+            }
+            const replace = msg.type === 'thinking-snapshot'
+            setTabs((prev) =>
+              prev.map((t) => {
+                if (t.id !== cid) return t
+                const messages = t.messages.slice()
+                let idx = -1
+                for (let i = messages.length - 1; i >= 0; i--) {
+                  if (messages[i]!.role === 'thinking' && messages[i]!.streaming) {
+                    idx = i
+                    break
+                  }
+                }
+                if (idx < 0) {
+                  messages.push({
+                    id: `th-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+                    role: 'thinking',
+                    text: chunk,
+                    streaming: true,
+                    at: Date.now(),
+                  })
+                } else {
+                  const cur = messages[idx]!
+                  messages[idx] = {
+                    ...cur,
+                    text: replace ? chunk : `${cur.text || ''}${chunk}`,
+                    streaming: true,
+                  }
+                }
+                return { ...t, messages, running: true }
+              }),
+            )
           } else if (msg.type === 'thinking-completed') {
+            const cid = chatId || activeIdRef.current
+            if (cid) {
+              const ms = typeof msg.ms === 'number' ? msg.ms : undefined
+              setTabs((prev) =>
+                prev.map((t) => {
+                  if (t.id !== cid) return t
+                  const messages = t.messages.slice()
+                  for (let i = messages.length - 1; i >= 0; i--) {
+                    const m = messages[i]!
+                    if (m.role === 'thinking' && m.streaming) {
+                      messages[i] = {
+                        ...m,
+                        streaming: false,
+                        durationMs: ms ?? m.durationMs,
+                      }
+                      break
+                    }
+                  }
+                  return { ...t, messages }
+                }),
+              )
+            }
             if (!forActive) return
             setPhase('streaming', '')
             pushRunLog('thinking done')
@@ -711,6 +924,52 @@ export function ChatPanel({
             const st = String(msg.status || '')
             const callId = msg.callId ? String(msg.callId) : ''
             const name = String(msg.name || 'tool')
+            const detail = msg.detail != null ? String(msg.detail) : undefined
+            const cid = chatId || activeIdRef.current
+            if (cid) {
+              setTabs((prev) =>
+                prev.map((t) => {
+                  if (t.id !== cid) return t
+                  const messages = t.messages.slice()
+                  let idx = -1
+                  if (callId) {
+                    idx = messages.findIndex(
+                      (m) => m.role === 'tool' && m.tool?.callId === callId,
+                    )
+                  }
+                  if (idx < 0) {
+                    messages.push({
+                      id: `tool-${callId || Date.now().toString(36)}`,
+                      role: 'tool',
+                      text: '',
+                      at: Date.now(),
+                      tool: {
+                        name,
+                        status: st || 'running',
+                        detail,
+                        callId: callId || undefined,
+                        sessionId: msg.sessionId ? String(msg.sessionId) : undefined,
+                      },
+                    })
+                  } else {
+                    const cur = messages[idx]!
+                    messages[idx] = {
+                      ...cur,
+                      tool: {
+                        name,
+                        status: st || cur.tool?.status || 'running',
+                        detail: detail ?? cur.tool?.detail,
+                        callId: callId || cur.tool?.callId,
+                        sessionId: msg.sessionId
+                          ? String(msg.sessionId)
+                          : cur.tool?.sessionId,
+                      },
+                    }
+                  }
+                  return { ...t, messages, running: true }
+                }),
+              )
+            }
             if (st === 'completed' && forActive) {
               if (!callId || !presentedCalls.current.has(callId)) {
                 if (callId) presentedCalls.current.add(callId)
@@ -782,6 +1041,21 @@ export function ChatPanel({
             const err =
               String(msg.status || '').toLowerCase() === 'error' ||
               String(msg.status || '').toLowerCase() === 'failed'
+            const cid = chatId || activeIdRef.current
+            if (cid) {
+              setTabs((prev) =>
+                prev.map((t) => {
+                  if (t.id !== cid) return t
+                  return {
+                    ...t,
+                    running: false,
+                    messages: t.messages.map((m) =>
+                      m.streaming ? { ...m, streaming: false } : m,
+                    ),
+                  }
+                }),
+              )
+            }
             if (forActive) {
               setStreaming(false)
               if (err) {
@@ -833,12 +1107,22 @@ export function ChatPanel({
             }
           } else if (msg.type === 'cancelled') {
             if (!forActive) return
+            setQueuedCount(0)
             if (msg.ok === false) {
               setPhase('idle', '')
               return
             }
+            setStreaming(false)
             pushRunLog('stop requested — run is ending on the server')
             setPhase('busy', 'stopping…')
+          } else if (msg.type === 'queued') {
+            if (!forActive) return
+            setQueuedCount(Number(msg.position) || 0)
+            pushRunLog(`queued · #${msg.position || '?'} ${String(msg.prompt || '').slice(0, 40)}`)
+            setPhase('busy', `queued (#${msg.position || '?'})`)
+          } else if (msg.type === 'agent') {
+            if (!forActive) return
+            if (msg.agentId) setAgentId(String(msg.agentId))
           }
         } catch {
           /* ignore */
@@ -928,38 +1212,183 @@ export function ChatPanel({
     setPickerEntries(data.entries.filter((e) => e.type === 'dir'))
   }
 
-  function send(e: FormEvent) {
-    e.preventDefault()
-    const prompt = input.trim()
-    if (!prompt || !active) return
+  async function fileToChatImage(file: File): Promise<ChatImage | null> {
+    const mime = (file.type || '').toLowerCase()
+    if (!/^image\/(png|jpe?g|gif|webp)$/.test(mime)) {
+      setError('Only PNG, JPEG, GIF, or WebP images are supported.')
+      return null
+    }
+    const result = await fileToCompressedChatImage(file, MAX_DRAFT_IMAGE_BYTES)
+    if (!result) {
+      setError(
+        file.size > MAX_DRAFT_IMAGE_BYTES
+          ? 'Could not shrink that image enough to attach (4 MB max).'
+          : 'Could not read that image.',
+      )
+      return null
+    }
+    if (result.toBytes < result.fromBytes && result.fromBytes > MAX_DRAFT_IMAGE_BYTES) {
+      notify?.ping({
+        title: 'Sorry — image was reduced',
+        body: `From ${formatMb(result.fromBytes)} to ${formatMb(result.toBytes)} so it could attach.`,
+        level: 'info',
+        category: 'chat-image',
+      })
+    }
+    return result.image
+  }
+
+  async function addDraftFiles(files: FileList | File[] | null) {
+    if (!files?.length) return
+    const list = Array.from(files)
+    const next = [...draftImages]
+    for (const file of list) {
+      if (next.length >= MAX_DRAFT_IMAGES) {
+        setError(`At most ${MAX_DRAFT_IMAGES} images per message.`)
+        break
+      }
+      const img = await fileToChatImage(file)
+      if (img) next.push(img)
+    }
+    setDraftImages(next)
+  }
+
+  function removeDraftImage(idx: number) {
+    setDraftImages((prev) => prev.filter((_, i) => i !== idx))
+  }
+
+  function syncAtMention(value: string, caret: number) {
+    setAtMention(detectAtMention(value, caret))
+  }
+
+  function addContextPath(pick: AtPick) {
+    setDraftContext((prev) => {
+      if (prev.includes(pick.path)) return prev
+      if (prev.length >= MAX_DRAFT_CONTEXT) {
+        setError(`At most ${MAX_DRAFT_CONTEXT} @ context paths per message.`)
+        return prev
+      }
+      return [...prev, pick.path]
+    })
+    if (atMention) {
+      const before = input.slice(0, atMention.start)
+      const after = input.slice(atMention.start + 1 + atMention.query.length)
+      const next = `${before}${after.replace(/^\s/, '')}`
+      setInput(next)
+      const caret = before.length
+      requestAnimationFrame(() => {
+        const ta = textareaRef.current
+        if (ta) {
+          ta.focus()
+          ta.setSelectionRange(caret, caret)
+        }
+      })
+    }
+    setAtMention(null)
+  }
+
+  function removeDraftContext(path: string) {
+    setDraftContext((prev) => prev.filter((p) => p !== path))
+  }
+
+  function insertAtMention() {
+    const ta = textareaRef.current
+    const start = ta?.selectionStart ?? input.length
+    const end = ta?.selectionEnd ?? start
+    const next = `${input.slice(0, start)}@${input.slice(end)}`
+    setInput(next)
+    const caret = start + 1
+    setAtMention({ start, query: '' })
+    requestAnimationFrame(() => {
+      ta?.focus()
+      ta?.setSelectionRange(caret, caret)
+    })
+  }
+
+  function send(
+    e?: FormEvent,
+    opts?: { prompt?: string; replaceLastUser?: boolean; skipOptimistic?: boolean },
+  ) {
+    e?.preventDefault()
+    const images = draftImages
+    const contextPaths = draftContext
+    let prompt = (opts?.prompt ?? input).trim()
+    if (!prompt && images.length) {
+      prompt =
+        images.length === 1
+          ? 'Please look at the attached image.'
+          : `Please look at the ${images.length} attached images.`
+    }
+    if (!prompt && contextPaths.length) {
+      prompt =
+        contextPaths.length === 1
+          ? 'Please review the attached file.'
+          : `Please review the ${contextPaths.length} attached paths.`
+    }
+    if ((!prompt && !images.length && !contextPaths.length) || !active) return
     if (!socketOpen()) {
       setError('Reconnecting to the server — try again in a moment.')
       return
     }
+    const replaceLastUser = opts?.replaceLastUser ?? editingLast
     setError('')
-    setStreaming(true)
-    setPhase('starting', 'starting…')
-    setRunLog([])
-    pushRunLog(`send · mode=${mode} model=${model || defaultModel}`)
+    const queueing = streaming && !replaceLastUser
+    if (!queueing) {
+      setStreaming(true)
+      setPhase('starting', 'starting…')
+      setRunLog([])
+    } else {
+      setPhase('busy', 'queued…')
+    }
+    pushRunLog(
+      `${queueing ? 'queue' : 'send'} · mode=${mode} model=${model || defaultModel}${
+        replaceLastUser ? ' · edit' : ''
+      }${images.length ? ` · ${images.length} img` : ''}${
+        contextPaths.length ? ` · ${contextPaths.length} @` : ''
+      }`,
+    )
     setSettingsOpen(false)
     stickBottom.current = true
-    setInput('')
-    // Show the prompt immediately. The server copy replaces this a moment later.
+    setShowJump(false)
+    setEditingLast(false)
+    setAtMention(null)
+    if (!opts?.prompt) setInput('')
+    setDraftImages([])
+    setDraftContext([])
     const chatId = active.id
-    setTabs((prev) =>
-      prev.map((t) =>
-        t.id === chatId
-          ? {
-              ...t,
-              running: true,
-              messages: [
-                ...t.messages,
-                { id: `pending-${Date.now()}`, role: 'user', text: prompt, at: Date.now() },
-              ],
+    if (!opts?.skipOptimistic && !queueing) {
+      setTabs((prev) =>
+        prev.map((t) => {
+          if (t.id !== chatId) return t
+          let messages = t.messages
+          if (replaceLastUser) {
+            let lastUser = -1
+            for (let i = messages.length - 1; i >= 0; i--) {
+              if (messages[i]!.role === 'user') {
+                lastUser = i
+                break
+              }
             }
-          : t,
-      ),
-    )
+            if (lastUser >= 0) messages = messages.slice(0, lastUser)
+          }
+          return {
+            ...t,
+            running: true,
+            messages: [
+              ...messages,
+              {
+                id: `pending-${Date.now()}`,
+                role: 'user',
+                text: prompt,
+                at: Date.now(),
+                ...(images.length ? { images } : {}),
+                ...(contextPaths.length ? { contextPaths } : {}),
+              },
+            ],
+          }
+        }),
+      )
+    }
     wsRef.current?.send(
       JSON.stringify({
         type: 'send',
@@ -969,6 +1398,16 @@ export function ChatPanel({
         approvalPolicy,
         chatId: active.id,
         cwd: active.cwd || undefined,
+        replaceLastUser,
+        queueIfBusy: true,
+        images: images.map((img) => ({
+          mimeType: img.mimeType,
+          data: img.data,
+          name: img.name,
+          width: img.width,
+          height: img.height,
+        })),
+        contextPaths,
       }),
     )
   }
@@ -976,8 +1415,79 @@ export function ChatPanel({
   function cancel() {
     if (!active) return
     pushRunLog('stop requested')
+    setQueuedCount(0)
+    setStreaming(false)
     setPhase('idle', '')
     wsRef.current?.send(JSON.stringify({ type: 'cancel', chatId: active.id }))
+  }
+
+  function regenerate() {
+    if (!active || !socketOpen() || streaming) return
+    setError('')
+    setStreaming(true)
+    setPhase('starting', 'regenerating…')
+    stickBottom.current = true
+    pushRunLog('regenerate')
+    wsRef.current?.send(
+      JSON.stringify({
+        type: 'regenerate',
+        chatId: active.id,
+        model: model || defaultModel,
+        mode,
+      }),
+    )
+  }
+
+  function editLastUser(text: string, contextPaths?: string[]) {
+    setInput(text)
+    setDraftContext(contextPaths ? [...contextPaths] : [])
+    setEditingLast(true)
+    setSettingsOpen(false)
+    setAtMention(null)
+  }
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return
+      if (atMention) {
+        e.preventDefault()
+        setAtMention(null)
+        return
+      }
+      if (streaming) {
+        e.preventDefault()
+        cancel()
+      } else if (editingLast) {
+        setEditingLast(false)
+      } else if (settingsOpen) {
+        setSettingsOpen(false)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streaming, editingLast, settingsOpen, active?.id, atMention])
+
+  // Restore mode/model when switching chats (per-tab when server has them).
+  useEffect(() => {
+    const tab = tabs.find((t) => t.id === activeId)
+    if (!tab) return
+    if (tab.mode && CHAT_MODES.some((m) => m.id === tab.mode)) {
+      setMode(tab.mode as ChatMode)
+    }
+    if (tab.model) setModel(tab.model)
+    setAgentId(tab.agentId || null)
+  }, [activeId])
+
+  function jumpToBottom() {
+    stickBottom.current = true
+    setShowJump(false)
+    const el = listRef.current
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+  }
+
+  function copyMessage(text: string) {
+    void copyText(text)
   }
 
   function submitSudo(e?: FormEvent) {
@@ -1405,7 +1915,9 @@ export function ChatPanel({
       className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-3 space-y-3"
       onScroll={(e) => {
         const el = e.currentTarget
-        stickBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 72
+        const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 72
+        stickBottom.current = nearBottom
+        setShowJump(!nearBottom && el.scrollHeight > el.clientHeight + 120)
       }}
     >
       {!active && (
@@ -1417,15 +1929,43 @@ export function ChatPanel({
             {isDock ? 'Work chat' : 'Local Cursor agent'}
           </p>
           <p className="text-mute text-xs leading-relaxed">
-            This workspace lives on the server. Any browser signed in here sees the same
-            chats, and a reply keeps going if you leave. Use + for a new tab. Open the gear
-            by Send for mode, model, and tools.
+            Server-backed chats stream like Cursor IDE. Queue follow-ups while it runs, Esc to
+            stop, Edit/Retry on messages, Copy on bubbles and code blocks. Gear → mode, model,
+            tool approvals.
           </p>
         </div>
       )}
-      {active?.messages.map((m) => (
-        <MessageCard key={m.id} m={m} onPresent={onPresent ? presentFromChat : undefined} />
-      ))}
+      {active?.messages.map((m, i, arr) => {
+        const lastUserIdx = (() => {
+          for (let j = arr.length - 1; j >= 0; j--) if (arr[j]!.role === 'user') return j
+          return -1
+        })()
+        const lastAssistantIdx = (() => {
+          for (let j = arr.length - 1; j >= 0; j--) if (arr[j]!.role === 'assistant') return j
+          return -1
+        })()
+        return (
+          <MessageCard
+            key={m.id}
+            m={m}
+            onPresent={onPresent ? presentFromChat : undefined}
+            onCopy={copyMessage}
+            onEdit={(text) => {
+              editLastUser(text)
+            }}
+            onRegenerate={regenerate}
+            canEdit={!streaming && i === lastUserIdx}
+            canRegenerate={!streaming && i === lastAssistantIdx && lastUserIdx >= 0}
+          />
+        )
+      })}
+      {showJump && (
+        <div className="hb-chat-jump">
+          <button type="button" onClick={jumpToBottom}>
+            Jump to latest
+          </button>
+        </div>
+      )}
       {pendingApprovals.map((ap) => (
         <div
           key={ap.id}
@@ -1751,14 +2291,112 @@ export function ChatPanel({
         </div>
       </div>
 
-      <div className="flex gap-2 items-stretch">
+      {(queuedCount > 0 || editingLast) && (
+        <p className="hb-chat-queue">
+          {editingLast
+            ? 'Editing last message — Send replaces it (Esc cancels edit)'
+            : `${queuedCount} follow-up${queuedCount === 1 ? '' : 's'} queued · Esc stops`}
+        </p>
+      )}
+      {agentId && (
+        <p className="hb-chat-queue font-mono truncate" title={agentId}>
+          agent {agentId.slice(0, 12)}…
+        </p>
+      )}
+      {!!draftContext.length && (
+        <div className="hb-chat-ctx-row">
+          {draftContext.map((p) => (
+            <span key={p} className="hb-chat-ctx-chip hb-chat-ctx-draft" title={p}>
+              @{contextChipLabel(p)}
+              <button
+                type="button"
+                className="hb-chat-ctx-x"
+                aria-label={`Remove ${p}`}
+                onClick={() => removeDraftContext(p)}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {!!draftImages.length && (
+        <div className="hb-chat-img-row">
+          {draftImages.map((img, i) => (
+            <div key={`draft-${i}`} className="hb-chat-img-thumb hb-chat-img-draft">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={chatImageSrc(img)} alt={img.name || 'attachment'} />
+              <button
+                type="button"
+                className="hb-chat-img-x"
+                aria-label="Remove image"
+                onClick={() => removeDraftImage(i)}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/webp"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          void addDraftFiles(e.target.files)
+          e.target.value = ''
+        }}
+      />
+      <div
+        className="flex gap-2 items-stretch"
+        onDragOver={(e) => {
+          if ([...e.dataTransfer.types].includes('Files')) e.preventDefault()
+        }}
+        onDrop={(e) => {
+          if (![...e.dataTransfer.types].includes('Files')) return
+          e.preventDefault()
+          void addDraftFiles(e.dataTransfer.files)
+        }}
+      >
         <div className="flex-1 min-w-0 relative">
+          {project && atMention && (
+            <AtMentionPicker
+              projectId={project.id}
+              rootPath={active?.cwd || ''}
+              query={atMention.query}
+              open
+              onSelect={addContextPath}
+              onClose={() => setAtMention(null)}
+            />
+          )}
           <textarea
+            ref={textareaRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              const v = e.target.value
+              setInput(v)
+              if (editingLast && !v.trim()) setEditingLast(false)
+              syncAtMention(v, e.target.selectionStart ?? v.length)
+            }}
+            onSelect={(e) => {
+              const t = e.currentTarget
+              syncAtMention(t.value, t.selectionStart ?? t.value.length)
+            }}
             rows={2}
-            placeholder={listening ? 'Listening… speak in English' : `Message (${cwdLabel})…`}
-            className={`w-full rounded-xl bg-panel-2 border px-3 py-2.5 pr-12 text-sm resize-none outline-none focus:border-accent ${
+            placeholder={
+              listening
+                ? 'Listening… speak in English'
+                : streaming
+                  ? `Queue follow-up (${cwdLabel})…`
+                  : editingLast
+                    ? 'Edit last message…'
+                    : draftImages.length || draftContext.length
+                      ? 'Add a note (optional)…'
+                      : `Message (@ for files · ${cwdLabel})…`
+            }
+            className={`w-full rounded-xl bg-panel-2 border px-3 py-2.5 pr-28 text-sm resize-none outline-none focus:border-accent ${
               listening ? 'border-accent/60' : 'border-line'
             }`}
             enterKeyHint="send"
@@ -1767,7 +2405,21 @@ export function ChatPanel({
               window.scrollTo(0, 0)
               requestAnimationFrame(() => window.scrollTo(0, 0))
             }}
+            onPaste={(e) => {
+              const files = [...e.clipboardData.items]
+                .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
+                .map((it) => it.getAsFile())
+                .filter((f): f is File => !!f)
+              if (files.length) {
+                e.preventDefault()
+                void addDraftFiles(files)
+              }
+            }}
             onKeyDown={(e) => {
+              if (atMention && (e.key === 'Enter' || e.key === 'Tab' || e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+                // AtMentionPicker handles these in capture phase.
+                return
+              }
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
                 if (listening) stopListening()
@@ -1775,6 +2427,43 @@ export function ChatPanel({
               }
             }}
           />
+          <button
+            type="button"
+            className="hb-at-btn"
+            aria-label="Attach file context"
+            title="@ attach file context"
+            onClick={insertAtMention}
+          >
+            @
+          </button>
+          <button
+            type="button"
+            className="hb-attach-btn"
+            aria-label="Attach image"
+            title="Attach image (or paste / drop)"
+            onClick={() => imageInputRef.current?.click()}
+          >
+            <svg viewBox="0 0 24 24" className="hb-attach-icon" aria-hidden>
+              <path
+                d="M8.5 13.5 11 11l2.5 2.5L17 10l3 3v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-1.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.75"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <rect
+                x="3"
+                y="5"
+                width="18"
+                height="14"
+                rx="2"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.75"
+              />
+            </svg>
+          </button>
           {canSpeak && (
             <button
               type="button"
@@ -1810,16 +2499,19 @@ export function ChatPanel({
         <div className="flex flex-col gap-2">
           <button
             type="submit"
-            disabled={streaming || !connected}
+            disabled={
+              !connected || (!input.trim() && !draftImages.length && !draftContext.length)
+            }
             className="rounded-xl hb-btn-primary font-semibold px-4 py-2.5 text-sm disabled:opacity-40 border-0"
           >
-            Send
+            {streaming && !editingLast ? 'Queue' : editingLast ? 'Resend' : 'Send'}
           </button>
           {streaming && (
             <button
               type="button"
               onClick={cancel}
               className="rounded-xl border border-danger/50 text-danger text-xs py-2 font-semibold"
+              title="Stop (Esc)"
             >
               Stop
             </button>

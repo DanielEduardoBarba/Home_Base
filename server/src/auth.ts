@@ -13,6 +13,8 @@ import {
   LOCKOUT_PATH,
   ensureRuntimeDirs,
 } from "./config";
+import { logWarn } from "./console_log";
+import { formatGeo, geoCached, warmGeo } from "./geo";
 import { appendDaily } from "./logging";
 import { pushNotification } from "./notifications";
 
@@ -325,6 +327,16 @@ export function recordFailure(
   }
   saveLockout({ failCount, lockedUntil });
   appendDaily("auth_failure", { ip, reason, failCount, lockoutSeconds: delay });
+  warmGeo(ip);
+  logWarn(`auth failure #${failCount}`, {
+    source: "auth",
+    fields: {
+      ip,
+      geo: formatGeo(geoCached(ip)),
+      reason,
+      lockoutSeconds: delay || undefined,
+    },
+  });
   if (failCount >= FAIL_THRESHOLD) {
     pushNotification(
       "Auth lockout",

@@ -4,6 +4,12 @@ import { listNotifications, pushNotification } from "./notifications";
 import { projectPublic, runAction, stopProject, tailLogs } from "./process";
 import { listSessions } from "./pty";
 import { restartHomebased, systemStatus } from "./system";
+import {
+  restartWireguardIface,
+  startWireguard,
+  stopWireguard,
+  wireguardStatus,
+} from "./wireguard";
 
 const CONTEXT_MARKER = "[Home Base context]";
 
@@ -96,6 +102,12 @@ export function buildHomebaseTools(
       parameters: { type: "object", properties: {} },
       execute: async () => json(systemStatus()),
     },
+    homebase_wireguard_status: {
+      description:
+        "WireGuard VPN install/setup status, peers, and client list (no private keys)",
+      parameters: { type: "object", properties: {} },
+      execute: async () => json(await wireguardStatus()),
+    },
   };
 
   if (!readonly) {
@@ -154,6 +166,25 @@ export function buildHomebaseTools(
         "Schedule a detached restart of homebased.service (survives self-stop; do not use raw systemctl restart from inside Home Base)",
       parameters: { type: "object", properties: {} },
       execute: async () => json(restartHomebased()),
+    };
+    tools.homebase_wireguard_control = {
+      description: "Start, stop, or restart the WireGuard VPN interface",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", description: "start | stop | restart" },
+          iface: { type: "string" },
+        },
+        required: ["action"],
+      },
+      execute: async (args) => {
+        const action = String(args.action || "").toLowerCase();
+        const iface = args.iface ? String(args.iface) : undefined;
+        if (action === "start") return json(startWireguard(iface));
+        if (action === "stop") return json(stopWireguard(iface));
+        if (action === "restart") return json(restartWireguardIface(iface));
+        return json({ error: "action must be start, stop, or restart" });
+      },
     };
   }
 

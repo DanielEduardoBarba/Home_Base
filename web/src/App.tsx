@@ -151,6 +151,8 @@ function AuthedApp() {
   const [hostLink, setHostLink] = useState<HostLink>('reconnecting')
   const [cursorConfigured, setCursorConfigured] = useState(false)
   const [hostLabel, setHostLabel] = useState('host')
+  const [vpnActive, setVpnActive] = useState<boolean | null>(null)
+  const [vpnHostHint, setVpnHostHint] = useState<string | null>(null)
   const failStreak = useRef(0)
   const { unread, inboxOpen, toggleInbox, closeInbox, unlockAudio } = useNotify()
   const [viewVisited, setViewVisited] = useState(false)
@@ -201,6 +203,15 @@ function AuthedApp() {
         setCursorConfigured(!!health.cursorConfigured)
         if (health.version) setVersion(health.version)
         if (typeof health.backup === 'boolean') setBackup(health.backup)
+        if (health.wireguard) {
+          setVpnActive(
+            health.wireguard.configured ? !!health.wireguard.active : null,
+          )
+          setVpnHostHint(health.wireguard.host || health.vpnHost || null)
+        } else {
+          setVpnActive(health.vpnHost ? true : null)
+          setVpnHostHint(health.vpnHost || null)
+        }
       }
       if (!data.projects.find((p) => p.id === selectedId)) {
         const next = data.projects[0]?.id || ''
@@ -364,6 +375,23 @@ function AuthedApp() {
               <span className="hb-status-sep">·</span>
               <span className={cursorRunning ? 'text-sky' : 'text-mute'} title="Local Cursor agent">
                 Cursor{cursorRunning ? ' run' : ''}
+              </span>
+            </>
+          )}
+          {vpnActive !== null && (
+            <>
+              <span className="hb-status-sep">·</span>
+              <span
+                className={vpnActive ? 'text-ok' : 'text-amber'}
+                title={
+                  vpnActive
+                    ? vpnHostHint
+                      ? `WireGuard up · ${vpnHostHint}`
+                      : 'WireGuard up'
+                    : 'WireGuard configured but down — open More → VPN'
+                }
+              >
+                VPN {vpnActive ? 'up' : 'down'}
               </span>
             </>
           )}

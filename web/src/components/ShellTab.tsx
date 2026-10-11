@@ -350,8 +350,8 @@ export function ShellTab({
           <h2 className="hb-label">Sessions</h2>
           {sessions.length === 0 && (
             <p className="text-mute text-sm leading-relaxed">
-              No active PTY sessions. Start a stack from Apps, or tap + for an interactive shell.
-              Leaving a shell keeps it alive until you Exit or Kill it.
+              No PTY sessions. Start a stack from Apps, or tap + for an interactive shell.
+              Tap a session to open it. Dead sessions get an X to dismiss.
             </p>
           )}
           <ul className="space-y-2.5">
@@ -360,7 +360,21 @@ export function ShellTab({
                 key={s.id}
                 className="hb-surface p-3.5 flex flex-wrap sm:flex-nowrap items-center gap-2.5"
               >
-                <div className="flex-1 min-w-0">
+                <button
+                  type="button"
+                  disabled={!s.alive}
+                  onClick={() => {
+                    if (!s.alive) return
+                    setError('')
+                    setActiveTab(0)
+                    setInteractive(false)
+                    setInteractiveId('')
+                    setAttach([s.id])
+                    if (project.id) writeShellAttach(project.id, [s.id])
+                  }}
+                  className="flex-1 min-w-0 text-left rounded-md -m-1 p-1 disabled:opacity-70 disabled:cursor-default enabled:active:bg-black/5 dark:enabled:active:bg-white/5"
+                  title={s.alive ? 'Open session' : 'Session exited'}
+                >
                   <div className="text-sm font-medium truncate">{s.label}</div>
                   <div className="text-[11px] font-mono text-mute mt-0.5">
                     {s.kind} · pid {s.pid ?? '—'} ·{' '}
@@ -368,36 +382,44 @@ export function ShellTab({
                       {s.alive ? 'alive' : 'dead'}
                     </span>
                   </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setError('')
-                    setActiveTab(0)
-                    setAttach([s.id])
-                  }}
-                  disabled={!s.alive}
-                  className="hb-btn hb-btn-ghost text-xs !min-h-9 px-3 disabled:opacity-40"
-                >
-                  Attach
                 </button>
-                <HoldButton
-                  label="Exit"
-                  holdLabel="…"
-                  holdMs={1000}
-                  title="Hold 1s — send Ctrl+C twice"
-                  disabled={!s.alive}
-                  className="hb-btn hb-btn-ghost text-xs !min-h-9 px-3"
-                  onConfirm={() => void exitSession(s.id)}
-                />
-                <HoldButton
-                  label="Kill"
-                  holdLabel="…"
-                  holdMs={2000}
-                  title="Hold 2s — kill process"
-                  className="hb-btn hb-btn-danger text-xs !min-h-9 px-3"
-                  onConfirm={() => void killSession(s.id)}
-                />
+                {s.alive ? (
+                  <>
+                    <HoldButton
+                      label="Exit"
+                      holdLabel="…"
+                      holdMs={1000}
+                      title="Hold 1s — send Ctrl+C twice"
+                      className="hb-btn hb-btn-ghost text-xs !min-h-9 px-3"
+                      onConfirm={() => void exitSession(s.id)}
+                    />
+                    <HoldButton
+                      label="Kill"
+                      holdLabel="…"
+                      holdMs={2000}
+                      title="Hold 2s — kill process"
+                      className="hb-btn hb-btn-danger text-xs !min-h-9 px-3"
+                      onConfirm={() => void killSession(s.id)}
+                    />
+                  </>
+                ) : (
+                  <IconBtn
+                    label="Remove"
+                    variant="ghost"
+                    className="shrink-0"
+                    onClick={() => void killSession(s.id)}
+                  >
+                    <svg viewBox="0 0 24 24" className="hb-icon-btn-glyph" aria-hidden>
+                      <path
+                        d="M6 6l12 12M18 6 6 18"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                  </IconBtn>
+                )}
               </li>
             ))}
           </ul>

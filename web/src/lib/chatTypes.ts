@@ -2,6 +2,15 @@
 
 export type ChatRole = 'user' | 'assistant' | 'thinking' | 'tool' | 'file' | 'status' | 'system'
 
+export type ChatImage = {
+  mimeType: string
+  /** Raw base64 (no data: prefix). */
+  data: string
+  name?: string
+  width?: number
+  height?: number
+}
+
 export type ChatMsg = {
   id: string
   role: ChatRole
@@ -12,6 +21,9 @@ export type ChatMsg = {
   at?: number
   /** Thinking duration from the model (ms), when known. */
   durationMs?: number
+  images?: ChatImage[]
+  /** Project-relative paths attached via @ picker. */
+  contextPaths?: string[]
   tool?: {
     name: string
     status: string
@@ -20,6 +32,10 @@ export type ChatMsg = {
     sessionId?: string
   }
   file?: { path: string; action: string }
+}
+
+export function chatImageSrc(img: ChatImage): string {
+  return `data:${img.mimeType};base64,${img.data}`
 }
 
 /** Cursor IDE–style conversation modes (Ask/Debug approximated via tool policy). */
@@ -45,6 +61,7 @@ export type ChatTab = {
   messages: ChatMsg[]
   agentId?: string | null
   mode?: ChatMode
+  model?: string
   /** True while the server is still running this chat's agent. */
   running?: boolean
   updatedAt: number

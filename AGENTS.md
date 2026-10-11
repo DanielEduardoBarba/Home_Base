@@ -82,7 +82,7 @@ Writable state: `/var/lib/homebased` (`HOMEBASE_HOME`). Unit **homebased** runs 
 
 ## Capabilities vs non-goals
 
-- **Supports:** local Cursor agents (Home Base context + `homebase_*` in-process tools), project actions/PTY, Files (project + absolute host with JWT), View (X11 screen + input over JWT WS), WireGuard/homebased restart
+- **Supports:** local Cursor agents (Home Base context + `homebase_*` in-process tools), project actions/PTY, Files (project + absolute host with JWT), View (X11 screen + input over JWT WS), WireGuard setup/manage (QR onboarding) + homebased restart
 - **Self-deploy / restart:** `./build.sh --deploy` from a Chat/Shell PTY under homebased schedules a detached systemd oneshot (not killed by `KillMode=control-group`). API `POST /api/system/restart/homebased` and tool `homebase_restart_homebased` use `systemd-run --on-active=1s` the same way.
 - **Does not:** Cursor IDE buffer sync, cloud agents, public internet exposure, Wayland capture (X11 / XWayland only)
 

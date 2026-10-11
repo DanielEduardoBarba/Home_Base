@@ -7,6 +7,25 @@ const SECRET_PATH = join(RUNTIME_DIR, "hook_secret");
 
 let policy: "ask" | "auto" = "ask";
 
+type Pending = {
+  id: string;
+  kind: string;
+  tool: string;
+  detail: string;
+  command?: string;
+  cwd?: string;
+  agentId?: string;
+  createdAt: number;
+  resolve: (r: {
+    permission: string;
+    user_message: string;
+    agent_message: string;
+  }) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
+const pending = new Map<string, Pending>();
+
 export function ensureHookSecret(): string {
   ensureRuntimeDirs();
   mkdirSync(RUNTIME_DIR, { recursive: true });
@@ -34,12 +53,53 @@ export function setPolicy(p: string): "ask" | "auto" {
   return policy;
 }
 
-export function listPending(): unknown[] {
-  return [];
+export function listPending(): Array<{
+  id: string;
+  kind: string;
+  tool: string;
+  detail: string;
+  command?: string;
+  cwd?: string;
+  agentId?: string;
+  createdAt: number;
+}> {
+  return [...pending.values()].map(
+    ({ id, kind, tool, detail, command, cwd, agentId, createdAt }) => ({
+      id,
+      kind,
+      tool,
+      detail,
+      command,
+      cwd,
+      agentId,
+      createdAt,
+    }),
+  );
 }
 
-/** IDE-friendly: auto-allow when policy is auto; otherwise allow with short message for migration stability when no UI listeners. */
-export async function requestApproval(_opts: {
+export function resolveApproval(id: string, allow: boolean): boolean {
+  const p = pending.get(id);
+  if (!p) return false;
+  clearTimeout(p.timer);
+  pending.delete(id);
+  p.resolve(
+    allow
+      ? {
+          permission: "allow",
+          user_message: "Allowed in Home Base Chat",
+          agent_message: "Allowed",
+        }
+      : {
+          permission: "deny",
+          user_message: "Denied in Home Base Chat",
+          agent_message: "Denied by user",
+        },
+  );
+  return true;
+}
+
+/** Ask Chat UI when listeners exist; auto-allow when policy is auto or nobody is watching. */
+export async function requestApproval(opts: {
   kind: string;
   tool: string;
   detail: string;
@@ -54,11 +114,53 @@ export async function requestApproval(_opts: {
       agent_message: "Auto-run tools enabled",
     };
   }
-  // Without Chat WS listeners, blocking IDE for 560s is a known footgun (R-003).
-  // Fail-open with explicit message so agentic workflows continue; Chat UI can still set ask+approve when connected later.
-  return {
-    permission: "allow",
-    user_message: "No approval UI listener — allowed (ask policy fail-open; see R-003)",
-    agent_message: "Allowed without UI listener",
+
+  // Lazy import avoids circular init with cursor.ts
+  const { cursorSubscriberCount, broadcastAllCursor } = await import("./cursor");
+  if (cursorSubscriberCount() === 0) {
+    return {
+      permission: "allow",
+      user_message: "No Chat listener — allowed (ask policy fail-open)",
+      agent_message: "Allowed without UI listener",
+    };
+  }
+
+  const id = randomBytes(8).toString("hex");
+  const createdAt = Date.now() / 1000;
+  const payload = {
+    type: "approval",
+    id,
+    kind: opts.kind || "tool",
+    tool: opts.tool || "tool",
+    detail: opts.detail || "",
+    command: opts.command,
+    cwd: opts.cwd,
+    agentId: opts.agentId,
+    createdAt,
   };
+  broadcastAllCursor(payload);
+
+  return await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      broadcastAllCursor({ type: "approval-resolved", id, timedOut: true });
+      resolve({
+        permission: "deny",
+        user_message: "Approval timed out",
+        agent_message: "Denied — approval timed out",
+      });
+    }, 560_000);
+    pending.set(id, {
+      id,
+      kind: String(opts.kind || "tool"),
+      tool: String(opts.tool || "tool"),
+      detail: String(opts.detail || ""),
+      command: opts.command,
+      cwd: opts.cwd,
+      agentId: opts.agentId,
+      createdAt,
+      resolve,
+      timer,
+    });
+  });
 }

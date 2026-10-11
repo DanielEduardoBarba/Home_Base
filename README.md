@@ -60,7 +60,7 @@ Fetch and WebSocket clients always use relative `/api/...` and `/ws/...` against
 | View | Live laptop screen + mouse/keyboard (`/ws/view`, JWT; X11) |
 | Logs | Capped console ring (`/api/trace`) |
 | *(status bar)* Alerts | Bell in host/live bar; top→bottom inbox; History drawer |
-| More | Theme, notify prefs, Share/password (localhost), VPN/homebased restart, sign-out |
+| More | Theme, notify prefs, Share/password (localhost), WireGuard VPN setup/manage, homebased restart, sign-out |
 
 ## Projects
 
@@ -84,7 +84,7 @@ Action `type` values: `script` (default), `stop`, `restart` (with `restartAction
 | Shell | JWT-gated PTY scoped to project cwd; phone Ctrl/Esc/Tab bar |
 | Files | REST read/write; relative paths under project; absolute `/…` = host browse (JWT) |
 | View | JWT WebSocket JPEG stream of the X11 desktop + XTest input; adaptive for LAN/VPN |
-| Laptop services | WireGuard / homebased restart from More (JWT) |
+| Laptop services | WireGuard setup/manage (QR) + homebased restart from More (JWT) |
 
 **Not supported:** Wayland-native capture (needs X11/XWayland), reading Cursor IDE open-buffer state, cloud Cursor agents, public internet exposure.
 

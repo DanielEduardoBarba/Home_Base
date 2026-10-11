@@ -51,7 +51,9 @@ export function TerminalView({ path, sessionId, onSession, className }: Props) {
 
     const term = new XTerm({
       cursorBlink: true,
-      fontFamily: '"IBM Plex Mono", ui-monospace, monospace',
+      // Fallbacks cover common zsh/OMZ glyphs (➜ etc.) when Plex lacks them.
+      fontFamily:
+        '"IBM Plex Mono", "DejaVu Sans Mono", "Noto Sans Mono", ui-monospace, monospace',
       fontSize: 13,
       lineHeight: 1.25,
       theme: {

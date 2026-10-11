@@ -30,6 +30,8 @@ import {
   subscribeCursor,
 } from "./cursor";
 import { listDir, readFile, writeFile } from "./files";
+import { logInfo } from "./console_log";
+import { formatGeo, geoCached, warmGeo } from "./geo";
 import { clientIp, jsonError, readJson, requireAuth } from "./http";
 import { readDailyLogs } from "./logging";
 import { clearRead, listNotifications, markRead } from "./notifications";
@@ -39,6 +41,7 @@ import {
   killSession,
   listSessions,
 } from "./pty";
+import { requestLogMiddleware } from "./request_log";
 import {
   isLocalhostBrowser,
   mdnsHostname,
@@ -58,10 +61,26 @@ import {
 } from "./system";
 import { appendTrace, listTrace } from "./trace";
 import { viewStatusAsync } from "./view";
+import {
+  addWireguardClient,
+  adoptWireguard,
+  getWireguardClientConfig,
+  installWireguardPackages,
+  removeWireguardClient,
+  restartWireguardIface,
+  setupWireguard,
+  startWireguard,
+  stopWireguard,
+  uninstallWireguard,
+  updateWireguardEndpoint,
+  wireguardHealthSummary,
+  wireguardStatus,
+} from "./wireguard";
 
 export const app = new Hono();
 
 app.onError((err, c) => jsonError(c, err));
+app.use("*", requestLogMiddleware);
 
 app.get("/api/health", (c) => {
   const access = accessHosts(bindPort());
@@ -74,6 +93,7 @@ app.get("/api/health", (c) => {
     version: readVersion(),
     backup: isBackupBinary(),
     runtime: "bun",
+    wireguard: wireguardHealthSummary(),
     ...access,
   });
 });
@@ -100,6 +120,110 @@ app.post("/api/system/restart/wireguard", async (c) => {
   return c.json(restartWireguard(body.iface ?? null));
 });
 
+app.get("/api/wireguard/status", async (c) => {
+  await requireAuth(c);
+  return c.json(await wireguardStatus());
+});
+
+app.post("/api/wireguard/install", async (c) => {
+  await requireAuth(c);
+  return c.json(installWireguardPackages());
+});
+
+app.post("/api/wireguard/setup", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({
+      endpoint: z.string().optional(),
+      listenPort: z.number().int().min(1024).max(65535).optional(),
+      iface: z.string().optional(),
+      clientName: z.string().optional(),
+      vpnCidr: z.string().optional(),
+      force: z.boolean().optional(),
+    })
+    .parse(await readJson(c));
+  return c.json(await setupWireguard(body));
+});
+
+app.post("/api/wireguard/adopt", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({
+      iface: z.string().optional(),
+      endpoint: z.string().optional(),
+    })
+    .parse(await readJson(c));
+  return c.json(await adoptWireguard(body));
+});
+
+app.post("/api/wireguard/start", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({ iface: z.string().optional() })
+    .parse(await readJson(c));
+  return c.json(startWireguard(body.iface));
+});
+
+app.post("/api/wireguard/stop", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({ iface: z.string().optional() })
+    .parse(await readJson(c));
+  return c.json(stopWireguard(body.iface));
+});
+
+app.post("/api/wireguard/restart", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({ iface: z.string().optional() })
+    .parse(await readJson(c));
+  return c.json(restartWireguardIface(body.iface));
+});
+
+app.post("/api/wireguard/clients", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({
+      name: z.string().optional(),
+      rotateId: z.string().optional(),
+    })
+    .parse(await readJson(c));
+  return c.json(addWireguardClient(body));
+});
+
+app.get("/api/wireguard/clients/:id/config", async (c) => {
+  await requireAuth(c);
+  return c.json(getWireguardClientConfig(c.req.param("id")));
+});
+
+app.delete("/api/wireguard/clients/:id", async (c) => {
+  await requireAuth(c);
+  return c.json(removeWireguardClient(c.req.param("id")));
+});
+
+app.post("/api/wireguard/endpoint", async (c) => {
+  await requireAuth(c);
+  const body = z.object({ endpoint: z.string() }).parse(await readJson(c));
+  return c.json(updateWireguardEndpoint(body.endpoint));
+});
+
+app.post("/api/wireguard/uninstall", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({
+      confirm: z.literal(true),
+      removePackages: z.boolean().optional(),
+      iface: z.string().optional(),
+    })
+    .parse(await readJson(c));
+  return c.json(
+    uninstallWireguard({
+      removePackages: body.removePackages,
+      iface: body.iface,
+    }),
+  );
+});
+
 app.get("/api/auth/status", (c) => {
   const local = isLocalhostBrowser(c.req.raw.headers);
   return c.json(authStatusPayload(local));
@@ -107,7 +231,13 @@ app.get("/api/auth/status", (c) => {
 
 app.post("/api/login", async (c) => {
   const body = z.object({ password: z.string() }).parse(await readJson(c));
-  const session = await loginWithPassword(body.password, clientIp(c));
+  const ip = clientIp(c);
+  warmGeo(ip);
+  const session = await loginWithPassword(body.password, ip);
+  logInfo("login ok", {
+    source: "auth",
+    fields: { ip, geo: formatGeo(geoCached(ip)), ttlSec: JWT_TTL_SEC },
+  });
   return c.json({ ok: true, ...session });
 });
 
