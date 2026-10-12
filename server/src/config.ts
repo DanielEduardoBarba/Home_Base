@@ -17,6 +17,16 @@ export function bundleRoot(): string {
   // ./build.sh --setup/--run never pick /usr/share just because prod is installed.
   const sourceRoot = resolve(here, "../..");
   if (existsSync(join(sourceRoot, "build.sh"))) return sourceRoot;
+  // Bun --compile: import.meta is inside the binary; use execPath (…/dist/homebase
+  // → repo root) so local probes don't inherit a stale /usr/share VERSION.
+  try {
+    const execDir = dirname(process.execPath);
+    const fromDist = resolve(execDir, "..");
+    if (existsSync(join(fromDist, "build.sh"))) return fromDist;
+    if (existsSync(join(execDir, "VERSION"))) return execDir;
+  } catch {
+    /* ignore */
+  }
   const share = "/usr/share/homebased";
   if (existsSync(join(share, "web", "dist", "index.html"))) return share;
   return sourceRoot;

@@ -426,8 +426,11 @@ secure_var_ownership() {
       $(printf %q "$HOMEBASE_VAR/.runtime") \
       $(printf %q "$HOMEBASE_VAR/.runtime/logs") || true
     [[ -f $(printf %q "$HOMEBASE_VAR/.env") ]] && chmod 600 $(printf %q "$HOMEBASE_VAR/.env")
-    [[ -f $(printf %q "$HOMEBASE_VAR/config/projects.json") ]] && \
+    if [[ -f $(printf %q "$HOMEBASE_VAR/config/projects.json") ]]; then
       chmod 644 $(printf %q "$HOMEBASE_VAR/config/projects.json")
+      # Drop leftover ACLs (mask can make user:rw- effective r-- only).
+      command -v setfacl >/dev/null && setfacl -b $(printf %q "$HOMEBASE_VAR/config/projects.json") || true
+    fi
     for secret in jwt_secret auth.json; do
       f=$(printf %q "$HOMEBASE_VAR/.runtime")/\$secret
       [[ -f \"\$f\" ]] && chmod 600 \"\$f\"
@@ -442,8 +445,11 @@ probe_bin() {
   local tmp rc
   [[ -x "$target" ]] || return 1
   tmp="$(mktemp -d /tmp/homebased-probe.XXXXXX)"
+  # Point BUNDLE_ROOT at the repo when probing dist/homebase so VERSION/SPA
+  # resolution does not pick a stale installed /usr/share/homebased.
   set +e
   TMPDIR="$tmp" HOMEBASE_SELF_TEST=1 HOMEBASE_HOME="$tmp" HOMEBASE_RUNTIME="$tmp/.runtime" \
+    HOMEBASE_BUNDLE_ROOT="$ROOT" \
     "$target" >/dev/null 2>&1
   rc=$?
   set -e
@@ -451,6 +457,7 @@ probe_bin() {
     set +e
     run_priv env TMPDIR="$tmp" HOMEBASE_SELF_TEST=1 \
       HOMEBASE_HOME="$tmp" HOMEBASE_RUNTIME="$tmp/.runtime" \
+      HOMEBASE_BUNDLE_ROOT="$ROOT" \
       "$target" >/dev/null 2>&1
     rc=$?
     set -e
@@ -465,23 +472,75 @@ ensure_web_dist() {
   fi
 }
 
+# Prior root/sandbox builds leave nobody/root-owned files under web/.next, web/out, web/dist.
+path_has_foreign_files() {
+  local path="$1"
+  [[ -e "$path" ]] || return 1
+  [[ -w "$path" ]] || return 0
+  # Any file not owned by the current user blocks Next unlink/write.
+  if find "$path" ! -user "$(id -un)" -print -quit 2>/dev/null | grep -q .; then
+    return 0
+  fi
+  if find "$path" ! -writable -print -quit 2>/dev/null | grep -q .; then
+    return 0
+  fi
+  return 1
+}
+
+# Move a foreign-owned build dir aside. Parent (web/) is user-writable, so mv works
+# even when the tree itself is root/nobody-owned (rm -rf would fail without sudo).
+move_web_build_aside() {
+  local path="$1"
+  local aside="${path}.unwritable.$(date +%s)"
+  echo "    $path not writable — moving aside → $aside"
+  mv "$path" "$aside"
+}
+
+reclaim_web_build_dirs() {
+  local owner group path aside
+  owner="$(workspace_owner)"
+  group="$(workspace_group)"
+  for path in web/.next web/out web/dist; do
+    [[ -e "$path" ]] || continue
+    if ! path_has_foreign_files "$path"; then
+      continue
+    fi
+    echo "    reclaiming $path → ${owner}:${group}"
+    if [[ "$(id -u)" -eq 0 ]]; then
+      chown -R "${owner}:${group}" "$path" 2>/dev/null || rm -rf "$path"
+      continue
+    fi
+    # Prefer chown when already elevated (deploy); never prompt sudo just for a SPA build.
+    if [[ "${PRIV_MODE}" == "sudo" ]] && sudo -n chown -R "${owner}:${group}" "$path" 2>/dev/null; then
+      continue
+    fi
+    if move_web_build_aside "$path"; then
+      continue
+    fi
+    echo "    could not reclaim $path" >&2
+    return 1
+  done
+  # Drop leftovers from prior move-aside when we already have sudo (deploy).
+  if [[ "${PRIV_MODE}" == "sudo" || "$(id -u)" -eq 0 ]]; then
+    shopt -s nullglob
+    for aside in web/.next.unwritable.* web/out.unwritable.* web/dist.unwritable.*; do
+      if [[ "$(id -u)" -eq 0 ]]; then
+        rm -rf "$aside"
+      else
+        sudo -n rm -rf "$aside" 2>/dev/null || true
+      fi
+    done
+    shopt -u nullglob
+  fi
+}
+
 # Always rebuild SPA (deploy / --bin must ship current UI, not a stale web/dist).
 build_web_dist() {
   echo "==> Building web UI"
   if [[ ! -d web/node_modules ]]; then
     (cd web && npm install)
   fi
-  # Prior sudo builds can leave root-owned web/dist; move it aside so Next can write.
-  if [[ -d web/dist ]] && [[ ! -w web/dist || ( -d web/dist/_next && ! -w web/dist/_next ) ]]; then
-    local stamped="web/dist.unwritable.$(date +%s)"
-    echo "    web/dist not writable — moving aside → $stamped"
-    mv web/dist "$stamped" 2>/dev/null \
-      || run_priv mv web/dist "$stamped" \
-      || {
-        echo "Error: cannot replace root-owned web/dist (try: sudo chown -R \"\$USER:\$USER\" web/dist)" >&2
-        exit 1
-      }
-  fi
+  reclaim_web_build_dirs
   # Cap worker threads under memory pressure so deploy still works on a busy laptop.
   (
     cd web
@@ -664,6 +723,36 @@ seed_homebase_project() {
   hb_ok "project homebase → $ROOT"
 }
 
+# Upsert homebase into /var/lib/homebased/config/projects.json (root-owned).
+# Deploy already copies the repo registry; this re-upserts under sudo so a
+# divergent prod file still gets the Home Base project without a false ✓.
+sync_homebase_project_prod() {
+  local bun_bin server_dir
+  bun_bin="$(command -v bun 2>/dev/null || true)"
+  server_dir="$(bun_server_dir)"
+  if [[ ! -x "$bun_bin" ]]; then
+    echo "    bun not found — copying repo projects.json" >&2
+    [[ -f "$ROOT/config/projects.json" ]] || return 1
+    run_priv cp "$ROOT/config/projects.json" "$HOMEBASE_VAR/config/projects.json"
+    run_priv bash -c "chown root:root $(printf %q "$HOMEBASE_VAR/config/projects.json"); chmod 644 $(printf %q "$HOMEBASE_VAR/config/projects.json"); command -v setfacl >/dev/null && setfacl -b $(printf %q "$HOMEBASE_VAR/config/projects.json") || true"
+    return 0
+  fi
+  run_priv env \
+    HOMEBASE_HOME="$HOMEBASE_VAR" \
+    HOMEBASE_PROJECTS="$HOMEBASE_VAR/config/projects.json" \
+    HOMEBASE_BUNDLE_ROOT="$ROOT" \
+    HOMEBASE_RUNTIME="$HOMEBASE_VAR/.runtime" \
+    PATH="$(dirname "$bun_bin"):${PATH}" \
+    bash -c "
+      set -e
+      cd $(printf %q "$server_dir")
+      bun run src/cli_add_project.ts --preset homebase --path $(printf %q "$ROOT") --id homebase --name 'Home Base'
+      chown root:root $(printf %q "$HOMEBASE_VAR/config/projects.json")
+      chmod 644 $(printf %q "$HOMEBASE_VAR/config/projects.json")
+      command -v setfacl >/dev/null && setfacl -b $(printf %q "$HOMEBASE_VAR/config/projects.json") || true
+    "
+}
+
 cmd_onboarding() {
   hb_banner "Onboarding"
   cmd_setup nobanner
@@ -673,13 +762,11 @@ cmd_onboarding() {
     cmd_deploy
     if [[ -d "$HOMEBASE_VAR" ]]; then
       hb_step "Sync Home Base project into production config"
-      (
-        export HOMEBASE_HOME="$HOMEBASE_VAR"
-        export HOMEBASE_PROJECTS="$HOMEBASE_VAR/config/projects.json"
-        cd "$(bun_server_dir)"
-        bun run src/cli_add_project.ts --preset homebase --path "$ROOT" --id homebase --name "Home Base"
-      ) >/dev/null || true
-      hb_ok "production projects synced"
+      if sync_homebase_project_prod >/dev/null; then
+        hb_ok "production projects synced"
+      else
+        hb_warn "production projects sync failed — Chat may need Apps + to add Home Base"
+      fi
     fi
     refresh_prod_port
     local tip
