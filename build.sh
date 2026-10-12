@@ -130,7 +130,7 @@ write_default_env() {
   if [[ -f "$dest" ]]; then
     return 0
   fi
-  echo "==> Creating $dest (from defaults · no Cursor key)"
+  echo "  creating $dest (defaults · no Cursor key)"
   local seat_user seat_home xauth
   seat_user="${SUDO_USER:-$(id -un)}"
   if [[ "$seat_user" == "root" ]]; then
@@ -247,6 +247,10 @@ fi
 PRIV_MODE="" # root | sudo | (empty until ensure_priv_session)
 _SUDO_KEEPALIVE_PID=""
 
+have_controlling_tty() {
+  { true </dev/tty; } 2>/dev/null
+}
+
 ensure_priv_session() {
   local why="${1:-homebased install}"
   if [[ "${PRIV_MODE}" == "root" || "${PRIV_MODE}" == "sudo" ]]; then
@@ -258,36 +262,50 @@ ensure_priv_session() {
   fi
   if ! command -v sudo >/dev/null 2>&1; then
     echo "Error: sudo is required for $why" >&2
-    echo "    (pkexec is intentionally unused — it prompts once per command)" >&2
     exit 1
   fi
-  # Prefer Home Base Chat SUDO_ASKPASS (no TTY) when available.
-  if [[ -z "${SUDO_ASKPASS:-}" ]]; then
-    for _ask in \
-      "${HOMEBASE_HOME:-/var/lib/homebased}/.runtime/sudo-askpass" \
-      "/var/lib/homebased/.runtime/sudo-askpass"; do
-      if [[ -x "$_ask" ]]; then
-        export SUDO_ASKPASS="$_ask"
-        export SUDO_ASKPASS_REQUIRE=1
-        break
-      fi
-    done
-  fi
-  export HOMEBASE_SUDO_FOR="$why"
+
   if sudo -n true 2>/dev/null; then
     PRIV_MODE="sudo"
+  elif have_controlling_tty; then
+    # Interactive terminal: normal sudo password prompt (never Chat askpass).
+    unset SUDO_ASKPASS SUDO_ASKPASS_REQUIRE HOMEBASE_SUDO_FOR || true
+    echo ""
+    echo "  ${C_BOLD}Administrator access${C_RESET} needed (${why})."
+    echo "  ${C_DIM}Enter your laptop password — cached for this run.${C_RESET}"
+    echo ""
+    # Force a classic TTY prompt; never Chat askpass from a real terminal.
+    if ! sudo -v </dev/tty 2>/dev/tty; then
+      echo "  ${C_RED}✗${C_RESET} sudo authentication failed" >&2
+      exit 1
+    fi
+    echo "  ${C_GREEN}✓${C_RESET} sudo ok"
+    PRIV_MODE="sudo"
   else
-    echo "==> Elevating once for $why (single sudo password; cached for this run)"
+    # No TTY (e.g. Chat shell): use Home Base askpass card when available.
+    if [[ -z "${SUDO_ASKPASS:-}" ]]; then
+      for _ask in \
+        "${HOMEBASE_HOME:-/var/lib/homebased}/.runtime/sudo-askpass" \
+        "/var/lib/homebased/.runtime/sudo-askpass" \
+        "${ROOT}/.runtime/sudo-askpass"; do
+        if [[ -x "$_ask" ]]; then
+          export SUDO_ASKPASS="$_ask"
+          export SUDO_ASKPASS_REQUIRE=1
+          break
+        fi
+      done
+    fi
+    export HOMEBASE_SUDO_FOR="$why"
     if [[ -n "${SUDO_ASKPASS:-}" && -x "${SUDO_ASKPASS}" ]]; then
-      echo "    → enter password in Home Base Chat sudo card (for: $why)"
-      # -A uses askpass (Chat UI); never hang on a non-interactive TTY.
+      echo "  → approve sudo in Home Base Chat (for: $why)"
       if ! sudo -A -v; then
         echo "Error: sudo authentication failed for $why" >&2
-        echo "    Open Chat and unlock sudo when the card appears, then retry." >&2
+        echo "    Unlock sudo in Chat, then retry." >&2
         exit 1
       fi
-    elif ! sudo -v; then
-      echo "Error: sudo authentication failed for $why" >&2
+    else
+      echo "Error: no TTY and no sudo askpass — run from a terminal:" >&2
+      echo "    ./build.sh --onboarding" >&2
       exit 1
     fi
     PRIV_MODE="sudo"
@@ -582,63 +600,58 @@ cmd_clean() {
 }
 
 cmd_setup() {
-  echo "==> Bun server deps"
-  ensure_bun_server
+  local quiet_banner="${1:-}"
+  [[ "$quiet_banner" != "nobanner" ]] && hb_banner "Setup"
 
-  echo "==> Frontend deps"
+  hb_step "Server deps (Bun)"
+  ensure_bun_server
+  hb_ok "server ready"
+
+  hb_step "Frontend deps (Next)"
   if [[ ! -d web/node_modules || ! -x web/node_modules/.bin/next ]]; then
     (cd web && npm install) || {
-      echo "Error: npm install failed in web/" >&2
+      hb_err "npm install failed in web/"
       exit 1
     }
   else
-    # Refresh is best-effort — never abort onboarding when deps already work
-    # (npm --silent can exit non-zero / 243 on some hosts while leaving a fine tree).
     if ! (cd web && npm install --no-fund --no-audit >/dev/null 2>&1); then
-      echo "    web deps already present — continuing"
+      hb_dim "deps present — skipped refresh"
     fi
   fi
+  hb_ok "web ready"
 
   mkdir -p config .runtime/logs dist
   if [[ ! -f config/projects.json ]]; then
     cp config/projects.example.json config/projects.json
-    echo "==> Created empty config/projects.json"
+    hb_ok "created config/projects.json"
   fi
 
   write_default_env "$ROOT/.env"
-  echo "==> .env ready"
+  hb_ok ".env ready"
 
-  # Pin checkout paths so an installed prod share cannot steal HOME / JWT writes.
   export HOMEBASE_HOME="${HOMEBASE_HOME:-$ROOT}"
   export HOMEBASE_BUNDLE_ROOT="${HOMEBASE_BUNDLE_ROOT:-$ROOT}"
   export HOMEBASE_RUNTIME="${HOMEBASE_RUNTIME:-$ROOT/.runtime}"
 
-  # Ensure JWT signing material exists (password is set later via localhost UI)
+  hb_step "JWT signing key"
   (
     cd "$(bun_server_dir)"
-    bun -e 'import { jwtSecret } from "./src/auth.ts"; jwtSecret(); console.log("JWT secret ready")'
+    bun -e 'import { jwtSecret } from "./src/auth.ts"; jwtSecret();'
   )
+  hb_ok "JWT ready"
 
-  # Drop legacy HOMEBASE_TOKEN from .env if present (auth is password → JWT now)
   if grep -qE '^HOMEBASE_TOKEN=' .env 2>/dev/null; then
     sed_inplace '/^HOMEBASE_TOKEN=/d' .env
-    echo "Removed legacy HOMEBASE_TOKEN from .env"
+    hb_warn "removed legacy HOMEBASE_TOKEN from .env"
   fi
 
   seed_homebase_project
-
-  echo ""
-  echo "Setup complete."
-  echo "  Open UI on localhost → create a password (only localhost can set/change it)."
-  echo "  Home Base project is ready — open Chat to vibe-code this repo."
-  echo "  Add more apps in the UI (+ in Apps) or: ./build.sh --add-project --path /path/to/repo"
-  echo "  Dev console:   ./build.sh --run"
-  echo "  Full install:  ./build.sh --onboarding"
+  hb_ok "setup complete"
 }
 
 # Idempotent: register this checkout as the Home Base project.
 seed_homebase_project() {
-  echo "==> Seeding Home Base project (this repo)"
+  hb_step "Seed Home Base project"
   mkdir -p config
   if [[ ! -f config/projects.json ]]; then
     cp config/projects.example.json config/projects.json
@@ -647,41 +660,41 @@ seed_homebase_project() {
   export HOMEBASE_HOME="${HOMEBASE_HOME:-$ROOT}"
   export HOMEBASE_BUNDLE_ROOT="${HOMEBASE_BUNDLE_ROOT:-$ROOT}"
   export HOMEBASE_RUNTIME="${HOMEBASE_RUNTIME:-$ROOT/.runtime}"
-  (cd "$(bun_server_dir)" && bun run src/cli_add_project.ts --preset homebase --path "$ROOT" --id homebase --name "Home Base")
+  (cd "$(bun_server_dir)" && bun run src/cli_add_project.ts --preset homebase --path "$ROOT" --id homebase --name "Home Base") >/dev/null
+  hb_ok "project homebase → $ROOT"
 }
 
 cmd_onboarding() {
-  echo "==> Home Base onboarding"
-  cmd_setup
+  hb_banner "Onboarding"
+  cmd_setup nobanner
   if [[ "$IS_LINUX" == true ]]; then
-    echo "==> Deploying production service (Linux)"
+    echo ""
+    hb_step "Deploy production service"
     cmd_deploy
-    # Re-seed into prod HOME after deploy sync
     if [[ -d "$HOMEBASE_VAR" ]]; then
-      echo "==> Ensuring Home Base project in production config"
+      hb_step "Sync Home Base project into production config"
       (
         export HOMEBASE_HOME="$HOMEBASE_VAR"
         export HOMEBASE_PROJECTS="$HOMEBASE_VAR/config/projects.json"
         cd "$(bun_server_dir)"
         bun run src/cli_add_project.ts --preset homebase --path "$ROOT" --id homebase --name "Home Base"
-      ) || true
+      ) >/dev/null || true
+      hb_ok "production projects synced"
     fi
     refresh_prod_port
     local tip
     tip="$(lan_ip_guess || true)"
-    echo ""
-    echo "────────────────────────────────────────"
-    echo "  Open  http://localhost:${PROD_PORT}/"
-    [[ -n "$tip" ]] && echo "  LAN   http://${tip}:${PROD_PORT}/"
-    echo "  Create a password → finish the in-app setup."
-    echo "  Chat is ready on the Home Base project."
-    echo "────────────────────────────────────────"
+    local lines=("Open  http://localhost:${PROD_PORT}/")
+    [[ -n "$tip" ]] && lines+=("LAN   http://${tip}:${PROD_PORT}/")
+    lines+=("Create a password → finish in-app setup")
+    lines+=("Chat is ready on the Home Base project")
+    hb_box "${lines[@]}"
   else
-    echo ""
-    echo "Mac / non-Linux: production deploy is Linux-only."
-    echo "  Start now:  ./build.sh --run"
-    echo "  Then open:  http://localhost:${DEV_WEB_PORT}/"
-    echo "  Create a password → finish the in-app setup."
+    hb_warn "Mac: production deploy is Linux-only"
+    hb_box \
+      "Start:  ./build.sh --run" \
+      "Open:   http://localhost:${DEV_WEB_PORT}/" \
+      "Then create a password and finish setup"
   fi
 }
 
@@ -727,8 +740,53 @@ C_DIM=$'\033[2m'
 C_CYAN=$'\033[36m'
 C_GREEN=$'\033[32m'
 C_YELLOW=$'\033[33m'
+C_RED=$'\033[31m'
+C_BLUE=$'\033[34m'
 C_WHITE=$'\033[97m'
 C_RESET=$'\033[0m'
+
+hb_version() {
+  if [[ -f "$VERSION_FILE" ]]; then
+    tr -d '\n' <"$VERSION_FILE" | head -c 32
+  else
+    echo "0.0.0"
+  fi
+}
+
+hb_banner() {
+  local title="${1:-Home Base}"
+  local ver
+  ver="$(hb_version)"
+  echo ""
+  echo "${C_CYAN}${C_BOLD}"
+  cat <<'ASCII'
+  _   _                         ____
+ | | | | ___  _ __ ___   ___   | __ )  __ _ ___  ___
+ | |_| |/ _ \| '_ ` _ \ / _ \  |  _ \ / _` / __|/ _ \
+ |  _  | (_) | | | | | |  __/  | |_) | (_| \__ \  __/
+ |_| |_|\___/|_| |_| |_|\___|  |____/ \__,_|___/\___|
+ASCII
+  echo "${C_RESET}"
+  echo "  ${C_BOLD}${title}${C_RESET}  ${C_DIM}v${ver} · ${OS_NAME}${C_RESET}"
+  echo "  ${C_DIM}────────────────────────────────────────────${C_RESET}"
+  echo ""
+}
+
+hb_step()  { echo "  ${C_CYAN}▸${C_RESET} ${C_BOLD}$*${C_RESET}"; }
+hb_ok()    { echo "  ${C_GREEN}✓${C_RESET} $*"; }
+hb_warn()  { echo "  ${C_YELLOW}!${C_RESET} $*" >&2; }
+hb_err()   { echo "  ${C_RED}✗${C_RESET} $*" >&2; }
+hb_dim()   { echo "  ${C_DIM}$*${C_RESET}"; }
+hb_box() {
+  echo ""
+  echo "  ${C_DIM}┌────────────────────────────────────────────┐${C_RESET}"
+  while [[ $# -gt 0 ]]; do
+    printf "  ${C_DIM}│${C_RESET} %-42s ${C_DIM}│${C_RESET}\n" "$1"
+    shift
+  done
+  echo "  ${C_DIM}└────────────────────────────────────────────┘${C_RESET}"
+  echo ""
+}
 
 stop_process_tree() {
   local pid="$1"
@@ -777,10 +835,6 @@ stop_extra_pids() {
     stop_process_tree "$pid"
   done
   HOMEBASE_EXTRA_PIDS=()
-}
-
-have_controlling_tty() {
-  { true </dev/tty; } 2>/dev/null
 }
 
 print_hotkey_help() {
@@ -1583,15 +1637,16 @@ cmd_deploy() {
     return 0
   fi
 
-  echo "==> Deploy: build → install homebase binary → restart homebased.service"
+  hb_step "Build → install → restart ${SERVICE_NAME}"
   # Elevate before bin so reclaiming root-owned dist/web paths only prompts once.
-  ensure_priv_session "homebased deploy"
+  ensure_priv_session "install / deploy"
   cmd_bin
   # install_binary runs once inside cmd_service (avoid double-install, which
   # would copy the NEW primary over .bak and lose the real previous binary)
   cmd_service
   seed_homebase_project || true
-  echo "==> Deploy complete → http://0.0.0.0:${PROD_PORT}/ ($SERVICE_NAME)"
+  refresh_prod_port
+  hb_ok "deployed → http://0.0.0.0:${PROD_PORT}/"
 }
 
 cmd_service() {

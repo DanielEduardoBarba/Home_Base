@@ -57,6 +57,10 @@ import {
   cursorApiKeyConfigured,
   setCursorApiKey,
 } from "./secrets_vault";
+import {
+  identityPublic,
+  saveIdentity,
+} from "./server_identity";
 import { hardReset, softReset } from "./system_reset";
 import { accessHosts } from "./network";
 import {
@@ -142,6 +146,7 @@ app.use("*", requestLogMiddleware);
 
 app.get("/api/health", (c) => {
   const access = accessHosts(bindPort());
+  const identity = identityPublic();
   return c.json({
     ok: true,
     cursorConfigured: cursorConfigured(),
@@ -151,9 +156,25 @@ app.get("/api/health", (c) => {
     version: readVersion(),
     backup: isBackupBinary(),
     runtime: "bun",
+    displayName: identity.displayName,
     wireguard: wireguardHealthSummary(),
     ...access,
   });
+});
+
+app.get("/api/server/identity", async (c) => {
+  // Public enough for Login branding; POST still requires auth.
+  return c.json(identityPublic());
+});
+
+app.post("/api/server/identity", async (c) => {
+  await requireAuth(c);
+  const body = z.object({ displayName: z.string().min(1).max(64) }).parse(await readJson(c));
+  try {
+    return c.json({ ok: true, ...saveIdentity(body.displayName), ...identityPublic() });
+  } catch (e) {
+    throw new HttpError(400, e instanceof Error ? e.message : String(e));
+  }
 });
 
 app.get("/api/version", (c) =>

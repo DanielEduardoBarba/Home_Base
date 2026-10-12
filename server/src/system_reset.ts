@@ -36,6 +36,7 @@ const KEEP_SOFT = new Set([
   "cloudflare_tunnel.json",
   "cloudflare_token.enc",
   "onboarding.json",
+  "server_identity.json",
   "logs",
 ]);
 

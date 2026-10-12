@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { api } from '../lib/api'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 import type { ActionDef, Project } from '../lib/types'
+import { useServerIdentity } from '../lib/serverIdentity'
 import { AddProjectWizard } from './AddProjectWizard'
+import { BrandTitle } from './BrandTitle'
 import { HoldButton } from './HoldButton'
 import { IconBtn } from './IconBtn'
 import { ProjectSelect } from './ProjectSelect'
@@ -61,6 +63,7 @@ export function AppsTab({
   const [msg, setMsg] = useState('')
   const [hotkeysOpen, setHotkeysOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
+  const { displayName } = useServerIdentity()
   const project = projects.find((p) => p.id === selectedId) || projects[0]
 
   useSceneRefresh(onRefresh)
@@ -169,7 +172,7 @@ export function AppsTab({
           <header>
             <div className="hb-brand-rule" />
             <h1 className="font-display text-2xl md:text-3xl font-extrabold tracking-tight">
-              Home<span className="text-accent"> Base</span>
+              <BrandTitle name={displayName} />
             </h1>
           </header>
         )}
@@ -205,7 +208,7 @@ export function AppsTab({
         <header>
           <div className="hb-brand-rule" />
           <h1 className="font-display text-2xl md:text-3xl font-extrabold tracking-tight">
-            Home<span className="text-accent"> Base</span>
+            <BrandTitle name={displayName} />
           </h1>
         </header>
       )}

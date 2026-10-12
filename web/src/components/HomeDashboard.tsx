@@ -1,5 +1,8 @@
 'use client'
 
+import { BrandTitle } from './BrandTitle'
+import { useServerIdentity } from '../lib/serverIdentity'
+
 type Props = {
   version?: string
   hostLabel?: string
@@ -22,6 +25,7 @@ export function HomeDashboard({
   onOpenAccess,
   onOpenAgent,
 }: Props) {
+  const { displayName } = useServerIdentity()
   const linkLabel =
     hostLink === 'live' ? 'Live' : hostLink === 'reconnecting' ? 'Reconnecting' : 'Unreachable'
 
@@ -30,7 +34,9 @@ export function HomeDashboard({
       <div className="hb-home-inner">
         <header className="hb-home-brand">
           <p className="hb-home-kicker">Control plane</p>
-          <h1 className="hb-home-title">Home Base</h1>
+          <h1 className="hb-home-title">
+            <BrandTitle name={displayName} />
+          </h1>
           <p className="hb-home-sub">
             {hostLabel}
             <span className="hb-status-sep">·</span>

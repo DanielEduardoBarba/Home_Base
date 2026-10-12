@@ -100,6 +100,7 @@ export const api = {
       jwtTtlSec: number
       version?: string
       backup?: boolean
+      displayName?: string
       lanHost?: string | null
       vpnHost?: string | null
       advertiseHost?: string | null
@@ -113,6 +114,24 @@ export const api = {
         host: string | null
       }
     }>('/api/health'),
+  serverIdentity: () =>
+    request<{
+      displayName: string
+      suggestedName: string
+      ownerGuess: string
+      customized: boolean
+    }>('/api/server/identity'),
+  setServerIdentity: (displayName: string) =>
+    request<{
+      ok: boolean
+      displayName: string
+      suggestedName: string
+      ownerGuess: string
+      customized: boolean
+    }>('/api/server/identity', {
+      method: 'POST',
+      body: JSON.stringify({ displayName }),
+    }),
   version: () => request<{ version: string; backup: boolean }>('/api/version'),
   viewStatus: () =>
     request<{
