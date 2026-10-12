@@ -16,6 +16,8 @@ import { isLocalHostPage } from '../lib/types'
 import { readPinIdleMs, writePinIdleMs } from '../lib/uiPrefs'
 import { HoldButton } from './HoldButton'
 import { SharingTab } from './SharingTab'
+import { refreshServerIdentity, useServerIdentity } from '../lib/serverIdentity'
+import { BrandTitle } from './BrandTitle'
 import { CloudflarePanel } from './CloudflarePanel'
 import { LegalAbout } from './LegalAbout'
 import { WireGuardPanel } from './WireGuardPanel'
@@ -48,6 +50,10 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
   const [cursorKey, setCursorKey] = useState('')
   const [cursorMsg, setCursorMsg] = useState('')
   const [cursorBusy, setCursorBusy] = useState(false)
+  const identity = useServerIdentity()
+  const [nameDraft, setNameDraft] = useState('')
+  const [nameMsg, setNameMsg] = useState('')
+  const [nameBusy, setNameBusy] = useState(false)
 
   useEffect(() => {
     void api
@@ -63,6 +69,10 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
       .then((s) => setCursorConfigured(s.configured))
       .catch(() => undefined)
   }, [])
+
+  useEffect(() => {
+    setNameDraft(identity.displayName)
+  }, [identity.displayName])
 
   const pinDigits = (v: string) => v.replace(/\D/g, '').slice(0, 4)
   const pinInputClass =
@@ -232,7 +242,8 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
             Settings
           </h1>
           <p className="text-mute text-sm mt-1.5">
-            {version ? `v${version}` : 'Home Base'}
+            <BrandTitle name={identity.displayName} />
+            {version ? ` · v${version}` : ''}
             {backup ? ' · backup build' : ''}
             {sessionHint ? ` · ${sessionHint}` : ''}
           </p>
@@ -243,6 +254,47 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
             Running last known-good build after a failed deploy. Redeploy when ready.
           </div>
         )}
+
+        <section className="hb-surface p-3.5 space-y-2.5">
+          <h2 className="hb-label">Server name</h2>
+          <p className="text-xs text-mute">Shown on login and Home.</p>
+          <input
+            className="w-full rounded-[var(--radius-control)] bg-panel-2 border border-line px-3 py-2.5 text-sm"
+            value={nameDraft}
+            onChange={(e) => setNameDraft(e.target.value.slice(0, 64))}
+            placeholder={identity.suggestedName}
+          />
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="hb-btn hb-btn-primary text-sm !min-h-10"
+              disabled={nameBusy || !nameDraft.trim() || nameDraft.trim() === identity.displayName}
+              onClick={() => {
+                setNameBusy(true)
+                setNameMsg('')
+                void api
+                  .setServerIdentity(nameDraft.trim())
+                  .then(async () => {
+                    await refreshServerIdentity()
+                    setNameMsg('Saved')
+                  })
+                  .catch((e) => setNameMsg(e instanceof Error ? e.message : String(e)))
+                  .finally(() => setNameBusy(false))
+              }}
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              className="hb-btn hb-btn-ghost text-sm !min-h-10"
+              disabled={nameBusy}
+              onClick={() => setNameDraft(identity.suggestedName)}
+            >
+              Suggest
+            </button>
+          </div>
+          {nameMsg && <p className="text-xs text-sky">{nameMsg}</p>}
+        </section>
 
         <section className="hb-surface p-3.5 space-y-2.5">
           <h2 className="hb-label">Theme</h2>

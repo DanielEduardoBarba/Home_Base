@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { api } from '../lib/api'
+import { refreshServerIdentity } from '../lib/serverIdentity'
+import { BrandTitle } from './BrandTitle'
 import { CloudflarePanel } from './CloudflarePanel'
 import { WireGuardPanel } from './WireGuardPanel'
 
@@ -11,6 +13,7 @@ type Props = {
 
 type Step =
   | 'welcome'
+  | 'name'
   | 'pin'
   | 'cursor'
   | 'remote'
@@ -18,10 +21,10 @@ type Step =
   | 'cloudflare'
   | 'done'
 
-const STEPS: Step[] = ['welcome', 'pin', 'cursor', 'remote', 'done']
-
 export function OnboardingFlow({ onDone }: Props) {
   const [step, setStep] = useState<Step>('welcome')
+  const [displayName, setDisplayName] = useState('Home Base')
+  const [suggestedName, setSuggestedName] = useState('Home Base')
   const [pin, setPin] = useState('')
   const [pin2, setPin2] = useState('')
   const [idleMin, setIdleMin] = useState(5)
@@ -32,9 +35,31 @@ export function OnboardingFlow({ onDone }: Props) {
 
   useEffect(() => {
     void api.cursorCredentials().then((r) => setCursorOk(r.configured)).catch(() => {})
+    void api
+      .serverIdentity()
+      .then((s) => {
+        setSuggestedName(s.suggestedName)
+        setDisplayName(s.customized ? s.displayName : s.suggestedName)
+      })
+      .catch(() => {})
   }, [])
 
   const digits = (v: string) => v.replace(/\D/g, '').slice(0, 4)
+
+  const progressIndex =
+    step === 'wireguard' || step === 'cloudflare'
+      ? 4
+      : step === 'welcome'
+        ? 0
+        : step === 'name'
+          ? 1
+          : step === 'pin'
+            ? 2
+            : step === 'cursor'
+              ? 3
+              : step === 'remote'
+                ? 4
+                : 5
 
   async function finish(opts?: {
     skippedRemote?: boolean
@@ -47,7 +72,27 @@ export function OnboardingFlow({ onDone }: Props) {
         skippedRemote: opts?.skippedRemote,
         remoteMode: opts?.remoteMode ?? null,
       })
+      await refreshServerIdentity()
       onDone()
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function saveName() {
+    setMsg('')
+    const name = displayName.trim()
+    if (!name) {
+      setMsg('Enter a name')
+      return
+    }
+    setBusy(true)
+    try {
+      await api.setServerIdentity(name)
+      await refreshServerIdentity()
+      setStep('pin')
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e))
     } finally {
@@ -92,11 +137,6 @@ export function OnboardingFlow({ onDone }: Props) {
     }
   }
 
-  const progressIndex =
-    step === 'wireguard' || step === 'cloudflare'
-      ? 3
-      : Math.max(0, STEPS.indexOf(step === 'done' ? 'done' : step))
-
   return (
     <div className="fixed inset-0 z-[60] bg-bg flex flex-col">
       <div className="flex-1 overflow-y-auto">
@@ -105,7 +145,7 @@ export function OnboardingFlow({ onDone }: Props) {
             <div className="hb-brand-rule" />
             <p className="hb-label">Setup</p>
             <div className="flex gap-1.5 pt-1" aria-hidden>
-              {[0, 1, 2, 3, 4].map((i) => (
+              {[0, 1, 2, 3, 4, 5].map((i) => (
                 <span
                   key={i}
                   className={`h-1 flex-1 rounded-full ${i <= progressIndex ? 'bg-accent' : 'bg-line'}`}
@@ -117,16 +157,53 @@ export function OnboardingFlow({ onDone }: Props) {
           {step === 'welcome' && (
             <div className="space-y-5 hb-enter">
               <h1 className="font-display text-3xl font-extrabold tracking-tight leading-tight">
-                Welcome to Home<span className="text-accent"> Base</span>
+                Welcome
               </h1>
               <p className="text-mute text-sm leading-relaxed">
-                Your Home Base project is ready. A few quick steps and you can chat,
-                run apps, and reach this laptop from your phone.
+                Your project is ready. A few quick steps and you can chat, run apps, and
+                reach this laptop from your phone.
               </p>
               <button
                 type="button"
                 className="hb-btn hb-btn-primary w-full !min-h-12 text-base"
-                onClick={() => setStep('pin')}
+                onClick={() => setStep('name')}
+              >
+                Continue
+              </button>
+            </div>
+          )}
+
+          {step === 'name' && (
+            <div className="space-y-4 hb-enter">
+              <h1 className="font-display text-2xl font-extrabold tracking-tight">Name this server</h1>
+              <p className="text-mute text-sm">
+                Shown on login and Home. Suggested from your laptop user.
+              </p>
+              <p className="font-display text-xl font-extrabold tracking-tight">
+                <BrandTitle name={displayName.trim() || suggestedName} />
+              </p>
+              <input
+                className="w-full rounded-[var(--radius-control)] bg-panel-2 border border-line px-3 py-3 text-sm"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value.slice(0, 64))}
+                placeholder={suggestedName}
+                autoFocus
+              />
+              {displayName.trim() !== suggestedName && (
+                <button
+                  type="button"
+                  className="text-xs text-sky underline underline-offset-2"
+                  onClick={() => setDisplayName(suggestedName)}
+                >
+                  Use suggested · {suggestedName}
+                </button>
+              )}
+              {msg && <p className="text-danger text-sm">{msg}</p>}
+              <button
+                type="button"
+                className="hb-btn hb-btn-primary w-full !min-h-11"
+                disabled={busy || !displayName.trim()}
+                onClick={() => void saveName()}
               >
                 Continue
               </button>
@@ -316,7 +393,7 @@ export function OnboardingFlow({ onDone }: Props) {
             <div className="space-y-5 hb-enter">
               <h1 className="font-display text-2xl font-extrabold tracking-tight">You are set</h1>
               <p className="text-mute text-sm">
-                Open Chat on Home Base — or add another app with + in Apps.
+                Open Chat — or add another app with + in Apps.
               </p>
               <button
                 type="button"
