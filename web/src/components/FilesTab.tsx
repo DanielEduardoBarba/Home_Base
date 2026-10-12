@@ -159,9 +159,29 @@ export function FilesTab({
   const [filePath, setFilePath] = useState<string | null>(null)
   const [content, setContent] = useState('')
   const [savedContent, setSavedContent] = useState('')
+  /** Last programmatically loaded buffer — Save/Revert stay hidden until the user changes this. */
+  const baselineRef = useRef('')
   const [language, setLanguage] = useState('plaintext')
   const [dirty, setDirty] = useState(false)
+  /** True only after the user edits the editor (not when AI diffs are presented). */
+  const [userEdited, setUserEdited] = useState(false)
   const [status, setStatus] = useState('')
+
+  function adoptBuffer(next: string, disk: string) {
+    baselineRef.current = next
+    setContent(next)
+    setSavedContent(disk)
+    setDirty(next !== disk)
+    setUserEdited(false)
+  }
+
+  function clearBuffer() {
+    baselineRef.current = ''
+    setContent('')
+    setSavedContent('')
+    setDirty(false)
+    setUserEdited(false)
+  }
   const [navOpen, setNavOpen] = useState(!minimal)
   const [error, setError] = useState('')
   const [filter, setFilter] = useState('')
@@ -282,9 +302,7 @@ export function FilesTab({
         setFilter('')
         if (!opts?.keepFile) {
           setFilePath(null)
-          setContent('')
-          setSavedContent('')
-          setDirty(false)
+          clearBuffer()
           setStatus(abs)
         }
         setNavOpen(true)
@@ -298,25 +316,21 @@ export function FilesTab({
   const refreshScene = useCallback(async () => {
     if (!project) return
     await loadDir(dir || projectRoot, { keepFile: true })
-    if (filePath && !dirty) {
+    if (filePath && !dirty && !userEdited) {
       try {
         const data = await api.fsRead(project.id, filePath)
-        setContent(data.content)
-        setSavedContent(data.content)
-        setDirty(false)
+        adoptBuffer(data.content, data.content)
       } catch {
         /* keep editor buffer if read fails */
       }
     }
-  }, [project, dir, filePath, dirty, loadDir, projectRoot])
+  }, [project, dir, filePath, dirty, userEdited, loadDir, projectRoot])
 
   useSceneRefresh(refreshScene)
 
   useEffect(() => {
     setFilePath(null)
-    setContent('')
-    setSavedContent('')
-    setDirty(false)
+    clearBuffer()
     setDir(projectRoot)
     setEntries([])
     setNavOpen(true)
@@ -341,10 +355,8 @@ export function FilesTab({
         setFilePath(opened)
         // Prefer post-edit snapshot when presenting an AI change.
         const body = diffAfter != null ? diffAfter : data.content
-        setContent(body)
-        setSavedContent(data.content)
+        adoptBuffer(body, data.content)
         setLanguage(data.language)
-        setDirty(diffAfter != null && diffAfter !== data.content)
         setStatus(
           hasDiff
             ? `${opened} · AI ${diffAction || 'edit'}`
@@ -362,8 +374,8 @@ export function FilesTab({
         // Still show diff even if live read fails (deleted / path moved).
         if (hasDiff) {
           setFilePath(abs)
-          setContent(diffAfter ?? diffBefore ?? '')
-          setSavedContent(diffBefore ?? '')
+          const body = diffAfter ?? diffBefore ?? ''
+          adoptBuffer(body, diffBefore ?? '')
           setLanguage(guessLanguageFromPath(abs))
           setStatus(`${abs} · AI ${diffAction || 'edit'}`)
           setNavOpen(false)
@@ -392,10 +404,8 @@ export function FilesTab({
       const data = await api.fsRead(project.id, abs)
       const opened = toAbs(data.path)
       setFilePath(opened)
-      setContent(data.content)
-      setSavedContent(data.content)
+      adoptBuffer(data.content, data.content)
       setLanguage(data.language)
-      setDirty(false)
       setStatus(`${opened} · ${data.size}b`)
       const parent = parentDir(opened)
       setDir(parent)
@@ -416,8 +426,7 @@ export function FilesTab({
     setStatus('saving…')
     try {
       await api.fsWrite(project.id, filePath, content)
-      setSavedContent(content)
-      setDirty(false)
+      adoptBuffer(content, content)
       setStatus(`saved ${filePath}`)
       setConfirm(null)
     } catch (e) {
@@ -429,8 +438,7 @@ export function FilesTab({
   }
 
   function doRevert() {
-    setContent(savedContent)
-    setDirty(false)
+    adoptBuffer(savedContent, savedContent)
     setStatus(`reverted ${filePath}`)
     setConfirm(null)
   }
@@ -583,26 +591,28 @@ export function FilesTab({
         })}
       </nav>
 
-      <div className="flex items-center gap-1.5 shrink-0">
-        <button
-          type="button"
-          disabled={!filePath || !dirty || busy}
-          onClick={() => setConfirm({ type: 'revert' })}
-          className="hb-btn hb-btn-ghost !min-h-9 px-2.5 sm:px-3 text-xs disabled:opacity-35"
-          title="Revert unsaved changes"
-        >
-          Revert
-        </button>
-        <button
-          type="button"
-          disabled={!filePath || !dirty || busy}
-          onClick={() => setConfirm({ type: 'save' })}
-          className="hb-btn hb-btn-primary !min-h-9 px-2.5 sm:px-3 text-xs disabled:opacity-35"
-          title="Save file"
-        >
-          Save
-        </button>
-      </div>
+      {filePath && userEdited && dirty && (
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => setConfirm({ type: 'revert' })}
+            className="hb-btn hb-btn-ghost !min-h-9 px-2.5 sm:px-3 text-xs disabled:opacity-35"
+            title="Revert unsaved changes"
+          >
+            Revert
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => setConfirm({ type: 'save' })}
+            className="hb-btn hb-btn-primary !min-h-9 px-2.5 sm:px-3 text-xs disabled:opacity-35"
+            title="Save file"
+          >
+            Save
+          </button>
+        </div>
+      )}
     </div>
   )
 
@@ -643,6 +653,7 @@ export function FilesTab({
     (v: string) => {
       setContent(v)
       setDirty(v !== savedContent)
+      setUserEdited(v !== baselineRef.current)
     },
     [savedContent],
   )
@@ -652,14 +663,14 @@ export function FilesTab({
       <div className="w-full max-w-sm hb-surface p-4 sm:p-5 space-y-4 hb-enter">
         <h2 className="font-semibold text-sm">
           {confirm.type === 'save'
-            ? 'Save this file?'
+            ? 'Are you sure?'
             : confirm.type === 'revert'
               ? 'Revert changes?'
               : 'Discard unsaved changes?'}
         </h2>
         <p className="text-xs text-mute leading-relaxed">
           {confirm.type === 'save'
-            ? filePath
+            ? `This will write your edits to disk${filePath ? `:\n${filePath}` : '.'}`
             : confirm.type === 'revert'
               ? 'Unsaved edits will be lost.'
               : 'You have unsaved edits. Continue without saving?'}

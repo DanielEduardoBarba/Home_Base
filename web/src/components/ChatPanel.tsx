@@ -1144,6 +1144,19 @@ export function ChatPanel({
           const msg = JSON.parse(ev.data as string)
           const chatId = String(msg.chatId || '')
           const forActive = !chatId || chatId === activeIdRef.current
+          if (msg.type === 'deleted') {
+            const gone = String(msg.chatId || '')
+            if (gone) {
+              setTabs((prev) => prev.filter((t) => t.id !== gone))
+              if (activeIdRef.current === gone) {
+                const next = String(msg.activeId || '')
+                setActiveId(next)
+                setStreaming(false)
+                setPhase('idle', '')
+              }
+            }
+            return
+          }
           if (msg.type === 'workspace') {
             const nextTabs = (Array.isArray(msg.tabs) ? msg.tabs : []) as ChatTab[]
             setTabs(nextTabs)

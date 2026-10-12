@@ -424,6 +424,47 @@ export const api = {
         activeId: string | null
       }
     }>(`/api/cursor/${encodeURIComponent(projectId)}`),
+  /** Lean chat list — no full histories / images. */
+  cursorChats: (projectId: string) =>
+    request<{
+      configured: boolean
+      activeId: string | null
+      chats: {
+        id: string
+        title: string
+        cwd: string
+        updatedAt: number
+        running: boolean
+        messageCount: number
+        recent: {
+          role: string
+          streaming?: boolean
+          text?: string
+          tool?: {
+            name?: string
+            status?: string
+            detail?: string
+            path?: string
+            command?: string
+          }
+          file?: { path?: string; action?: string }
+          task?: { status?: string; name?: string }
+        }[]
+      }[]
+    }>(`/api/cursor/${encodeURIComponent(projectId)}/chats`),
+  cursorCreateChat: (projectId: string, body: { title?: string; cwd?: string } = {}) =>
+    request<{
+      ok: boolean
+      chat: { id: string; title: string; cwd: string }
+    }>(`/api/cursor/${encodeURIComponent(projectId)}/chats`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  cursorDeleteChat: (projectId: string, chatId: string) =>
+    request<{ ok: boolean; deleted: boolean; activeId: string | null }>(
+      `/api/cursor/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(chatId)}`,
+      { method: 'DELETE' },
+    ),
   fsList: (id: string, path = '', opts: { all?: boolean } = {}) => {
     const q = new URLSearchParams()
     // Allow "" (project-relative) and "/" (Linux root)

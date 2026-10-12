@@ -2,7 +2,7 @@
 
 import dynamic from 'next/dynamic'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, wsUrl } from '../lib/api'
+import { api } from '../lib/api'
 import type { PresentRequest } from '../lib/chatTypes'
 import { useNotify } from '../lib/NotifyContext'
 import type { FsEntry, Project } from '../lib/types'
@@ -63,47 +63,6 @@ function chatContextLabel(cwd: string, projectName: string): string {
   return `${projectName} · ./${cwdLabel(cwd, projectName)}`
 }
 
-function mapTabToRow(
-  t: {
-    id: string
-    title?: string
-    cwd?: string
-    updatedAt?: number
-    running?: boolean
-    messages?: unknown[]
-  },
-  project: Project,
-): ChatRow {
-  const messages = (t.messages || []) as {
-    role?: string
-    streaming?: boolean
-    text?: string
-    tool?: {
-      name?: string
-      status?: string
-      detail?: string
-      path?: string
-      command?: string
-    }
-    file?: { path?: string; action?: string }
-    task?: { status?: string; name?: string }
-  }[]
-  const running = !!t.running
-  const cwd = t.cwd || ''
-  return {
-    id: t.id,
-    title: t.title || 'Chat',
-    cwd,
-    projectId: project.id,
-    projectName: project.name,
-    contextLabel: chatContextLabel(cwd, project.name),
-    updatedAt: t.updatedAt || 0,
-    running,
-    messageCount: messages.length,
-    activity: chatLiveActivity(messages.slice(-24), running),
-  }
-}
-
 function normCwd(cwd: string | undefined | null): string {
   return (cwd || '').replace(/^\.\//, '').replace(/\/+$/, '')
 }
@@ -118,105 +77,32 @@ function cwdLabel(cwd: string, projectName: string): string {
   return parts.slice(-2).join('/') || cwd
 }
 
-function createChatOverWs(projectId: string, cwd: string, title: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(wsUrl(`/ws/cursor?project=${encodeURIComponent(projectId)}`))
-    let settled = false
-    /** Ignore workspace snapshots — they race in with the newest *existing* chat. */
-    let sentNew = false
-    const timer = window.setTimeout(() => {
-      if (!settled) {
-        settled = true
-        try {
-          ws.close()
-        } catch {
-          /* ignore */
-        }
-        reject(new Error('Timed out creating chat'))
-      }
-    }, 12_000)
-    const finish = (id: string | null, err?: string) => {
-      if (settled) return
-      settled = true
-      window.clearTimeout(timer)
-      try {
-        ws.close()
-      } catch {
-        /* ignore */
-      }
-      if (id) resolve(id)
-      else reject(new Error(err || 'Could not create chat'))
-    }
-    ws.onerror = () => finish(null, 'Socket error')
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(String(ev.data)) as {
-          type?: string
-          tab?: { id?: string }
-        }
-        // Only the direct `tab` ack for our `new` is authoritative.
-        if (sentNew && msg.type === 'tab' && msg.tab?.id) {
-          finish(String(msg.tab.id))
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-    ws.onopen = () => {
-      sentNew = true
-      ws.send(JSON.stringify({ type: 'new', cwd, title }))
-    }
-  })
-}
-
-function deleteChatOverWs(projectId: string, chatId: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(wsUrl(`/ws/cursor?project=${encodeURIComponent(projectId)}`))
-    let settled = false
-    let sentDelete = false
-    const timer = window.setTimeout(() => {
-      if (!settled) {
-        settled = true
-        try {
-          ws.close()
-        } catch {
-          /* ignore */
-        }
-        reject(new Error('Timed out deleting chat'))
-      }
-    }, 10_000)
-    const finish = (ok: boolean, err?: string) => {
-      if (settled) return
-      settled = true
-      window.clearTimeout(timer)
-      try {
-        ws.close()
-      } catch {
-        /* ignore */
-      }
-      if (ok) resolve()
-      else reject(new Error(err || 'Could not delete chat'))
-    }
-    ws.onerror = () => finish(false, 'Socket error')
-    ws.onmessage = (ev) => {
-      if (!sentDelete) return
-      try {
-        const msg = JSON.parse(String(ev.data)) as {
-          type?: string
-          tabs?: { id: string }[]
-        }
-        if (msg.type === 'workspace' && Array.isArray(msg.tabs)) {
-          if (!msg.tabs.some((t) => t.id === chatId)) finish(true)
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-    ws.onopen = () => {
-      sentDelete = true
-      ws.send(JSON.stringify({ type: 'delete', chatId }))
-    }
-  })
+function mapSummaryToRow(
+  c: {
+    id: string
+    title?: string
+    cwd?: string
+    updatedAt?: number
+    running?: boolean
+    messageCount?: number
+    recent?: Parameters<typeof chatLiveActivity>[0]
+  },
+  project: Project,
+): ChatRow {
+  const cwd = c.cwd || ''
+  const running = !!c.running
+  return {
+    id: c.id,
+    title: c.title || 'Chat',
+    cwd,
+    projectId: project.id,
+    projectName: project.name,
+    contextLabel: chatContextLabel(cwd, project.name),
+    updatedAt: c.updatedAt || 0,
+    running,
+    messageCount: c.messageCount || 0,
+    activity: chatLiveActivity(c.recent || [], running),
+  }
 }
 
 /**
@@ -346,11 +232,11 @@ export function HomeAgentTab({
           setChats([])
           return
         }
-        const data = await api.cursorWorkspace(projectId)
+        const data = await api.cursorChats(projectId)
         const want = normCwd(cwd)
-        const rows: ChatRow[] = (data.workspace?.tabs || [])
+        const rows: ChatRow[] = (data.chats || [])
           .filter((t) => normCwd(t.cwd) === want)
-          .map((t) => mapTabToRow(t, proj))
+          .map((t) => mapSummaryToRow(t, proj))
           .sort((a, b) => b.updatedAt - a.updatedAt)
         setChats(rows)
       } catch (e) {
@@ -375,18 +261,14 @@ export function HomeAgentTab({
         const lists = await Promise.all(
           projects.map(async (proj) => {
             try {
-              const data = await api.cursorWorkspace(proj.id)
-              return (data.workspace?.tabs || []).map((t) => mapTabToRow(t, proj))
+              const data = await api.cursorChats(proj.id)
+              return (data.chats || []).map((t) => mapSummaryToRow(t, proj))
             } catch {
               return [] as ChatRow[]
             }
           }),
         )
-        setChats(
-          lists
-            .flat()
-            .sort((a, b) => b.updatedAt - a.updatedAt),
-        )
+        setChats(lists.flat().sort((a, b) => b.updatedAt - a.updatedAt))
       } catch (e) {
         if (!opts?.soft) {
           reportError(e instanceof Error ? e.message : String(e))
@@ -409,10 +291,10 @@ export function HomeAgentTab({
     [chats],
   )
 
-  // Keep live activity fresh on the chats list (faster while a run is active).
+  // Soft-refresh lean summaries (slower idle; still snappy while a run is live).
   useEffect(() => {
     if (scene.kind !== 'chats' && scene.kind !== 'all') return
-    const ms = chatsLive ? 1600 : 7000
+    const ms = chatsLive ? 2500 : 12_000
     const t = window.setInterval(() => {
       if (scene.kind === 'all') void loadAllChats({ soft: true })
       else if (scene.kind === 'chats') void loadChats(scene.projectId, scene.cwd, { soft: true })
@@ -487,10 +369,10 @@ export function HomeAgentTab({
           ? cwd.split('/').filter(Boolean).slice(-1)[0] || 'Chat'
           : `./${cwd.split('/').pop()}`
         : 'New chat'
-      const id = await createChatOverWs(projectId, cwd, title)
+      const { chat } = await api.cursorCreateChat(projectId, { cwd, title })
       if (cwd.startsWith('/')) pushAgentRecentAbs({ path: cwd, projectId })
       else pushAgentRecentDir(projectId, cwd)
-      setScene({ kind: 'chat', projectId, cwd, chatId: id })
+      setScene({ kind: 'chat', projectId, cwd, chatId: chat.id })
     } catch (e) {
       reportError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -502,13 +384,16 @@ export function HomeAgentTab({
     const rowKey = `${projectId}:${chatId}`
     setDeletingId(rowKey)
     setError('')
+    const prev = chats
+    // Optimistic: drop the row immediately; server delete is sync + background agent GC.
+    setChats((list) => list.filter((c) => !(c.id === chatId && c.projectId === projectId)))
     try {
-      await deleteChatOverWs(projectId, chatId)
-      setChats((prev) => prev.filter((c) => !(c.id === chatId && c.projectId === projectId)))
+      await api.cursorDeleteChat(projectId, chatId)
+    } catch (e) {
+      setChats(prev)
+      reportError(e instanceof Error ? e.message : String(e))
       if (scene.kind === 'all') void loadAllChats({ soft: true })
       else void loadChats(projectId, cwd, { soft: true })
-    } catch (e) {
-      reportError(e instanceof Error ? e.message : String(e))
     } finally {
       setDeletingId(null)
     }

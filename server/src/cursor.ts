@@ -192,7 +192,8 @@ function saveWorkspaceNow(projectId: string, ws?: Workspace): void {
   mkdirSync(join(RUNTIME_DIR, "chats"), { recursive: true });
   const path = chatPath(projectId);
   const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n");
+  // Compact JSON — chats can grow large; pretty-print only slows I/O.
+  writeFileSync(tmp, JSON.stringify(data) + "\n");
   try {
     chmodSync(tmp, 0o600);
   } catch {
@@ -262,11 +263,223 @@ function loadAgentIds(): Record<string, string> {
 
 function saveAgentIds(data: Record<string, string>): void {
   ensureRuntimeDirs();
-  writeFileSync(AGENTS_PATH, JSON.stringify(data, null, 2) + "\n");
+  writeFileSync(AGENTS_PATH, JSON.stringify(data) + "\n");
+}
+
+/** Historical keys used `project:chat`; current uses `project::chat`. */
+function agentMapKeys(projectId: string, chatId: string): string[] {
+  return [`${projectId}::${chatId}`, `${projectId}:${chatId}`];
+}
+
+function unmapAgentId(projectId: string, chatId: string): string | null {
+  const ids = loadAgentIds();
+  let agentId: string | null = null;
+  let dirty = false;
+  for (const k of agentMapKeys(projectId, chatId)) {
+    const v = ids[k];
+    if (!v) continue;
+    if (!agentId) agentId = v;
+    delete ids[k];
+    dirty = true;
+  }
+  if (dirty) saveAgentIds(ids);
+  return agentId;
+}
+
+function resolveChatCwd(projectId: string, tabCwd?: string | null): string {
+  const project = loadProjects().get(projectId);
+  const raw = (tabCwd || "").trim();
+  if (!raw) return project?.path || process.cwd();
+  if (raw.startsWith("/")) return raw;
+  return project?.path ? join(project.path, raw) : raw;
+}
+
+const AGENT_CLEANUP_MS = 8_000;
+
+/** Best-effort SDK cleanup — never block the delete response. */
+async function disposeAgentBackground(agentId: string, cwd: string): Promise<void> {
+  if (!agentId) return;
+  const work = async () => {
+    try {
+      await clearStuckAgentRuns(agentId, cwd);
+    } catch {
+      /* ignore */
+    }
+    try {
+      const { Agent } = await import("@cursor/sdk");
+      if (typeof Agent.delete === "function") {
+        await Agent.delete(agentId, { runtime: "local", cwd } as never);
+      }
+    } catch {
+      /* local delete may be unsupported — ignore */
+    }
+  };
+  await Promise.race([
+    work(),
+    new Promise<void>((resolve) => setTimeout(resolve, AGENT_CLEANUP_MS)),
+  ]);
+}
+
+export type ChatSummary = {
+  id: string;
+  title: string;
+  cwd: string;
+  updatedAt: number;
+  running: boolean;
+  messageCount: number;
+  recent: Array<{
+    role: string;
+    streaming?: boolean;
+    text?: string;
+    tool?: {
+      name?: string;
+      status?: string;
+      detail?: string;
+      path?: string;
+      command?: string;
+    };
+    file?: { path?: string; action?: string };
+    task?: { status?: string; name?: string };
+  }>;
+};
+
+function slimRecentMessages(messages: ChatMsg[] | undefined): ChatSummary["recent"] {
+  const src = messages || [];
+  const start = Math.max(0, src.length - 24);
+  const out: ChatSummary["recent"] = [];
+  for (let i = start; i < src.length; i++) {
+    const m = src[i]!;
+    const row: ChatSummary["recent"][number] = { role: m.role };
+    if (m.streaming) row.streaming = true;
+    if (m.text) row.text = m.text.length > 160 ? `${m.text.slice(0, 160)}…` : m.text;
+    if (m.tool) {
+      row.tool = {
+        name: m.tool.name,
+        status: m.tool.status,
+        detail: m.tool.detail
+          ? m.tool.detail.length > 80
+            ? `${m.tool.detail.slice(0, 80)}…`
+            : m.tool.detail
+          : undefined,
+        path: m.tool.path,
+        command: m.tool.command
+          ? m.tool.command.length > 80
+            ? `${m.tool.command.slice(0, 80)}…`
+            : m.tool.command
+          : undefined,
+      };
+    }
+    if (m.file) row.file = { path: m.file.path, action: m.file.action };
+    if (m.task) row.task = { status: m.task.status, name: m.task.name };
+    out.push(row);
+  }
+  return out;
 }
 
 export function getWorkspace(projectId: string): Workspace {
   return loadWorkspace(projectId);
+}
+
+/** Lean chat list for Home Agent — no full message bodies / images. */
+export function listChatSummaries(projectId: string): {
+  configured: boolean;
+  activeId: string | null;
+  chats: ChatSummary[];
+} {
+  const ws = loadWorkspace(projectId);
+  return {
+    configured: cursorConfigured(),
+    activeId: ws.activeId,
+    chats: ws.tabs.map((tab) => ({
+      id: tab.id,
+      title: tab.title || "Chat",
+      cwd: tab.cwd || "",
+      updatedAt: tab.updatedAt || 0,
+      running: running.has(sessionKey(projectId, tab.id)),
+      messageCount: tab.messages?.length || 0,
+      recent: slimRecentMessages(tab.messages),
+    })),
+  };
+}
+
+export function createChat(
+  projectId: string,
+  opts: { title?: string; cwd?: string } = {},
+): ChatTab {
+  const ws = loadWorkspace(projectId);
+  const tab: ChatTab = {
+    id: randomBytes(8).toString("hex"),
+    title: String(opts.title || "New chat"),
+    cwd: String(opts.cwd || ""),
+    messages: [],
+    mode: "agent",
+    running: false,
+    updatedAt: Date.now(),
+  };
+  ws.tabs.push(tab);
+  ws.activeId = tab.id;
+  saveWorkspace(projectId);
+  broadcast(projectId, { type: "tab", tab });
+  broadcast(projectId, workspacePayload(projectId, ws));
+  return tab;
+}
+
+/**
+ * Fast chat delete: persist + ack immediately; SDK agent cleanup is background.
+ */
+export function deleteChat(
+  projectId: string,
+  chatId: string,
+): { ok: boolean; deleted: boolean; activeId: string | null } {
+  const id = String(chatId || "").trim();
+  if (!id) return { ok: false, deleted: false, activeId: loadWorkspace(projectId).activeId };
+
+  const ws = loadWorkspace(projectId);
+  const tab = ws.tabs.find((t) => t.id === id);
+  const key = sessionKey(projectId, id);
+  const mappedId = unmapAgentId(projectId, id);
+  const agentId = (tab?.agentId || mappedId || "").trim() || null;
+  const cwd = resolveChatCwd(projectId, tab?.cwd);
+
+  // Sync abort so the chat unlocks immediately.
+  const ac = running.get(key);
+  if (ac) {
+    try {
+      ac.abort();
+    } catch {
+      /* ignore */
+    }
+  }
+  promptQueues.delete(key);
+
+  let deleted = false;
+  if (tab) {
+    ws.tabs = ws.tabs.filter((t) => t.id !== id);
+    if (ws.activeId === id) ws.activeId = ws.tabs[0]?.id || null;
+    saveWorkspace(projectId);
+    deleted = true;
+  }
+
+  const activeId = ws.activeId;
+  broadcast(projectId, { type: "deleted", chatId: id, activeId, deleted });
+  // Keep open Chat panels in sync without waiting for SDK cleanup.
+  if (deleted) broadcast(projectId, workspacePayload(projectId, ws));
+
+  void (async () => {
+    const live = liveRuns.get(key);
+    liveRuns.delete(key);
+    running.delete(key);
+    if (live?.cancel) {
+      try {
+        await live.cancel();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (agentId) await disposeAgentBackground(agentId, cwd);
+  })();
+
+  return { ok: true, deleted, activeId };
 }
 
 export function cursorConfigured(): boolean {
@@ -1333,21 +1546,11 @@ export async function handleCursorMessage(
   }
 
   if (type === "new") {
-    const id = randomBytes(8).toString("hex");
-    const tab: ChatTab = {
-      id,
+    const tab = createChat(projectId, {
       title: String(msg.title || "New chat"),
       cwd: String(msg.cwd || ""),
-      messages: [],
-      mode: "agent",
-      running: false,
-      updatedAt: Date.now(),
-    };
-    ws.tabs.push(tab);
-    ws.activeId = id;
-    saveWorkspace(projectId);
+    });
     send({ type: "tab", tab });
-    broadcast(projectId, workspacePayload(projectId, ws));
     return;
   }
 
@@ -1360,11 +1563,14 @@ export async function handleCursorMessage(
 
   if (type === "delete") {
     const chatId = String(msg.chatId || "");
-    void cancelRun(projectId, chatId);
-    ws.tabs = ws.tabs.filter((t) => t.id !== chatId);
-    if (ws.activeId === chatId) ws.activeId = ws.tabs[0]?.id || null;
-    saveWorkspace(projectId);
-    broadcast(projectId, workspacePayload(projectId, ws));
+    const result = deleteChat(projectId, chatId);
+    send({
+      type: "deleted",
+      chatId,
+      ok: result.ok,
+      deleted: result.deleted,
+      activeId: result.activeId,
+    });
     return;
   }
 
@@ -2225,20 +2431,21 @@ async function cancelRun(
   }
   const ws = loadWorkspace(projectId);
   const tab = ws.tabs.find((t) => t.id === chatId);
-  const agentId = tab?.agentId || loadAgentIds()[key];
-  const project = loadProjects().get(projectId);
-  const cwd = tab?.cwd || project?.path || process.cwd();
-  if (agentId) {
+  const mapped = loadAgentIds()[key] || loadAgentIds()[`${projectId}:${chatId}`];
+  const agentId = tab?.agentId || mapped;
+  const cwd = resolveChatCwd(projectId, tab?.cwd);
+  if (agentId && !invalidate) {
     const n = await clearStuckAgentRuns(agentId, cwd);
     if (n > 0) ok = true;
   }
-  if (invalidate && tab) {
-    tab.agentId = null;
-    const ids = loadAgentIds();
-    delete ids[key];
-    saveAgentIds(ids);
-    tab.running = false;
-    saveWorkspace(projectId);
+  if (invalidate) {
+    const removedId = unmapAgentId(projectId, chatId) || agentId;
+    if (tab) {
+      tab.agentId = null;
+      tab.running = false;
+      saveWorkspace(projectId);
+    }
+    if (removedId) void disposeAgentBackground(String(removedId), cwd);
     ok = true;
   }
   return ok;

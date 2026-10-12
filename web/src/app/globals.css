@@ -3185,6 +3185,12 @@ html.hb-view-max .hb-status-bar {
   border-radius: 0.85rem;
   background: var(--hb-bg);
   overflow: hidden;
+  cursor: grab;
+  user-select: none;
+}
+
+.hb-swipe-front:active {
+  cursor: grabbing;
 }
 
 .hb-swipe-front .hb-agent-row {

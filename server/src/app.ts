@@ -32,9 +32,12 @@ import {
 import { bindPort, isBackupBinary, loadProjects, readVersion } from "./config";
 import { accessHosts } from "./network";
 import {
+  createChat,
   cursorConfigured,
+  deleteChat,
   getWorkspace,
   handleCursorMessage,
+  listChatSummaries,
   listModels,
   subscribeCursor,
 } from "./cursor";
@@ -597,6 +600,33 @@ app.post("/api/internal/sudo-release", async (c) => {
     throw new HttpError(403, "bad secret");
   }
   return c.json(releaseSudoPassword({ id: body.id }));
+});
+
+app.get("/api/cursor/:projectId/chats", async (c) => {
+  await requireAuth(c);
+  return c.json(listChatSummaries(c.req.param("projectId")));
+});
+
+app.post("/api/cursor/:projectId/chats", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({
+      title: z.string().max(200).optional(),
+      cwd: z.string().max(500).optional(),
+    })
+    .parse(await readJson(c).catch(() => ({})));
+  const tab = createChat(c.req.param("projectId"), {
+    title: body.title,
+    cwd: body.cwd,
+  });
+  return c.json({ ok: true, chat: tab });
+});
+
+app.delete("/api/cursor/:projectId/chats/:chatId", async (c) => {
+  await requireAuth(c);
+  const result = deleteChat(c.req.param("projectId"), c.req.param("chatId"));
+  if (!result.ok) throw new HttpError(400, "invalid chat id");
+  return c.json(result);
 });
 
 app.get("/api/cursor/:projectId", async (c) => {

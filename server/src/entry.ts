@@ -241,14 +241,28 @@ const server = Bun.serve<WsData>({
     },
     async message(ws, message) {
       const data = ws.data;
-      // App PIN lock: keep sessions/workers alive; ignore client commands until unlock.
+      // App PIN lock: keep sessions/workers alive; reject commands until unlock
+      // (clients must not hang waiting for delete/create acks).
       if (isAppPinLocked()) {
         try {
+          let reqType = "";
+          try {
+            const raw =
+              typeof message === "string"
+                ? message
+                : new TextDecoder().decode(message);
+            reqType = String(
+              (JSON.parse(raw) as { type?: string }).type || "",
+            );
+          } catch {
+            /* ignore */
+          }
           ws.send(
             JSON.stringify({
               type: "error",
               code: "pin_locked",
               detail: "App PIN required",
+              ...(reqType ? { requestType: reqType } : {}),
             }),
           );
         } catch {

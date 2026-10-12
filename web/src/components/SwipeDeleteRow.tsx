@@ -5,6 +5,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
 
@@ -22,8 +23,8 @@ type Props = {
 }
 
 /**
- * Shared swipe-left → Delete card. Reveals a rounded Delete action, then an
- * in-row confirm step before calling `onDelete`.
+ * Shared swipe-left → Delete card (touch + mouse/pointer). Reveals a rounded
+ * Delete action, then an in-row confirm step before calling `onDelete`.
  */
 export function SwipeDeleteRow({
   children,
@@ -35,16 +36,25 @@ export function SwipeDeleteRow({
 }: Props) {
   const [dx, setDx] = useState(0)
   const [confirming, setConfirming] = useState(false)
+  const dxRef = useRef(0)
   const startX = useRef(0)
   const startY = useRef(0)
   const baseDx = useRef(0)
   const axis = useRef<'x' | 'y' | null>(null)
+  const dragging = useRef(false)
+  const didSwipe = useRef(false)
+  const frontRef = useRef<HTMLDivElement | null>(null)
   const revealing = !confirming && dx < -6
 
-  const closeSwipe = useCallback(() => {
-    setDx(0)
-    baseDx.current = 0
+  const setOffset = useCallback((next: number) => {
+    dxRef.current = next
+    setDx(next)
   }, [])
+
+  const closeSwipe = useCallback(() => {
+    setOffset(0)
+    baseDx.current = 0
+  }, [setOffset])
 
   useEffect(() => {
     if (disabled || deleting) return
@@ -72,6 +82,70 @@ export function SwipeDeleteRow({
     }
   }
 
+  function onPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
+    if (disabled || deleting || confirming) return
+    // Left mouse / primary touch / pen only
+    if (e.pointerType === 'mouse' && e.button !== 0) return
+    dragging.current = true
+    didSwipe.current = false
+    startX.current = e.clientX
+    startY.current = e.clientY
+    baseDx.current = dxRef.current
+    axis.current = null
+    frontRef.current?.setPointerCapture(e.pointerId)
+  }
+
+  function onPointerMove(e: ReactPointerEvent<HTMLDivElement>) {
+    if (!dragging.current || disabled || deleting || confirming) return
+    const mx = e.clientX - startX.current
+    const my = e.clientY - startY.current
+    if (!axis.current) {
+      if (Math.abs(mx) < 6 && Math.abs(my) < 6) return
+      axis.current = Math.abs(mx) > Math.abs(my) ? 'x' : 'y'
+      if (axis.current === 'y') {
+        // Vertical scroll — release capture so the list can scroll
+        dragging.current = false
+        try {
+          frontRef.current?.releasePointerCapture(e.pointerId)
+        } catch {
+          /* ignore */
+        }
+        return
+      }
+    }
+    if (axis.current !== 'x') return
+    e.preventDefault()
+    didSwipe.current = true
+    const next = Math.min(0, Math.max(-SWIPE_DELETE_WIDTH, baseDx.current + mx))
+    setOffset(next)
+  }
+
+  function endPointer(e: ReactPointerEvent<HTMLDivElement>) {
+    if (!dragging.current) return
+    dragging.current = false
+    try {
+      frontRef.current?.releasePointerCapture(e.pointerId)
+    } catch {
+      /* ignore */
+    }
+    if (axis.current === 'x') {
+      const cur = dxRef.current
+      const snap = cur <= -SWIPE_DELETE_WIDTH * 0.45 ? -SWIPE_DELETE_WIDTH : 0
+      setOffset(snap)
+      baseDx.current = snap
+    }
+    axis.current = null
+  }
+
+  function onClickCapture(e: React.MouseEvent) {
+    // After a horizontal drag, don't open the chat row
+    if (didSwipe.current || dxRef.current < -6) {
+      e.preventDefault()
+      e.stopPropagation()
+      didSwipe.current = false
+    }
+  }
+
   return (
     <div
       className={`hb-swipe-row${revealing ? ' hb-swipe-row--open' : ''}${
@@ -89,40 +163,14 @@ export function SwipeDeleteRow({
         </button>
       </div>
       <div
+        ref={frontRef}
         className="hb-swipe-front"
         style={{ transform: confirming ? undefined : `translateX(${dx}px)` }}
-        onTouchStart={(e) => {
-          if (disabled || deleting || confirming) return
-          const t = e.touches[0]
-          if (!t) return
-          startX.current = t.clientX
-          startY.current = t.clientY
-          baseDx.current = dx
-          axis.current = null
-        }}
-        onTouchMove={(e) => {
-          if (disabled || deleting || confirming) return
-          const t = e.touches[0]
-          if (!t) return
-          const mx = t.clientX - startX.current
-          const my = t.clientY - startY.current
-          if (!axis.current) {
-            if (Math.abs(mx) < 6 && Math.abs(my) < 6) return
-            axis.current = Math.abs(mx) > Math.abs(my) ? 'x' : 'y'
-          }
-          if (axis.current !== 'x') return
-          e.preventDefault()
-          const next = Math.min(0, Math.max(-SWIPE_DELETE_WIDTH, baseDx.current + mx))
-          setDx(next)
-        }}
-        onTouchEnd={() => {
-          if (axis.current === 'x') {
-            const snap = dx <= -SWIPE_DELETE_WIDTH * 0.45 ? -SWIPE_DELETE_WIDTH : 0
-            setDx(snap)
-            baseDx.current = snap
-          }
-          axis.current = null
-        }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endPointer}
+        onPointerCancel={endPointer}
+        onClickCapture={onClickCapture}
       >
         {confirming ? (
           <div className="hb-agent-row hb-agent-row--confirm">
