@@ -1,174 +1,137 @@
 # Home Base
 
-Mobile-first control plane for projects on your laptop — run scripts, shells, edit files, and chat with **local** Cursor agents. Intended daily use is over your **VPN** (not the public internet).
+Control your laptop from your phone — run apps, shell, files, and chat with local Cursor agents.
 
-| Mode | URL | Process |
-|------|-----|---------|
-| **Production** | `http://<laptop>:8888/` | systemd `homebased` as **root** (Bun binary) |
-| **Development** | Next `http://localhost:3081` → Bun API `:8081` | `./build.sh --run` (beside prod) |
+**License:** MIT · [DevCon1 Solutions](https://devcon1solutions.com) · daniel@devcon1solutions.com  
+**Use at your own risk.** Home Base can control shell, files, and screen. Provided AS IS with no liability.
 
-**Stack:** Bun TypeScript server (`server/`) + Next.js static SPA (`web/`).
+---
 
-## Prerequisites
+## Get started
 
-- [Bun](https://bun.sh) (API + compile)
-- Node.js + npm (Next SPA build)
-- **sudo** for systemd install (`--deploy` / `--service`)
-- Optional: `CURSOR_API_KEY` in `.env` for Chat
-
-## Quick start (dev)
+1. **Need:** a Linux laptop for always-on (recommended). Mac works to try it out.
+2. Install [Bun](https://bun.sh) and [Node.js](https://nodejs.org) if you don’t have them.
+3. Clone this repo, then run:
 
 ```bash
-./build.sh --setup          # Bun + Next deps, JWT signing key, seed config
-# Optional: wipe Python/Nuitka leftovers, .runtime, node_modules, build caches
-# ./build.sh --clean --setup
-# Presets are templates only — always pass --path
-./build.sh --add-project --preset example --path /path/to/your-repo
-# Put CURSOR_API_KEY in .env if you want Chat
-./build.sh --run
+./build.sh --onboarding
 ```
 
-Open `http://localhost:3081` and **create a password** (localhost-loaded UI only). Later sign-ins get a **24h JWT** in `localStorage`. Dev ports (`:8081` / `:3081`) sit beside production `:8888` so both can run at once.
+4. Open the URL it prints (`http://localhost:8080/` by default on Linux, or follow the Mac tip for `--run`).
+5. Create a password → finish the short in-app setup (PIN, Cursor key, phone access).
+6. Open **Homework → Chat** — the **Home Base** project is already there. Start building.
+7. Add more apps with **+** in Homework → Apps (or ask Chat).
 
-Hotkeys while `--run`: `r` restart both · `a`/`q` API · `w` Next · `h` help · Ctrl+C quit.
+That’s it.
 
-## Daily use / production (VPN)
+### Phone access (in the app)
 
-1. Deploy once: `./build.sh --deploy` (Bun compile, installs unit, syncs env/projects + SPA).
-2. Ensure WireGuard (or your VPN) can reach the laptop.
-3. On phone/iPad/desktop: open `http://<laptop-vpn-ip>:8888/` (or hostname).
-4. Sign in with the password (or scan Share QR from a localhost session).
-5. Status bar shows host · Live/Reconnecting · active project · Cursor when configured.
+Pick one during setup (or later in More):
 
-Bind defaults to `0.0.0.0` so VPN clients can connect. **Do not** port-forward this service to the public internet.
+| Choice | What you do |
+|--------|-------------|
+| **WireGuard** | Install on the laptop → forward one **UDP** port on your router → scan the phone QR |
+| **Cloudflare Tunnel** | Install `cloudflared` → paste a tunnel token → open the HTTPS link on your phone |
 
-Stop / restart prod: `sudo systemctl stop|restart homebased`.
+Do **not** port-forward Home Base’s HTTP port to the public internet.
 
-## Same-origin API
+---
 
-Fetch and WebSocket clients always use relative `/api/...` and `/ws/...` against `location.host`. Dev (Next proxy) and prod (Bun serves SPA + API) share the same client code. No open CORS — cross-origin browser API access is not supported.
+## What `--onboarding` does
 
-## Areas (after login)
+1. `--setup` — install deps, JWT secret  
+2. Seeds this repo as the **Home Base** project  
+3. **Linux:** `--deploy` (binary + systemd; port from `HOMEBASE_PORT` in `.env`, default **8080**)  
+4. **Mac:** setup only — then `./build.sh --run` for `http://localhost:3081/`
+
+Safe to run again. It won’t wipe other projects.
+
+### Other commands
+
+```bash
+./build.sh --setup          # deps + seed Home Base project
+./build.sh --run            # dev API :8081 + Next :3081
+./build.sh --deploy         # Linux production only
+./build.sh --add-project --preset example --path /path/to/repo
+./build.sh --clean          # wipe caches (.env + projects kept)
+```
+
+---
+
+## After login
 
 | Area | Purpose |
 |------|---------|
-| **Home** | Dashboard — enter Home Agent, Homework, or Home Access |
-| **Home Agent** | Streamlined project chat (folder → chats → minimal talk/type UI) |
-| **Homework** | Full project control plane (former main app) |
-| **Home Access** | House panel: buttons / toggles / sliders / gauges + Chat dock |
+| **Home** | Dashboard |
+| **Home Agent** | Simple project chat |
+| **Homework** | Full control plane (Apps, Work, Chat, Shell, Files, View, Logs, More) |
+| **Home Access** | House widgets (buttons / toggles / sliders / gauges) |
 
-### Homework tabs
+**More / Settings:** theme, PIN, Cursor key, WireGuard, Cloudflare Tunnel, replay setup, reset / erase, About & legal.
 
-| Tab | Purpose |
-|-----|---------|
-| Apps | Project actions, ports, Run/Ship/Stop |
-| Work | Apps/Shell/Files scene + Chat dock |
-| Chat | Full-page local Cursor agent |
-| Shell | Interactive PTY + attach managed sessions |
-| Files | Host/project file browser + editor (**not** Cursor’s open buffers) |
-| View | Live laptop screen + mouse/keyboard (`/ws/view`, JWT; X11) |
-| Logs | Capped console ring (`/api/trace`) |
-| *(status bar)* Alerts | Bell in host/live bar; top→bottom inbox; History drawer |
-| More | Theme, notify prefs, Share/password (localhost), WireGuard VPN setup/manage, homebased restart, sign-out |
-
-### Home Access
-
-Add controls with **+** (or ask Chat / `homebase_access_*` tools). Each widget has a hook:
-
-| Hook | Use |
-|------|-----|
-| `script` | Run bash on the laptop (`{{value}}`, `{{on}}`, `{{json}}`) |
-| `http` | Call a local/LAN API |
-| `websocket` | Send a short-lived WS message |
-| `static` | Store UI state only |
-
-Gauges are read-only; tap or `pollMs` refreshes. Definitions persist in `/var/lib/homebased/.runtime/home_access.json`. Prefer configuring widgets over rewriting the panel framework.
-
-### Chat history
-
-Chats are stored on the server under `.runtime/chats/` and survive deploys/restarts. Streaming activity is flushed continuously (and on shutdown). Deleting a chat tab is the only intentional wipe.
+---
 
 ## Projects
 
+- First install registers **this repo** as project `homebase`.
+- Add more with **+** in Apps, Chat tools (`homebase_project_upsert`), or:
+
 ```bash
 ./build.sh --add-project --preset example --path /path/to/your-repo
-./build.sh --add-project --path /path/to/repo --id myapp --name "My App"
 ```
 
-- Live registry: `config/projects.json` (**gitignored**; prod copy under `/var/lib/homebased`)
-- Example shape: [`config/projects.example.json`](config/projects.example.json)
-- Presets: [`config/presets/`](config/presets/) — committed `example.json` and `homebase.json`; other presets gitignored
+Registry: `config/projects.json` (gitignored). Presets live in `config/presets/`.
 
-Action `type` values: `script` (default), `stop`, `restart` (with `restartAction`), `compose` (`compose: [actionId, …]` — nested compose unsupported).
+---
 
-## What the integration supports
+## Auth & security
 
-| Capability | How |
-|------------|-----|
-| Local Cursor agents | In-process `@cursor/sdk` + `/ws/cursor` (needs `CURSOR_API_KEY`) |
-| Project scripts / ports | Config-driven actions; Stop kills PTYs, pidfiles, and listeners |
-| Shell | JWT-gated PTY scoped to project cwd; phone Ctrl/Esc/Tab bar |
-| Files | REST read/write; relative paths under project; absolute `/…` = host browse (JWT) |
-| View | JWT WebSocket JPEG stream of the X11 desktop + XTest input; adaptive for LAN/VPN |
-| Laptop services | WireGuard setup/manage (QR) + homebased restart from More (JWT) |
+- Password (localhost only to set/change) → JWT (24h)
+- Optional App PIN (server-side lock)
+- Cursor API key stored **encrypted** in `.runtime/` (set in the app)
+- Share QR: one-time redeem (20s) → JWT — never embeds the password
+- Same-origin API only (`/api`, `/ws`)
 
-**Not supported:** Wayland-native capture (needs X11/XWayland), reading Cursor IDE open-buffer state, cloud Cursor agents, public internet exposure.
+---
 
-## Authentication & sessions
+## Production layout (Linux)
 
-- Password (scrypt in `.runtime/auth.json`) → HS256 JWT, **24h TTL**
-- Password set/change only from a **localhost-loaded** SPA
-- Changing the password bumps `authEpoch` and **invalidates** existing JWTs
-- Share QR: 20s one-time redeem id → normal 24h JWT (never embeds the password)
-- Lockout after 5 failures: `10s → … → 1d`
-- Logout clears the browser token only (server trusts TTL / epoch until expiry)
-- WebSockets authenticate via `?token=` (browsers cannot set WS Authorization headers); do not paste WS URLs into logs
+- Unit: `homebased.service` → `/usr/bin/homebase`
+- Port: `HOMEBASE_PORT` in `/var/lib/homebased/.env` (default **8080** — change it and redeploy)
+- State: `/var/lib/homebased`
+- Prefer VPN or Cloudflare Tunnel — not public HTTP
+
+```bash
+sudo systemctl status|restart homebased
+```
+
+---
 
 ## Env
 
-Copy [`.env.example`](.env.example). Never commit `.env` or `config/projects.json`.
+`--setup` / `--onboarding` create `.env` when missing (no Cursor key). On Linux it also sets `HOMEBASE_DISPLAY` / `HOMEBASE_XAUTHORITY` for View. Cursor key is set in the app.
 
 | Var | Role |
 |-----|------|
-| `HOMEBASE_JWT_SECRET` | Optional JWT HMAC override (else `.runtime/jwt_secret`) |
-| `CURSOR_API_KEY` | Local Cursor agents |
-| `CURSOR_MODEL` | Default model (`auto` = Cursor picks) |
-| `HOMEBASE_HOST` / `HOMEBASE_PORT` | Bind (dev `--run` forces `:8081` + Next `:3081`; systemd forces `:8888`) |
+| `HOMEBASE_PORT` | Production listen port (default `8080`; honored on deploy) |
+| `HOMEBASE_HOST` | Bind address |
+| `HOMEBASE_JWT_SECRET` | Optional JWT HMAC override |
+| `CURSOR_MODEL` | Default model |
+| `CURSOR_API_KEY` | Optional override (prefer in-app vault) |
+| `HOMEBASE_DISPLAY` / `HOMEBASE_XAUTHORITY` | Linux View (X11) only |
 
-Deploy also syncs those keys into `/var/lib/homebased/.env`.
+---
 
-## Binary + systemd
-
-```bash
-./build.sh --bin                 # Bun compile → dist/homebase
-./build.sh --service             # install unit + binary + SPA
-./build.sh --deploy              # --bin then --service
-```
-
-- Active: `/usr/share/homebased/homebase` (previous → `homebase.bak`)
-- Wrapper `/usr/bin/homebase` self-tests; on failure runs `.bak` with `HOMEBASE_RUNNING_BACKUP=1`
-- State: `/var/lib/homebased` (`HOMEBASE_HOME`)
-- Unit: [`packaging/homebased.service`](packaging/homebased.service)
-- SPA: `/usr/share/homebased/web/dist` (precompressed `.br` / `.gz`)
-
-## Connection problems
+## Troubleshooting
 
 | Symptom | Try |
 |---------|-----|
-| Unreachable in status bar | VPN up? `systemctl status homebased`? laptop awake? Prefer `http://<wg-ip>:8888/` on VPN |
-| Chat/Shell “Reconnecting” | Wait for backoff, or tap the badge; pull-to-refresh hard reload if stuck |
-| Session expired / Sign in | Password changed, or 24h TTL ended — sign in again |
-| Chat: Cursor key missing | Set `CURSOR_API_KEY`, redeploy or sync `/var/lib/homebased/.env` |
-| Share link fails | Redeem within 20s; reveal again from localhost More → Share |
+| Can’t reach from phone | VPN up? Tunnel running? Prefer WireGuard IP or Cloudflare HTTPS URL |
+| Chat says key missing | More → Cursor API key |
+| Session expired | Sign in again (24h TTL or password changed) |
+| Deploy on Mac fails | Expected — use `./build.sh --run` on Mac; deploy on Linux |
 
-## Known limitations
-
-- Production runs as **root** on `:8888` — a stolen JWT can use shell, host Files, View (screen/input), and systemctl helpers
-- Absolute Files paths intentionally allow host-wide browse when authenticated
-- View needs a reachable X11 display (`HOMEBASE_DISPLAY` / `HOMEBASE_XAUTHORITY` if auto-detect fails)
-- Client-only logout (no server token denylist); password change invalidates via `authEpoch`
-- PWA Add-to-Home-Screen icons only — **no service worker** (avoids stale “live” remote state)
-- Nested `compose` actions unsupported
+---
 
 ## Tests
 
@@ -177,3 +140,13 @@ cd server && bun run typecheck && bun test
 HOMEBASE_SELF_TEST=1 bun run server/src/entry.ts
 cd web && npm run typecheck && npm run build
 ```
+
+---
+
+## Known limits
+
+- Production / WireGuard host / View (X11) are **Linux-first**
+- Wayland-native capture not supported
+- Intended access: VPN or Cloudflare — not open internet without a password
+
+Full agent notes: [AGENTS.md](AGENTS.md)

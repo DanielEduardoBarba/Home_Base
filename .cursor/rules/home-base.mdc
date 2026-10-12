@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Home Base
 
-Generic control plane: systemd **`homebased`**, binary **`homebase`**. Production **:8888** (systemd as root). Dev API **:8081**, Next **:3081** (proxies `/api` + `/ws`) — can run beside prod. Projects come from gitignored `config/projects.json`.
+Generic control plane: systemd **`homebased`**, binary **`homebase`**. Production port from **`HOMEBASE_PORT`** in `.env` (default **8080**, systemd as root). Dev API **:8081**, Next **:3081** (proxies `/api` + `/ws`) — can run beside prod. Projects come from gitignored `config/projects.json`.
 
 ## Hard rules
 
@@ -23,10 +23,12 @@ Generic control plane: systemd **`homebased`**, binary **`homebase`**. Productio
 - Always bump the repo `VERSION` file (semver patch by default; minor/major when the change warrants it) whenever you make code or behavior changes. Do this in the same turn as the change — before finishing.
 - **Chat durability:** workspaces under `.runtime/chats/` must flush mid-stream (debounced) and on SIGTERM/SIGINT so `--deploy` does not drop assistant/tool history. Only delete a chat when the user deletes that tab.
 - **UI areas:** post-login **Home** dashboard → **Homework** (project control plane) and **Home Access** (house widgets). See `home-access.mdc`.
+- **Cursor API key:** prefer in-app encrypted vault (`.runtime/cursor_api_key.enc`); env `CURSOR_API_KEY` is an override only.
+- **First install:** `./build.sh --onboarding` (or `--setup`) seeds this repo as the `homebase` project. Apps **+** / `homebase_project_upsert` add more.
 
 ## Entry points
 
-- `./build.sh --setup` (Bun + Next deps) / `--clean` (Python/Nuitka leftovers + `.runtime` + setup/build caches) / `--run` (Bun API + Next) / `--add-project --preset …`
+- `./build.sh --onboarding` (setup + seed + deploy on Linux) / `--setup` / `--clean` / `--run` / `--add-project --preset …`
 - Backend: Bun `server/src/entry.ts`
 - Frontend: Next.js static export `web/` → `web/dist` (brotli/gzip siblings)
-- Deploy: `./build.sh --deploy` → Bun compile → `/usr/share/homebased` + wrapper + systemd
+- Deploy: `./build.sh --deploy` → Bun compile → `/usr/share/homebased` + wrapper + systemd (Linux only)

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { api } from '../lib/api'
 import { setSession, takeAuthLostReason } from '../lib/auth'
 import { isLocalHostPage } from '../lib/types'
+import { LegalAbout } from './LegalAbout'
 
 const AUTH_REASON_COPY: Record<string, string> = {
   expired: 'Session expired — sign in again',
@@ -274,6 +275,9 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
             {setupMode ? 'Create password' : 'Enter'}
           </button>
         </form>
+        <div className="mt-8">
+          <LegalAbout compact />
+        </div>
       </div>
     </div>
   )

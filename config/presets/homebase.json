@@ -6,7 +6,7 @@
     {
       "id": "api",
       "label": "API",
-      "port": 8888,
+      "port": 8080,
       "health": "/api/health"
     }
   ],

@@ -13,7 +13,7 @@ if [[ ! -f "$DEV_JSON" ]]; then
   exit 0
 fi
 
-mapfile -t META < <(python3 - "$DEV_JSON" "$ID" <<'PY'
+META_RAW="$(python3 - "$DEV_JSON" "$ID" <<'PY'
 import json, sys
 path, did = sys.argv[1], sys.argv[2]
 data = json.load(open(path))
@@ -26,27 +26,33 @@ print(dev.get("kind", "host"))
 print(dev.get("label", did))
 print(dev.get("id", did))
 PY
-)
-
-IP="${META[0]:-}"
-KIND="${META[1]:-host}"
-LABEL="${META[2]:-$ID}"
+)"
+IP="$(printf '%s\n' "$META_RAW" | sed -n '1p')"
+KIND="$(printf '%s\n' "$META_RAW" | sed -n '2p')"
+LABEL="$(printf '%s\n' "$META_RAW" | sed -n '3p')"
+KIND="${KIND:-host}"
+LABEL="${LABEL:-$ID}"
 if [[ -z "$IP" ]]; then
   echo '{"up":0,"detail":"unknown device"}'
   exit 0
 fi
 
+# ping -W is milliseconds on Linux, seconds on macOS — use 1s budget either way.
 up=0
-if ping -c1 -W1 "$IP" >/dev/null 2>&1; then
+if ping -c1 -W1 "$IP" >/dev/null 2>&1 || ping -c1 -W 1000 "$IP" >/dev/null 2>&1; then
   up=1
-elif ip neigh show "$IP" 2>/dev/null | grep -qiE 'REACHABLE|STALE|DELAY'; then
+elif command -v ip >/dev/null 2>&1 && ip neigh show "$IP" 2>/dev/null | grep -qiE 'REACHABLE|STALE|DELAY'; then
   up=1
 fi
 
 detail="$LABEL"
 mdns=""
 if command -v avahi-resolve-address >/dev/null 2>&1; then
-  mdns="$(timeout 1 avahi-resolve-address "$IP" 2>/dev/null | awk '{print $2}' | head -1 || true)"
+  if command -v timeout >/dev/null 2>&1; then
+    mdns="$(timeout 1 avahi-resolve-address "$IP" 2>/dev/null | awk '{print $2}' | head -1 || true)"
+  else
+    mdns="$(avahi-resolve-address "$IP" 2>/dev/null | awk '{print $2}' | head -1 || true)"
+  fi
 fi
 if [[ -n "$mdns" ]]; then
   detail="$mdns"

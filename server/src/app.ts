@@ -29,7 +29,35 @@ import {
   setPolicy,
   verifySecret,
 } from "./approvals";
-import { bindPort, isBackupBinary, loadProjects, readVersion } from "./config";
+import {
+  bindPort,
+  deleteProject,
+  isBackupBinary,
+  listPresets,
+  loadProjects,
+  readVersion,
+  upsertProjectFromInput,
+} from "./config";
+import {
+  clearCloudflareTunnel,
+  cloudflareStatus,
+  configureCloudflareToken,
+  installCloudflared,
+  startCloudflareTunnel,
+  stopCloudflareTunnel,
+  updateCloudflareHostname,
+} from "./cloudflare_tunnel";
+import {
+  loadOnboarding,
+  resetOnboardingForReplay,
+  saveOnboarding,
+} from "./onboarding_state";
+import {
+  clearCursorApiKey,
+  cursorApiKeyConfigured,
+  setCursorApiKey,
+} from "./secrets_vault";
+import { hardReset, softReset } from "./system_reset";
 import { accessHosts } from "./network";
 import {
   createChat,
@@ -381,6 +409,167 @@ app.get("/api/projects", async (c) => {
     [...loadProjects().values()].map((p) => projectPublic(p)),
   );
   return c.json({ projects });
+});
+
+app.get("/api/presets", async (c) => {
+  await requireAuth(c);
+  return c.json({ presets: listPresets() });
+});
+
+app.post("/api/projects", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({
+      path: z.string().min(1),
+      preset: z.string().optional(),
+      id: z.string().optional(),
+      name: z.string().optional(),
+      ports: z.array(z.unknown()).optional(),
+      actions: z.array(z.unknown()).optional(),
+    })
+    .parse(await readJson(c));
+  try {
+    const project = upsertProjectFromInput(body);
+    return c.json({ ok: true, project: await projectPublic(project) });
+  } catch (e) {
+    throw new HttpError(400, e instanceof Error ? e.message : String(e));
+  }
+});
+
+app.patch("/api/projects/:projectId", async (c) => {
+  await requireAuth(c);
+  const id = c.req.param("projectId");
+  const existing = loadProjects().get(id);
+  if (!existing) throw new HttpError(404, "Project not found");
+  const body = z
+    .object({
+      path: z.string().optional(),
+      name: z.string().optional(),
+      ports: z.array(z.unknown()).optional(),
+      actions: z.array(z.unknown()).optional(),
+      preset: z.string().optional(),
+    })
+    .parse(await readJson(c));
+  try {
+    const project = upsertProjectFromInput({
+      path: body.path || existing.path,
+      id,
+      name: body.name || existing.name,
+      preset: body.preset,
+      ports: body.ports,
+      actions: body.actions,
+    });
+    return c.json({ ok: true, project: await projectPublic(project) });
+  } catch (e) {
+    throw new HttpError(400, e instanceof Error ? e.message : String(e));
+  }
+});
+
+app.delete("/api/projects/:projectId", async (c) => {
+  await requireAuth(c);
+  const id = c.req.param("projectId");
+  if (!deleteProject(id)) throw new HttpError(404, "Project not found");
+  return c.json({ ok: true, id });
+});
+
+app.get("/api/cursor/credentials", async (c) => {
+  await requireAuth(c);
+  return c.json({ configured: cursorApiKeyConfigured() || cursorConfigured() });
+});
+
+app.post("/api/cursor/credentials", async (c) => {
+  await requireAuth(c);
+  const body = z.object({ apiKey: z.string().min(1) }).parse(await readJson(c));
+  return c.json(setCursorApiKey(body.apiKey));
+});
+
+app.delete("/api/cursor/credentials", async (c) => {
+  await requireAuth(c);
+  return c.json(clearCursorApiKey());
+});
+
+app.get("/api/onboarding", async (c) => {
+  await requireAuth(c);
+  return c.json(loadOnboarding());
+});
+
+app.post("/api/onboarding", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({
+      complete: z.boolean().optional(),
+      skippedRemote: z.boolean().optional(),
+      remoteMode: z
+        .enum(["wireguard", "cloudflare"])
+        .nullable()
+        .optional(),
+      replay: z.boolean().optional(),
+    })
+    .parse(await readJson(c));
+  if (body.replay) return c.json(resetOnboardingForReplay());
+  const { replay: _r, ...patch } = body;
+  return c.json(saveOnboarding(patch));
+});
+
+app.post("/api/system/reset", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({
+      mode: z.enum(["soft", "hard"]),
+      confirm: z.string().optional(),
+    })
+    .parse(await readJson(c));
+  if (body.mode === "hard") {
+    requireLocalhostBrowser(c.req.raw.headers);
+    if ((body.confirm || "").trim().toUpperCase() !== "ERASE") {
+      throw new HttpError(400, 'Type ERASE to confirm full erase');
+    }
+    return c.json(hardReset());
+  }
+  return c.json(softReset());
+});
+
+app.get("/api/cloudflare/status", async (c) => {
+  await requireAuth(c);
+  return c.json(cloudflareStatus());
+});
+
+app.post("/api/cloudflare/install", async (c) => {
+  await requireAuth(c);
+  return c.json(installCloudflared());
+});
+
+app.post("/api/cloudflare/configure", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({
+      token: z.string().min(1),
+      hostname: z.string().optional(),
+      tunnelName: z.string().optional(),
+    })
+    .parse(await readJson(c));
+  return c.json(configureCloudflareToken(body));
+});
+
+app.post("/api/cloudflare/hostname", async (c) => {
+  await requireAuth(c);
+  const body = z.object({ hostname: z.string().min(1) }).parse(await readJson(c));
+  return c.json(updateCloudflareHostname(body.hostname));
+});
+
+app.post("/api/cloudflare/start", async (c) => {
+  await requireAuth(c);
+  return c.json(startCloudflareTunnel());
+});
+
+app.post("/api/cloudflare/stop", async (c) => {
+  await requireAuth(c);
+  return c.json(stopCloudflareTunnel());
+});
+
+app.post("/api/cloudflare/clear", async (c) => {
+  await requireAuth(c);
+  return c.json(clearCloudflareTunnel());
 });
 
 app.get("/api/projects/:projectId", async (c) => {

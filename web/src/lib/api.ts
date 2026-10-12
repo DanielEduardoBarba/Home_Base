@@ -383,6 +383,113 @@ export const api = {
   shareHide: () =>
     request<{ ok: boolean; active: boolean }>('/api/share/hide', { method: 'POST' }),
   projects: () => request<{ projects: Project[] }>('/api/projects'),
+  presets: () =>
+    request<{ presets: { id: string; name: string }[] }>('/api/presets'),
+  upsertProject: (body: {
+    path: string
+    preset?: string
+    id?: string
+    name?: string
+    ports?: unknown[]
+    actions?: unknown[]
+  }) =>
+    request<{ ok: boolean; project: Project }>('/api/projects', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  deleteProject: (id: string) =>
+    request<{ ok: boolean; id: string }>(`/api/projects/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  cursorCredentials: () =>
+    request<{ configured: boolean }>('/api/cursor/credentials'),
+  setCursorCredentials: (apiKey: string) =>
+    request<{ configured: boolean }>('/api/cursor/credentials', {
+      method: 'POST',
+      body: JSON.stringify({ apiKey }),
+    }),
+  clearCursorCredentials: () =>
+    request<{ configured: boolean }>('/api/cursor/credentials', {
+      method: 'DELETE',
+    }),
+  onboarding: () =>
+    request<{
+      complete: boolean
+      skippedRemote?: boolean
+      remoteMode?: 'wireguard' | 'cloudflare' | null
+    }>('/api/onboarding'),
+  saveOnboarding: (body: {
+    complete?: boolean
+    skippedRemote?: boolean
+    remoteMode?: 'wireguard' | 'cloudflare' | null
+    replay?: boolean
+  }) =>
+    request<{
+      complete: boolean
+      skippedRemote?: boolean
+      remoteMode?: 'wireguard' | 'cloudflare' | null
+    }>('/api/onboarding', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  systemReset: (mode: 'soft' | 'hard', confirm?: string) =>
+    request<{ ok: boolean; removed: number }>('/api/system/reset', {
+      method: 'POST',
+      body: JSON.stringify({ mode, confirm }),
+    }),
+  cloudflareStatus: () =>
+    request<{
+      installed: boolean
+      binary: string | null
+      loggedIn: boolean
+      tunnelName: string | null
+      hostname: string | null
+      running: boolean
+      publicUrl: string | null
+      mode: string | null
+      linux: boolean
+      localPort: number
+      guidance: {
+        installMac: string
+        installLinux: string
+        dashboard: string
+        docs: string
+      }
+    }>('/api/cloudflare/status'),
+  cloudflareInstall: () =>
+    request<Record<string, unknown>>('/api/cloudflare/install', {
+      method: 'POST',
+      body: '{}',
+    }),
+  cloudflareConfigure: (body: {
+    token: string
+    hostname?: string
+    tunnelName?: string
+  }) =>
+    request<Record<string, unknown>>('/api/cloudflare/configure', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  cloudflareHostname: (hostname: string) =>
+    request<Record<string, unknown>>('/api/cloudflare/hostname', {
+      method: 'POST',
+      body: JSON.stringify({ hostname }),
+    }),
+  cloudflareStart: () =>
+    request<Record<string, unknown>>('/api/cloudflare/start', {
+      method: 'POST',
+      body: '{}',
+    }),
+  cloudflareStop: () =>
+    request<Record<string, unknown>>('/api/cloudflare/stop', {
+      method: 'POST',
+      body: '{}',
+    }),
+  cloudflareClear: () =>
+    request<Record<string, unknown>>('/api/cloudflare/clear', {
+      method: 'POST',
+      body: '{}',
+    }),
   action: (id: string, actionId: string, extraArgs: string[] = []) =>
     request<{ type?: string; session?: Session; sessions?: Session[] }>(
       `/api/projects/${id}/action`,

@@ -1,6 +1,7 @@
 {
   "name": "homebase-server",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "bun run --watch src/entry.ts",

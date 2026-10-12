@@ -66,6 +66,10 @@ const HomeAgentTab = dynamic(
 const PinLock = dynamic(() => import('./components/PinLock').then((m) => m.PinLock), {
   ssr: false,
 })
+const OnboardingFlow = dynamic(
+  () => import('./components/OnboardingFlow').then((m) => m.OnboardingFlow),
+  { ssr: false },
+)
 
 /** Primary dock: Work (expandable) · View · Logs · More (Alerts = status-bar bell) */
 const PRIMARY_TABS: { id: Tab; label: string }[] = [
@@ -179,12 +183,38 @@ function AuthedApp() {
   const { unread, inboxOpen, toggleInbox, closeInbox, unlockAudio } = useNotify()
   const [viewVisited, setViewVisited] = useState(false)
   const [workMenuOpen, setWorkMenuOpen] = useState(false)
+  const [showOnboarding, setShowOnboarding] = useState(false)
+  const [onboardingReady, setOnboardingReady] = useState(false)
 
   useEffect(() => {
     setArea(readLastArea('home'))
     setTab(readLastTab('apps'))
     setSelectedId(readLastProjectId())
     setHostLabel(location.hostname || 'host')
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    void api
+      .onboarding()
+      .then((s) => {
+        if (!cancelled) {
+          setShowOnboarding(!s.complete)
+          setOnboardingReady(true)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setShowOnboarding(false)
+          setOnboardingReady(true)
+        }
+      })
+    const onReplay = () => setShowOnboarding(true)
+    window.addEventListener('hb-onboarding-replay', onReplay)
+    return () => {
+      cancelled = true
+      window.removeEventListener('hb-onboarding-replay', onReplay)
+    }
   }, [])
 
   const goArea = useCallback((next: AppArea) => {
@@ -407,6 +437,17 @@ function AuthedApp() {
         onSignedOut={() => {
           goTab('apps')
           goArea('home')
+        }}
+      />
+    )
+  }
+
+  if (onboardingReady && showOnboarding) {
+    return (
+      <OnboardingFlow
+        onDone={() => {
+          setShowOnboarding(false)
+          void refresh()
         }}
       />
     )

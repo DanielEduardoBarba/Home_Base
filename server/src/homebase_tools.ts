@@ -1,5 +1,11 @@
 import type { Project } from "./config";
-import { loadProjects, readVersion } from "./config";
+import {
+  deleteProject,
+  listPresets,
+  loadProjects,
+  readVersion,
+  upsertProjectFromInput,
+} from "./config";
 import { requestApproval } from "./approvals";
 import {
   deleteAccessWidget,
@@ -152,6 +158,12 @@ export function buildHomebaseTools(
         return json({ projects, activeProjectId: projectId });
       },
     },
+    homebase_list_presets: {
+      description:
+        "List project presets (templates with ports/actions). Use with homebase_project_upsert.",
+      parameters: { type: "object", properties: {} },
+      execute: async () => json({ presets: listPresets() }),
+    },
     homebase_project_status: {
       description: "Status for one project (ports, sessions, recent logs)",
       parameters: {
@@ -200,6 +212,51 @@ export function buildHomebaseTools(
   };
 
   if (!readonly) {
+    tools.homebase_project_upsert = {
+      description:
+        "Add or update a Home Base project. Pass absolute path; optional preset (example|homebase), id, name, ports, actions.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          preset: { type: "string" },
+          id: { type: "string" },
+          name: { type: "string" },
+          ports: { type: "array" },
+          actions: { type: "array" },
+        },
+        required: ["path"],
+      },
+      execute: async (args) => {
+        try {
+          const project = upsertProjectFromInput({
+            path: String(args.path || ""),
+            preset: args.preset ? String(args.preset) : undefined,
+            id: args.id ? String(args.id) : undefined,
+            name: args.name ? String(args.name) : undefined,
+            ports: Array.isArray(args.ports) ? args.ports : undefined,
+            actions: Array.isArray(args.actions) ? args.actions : undefined,
+          });
+          return json({ ok: true, project: await projectPublic(project) });
+        } catch (e) {
+          return json({
+            error: e instanceof Error ? e.message : String(e),
+          });
+        }
+      },
+    };
+    tools.homebase_project_delete = {
+      description: "Remove a project from Home Base (does not delete files on disk)",
+      parameters: {
+        type: "object",
+        properties: { projectId: { type: "string" } },
+        required: ["projectId"],
+      },
+      execute: async (args) => {
+        const id = String(args.projectId || "");
+        return json({ ok: deleteProject(id), id });
+      },
+    };
     tools.homebase_run_action = {
       description: "Run a configured project action (script/compose)",
       parameters: {

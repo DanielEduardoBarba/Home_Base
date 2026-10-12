@@ -30,6 +30,10 @@ import {
 } from "./sudo";
 import { appendTrace } from "./trace";
 import { pushNotification } from "./notifications";
+import {
+  cursorApiKeyConfigured,
+  loadCursorApiKey,
+} from "./secrets_vault";
 
 export type ChatImage = {
   mimeType: string;
@@ -483,6 +487,13 @@ export function deleteChat(
 }
 
 export function cursorConfigured(): boolean {
+  if (cursorApiKeyConfigured()) {
+    const k = loadCursorApiKey();
+    if (k && !(process.env.CURSOR_API_KEY || "").trim()) {
+      process.env.CURSOR_API_KEY = k;
+    }
+    return Boolean(k || (process.env.CURSOR_API_KEY || "").trim());
+  }
   return Boolean((process.env.CURSOR_API_KEY || "").trim());
 }
 
@@ -497,7 +508,7 @@ export async function listModels(): Promise<Record<string, unknown>> {
       configured: false,
       default: defaultModel(),
       models: [],
-      error: "CURSOR_API_KEY not set",
+      error: "Cursor API key not set — add it in Settings or onboarding",
     };
   }
   try {
@@ -833,7 +844,7 @@ async function createAgentHandle(opts: {
   };
 }> {
   const { Agent } = await import("@cursor/sdk");
-  const apiKey = (process.env.CURSOR_API_KEY || "").trim();
+  const apiKey = loadCursorApiKey() || (process.env.CURSOR_API_KEY || "").trim();
   const readonly = opts.mode === "ask";
   const tools = buildHomebaseTools(opts.projectId, readonly, {
     chatId: opts.chatId,
@@ -1860,7 +1871,7 @@ async function startRun(
   if (!cursorConfigured()) {
     broadcast(projectId, {
       type: "error",
-      error: "CURSOR_API_KEY not set",
+      error: "Cursor API key not set — add it in Settings or onboarding",
       chatId: opts.chatId,
     });
     return;

@@ -16,6 +16,8 @@ import { isLocalHostPage } from '../lib/types'
 import { readPinIdleMs, writePinIdleMs } from '../lib/uiPrefs'
 import { HoldButton } from './HoldButton'
 import { SharingTab } from './SharingTab'
+import { CloudflarePanel } from './CloudflarePanel'
+import { LegalAbout } from './LegalAbout'
 import { WireGuardPanel } from './WireGuardPanel'
 
 export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
@@ -26,6 +28,10 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
   const [notifyMsg, setNotifyMsg] = useState('')
   const [confirmCache, setConfirmCache] = useState(false)
   const [confirmSignOut, setConfirmSignOut] = useState(false)
+  const [softStep, setSoftStep] = useState(0)
+  const [hardStep, setHardStep] = useState(0)
+  const [hardTyped, setHardTyped] = useState('')
+  const [resetMsg, setResetMsg] = useState('')
   const [version, setVersion] = useState('')
   const [backup, setBackup] = useState(false)
   const [busy, setBusy] = useState('')
@@ -38,6 +44,10 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
   const [pinConfirm, setPinConfirm] = useState('')
   const [pinMsg, setPinMsg] = useState('')
   const [pinBusy, setPinBusy] = useState(false)
+  const [cursorConfigured, setCursorConfigured] = useState(false)
+  const [cursorKey, setCursorKey] = useState('')
+  const [cursorMsg, setCursorMsg] = useState('')
+  const [cursorBusy, setCursorBusy] = useState(false)
 
   useEffect(() => {
     void api
@@ -47,6 +57,10 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
         setPinIdleMin(Math.round(s.idleMs / 60_000))
         writePinIdleMs(s.idleMs)
       })
+      .catch(() => undefined)
+    void api
+      .cursorCredentials()
+      .then((s) => setCursorConfigured(s.configured))
       .catch(() => undefined)
   }, [])
 
@@ -476,7 +490,81 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
           </button>
         </section>
 
+        <section className="hb-surface p-3.5 space-y-3">
+          <h2 className="hb-label">Cursor API key</h2>
+          <p className="text-xs text-mute">
+            {cursorConfigured ? 'Key is set and encrypted on this laptop.' : 'Required for Chat.'}
+          </p>
+          <input
+            type="password"
+            autoComplete="off"
+            className="w-full rounded-[var(--radius-control)] bg-panel-2 border border-line px-3 py-2.5 text-sm font-mono"
+            placeholder={cursorConfigured ? 'Replace key…' : 'Paste key'}
+            value={cursorKey}
+            onChange={(e) => setCursorKey(e.target.value)}
+          />
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="hb-btn hb-btn-primary text-sm !min-h-10"
+              disabled={cursorBusy || !cursorKey.trim()}
+              onClick={() => {
+                setCursorBusy(true)
+                setCursorMsg('')
+                void api
+                  .setCursorCredentials(cursorKey.trim())
+                  .then(() => {
+                    setCursorConfigured(true)
+                    setCursorKey('')
+                    setCursorMsg('Saved')
+                  })
+                  .catch((e) => setCursorMsg(e instanceof Error ? e.message : String(e)))
+                  .finally(() => setCursorBusy(false))
+              }}
+            >
+              Save
+            </button>
+            {cursorConfigured && (
+              <button
+                type="button"
+                className="hb-btn hb-btn-ghost text-sm !min-h-10"
+                disabled={cursorBusy}
+                onClick={() => {
+                  setCursorBusy(true)
+                  void api
+                    .clearCursorCredentials()
+                    .then(() => {
+                      setCursorConfigured(false)
+                      setCursorMsg('Cleared')
+                    })
+                    .catch((e) => setCursorMsg(e instanceof Error ? e.message : String(e)))
+                    .finally(() => setCursorBusy(false))
+                }}
+              >
+                Remove
+              </button>
+            )}
+          </div>
+          {cursorMsg && <p className="text-xs text-sky">{cursorMsg}</p>}
+        </section>
+
+        <section className="hb-surface p-3.5 space-y-2.5">
+          <h2 className="hb-label">Setup</h2>
+          <button
+            type="button"
+            className="hb-btn hb-btn-ghost text-sm !min-h-10 w-full"
+            onClick={() => {
+              void api.saveOnboarding({ replay: true }).then(() => {
+                window.dispatchEvent(new Event('hb-onboarding-replay'))
+              })
+            }}
+          >
+            Replay setup
+          </button>
+        </section>
+
         <WireGuardPanel />
+        <CloudflarePanel />
 
         <section className="hb-surface p-3.5 space-y-2.5">
           <h2 className="hb-label">Services</h2>
@@ -532,6 +620,32 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
             <span className="text-xs text-mute">{cacheCount} items</span>
           </div>
           {cacheMsg && <p className="text-xs text-sky">{cacheMsg}</p>}
+
+          <div className="border-t border-line pt-2.5 space-y-2">
+            <p className="text-xs text-mute">
+              Reset data keeps password, PIN, Cursor key, and VPN / tunnel settings.
+            </p>
+            <button
+              type="button"
+              className="hb-btn hb-btn-ghost text-sm !min-h-10 w-full"
+              onClick={() => setSoftStep(1)}
+            >
+              Reset data
+            </button>
+            {local && (
+              <button
+                type="button"
+                className="hb-btn hb-btn-danger text-sm !min-h-10 w-full"
+                onClick={() => {
+                  setHardStep(1)
+                  setHardTyped('')
+                }}
+              >
+                Erase everything
+              </button>
+            )}
+            {resetMsg && <p className="text-xs text-sky">{resetMsg}</p>}
+          </div>
         </section>
 
         <section className="hb-surface p-3.5 space-y-2.5">
@@ -551,6 +665,8 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
             <SharingTab embedded />
           </section>
         )}
+
+        <LegalAbout />
       </div>
 
       {confirmCache && (
@@ -564,6 +680,112 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
               </button>
               <button type="button" className="hb-btn hb-btn-danger flex-1 !min-h-10" onClick={doClearCache}>
                 Clear
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {softStep > 0 && (
+        <div className="fixed inset-0 z-40 hb-overlay backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
+          <div className="w-full max-w-sm hb-surface p-4 space-y-3">
+            <h2 className="font-semibold text-sm">
+              {softStep === 1 ? 'Reset data?' : 'Are you sure?'}
+            </h2>
+            <p className="text-sm text-mute">
+              Clears chats, Home Access widgets, and notifications. Keeps password, PIN, Cursor key,
+              and remote access.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="hb-btn hb-btn-ghost flex-1 !min-h-10"
+                onClick={() => setSoftStep(0)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="hb-btn hb-btn-danger flex-1 !min-h-10"
+                onClick={() => {
+                  if (softStep === 1) {
+                    setSoftStep(2)
+                    return
+                  }
+                  void api
+                    .systemReset('soft')
+                    .then((r) => {
+                      setResetMsg(`Reset ${r.removed} items`)
+                      doClearCache()
+                      setSoftStep(0)
+                    })
+                    .catch((e) => {
+                      setResetMsg(e instanceof Error ? e.message : String(e))
+                      setSoftStep(0)
+                    })
+                }}
+              >
+                {softStep === 1 ? 'Continue' : 'Reset'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {hardStep > 0 && (
+        <div className="fixed inset-0 z-40 hb-overlay backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
+          <div className="w-full max-w-sm hb-surface p-4 space-y-3">
+            <h2 className="font-semibold text-sm">
+              {hardStep === 1 ? 'Erase everything?' : 'Are you sure?'}
+            </h2>
+            <p className="text-sm text-mute">
+              Removes password, PIN, keys, projects, chats, and remote access. Localhost only.
+            </p>
+            {hardStep === 1 && (
+              <label className="block space-y-1">
+                <span className="text-xs text-mute">Type ERASE</span>
+                <input
+                  className="w-full rounded-[var(--radius-control)] bg-panel-2 border border-line px-3 py-2.5 text-sm font-mono uppercase"
+                  value={hardTyped}
+                  onChange={(e) => setHardTyped(e.target.value)}
+                  autoFocus
+                />
+              </label>
+            )}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="hb-btn hb-btn-ghost flex-1 !min-h-10"
+                onClick={() => {
+                  setHardStep(0)
+                  setHardTyped('')
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="hb-btn hb-btn-danger flex-1 !min-h-10"
+                disabled={hardStep === 1 && hardTyped.trim().toUpperCase() !== 'ERASE'}
+                onClick={() => {
+                  if (hardStep === 1) {
+                    setHardStep(2)
+                    return
+                  }
+                  void api
+                    .systemReset('hard', 'ERASE')
+                    .then(() => {
+                      setHardStep(0)
+                      clearSession('signed_out')
+                      onSignedOut()
+                    })
+                    .catch((e) => {
+                      setResetMsg(e instanceof Error ? e.message : String(e))
+                      setHardStep(0)
+                    })
+                }}
+              >
+                {hardStep === 1 ? 'Continue' : 'Erase'}
               </button>
             </div>
           </div>

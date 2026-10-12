@@ -37,6 +37,12 @@ type WsData = {
 ensureRuntimeDirs();
 ensureAskpass();
 Object.assign(process.env, sudoAskpassEnv());
+try {
+  const { hydrateCursorApiKeyFromVault } = await import("./secrets_vault");
+  hydrateCursorApiKeyFromVault();
+} catch {
+  /* vault optional at boot */
+}
 startSecurityMonitor();
 
 function selfTest(): number {

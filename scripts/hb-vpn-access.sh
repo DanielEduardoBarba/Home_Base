@@ -38,12 +38,42 @@ net.ipv4.conf.all.rp_filter=2
 net.ipv4.conf.default.rp_filter=2
 EOF
 
+hb_port="$(
+  python3 - <<'PY'
+import os
+from pathlib import Path
+def port_from(path):
+    if not path.is_file():
+        return None
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if line.startswith("HOMEBASE_PORT="):
+            raw = line.split("=", 1)[1].strip().strip('"').strip("'")
+            try:
+                n = int(raw)
+            except ValueError:
+                return None
+            if 1 <= n <= 65535:
+                return n
+    return None
+for p in (
+    Path("/var/lib/homebased/.env"),
+    Path(os.environ.get("ROOT", "")) / ".env",
+):
+    n = port_from(p)
+    if n is not None:
+        print(n)
+        raise SystemExit(0)
+print(8080)
+PY
+)"
+
 ports="$(
-  ROOT="$ROOT" python3 - <<'PY'
+  ROOT="$ROOT" HB_PORT="$hb_port" python3 - <<'PY'
 import json
 import os
 from pathlib import Path
-ports = {8888}
+ports = {int(os.environ.get("HB_PORT") or 8080)}
 candidates = [
     Path(os.environ.get("ROOT", "")) / "config" / "projects.json",
     Path("/var/lib/homebased/config/projects.json"),
@@ -137,11 +167,11 @@ declare -A seen=()
 for ip in "${probe_ips[@]}"; do
   [[ -n "${seen[$ip]:-}" ]] && continue
   seen[$ip]=1
-  url="http://${ip}:8888/api/health"
+  url="http://${ip}:${hb_port}/api/health"
   if curl -fsS --max-time 3 "$url" >/dev/null; then
     echo "  ok $url"
   else
     echo "  FAIL $url" >&2
   fi
 done
-echo "==> From a VPN client open: http://<wg-host-ip>:8888/ (not the Wi‑Fi 192.168.x address unless routed)"
+echo "==> From a VPN client open: http://<wg-host-ip>:${hb_port}/ (not the Wi‑Fi 192.168.x address unless routed)"
