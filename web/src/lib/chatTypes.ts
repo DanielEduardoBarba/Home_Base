@@ -1,6 +1,19 @@
 /** Shared chat types — used by ChatPanel (page + dock). */
 
-export type ChatRole = 'user' | 'assistant' | 'thinking' | 'tool' | 'file' | 'status' | 'system'
+export type ChatRole =
+  | 'user'
+  | 'assistant'
+  | 'thinking'
+  | 'tool'
+  | 'file'
+  | 'status'
+  | 'system'
+  | 'plan'
+  | 'todo'
+  | 'ask'
+  | 'debug'
+  | 'task'
+  | 'mode_prompt'
 
 export type ChatImage = {
   mimeType: string
@@ -10,6 +23,16 @@ export type ChatImage = {
   width?: number
   height?: number
 }
+
+export type TodoStatus = 'pending' | 'inProgress' | 'completed' | 'cancelled'
+
+export type ChatTodoItem = {
+  id?: string
+  content: string
+  status: TodoStatus
+}
+
+export type PlanCardState = 'open' | 'building' | 'cancelled' | 'done'
 
 export type ChatMsg = {
   id: string
@@ -30,8 +53,40 @@ export type ChatMsg = {
     detail?: string
     callId?: string
     sessionId?: string
+    /** Absolute or workspace path for edit/read tools. */
+    path?: string
+    /** Shell command when this tool ran a command. */
+    command?: string
+    /** Captured shell output (trimmed). */
+    output?: string
+    /** Pre-edit file snapshot for AI edits. */
+    before?: string
+    /** Post-edit file snapshot for AI edits. */
+    after?: string
   }
-  file?: { path: string; action: string }
+  file?: {
+    path: string
+    action: string
+    before?: string
+    after?: string
+  }
+  /** Structured todo checklist (UpdateTodos). */
+  todos?: ChatTodoItem[]
+  /** Plan card lifecycle. */
+  planState?: PlanCardState
+  /** Mode-switch proposal. */
+  modePrompt?: {
+    from?: string
+    to: ChatMode
+    reason?: string
+    status?: 'pending' | 'accepted' | 'denied'
+    approvalId?: string
+  }
+  /** Subagent / task status line. */
+  task?: {
+    status?: string
+    name?: string
+  }
 }
 
 export function chatImageSrc(img: ChatImage): string {
@@ -76,6 +131,15 @@ export type PresentRequest = {
   newShell?: boolean
   /** Absolute or project-relative path for Files. */
   path?: string
+  /** Home Agent: strip chrome — editor / shell replay only. */
+  minimal?: boolean
+  /** AI edit snapshots for +/- diff in the editor. */
+  before?: string
+  after?: string
+  action?: string
+  /** Shell command + captured output for minimal replay. */
+  command?: string
+  output?: string
 }
 
 export type WorkScene = PresentRequest['scene']

@@ -3,6 +3,8 @@
 import dynamic from 'next/dynamic'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { AppsTab } from './components/AppsTab'
+import { HomeAccessTab } from './components/HomeAccessTab'
+import { HomeDashboard } from './components/HomeDashboard'
 import { Login } from './components/Login'
 import { NotificationCenter } from './components/NotificationCenter'
 import { PullToRefresh } from './components/PullToRefresh'
@@ -14,10 +16,12 @@ import { installClientLog } from './lib/clientLog'
 import { NotifyProvider, useNotify } from './lib/NotifyContext'
 import { runSceneRefresh } from './lib/sceneRefresh'
 import { applyMobileSafeTop } from './lib/theme'
-import { type Project, type Tab } from './lib/types'
+import { type AppArea, type Project, type Tab } from './lib/types'
 import {
+  readLastArea,
   readLastProjectId,
   readLastTab,
+  writeLastArea,
   writeLastProjectId,
   writeLastTab,
 } from './lib/uiPrefs'
@@ -55,18 +59,39 @@ const SettingsTab = dynamic(() => import('./components/SettingsTab').then((m) =>
   ssr: false,
   loading: tabFallback,
 })
+const HomeAgentTab = dynamic(
+  () => import('./components/HomeAgentTab').then((m) => m.HomeAgentTab),
+  { ssr: false, loading: tabFallback },
+)
+const PinLock = dynamic(() => import('./components/PinLock').then((m) => m.PinLock), {
+  ssr: false,
+})
+const OnboardingFlow = dynamic(
+  () => import('./components/OnboardingFlow').then((m) => m.OnboardingFlow),
+  { ssr: false },
+)
 
-/** Mobile-first: Apps · Work · Chat · Shell · Files · View · Logs · More (Alerts = status-bar bell) */
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'apps', label: 'Apps' },
+/** Primary dock: Work (expandable) · View · Logs · More (Alerts = status-bar bell) */
+const PRIMARY_TABS: { id: Tab; label: string }[] = [
   { id: 'work', label: 'Work' },
-  { id: 'cursor', label: 'Chat' },
-  { id: 'shell', label: 'Shell' },
-  { id: 'files', label: 'Files' },
   { id: 'view', label: 'View' },
   { id: 'logs', label: 'Logs' },
   { id: 'settings', label: 'More' },
 ]
+
+/** Nested under Work — first Work tap expands; second tap opens the Work scene */
+const WORK_SUBTABS: { id: Tab; label: string }[] = [
+  { id: 'apps', label: 'Apps' },
+  { id: 'cursor', label: 'Chat' },
+  { id: 'shell', label: 'Shell' },
+  { id: 'files', label: 'Files' },
+]
+
+const WORK_SUB_IDS = new Set<Tab>(WORK_SUBTABS.map((t) => t.id))
+
+function isWorkFamily(id: Tab): boolean {
+  return id === 'work' || WORK_SUB_IDS.has(id)
+}
 
 function TabIcon({ id }: { id: Tab }) {
   const common = { className: 'hb-nav-icon', viewBox: '0 0 24 24', 'aria-hidden': true as const }
@@ -136,6 +161,7 @@ function TabIcon({ id }: { id: Tab }) {
 type HostLink = 'live' | 'reconnecting' | 'unreachable'
 
 function AuthedApp() {
+  const [area, setArea] = useState<AppArea>('home')
   const [tab, setTab] = useState<Tab>('apps')
   const [projects, setProjects] = useState<Project[]>([])
   const [selectedId, setSelectedId] = useState('')
@@ -156,24 +182,116 @@ function AuthedApp() {
   const failStreak = useRef(0)
   const { unread, inboxOpen, toggleInbox, closeInbox, unlockAudio } = useNotify()
   const [viewVisited, setViewVisited] = useState(false)
+  const [workMenuOpen, setWorkMenuOpen] = useState(false)
+  const [showOnboarding, setShowOnboarding] = useState(false)
+  const [onboardingReady, setOnboardingReady] = useState(false)
 
   useEffect(() => {
+    setArea(readLastArea('home'))
     setTab(readLastTab('apps'))
     setSelectedId(readLastProjectId())
     setHostLabel(location.hostname || 'host')
   }, [])
 
   useEffect(() => {
+    let cancelled = false
+    void api
+      .onboarding()
+      .then((s) => {
+        if (!cancelled) {
+          setShowOnboarding(!s.complete)
+          setOnboardingReady(true)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setShowOnboarding(false)
+          setOnboardingReady(true)
+        }
+      })
+    const onReplay = () => setShowOnboarding(true)
+    window.addEventListener('hb-onboarding-replay', onReplay)
+    return () => {
+      cancelled = true
+      window.removeEventListener('hb-onboarding-replay', onReplay)
+    }
+  }, [])
+
+  const goArea = useCallback((next: AppArea) => {
+    writeLastArea(next)
+    setArea(next)
+    setWorkMenuOpen(false)
+    closeInbox()
+  }, [closeInbox])
+
+  useEffect(() => {
     if (tab === 'view') setViewVisited(true)
   }, [tab])
 
-  const tabs = useMemo(() => TABS, [])
+  useEffect(() => {
+    if (!isWorkFamily(tab)) setWorkMenuOpen(false)
+  }, [tab])
+
+  const primaryTabs = useMemo(() => PRIMARY_TABS, [])
+  const workSubtabs = useMemo(() => WORK_SUBTABS, [])
   const activeProject = projects.find((p) => p.id === selectedId) || projects[0]
 
   const goTab = useCallback((id: Tab) => {
     writeLastTab(id)
     setTab(id)
   }, [])
+
+  const onPrimaryNav = useCallback(
+    (id: Tab) => {
+      unlockAudio()
+      closeInbox()
+      if (id === 'work') {
+        if (!workMenuOpen) {
+          setWorkMenuOpen(true)
+          return
+        }
+        // Second tap on Work → Work scene
+        setWorkPresent(null)
+        goTab('work')
+        return
+      }
+      setWorkMenuOpen(false)
+      setWorkPresent(null)
+      goTab(id)
+    },
+    [closeInbox, goTab, unlockAudio, workMenuOpen],
+  )
+
+  const onWorkSubNav = useCallback(
+    (id: Tab) => {
+      unlockAudio()
+      closeInbox()
+      setWorkPresent(null)
+      setWorkMenuOpen(false)
+      goTab(id)
+    },
+    [closeInbox, goTab, unlockAudio],
+  )
+
+  // Close Work submenu on outside tap / Escape
+  useEffect(() => {
+    if (!workMenuOpen) return
+    const onPointer = (e: PointerEvent) => {
+      const t = e.target
+      if (!(t instanceof Element)) return
+      if (t.closest('.hb-nav')) return
+      setWorkMenuOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setWorkMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', onPointer, true)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('pointerdown', onPointer, true)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [workMenuOpen])
 
   const selectProject = useCallback((id: string) => {
     writeLastProjectId(id)
@@ -318,6 +436,18 @@ function AuthedApp() {
       <SettingsTab
         onSignedOut={() => {
           goTab('apps')
+          goArea('home')
+        }}
+      />
+    )
+  }
+
+  if (onboardingReady && showOnboarding) {
+    return (
+      <OnboardingFlow
+        onDone={() => {
+          setShowOnboarding(false)
+          void refresh()
         }}
       />
     )
@@ -328,8 +458,89 @@ function AuthedApp() {
   const cursorHint = activeProject?.cursor
   const cursorRunning = !!(cursorHint?.running || cursorHint?.active)
 
+  if (area === 'home') {
+    return (
+      <div className="hb-app-shell h-full flex flex-col">
+        <PullToRefresh onRefresh={refresh} />
+        {refreshing && (
+          <div className="hb-refresh-overlay" role="status" aria-live="polite" aria-label="Refreshing">
+            <div className="hb-spinner" />
+          </div>
+        )}
+        <main className="flex-1 min-h-0 overflow-hidden">
+          <HomeDashboard
+            version={version}
+            hostLabel={hostLabel}
+            hostLink={hostLink}
+            vpnActive={vpnActive}
+            onOpenAgent={() => {
+              unlockAudio()
+              goArea('agent')
+            }}
+            onOpenHomework={() => {
+              unlockAudio()
+              goArea('homework')
+            }}
+            onOpenAccess={() => {
+              unlockAudio()
+              goArea('access')
+            }}
+          />
+        </main>
+        <ToastStack />
+        <NotificationCenter />
+      </div>
+    )
+  }
+
+  if (area === 'agent') {
+    return (
+      <div className="hb-app-shell h-full flex flex-col">
+        <PullToRefresh onRefresh={refresh} />
+        {refreshing && (
+          <div className="hb-refresh-overlay" role="status" aria-live="polite" aria-label="Refreshing">
+            <div className="hb-spinner" />
+          </div>
+        )}
+        <main className="flex-1 min-h-0 overflow-hidden">
+          <HomeAgentTab
+            projects={projects}
+            selectedId={selectedId}
+            onSelect={selectProject}
+            onHome={() => goArea('home')}
+          />
+        </main>
+        <ToastStack />
+        <NotificationCenter />
+      </div>
+    )
+  }
+
+  if (area === 'access') {
+    return (
+      <div className="hb-app-shell h-full flex flex-col">
+        <PullToRefresh onRefresh={refresh} />
+        {refreshing && (
+          <div className="hb-refresh-overlay" role="status" aria-live="polite" aria-label="Refreshing">
+            <div className="hb-spinner" />
+          </div>
+        )}
+        <main className="flex-1 min-h-0 overflow-hidden">
+          <HomeAccessTab
+            projects={projects}
+            selectedId={selectedId}
+            onSelect={selectProject}
+            onHome={() => goArea('home')}
+          />
+        </main>
+        <ToastStack />
+        <NotificationCenter />
+      </div>
+    )
+  }
+
   return (
-    <div className="hb-app-shell h-full flex flex-col">
+    <div className={`hb-app-shell h-full flex flex-col${workMenuOpen ? ' hb-nav-work-open' : ''}`}>
       <PullToRefresh onRefresh={refresh} />
       {refreshing && (
         <div className="hb-refresh-overlay" role="status" aria-live="polite" aria-label="Refreshing">
@@ -337,6 +548,19 @@ function AuthedApp() {
         </div>
       )}
       <div className="hb-status-bar">
+        <button
+          type="button"
+          className="hb-status-home shrink-0"
+          onClick={() => {
+            unlockAudio()
+            goArea('home')
+          }}
+          aria-label="Home dashboard"
+          title="Home"
+        >
+          Home
+        </button>
+        <span className="hb-status-sep shrink-0">·</span>
         <div className="hb-status-meta min-w-0" role="status" aria-live="polite">
           <span
             className={`hb-status-dot ${
@@ -439,30 +663,55 @@ function AuthedApp() {
       <ToastStack />
       <NotificationCenter />
 
-      <nav className="hb-nav" aria-label="Primary">
+      <nav
+        className="hb-nav"
+        aria-label="Primary"
+        data-work-open={workMenuOpen ? 'true' : 'false'}
+      >
+        {workMenuOpen && (
+          <div
+            className="hb-nav-work-tray"
+            role="group"
+            aria-label="Work"
+          >
+            {workSubtabs.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => onWorkSubNav(t.id)}
+                className="hb-nav-item hb-nav-item--sub"
+                data-active={tab === t.id}
+                aria-current={tab === t.id ? 'page' : undefined}
+              >
+                <TabIcon id={t.id} />
+                <span className="truncate max-w-full px-0.5">{t.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <div
           className="hb-nav-dock"
-          style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}
+          style={{ gridTemplateColumns: `repeat(${primaryTabs.length}, minmax(0, 1fr))` }}
         >
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => {
-                unlockAudio()
-                closeInbox()
-                // Drop stale present so revisiting Work via nav opens clean Apps scene
-                if (t.id !== 'work') setWorkPresent(null)
-                goTab(t.id)
-              }}
-              className="hb-nav-item"
-              data-active={tab === t.id}
-              aria-current={tab === t.id ? 'page' : undefined}
-            >
-              <TabIcon id={t.id} />
-              <span className="truncate max-w-full px-0.5">{t.label}</span>
-            </button>
-          ))}
+          {primaryTabs.map((t) => {
+            const workActive = t.id === 'work' && isWorkFamily(tab)
+            const active = t.id === 'work' ? workActive : tab === t.id
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => onPrimaryNav(t.id)}
+                className="hb-nav-item"
+                data-active={active}
+                aria-current={active ? 'page' : undefined}
+                aria-expanded={t.id === 'work' ? workMenuOpen : undefined}
+                aria-haspopup={t.id === 'work' ? 'true' : undefined}
+              >
+                <TabIcon id={t.id} />
+                <span className="truncate max-w-full px-0.5">{t.label}</span>
+              </button>
+            )
+          })}
         </div>
       </nav>
     </div>
@@ -501,7 +750,9 @@ export default function App() {
 
   return (
     <NotifyProvider>
-      <AuthedApp />
+      <PinLock>
+        <AuthedApp />
+      </PinLock>
     </NotifyProvider>
   )
 }

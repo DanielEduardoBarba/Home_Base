@@ -1,35 +1,56 @@
 # Home Base — agent guide
 
-Generic control plane. **Production `:8888`** (systemd as root). **Dev API `:8081`**, **Next `:3081`** (proxies `/api` + `/ws`) — one off the usual defaults so `./build.sh --run` can sit beside prod. Projects are configured in **gitignored** `config/projects.json` — nothing is hardcoded until added via CLI.
+Generic control plane. **Production** port from `HOMEBASE_PORT` in `.env` (default **`:8080`**, systemd as root). **Dev API `:8081`**, **Next `:3081`** (proxies `/api` + `/ws`) — can sit beside prod. Projects are configured in **gitignored** `config/projects.json` — nothing is hardcoded until added via CLI.
 
 **Backend is Bun** (`server/`). **Frontend is Next.js** static export (`web/` → `web/dist`).
 
 ## Setup
 
 ```bash
-./build.sh --setup                 # Bun server + Next web deps
-./build.sh --clean                 # Drop Python/Nuitka leftovers, .runtime, setup/build caches
+./build.sh --onboarding            # Recommended: setup + seed Home Base project + deploy (Linux)
+./build.sh --setup                 # Bun + Next deps + seed this repo as homebase project
+./build.sh --clean                 # Drop leftovers, .runtime, setup/build caches
 ./build.sh --add-project --preset example --path /path/to/your-repo
-./build.sh --run                   # Bun API + Next (proxied on :3081)
+./build.sh --run                   # Dev: Bun API + Next (proxied on :3081)
 ```
 
-Presets never embed a default filesystem path — always pass `--path`.
+`--onboarding` / `--setup` auto-register this checkout as the **Home Base** project so Chat works immediately. Prefer `./build.sh --onboarding` for new installs (Linux deploys; Mac falls back to setup + `--run`).
 
-Open the UI at `http://localhost:3081` in dev (Next). Production is `http://<host>:8888/`.
+Presets never embed a default filesystem path — always pass `--path` when adding other apps. UI: Homework → Apps **+**. Agents: `homebase_list_presets` / `homebase_project_upsert` / `homebase_project_delete`.
+
+Open the UI at the URL printed by onboarding (`:8080` prod by default, or `:3081` in dev). Cursor API key is set in-app (encrypted at rest); `.env` is created on setup when missing.
+
+MIT · DevCon1 Solutions · https://devcon1solutions.com · daniel@devcon1solutions.com — use at your own risk.
 
 ## Same-origin client API
 
 SPA fetch/WebSocket paths are always relative (`/api/...`, `/ws/...` via `location.host`). Dev and prod use the same client code — Next’s `scripts/dev.mjs` proxies those paths to the API in development; the Bun backend serves SPA + API together in production.
 
-## UI tabs
+## UI areas (after login)
 
-Apps · **Work** · Chat · Shell · Files · **View** · Logs · **More/Settings**. Alerts live in the status bar (host/live).
+**Home** dashboard → **Home Agent** (streamlined chat) · **Homework** (full control plane) · **Home Access** (house panel).
+
+### Homework tabs
+
+Apps · **Work** · Chat · Shell · Files · **View** · Logs · **More/Settings**. Alerts live in the status bar (host/live). Status bar **Home** returns to the dashboard.
 
 - **Work** — switch Apps / Shell / Files in one workspace with a bottom-right chat dock (Cursor-like). Chat can present a shell or file into the scene.
 - **Chat** — full-page agent; same engine as the Work dock; can jump into Work to show Apps/Shell/Files.
 - **Shell** — standalone PTY + session attach. Under systemd root, Shell/Run/Expo PTYs `setpriv` to the seat user and load that user’s login+interactive env (nvm/pnpm/cargo) so they match a native laptop terminal.
 - **View** — JWT-gated live laptop screen (`/ws/view`) with pointer/keyboard; Bun seat-user `--view-worker` (libX11 `XGetImage` + XTest via `bun:ffi`). Root systemd uses setpriv/runuser to the seat owner (cannot open the user display as root). Explicit Connect/Disconnect; maximize mode; adaptive JPEG. Capture runs only while connected.
-- Alerts bell in the thin top status bar opens a top→bottom near-full inbox; History is a right drawer. Chat supports English speech→text; Cursor done pings toast/sound and optional browser notifications. Theme, notification prefs, cache clear, sign-out, and localhost Share/password live under More.
+- Alerts bell in the thin top status bar opens a top→bottom near-full inbox; History is a right drawer. Chat supports English speech→text; Cursor done pings toast/sound and optional browser notifications. More: theme, PIN, Cursor key, WireGuard / Cloudflare, replay setup, reset/erase, Share/password, About/legal.
+
+### Home Agent
+
+Minimal Work+Chat: pick project → folder (app / recent / browse) → chat list → full-screen agent. Same Cursor engine as Homework Chat. Present→shell/files is a bare scene with only ← Chat. Mic **talk mode** dictates + green Confirm send + speaks replies (TTS) while armed.
+
+### Home Access
+
+Panel of **button / toggle / slider / gauge** widgets backed by `/api/home-access*` and `homebase_access_*` tools. Hooks: `script` · `http` · `websocket` · `static`. State in `.runtime/home_access.json`. Floating Chat dock helps wire IoT/scripts. Prefer adding widgets over rewriting the framework (see `.cursor/rules/home-access.mdc`).
+
+### Chat persistence
+
+Chat tabs/messages persist under `.runtime/chats/<projectId>.json` (survives `--deploy`). Saves run at send, debounced during streaming, on run end, and on SIGTERM/SIGINT. Only user tab-delete clears a chat.
 
 ## Config model
 
@@ -78,11 +99,11 @@ Committed presets: `config/presets/example.json` and `config/presets/homebase.js
 - Version: repo `VERSION` file; status bar + `/api/version`. **Always increment** on code/behavior changes (patch by default).
 - Deploy also syncs `CURSOR_MODEL` / `HOMEBASE_JWT_SECRET`. Cursor chat uses in-process `@cursor/sdk` (no separate Node bridge).
 
-Writable state: `/var/lib/homebased` (`HOMEBASE_HOME`). Unit **homebased** runs as **root** on **port 8888**.
+Writable state: `/var/lib/homebased` (`HOMEBASE_HOME`). Unit **homebased** runs as **root**; listen port from `HOMEBASE_PORT` in `.env` (default **8080**).
 
 ## Capabilities vs non-goals
 
-- **Supports:** local Cursor agents (Home Base context + `homebase_*` in-process tools), project actions/PTY, Files (project + absolute host with JWT), View (X11 screen + input over JWT WS), WireGuard setup/manage (QR onboarding) + homebased restart
+- **Supports:** local Cursor agents (Home Base context + `homebase_*` in-process tools), project actions/PTY, Files (project + absolute host with JWT), View (X11 screen + input over JWT WS), WireGuard setup/manage (QR onboarding) + homebased restart, Home Access widgets (`homebase_access_*`), durable chat under `.runtime/chats/`
 - **Self-deploy / restart:** `./build.sh --deploy` from a Chat/Shell PTY under homebased schedules a detached systemd oneshot (not killed by `KillMode=control-group`). API `POST /api/system/restart/homebased` and tool `homebase_restart_homebased` use `systemd-run --on-active=1s` the same way.
 - **Does not:** Cursor IDE buffer sync, cloud agents, public internet exposure, Wayland capture (X11 / XWayland only)
 

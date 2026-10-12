@@ -1,10 +1,11 @@
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -16,6 +17,16 @@ export function bundleRoot(): string {
   // ./build.sh --setup/--run never pick /usr/share just because prod is installed.
   const sourceRoot = resolve(here, "../..");
   if (existsSync(join(sourceRoot, "build.sh"))) return sourceRoot;
+  // Bun --compile: import.meta is inside the binary; use execPath (…/dist/homebase
+  // → repo root) so local probes don't inherit a stale /usr/share VERSION.
+  try {
+    const execDir = dirname(process.execPath);
+    const fromDist = resolve(execDir, "..");
+    if (existsSync(join(fromDist, "build.sh"))) return fromDist;
+    if (existsSync(join(execDir, "VERSION"))) return execDir;
+  } catch {
+    /* ignore */
+  }
   const share = "/usr/share/homebased";
   if (existsSync(join(share, "web", "dist", "index.html"))) return share;
   return sourceRoot;
@@ -77,7 +88,13 @@ export const AUTH_PATH = join(RUNTIME_DIR, "auth.json");
 export const JWT_SECRET_PATH = join(RUNTIME_DIR, "jwt_secret");
 
 export function ensureRuntimeDirs(): void {
-  for (const d of [ROOT, RUNTIME_DIR, join(RUNTIME_DIR, "logs"), CONFIG_DIR]) {
+  for (const d of [
+    ROOT,
+    RUNTIME_DIR,
+    join(RUNTIME_DIR, "logs"),
+    join(RUNTIME_DIR, "chats"),
+    CONFIG_DIR,
+  ]) {
     try {
       mkdirSync(d, { recursive: true });
     } catch {
@@ -150,6 +167,93 @@ export function loadPreset(name: string): Record<string, unknown> {
     throw new Error(`Unknown preset: ${name}`);
   }
   return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+}
+
+export function listPresets(): { id: string; name: string }[] {
+  const dir = presetsDir();
+  if (!existsSync(dir)) return [];
+  const out: { id: string; name: string }[] = [];
+  for (const name of readdirSync(dir).sort()) {
+    if (!name.endsWith(".json")) continue;
+    const id = name.slice(0, -5);
+    try {
+      const raw = JSON.parse(readFileSync(join(dir, name), "utf8")) as {
+        id?: string;
+        name?: string;
+      };
+      out.push({
+        id: String(raw.id || id),
+        name: String(raw.name || raw.id || id),
+      });
+    } catch {
+      out.push({ id, name: id });
+    }
+  }
+  return out;
+}
+
+function slugId(s: string): string {
+  return (
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "")
+      .replace(/^-+|-+$/g, "") || "app"
+  );
+}
+
+/** Upsert from preset name and/or raw fields (used by REST + Chat tools). */
+export function upsertProjectFromInput(input: {
+  path: string;
+  preset?: string;
+  id?: string;
+  name?: string;
+  ports?: unknown[];
+  actions?: unknown[];
+}): Project {
+  const abs = resolve(String(input.path || "").trim());
+  if (!abs) throw new Error("path required");
+  let raw: Record<string, unknown>;
+  if (input.preset) {
+    raw = { ...loadPreset(input.preset) };
+    delete raw.path;
+  } else {
+    raw = {
+      ports: input.ports || [],
+      actions: input.actions || [],
+    };
+  }
+  raw.path = abs;
+  raw.id = String(input.id || raw.id || slugId(basename(abs)));
+  raw.name = String(input.name || raw.name || basename(abs));
+  if (input.ports) raw.ports = input.ports;
+  if (input.actions) raw.actions = input.actions;
+  return upsertProject(raw);
+}
+
+export function deleteProject(id: string): boolean {
+  const want = String(id || "").trim();
+  if (!want) throw new Error("project id required");
+  ensureProjectsFile();
+  const data = JSON.parse(
+    readFileSync(PROJECTS_PATH, "utf8") || '{"projects":[]}',
+  ) as { projects?: Record<string, unknown>[] };
+  const projects = Array.isArray(data.projects) ? data.projects : [];
+  const next = projects.filter((p) => String(p?.id) !== want);
+  if (next.length === projects.length) return false;
+  data.projects = next;
+  writeFileSync(PROJECTS_PATH, `${JSON.stringify(data, null, 2)}\n`);
+  return true;
+}
+
+/** Seed / refresh the Home Base repo itself as a project. */
+export function seedHomebaseProject(repoRoot?: string): Project {
+  const root = resolve(repoRoot || BUNDLE_ROOT);
+  return upsertProjectFromInput({
+    path: root,
+    preset: "homebase",
+    id: "homebase",
+    name: "Home Base",
+  });
 }
 
 function ensureProjectsFile(): void {
@@ -259,7 +363,7 @@ export function bindHost(): string {
 }
 
 export function bindPort(): number {
-  const raw = (process.env.HOMEBASE_PORT || "8081").trim();
+  const raw = (process.env.HOMEBASE_PORT || "8080").trim();
   const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : 8081;
+  return Number.isFinite(n) && n > 0 ? n : 8080;
 }

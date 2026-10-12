@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { api } from '../lib/api'
 import { setSession, takeAuthLostReason } from '../lib/auth'
 import { isLocalHostPage } from '../lib/types'
+import { BrandTitle } from './BrandTitle'
+import { LegalAbout } from './LegalAbout'
+import { useServerIdentity } from '../lib/serverIdentity'
 
 const AUTH_REASON_COPY: Record<string, string> = {
   expired: 'Session expired — sign in again',
@@ -59,6 +62,7 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
   const [autoStatus, setAutoStatus] = useState('')
   const [canBootstrap, setCanBootstrap] = useState<boolean | null>(null)
   const local = isLocalHostPage()
+  const { displayName } = useServerIdentity()
 
   useEffect(() => {
     const reason = takeAuthLostReason()
@@ -174,9 +178,8 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
     <div className="hb-login-shell flex flex-col justify-end sm:justify-center px-5 pb-14 pt-16 sm:px-8">
       <div className="w-full max-w-md mx-auto hb-enter">
         <div className="hb-brand-rule" />
-        <h1 className="font-display text-[clamp(2.6rem,11vw,4.25rem)] font-extrabold leading-[0.92] tracking-tight">
-          Home
-          <span className="text-accent"> Base</span>
+        <h1 className="font-display text-[clamp(2.2rem,9vw,3.75rem)] font-extrabold leading-[0.95] tracking-tight">
+          <BrandTitle name={displayName} />
         </h1>
         <p className="mt-3 text-mute text-sm leading-relaxed max-w-sm">
           {setupMode
@@ -232,7 +235,7 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
                 />
               </label>
               {password.length > 0 && (
-                <ul className="text-[11px] font-mono space-y-0.5 pt-0.5">
+                <ul className="text-xs font-mono space-y-0.5 pt-0.5">
                   {['10+ characters', 'lowercase', 'uppercase', 'digit', 'special character'].map(
                     (label) => {
                       const key =
@@ -274,6 +277,9 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
             {setupMode ? 'Create password' : 'Enter'}
           </button>
         </form>
+        <div className="mt-8">
+          <LegalAbout compact />
+        </div>
       </div>
     </div>
   )

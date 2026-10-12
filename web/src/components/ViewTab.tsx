@@ -244,9 +244,27 @@ export function ViewTab() {
 
   useEffect(() => {
     document.documentElement.classList.toggle('hb-view-max', maximized)
-    if (!maximized) setMenuOpen(false)
     return () => document.documentElement.classList.remove('hb-view-max')
   }, [maximized])
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const onPointer = (e: globalThis.PointerEvent) => {
+      const t = e.target
+      if (!(t instanceof Element)) return
+      if (t.closest('.hb-view-maxbar, .hb-chrome, .hb-view-menu')) return
+      setMenuOpen(false)
+    }
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', onPointer, true)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('pointerdown', onPointer, true)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [menuOpen])
 
   useEffect(() => {
     try {
@@ -1214,76 +1232,95 @@ export function ViewTab() {
   const link =
     conn === 'live' ? 'text-ok' : conn === 'reconnecting' || conn === 'connecting' ? 'text-amber' : 'text-danger'
 
+  /** Display / mode / quality. In maximize, Stop + Exit live here too (toolbar hits are unreliable). */
   const controls = (
     <>
       {monitors.filter((m) => m.index > 0).length >= 2 && (
-        <select
-          className="hb-select hb-select-sm"
-          aria-label="Display"
-          value={monitor}
-          onChange={(e) => setMonitor(Number(e.target.value))}
-        >
-          {monitors.map((m) => (
-            <option key={m.index} value={m.index}>
-              {m.index === 0 ? 'All' : `D${m.index}`} · {m.width}×{m.height}
-            </option>
-          ))}
-        </select>
-      )}
-      <div className="hb-view-mode" role="group" aria-label="Control mode">
-        <button
-          type="button"
-          className={`hb-view-mode-btn ${control === 'touch' ? 'on' : ''}`}
-          aria-pressed={control === 'touch'}
-          title="Trackpad: drag moves the PC cursor · tap = click · hold = right-click"
-          onClick={() => setControl('touch')}
-        >
-          Touch
-        </button>
-        <button
-          type="button"
-          className={`hb-view-mode-btn ${control === 'mouse' ? 'on' : ''}`}
-          aria-pressed={control === 'mouse'}
-          title="Point: tap where you want the cursor · hold = right-click"
-          onClick={() => setControl('mouse')}
-        >
-          Point
-        </button>
-      </div>
-      <div className="hb-view-mode" role="group" aria-label="Stream quality">
-        {QUALITY_OPTIONS.map((q) => (
-          <button
-            key={q.id}
-            type="button"
-            className={`hb-view-mode-btn ${preset === q.id ? 'on' : ''}`}
-            aria-pressed={preset === q.id}
-            title={q.title}
-            onClick={() => setPreset(q.id)}
+        <label className="hb-view-menu-field">
+          <span>Display</span>
+          <select
+            className="hb-select hb-select-sm w-full"
+            aria-label="Display"
+            value={monitor}
+            onChange={(e) => setMonitor(Number(e.target.value))}
           >
-            {q.label}
+            {monitors.map((m) => (
+              <option key={m.index} value={m.index}>
+                {m.index === 0 ? 'All' : `D${m.index}`} · {m.width}×{m.height}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      <div className="hb-view-menu-field">
+        <span>Control</span>
+        <div className="hb-view-mode hb-view-mode--stretch" role="group" aria-label="Control mode">
+          <button
+            type="button"
+            className={`hb-view-mode-btn ${control === 'touch' ? 'on' : ''}`}
+            aria-pressed={control === 'touch'}
+            title="Trackpad: drag moves the PC cursor · tap = click · hold = right-click"
+            onClick={() => setControl('touch')}
+          >
+            Touch
           </button>
-        ))}
+          <button
+            type="button"
+            className={`hb-view-mode-btn ${control === 'mouse' ? 'on' : ''}`}
+            aria-pressed={control === 'mouse'}
+            title="Point: tap where you want the cursor · hold = right-click"
+            onClick={() => setControl('mouse')}
+          >
+            Point
+          </button>
+        </div>
       </div>
-      {wanted ? (
-        <>
-          {!maximized && (
+      <div className="hb-view-menu-field">
+        <span>Quality</span>
+        <div className="hb-view-mode hb-view-mode--stretch hb-view-mode--wrap" role="group" aria-label="Stream quality">
+          {QUALITY_OPTIONS.map((q) => (
+            <button
+              key={q.id}
+              type="button"
+              className={`hb-view-mode-btn ${preset === q.id ? 'on' : ''}`}
+              aria-pressed={preset === q.id}
+              title={q.title}
+              onClick={() => {
+                setPreset(q.id)
+                setMenuOpen(false)
+              }}
+            >
+              {q.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {maximized && wanted && (
+        <div className="hb-view-menu-field">
+          <span>Session</span>
+          <div className="hb-view-menu-actions">
             <button
               type="button"
               className="hb-btn hb-btn-ghost hb-btn-sm"
-              disabled={!live}
-              onClick={() => setMaximized(true)}
+              onClick={() => {
+                disconnect()
+                setMenuOpen(false)
+              }}
             >
-              Max
+              Stop
             </button>
-          )}
-          <button type="button" className="hb-btn hb-btn-ghost hb-btn-sm" onClick={disconnect}>
-            Stop
-          </button>
-        </>
-      ) : (
-        <button type="button" className="hb-btn hb-btn-primary hb-btn-sm" onClick={() => setWanted(true)}>
-          Start
-        </button>
+            <button
+              type="button"
+              className="hb-btn hb-btn-primary hb-btn-sm"
+              onClick={() => {
+                setMaximized(false)
+                setMenuOpen(false)
+              }}
+            >
+              Exit max
+            </button>
+          </div>
+        </div>
       )}
     </>
   )
@@ -1293,11 +1330,22 @@ export function ViewTab() {
       className={`h-full min-h-0 flex flex-col ${maximized ? 'hb-view-root-max' : 'hb-with-nav'}`}
       style={{ minHeight: '100%' }}
     >
-      {!maximized && (
-        <div className="hb-chrome shrink-0">
-          <div className="hb-chrome-inner">
-            <div className="flex items-center gap-2 justify-between">
-              <div className="min-w-0">
+      {/* Compact chrome: actions stay tappable; quality/display/mode live in Menu sheet */}
+      <div className={`shrink-0 ${maximized ? 'hb-view-maxbar' : 'hb-chrome'}`}>
+        <div className={maximized ? undefined : 'hb-chrome-inner'}>
+          <div className="hb-view-toolbar">
+            {maximized ? (
+              <button
+                type="button"
+                className="hb-view-max-tab"
+                aria-expanded={menuOpen}
+                onClick={() => setMenuOpen((o) => !o)}
+              >
+                <span className={`hb-view-max-dot ${live ? 'ok' : 'warn'}`} />
+                Menu
+              </button>
+            ) : (
+              <div className="hb-view-toolbar-meta min-w-0">
                 <p className="text-xs font-semibold tracking-tight">View</p>
                 <p className="text-[0.65rem] text-mute truncate">
                   {wanted ? (
@@ -1313,26 +1361,53 @@ export function ViewTab() {
                   )}
                 </p>
               </div>
-              <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">{controls}</div>
-            </div>
-            {error && <p className="text-[0.65rem] text-danger mt-1">{error}</p>}
+            )}
+            {/* Maximize: only Menu tab — Stop/Exit live inside the dropdown (stage steals hits). */}
+            {!maximized && (
+              <div className="hb-view-toolbar-actions">
+                <button
+                  type="button"
+                  className="hb-btn hb-btn-ghost hb-btn-sm"
+                  aria-expanded={menuOpen}
+                  onClick={() => setMenuOpen((o) => !o)}
+                >
+                  Menu
+                </button>
+                {wanted ? (
+                  <>
+                    <button
+                      type="button"
+                      className="hb-btn hb-btn-ghost hb-btn-sm"
+                      disabled={!live}
+                      onClick={() => setMaximized(true)}
+                    >
+                      Max
+                    </button>
+                    <button
+                      type="button"
+                      className="hb-btn hb-btn-ghost hb-btn-sm"
+                      onClick={disconnect}
+                    >
+                      Stop
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="hb-btn hb-btn-primary hb-btn-sm"
+                    onClick={() => setWanted(true)}
+                  >
+                    Start
+                  </button>
+                )}
+              </div>
+            )}
           </div>
-        </div>
-      )}
-
-      {maximized && (
-        <div className="hb-view-maxbar shrink-0">
-          <button
-            type="button"
-            className="hb-view-max-tab"
-            aria-expanded={menuOpen}
-            onClick={() => setMenuOpen((o) => !o)}
-          >
-            <span className={`hb-view-max-dot ${live ? 'ok' : 'warn'}`} />
-            Menu
-          </button>
+          {!maximized && error && (
+            <p className="text-[0.65rem] text-danger mt-1">{error}</p>
+          )}
           {menuOpen && (
-            <div className="hb-view-max-menu">
+            <div className={maximized ? 'hb-view-max-menu' : 'hb-view-menu'}>
               <p className="text-[0.65rem] text-mute truncate">
                 <span className={link}>{connStateLabel(conn)}</span>
                 {stats.screen ? ` · ${stats.screen}` : ''}
@@ -1340,23 +1415,11 @@ export function ViewTab() {
                 {zoom > 1.05 ? ` · ${zoom.toFixed(1)}×` : ''}
               </p>
               {error && <p className="text-[0.65rem] text-danger">{error}</p>}
-              <div className="flex flex-wrap items-center gap-1.5">
-                {controls}
-                <button
-                  type="button"
-                  className="hb-btn hb-btn-ghost hb-btn-sm"
-                  onClick={() => {
-                    setMaximized(false)
-                    setMenuOpen(false)
-                  }}
-                >
-                  Exit
-                </button>
-              </div>
+              <div className="hb-view-menu-controls">{controls}</div>
             </div>
           )}
         </div>
-      )}
+      </div>
 
       <div
         ref={wrapRef}

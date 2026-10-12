@@ -14,13 +14,14 @@ export function isPortListening(port: number): boolean {
 }
 
 export function homebaseListenPort(): number {
-  const n = Number(process.env.HOMEBASE_PORT || "8888");
-  return Number.isFinite(n) ? n : 8888;
+  const n = Number(process.env.HOMEBASE_PORT || "8080");
+  return Number.isFinite(n) && n > 0 ? n : 8080;
 }
 
-/** Never kill listeners on homebased's own port. */
+/** Never kill listeners on homebased's own port (incl. legacy :8888). */
 export function isProtectedPort(port: number): boolean {
-  return port === homebaseListenPort() || port === 8888;
+  const listen = homebaseListenPort();
+  return port === listen || port === 8080 || port === 8888;
 }
 
 export function pidsOnPort(port: number): number[] {

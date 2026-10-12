@@ -1,3 +1,6 @@
+/** Top-level areas after login (dashboard / homework / home access / home agent). */
+export type AppArea = 'home' | 'homework' | 'access' | 'agent'
+
 export type Tab =
   | 'apps'
   | 'work'
@@ -7,6 +10,50 @@ export type Tab =
   | 'cursor'
   | 'logs'
   | 'settings'
+
+export type AccessWidgetKind = 'button' | 'toggle' | 'slider' | 'gauge'
+export type AccessHookType = 'script' | 'http' | 'websocket' | 'static'
+
+export type AccessHook = {
+  type: AccessHookType
+  command?: string
+  cwd?: string
+  timeoutMs?: number
+  url?: string
+  method?: string
+  headers?: Record<string, string>
+  bodyTemplate?: string
+  wsUrl?: string
+  wsMessage?: string
+  pollMs?: number
+  valuePath?: string
+  detailPath?: string
+}
+
+export type AccessWidget = {
+  id: string
+  kind: AccessWidgetKind
+  label: string
+  description?: string
+  group?: string
+  order: number
+  value?: boolean | number | string | null
+  detail?: string
+  min?: number
+  max?: number
+  step?: number
+  unit?: string
+  hook: AccessHook
+  updatedAt: number
+  lastResult?: {
+    ok: boolean
+    at: number
+    stdout?: string
+    stderr?: string
+    status?: number
+    error?: string
+  }
+}
 
 /** True only when the page itself is loaded from loopback (not .local / LAN). */
 export function isLocalHostPage(): boolean {

@@ -44,6 +44,15 @@ export function WorkTab({
   const [focusPath, setFocusPath] = useState<string | null>(() =>
     present?.scene === 'files' ? present.path || null : null,
   )
+  const [diffBefore, setDiffBefore] = useState<string | null>(() =>
+    present?.scene === 'files' ? present.before ?? null : null,
+  )
+  const [diffAfter, setDiffAfter] = useState<string | null>(() =>
+    present?.scene === 'files' ? present.after ?? null : null,
+  )
+  const [diffAction, setDiffAction] = useState<string | null>(() =>
+    present?.scene === 'files' ? present.action || null : null,
+  )
   // Incoming present from Chat → start with dock minimized so the scene is visible
   const [dockOpen, setDockOpenState] = useState(false)
   // 0 so the first presentKey from Chat→Work is treated as a change
@@ -73,13 +82,20 @@ export function WorkTab({
     }
   }
 
+  function applyFilesPresent(req: PresentRequest) {
+    setFocusPath(req.path || null)
+    setDiffBefore(req.before ?? null)
+    setDiffAfter(req.after ?? null)
+    setDiffAction(req.action || null)
+  }
+
   // Apply present when key changes (Chat → Work, or dock buttons while here)
   useEffect(() => {
     if (!present || !presentKey || presentKey === lastPresentKey) return
     setLastPresentKey(presentKey)
     setScene(present.scene)
     if (present.scene === 'shell') applyShellPresent(present, presentKey)
-    if (present.scene === 'files') setFocusPath(present.path || null)
+    if (present.scene === 'files') applyFilesPresent(present)
     // Show file/shell → focus the workspace; minimize chat so it doesn't cover it
     setDockOpen(false)
   }, [present, presentKey, lastPresentKey])
@@ -89,7 +105,7 @@ export function WorkTab({
     setLastPresentKey(key)
     setScene(req.scene)
     if (req.scene === 'shell') applyShellPresent(req, key)
-    if (req.scene === 'files') setFocusPath(req.path || null)
+    if (req.scene === 'files') applyFilesPresent(req)
     // Message "Show" / Present → minimize chat so the scene is visible
     setDockOpen(false)
   }
@@ -163,6 +179,9 @@ export function WorkTab({
               onSelect={onSelect}
               embedded
               focusPath={focusPath}
+              diffBefore={diffBefore}
+              diffAfter={diffAfter}
+              diffAction={diffAction}
               onFocusPathConsumed={() => setFocusPath(null)}
             />
           )}

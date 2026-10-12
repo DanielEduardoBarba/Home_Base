@@ -2,7 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { api } from '../lib/api'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 import type { ActionDef, Project } from '../lib/types'
+import { useServerIdentity } from '../lib/serverIdentity'
+import { AddProjectWizard } from './AddProjectWizard'
+import { BrandTitle } from './BrandTitle'
 import { HoldButton } from './HoldButton'
+import { IconBtn } from './IconBtn'
 import { ProjectSelect } from './ProjectSelect'
 
 function Dot({ up }: { up?: boolean }) {
@@ -58,6 +62,8 @@ export function AppsTab({
   const [busy, setBusy] = useState('')
   const [msg, setMsg] = useState('')
   const [hotkeysOpen, setHotkeysOpen] = useState(false)
+  const [addOpen, setAddOpen] = useState(false)
+  const { displayName } = useServerIdentity()
   const project = projects.find((p) => p.id === selectedId) || projects[0]
 
   useSceneRefresh(onRefresh)
@@ -86,11 +92,29 @@ export function AppsTab({
   const [runId, setRunId] = useState('')
   const [shipId, setShipId] = useState('')
   useEffect(() => {
-    setRunId(runActions[0]?.id || '')
+    // Prefer Run + Expo (run_all) over plain Run when available.
+    const prefer =
+      runActions.find(
+        (a) =>
+          a.id === 'run_all' ||
+          a.id === 'run-all' ||
+          /run\s*\+\s*expo|run\s*and\s*expo|run\s*all/i.test(a.label),
+      ) || runActions[0]
+    setRunId(prefer?.id || '')
     setShipId(ship[0]?.id || '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset when project changes
   }, [project?.id])
 
-  const selectedRun = runActions.find((a) => a.id === runId) || runActions[0] || null
+  const selectedRun =
+    runActions.find((a) => a.id === runId) ||
+    runActions.find(
+      (a) =>
+        a.id === 'run_all' ||
+        a.id === 'run-all' ||
+        /run\s*\+\s*expo|run\s*and\s*expo|run\s*all/i.test(a.label),
+    ) ||
+    runActions[0] ||
+    null
   const selectedShip = ship.find((a) => a.id === shipId) || ship[0] || null
 
   async function doStop() {
@@ -143,16 +167,33 @@ export function AppsTab({
 
   if (!projects.length) {
     return (
-      <div className="hb-page space-y-4 hb-enter">
-        <header>
-          <div className="hb-brand-rule" />
-          <h1 className="font-display text-2xl md:text-3xl font-extrabold tracking-tight">
-            Home<span className="text-accent"> Base</span>
-          </h1>
-          <p className="text-mute text-sm mt-2">
-            No apps yet. Add one on the host, then pull down to refresh.
-          </p>
-        </header>
+      <div className={`hb-page space-y-4 hb-enter ${embedded ? '!pt-3' : ''}`}>
+        {!embedded && (
+          <header>
+            <div className="hb-brand-rule" />
+            <h1 className="font-display text-2xl md:text-3xl font-extrabold tracking-tight">
+              <BrandTitle name={displayName} />
+            </h1>
+          </header>
+        )}
+        <section className="hb-surface p-4 space-y-3">
+          <p className="text-sm text-mute">No apps yet. Add your first project.</p>
+          <button
+            type="button"
+            className="hb-btn hb-btn-primary w-full !min-h-11"
+            onClick={() => setAddOpen(true)}
+          >
+            Add app
+          </button>
+        </section>
+        <AddProjectWizard
+          open={addOpen}
+          onClose={() => setAddOpen(false)}
+          onAdded={(id) => {
+            onSelect(id)
+            void onRefresh()
+          }}
+        />
       </div>
     )
   }
@@ -167,22 +208,30 @@ export function AppsTab({
         <header>
           <div className="hb-brand-rule" />
           <h1 className="font-display text-2xl md:text-3xl font-extrabold tracking-tight">
-            Home<span className="text-accent"> Base</span>
+            <BrandTitle name={displayName} />
           </h1>
         </header>
       )}
 
       <section className="hb-surface p-3.5 sm:p-4 space-y-3">
         {!embedded && (
-          <label className="block space-y-1">
-            <span className="hb-label">App</span>
+          <div className="space-y-1">
+            <div className="flex items-center justify-between gap-2">
+              <span className="hb-label">App</span>
+              <IconBtn label="Add app" onClick={() => setAddOpen(true)} className="!w-9 !h-9" />
+            </div>
             <ProjectSelect
               projects={projects}
               selectedId={project.id}
               onSelect={onSelect}
               className="w-full !min-h-10 !py-2 text-sm"
             />
-          </label>
+          </div>
+        )}
+        {embedded && (
+          <div className="flex justify-end">
+            <IconBtn label="Add app" onClick={() => setAddOpen(true)} className="!w-9 !h-9" />
+          </div>
         )}
 
         {!!portCount && (
@@ -409,6 +458,15 @@ export function AppsTab({
       ))}
 
       {(busy || msg) && <p className="text-xs text-mute px-1">{busy ? `Working… ${busy}` : msg}</p>}
+
+      <AddProjectWizard
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        onAdded={(id) => {
+          onSelect(id)
+          void onRefresh()
+        }}
+      />
     </div>
   )
 }

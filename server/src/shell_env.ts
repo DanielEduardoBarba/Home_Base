@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { sudoAskpassEnv } from "./sudo";
 
 export type SeatUser = {
   uid: number;
@@ -134,6 +135,8 @@ export function enrichPtyEnv(env: Record<string, string>): Record<string, string
   if (!out.COLORTERM) {
     out.COLORTERM = "truecolor";
   }
+  // Route sudo password prompts through Chat (SUDO_ASKPASS), not a raw TTY.
+  Object.assign(out, sudoAskpassEnv());
   return out;
 }
 

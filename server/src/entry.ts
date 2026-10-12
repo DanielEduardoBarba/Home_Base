@@ -1,4 +1,5 @@
 import { app, authenticateWsToken, handleCursorMessage } from "./app";
+import { isAppPinLocked } from "./app_pin";
 import {
   bindHost,
   bindPort,
@@ -7,7 +8,7 @@ import {
   readVersion,
 } from "./config";
 import { logError, logInfo, logWarn } from "./console_log";
-import { subscribeCursor } from "./cursor";
+import { flushAllChatWorkspaces, subscribeCursor } from "./cursor";
 import { formatGeo, geoCached, normalizeIp, warmGeo } from "./geo";
 import { PEER_IP_HEADER } from "./http";
 import {
@@ -17,6 +18,8 @@ import {
   spawnShell,
   writeInput,
 } from "./pty";
+import { startSecurityMonitor } from "./security";
+import { ensureAskpass, sudoAskpassEnv } from "./sudo";
 import { appendTrace } from "./trace";
 import { viewHub } from "./view";
 
@@ -32,6 +35,15 @@ type WsData = {
 };
 
 ensureRuntimeDirs();
+ensureAskpass();
+Object.assign(process.env, sudoAskpassEnv());
+try {
+  const { hydrateCursorApiKeyFromVault } = await import("./secrets_vault");
+  hydrateCursorApiKeyFromVault();
+} catch {
+  /* vault optional at boot */
+}
+startSecurityMonitor();
 
 function selfTest(): number {
   try {
@@ -235,6 +247,35 @@ const server = Bun.serve<WsData>({
     },
     async message(ws, message) {
       const data = ws.data;
+      // App PIN lock: keep sessions/workers alive; reject commands until unlock
+      // (clients must not hang waiting for delete/create acks).
+      if (isAppPinLocked()) {
+        try {
+          let reqType = "";
+          try {
+            const raw =
+              typeof message === "string"
+                ? message
+                : new TextDecoder().decode(message);
+            reqType = String(
+              (JSON.parse(raw) as { type?: string }).type || "",
+            );
+          } catch {
+            /* ignore */
+          }
+          ws.send(
+            JSON.stringify({
+              type: "error",
+              code: "pin_locked",
+              detail: "App PIN required",
+              ...(reqType ? { requestType: reqType } : {}),
+            }),
+          );
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
       const text =
         typeof message === "string"
           ? message
@@ -316,6 +357,28 @@ process.on("unhandledRejection", (reason) => {
 process.on("uncaughtException", (err) => {
   appendTrace("error", `uncaughtException: ${err.message}`, "boot");
 });
+
+// Deploy / systemctl stop must not drop in-flight chat bubbles (only prompts
+// used to survive because saves ran at send + finally). Flush before exit.
+let shuttingDown = false;
+function gracefulExit(signal: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  try {
+    flushAllChatWorkspaces();
+  } catch {
+    /* ignore */
+  }
+  appendTrace("info", `shutdown flush complete (${signal})`, "boot");
+  try {
+    server.stop(true);
+  } catch {
+    /* ignore */
+  }
+  process.exit(0);
+}
+process.on("SIGTERM", () => gracefulExit("SIGTERM"));
+process.on("SIGINT", () => gracefulExit("SIGINT"));
 
 appendTrace(
   "info",
