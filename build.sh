@@ -586,10 +586,17 @@ cmd_setup() {
   ensure_bun_server
 
   echo "==> Frontend deps"
-  if [[ ! -d web/node_modules ]]; then
-    (cd web && npm install)
+  if [[ ! -d web/node_modules || ! -x web/node_modules/.bin/next ]]; then
+    (cd web && npm install) || {
+      echo "Error: npm install failed in web/" >&2
+      exit 1
+    }
   else
-    (cd web && npm install --silent)
+    # Refresh is best-effort — never abort onboarding when deps already work
+    # (npm --silent can exit non-zero / 243 on some hosts while leaving a fine tree).
+    if ! (cd web && npm install --no-fund --no-audit >/dev/null 2>&1); then
+      echo "    web deps already present — continuing"
+    fi
   fi
 
   mkdir -p config .runtime/logs dist
@@ -599,6 +606,7 @@ cmd_setup() {
   fi
 
   write_default_env "$ROOT/.env"
+  echo "==> .env ready"
 
   # Pin checkout paths so an installed prod share cannot steal HOME / JWT writes.
   export HOMEBASE_HOME="${HOMEBASE_HOME:-$ROOT}"
