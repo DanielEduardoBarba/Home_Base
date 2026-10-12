@@ -23,8 +23,12 @@ function AlertRow({
   return (
     <article
       className={`hb-surface p-3 ${
-        n.read ? 'opacity-80' : 'border-accent/35 !shadow-[0_0_0_1px_rgba(45,212,191,0.08)]'
-      }`}
+        n.category === 'security'
+          ? 'hb-notify-security'
+          : n.read
+            ? 'opacity-80'
+            : 'border-accent/35 !shadow-[0_0_0_1px_rgba(45,212,191,0.08)]'
+      }${n.read && n.category === 'security' ? ' opacity-80' : ''}`}
     >
       <div className="flex items-start gap-2">
         <span className={`mt-1 w-2 h-2 rounded-full shrink-0 ${levelDot(n.level)}`} />

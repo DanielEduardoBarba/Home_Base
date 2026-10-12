@@ -21,6 +21,8 @@ Generic control plane: systemd **`homebased`**, binary **`homebase`**. Productio
 - Auth lockout: after 5 failures escalate delays to a full day; log failures daily under `.runtime/logs/`.
 - Client API/WS must stay same-origin relative paths (`/api`, `/ws`) — no hardcoded host/port in the SPA.
 - Always bump the repo `VERSION` file (semver patch by default; minor/major when the change warrants it) whenever you make code or behavior changes. Do this in the same turn as the change — before finishing.
+- **Chat durability:** workspaces under `.runtime/chats/` must flush mid-stream (debounced) and on SIGTERM/SIGINT so `--deploy` does not drop assistant/tool history. Only delete a chat when the user deletes that tab.
+- **UI areas:** post-login **Home** dashboard → **Homework** (project control plane) and **Home Access** (house widgets). See `home-access.mdc`.
 
 ## Entry points
 

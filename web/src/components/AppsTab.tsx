@@ -86,11 +86,29 @@ export function AppsTab({
   const [runId, setRunId] = useState('')
   const [shipId, setShipId] = useState('')
   useEffect(() => {
-    setRunId(runActions[0]?.id || '')
+    // Prefer Run + Expo (run_all) over plain Run when available.
+    const prefer =
+      runActions.find(
+        (a) =>
+          a.id === 'run_all' ||
+          a.id === 'run-all' ||
+          /run\s*\+\s*expo|run\s*and\s*expo|run\s*all/i.test(a.label),
+      ) || runActions[0]
+    setRunId(prefer?.id || '')
     setShipId(ship[0]?.id || '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset when project changes
   }, [project?.id])
 
-  const selectedRun = runActions.find((a) => a.id === runId) || runActions[0] || null
+  const selectedRun =
+    runActions.find((a) => a.id === runId) ||
+    runActions.find(
+      (a) =>
+        a.id === 'run_all' ||
+        a.id === 'run-all' ||
+        /run\s*\+\s*expo|run\s*and\s*expo|run\s*all/i.test(a.label),
+    ) ||
+    runActions[0] ||
+    null
   const selectedShip = ship.find((a) => a.id === shipId) || ship[0] || null
 
   async function doStop() {

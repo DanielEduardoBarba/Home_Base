@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react'
 import { api, wsUrl } from '../lib/api'
 import { ChatMarkdown, copyText } from './ChatMarkdown'
 import { clearLocalChats, loadLocalChatsForImport } from '../lib/chatTabs'
@@ -14,10 +24,23 @@ import type {
 import { fileToCompressedChatImage, formatMb } from '../lib/chatImageCompress'
 import { chatImageSrc } from '../lib/chatTypes'
 import { useNotifyOptional } from '../lib/NotifyContext'
-import { presentFromTool, presentLabel } from '../lib/present'
+import { presentFromMessage, presentFromTool, presentLabel } from '../lib/present'
 import { useSceneRefresh } from '../lib/sceneRefresh'
-import { speechSupported, startSpeechDictation, type SpeechHandle } from '../lib/speech'
-import { formatMsgTime, polishThinking, prettyToolName } from '../lib/toolFormat'
+import { clearChatDraft, readChatDraft, writeChatDraft } from '../lib/uiPrefs'
+import {
+  speakText,
+  speechSupported,
+  speechSynthesisSupported,
+  startSpeechDictation,
+  stopSpeaking,
+  type SpeechHandle,
+} from '../lib/speech'
+import {
+  formatMsgTime,
+  formatToolDetail,
+  polishThinking,
+  prettyToolName,
+} from '../lib/toolFormat'
 import type { CursorModel, FsEntry, Project } from '../lib/types'
 import {
   connStateLabel,
@@ -66,10 +89,11 @@ function MsgMeta({ at, align = 'start' }: { at?: number; align?: 'start' | 'end'
   if (!t) return null
   return (
     <time
-      className={`hb-chat-meta block text-[10px] text-mute/80 mt-1 ${
+      className={`hb-chat-meta block text-[11px] text-mute mt-1 font-mono tabular-nums ${
         align === 'end' ? 'text-right' : 'text-left'
       }`}
       dateTime={at ? new Date(at).toISOString() : undefined}
+      title={at ? new Date(at).toISOString() : undefined}
     >
       {t}
     </time>
@@ -95,14 +119,96 @@ function useNowTick(active: boolean, intervalMs = 250): number {
   return now
 }
 
-/** Inline phase chip: thinking / busy / writing / done (+ live seconds while active). */
+/** Collapsible thinking block — stays open for the latest turn, still user-togglable. */
+function ThinkingDetails({
+  streaming,
+  preferOpen,
+  className,
+  summary,
+  children,
+}: {
+  streaming: boolean
+  preferOpen: boolean
+  className: string
+  summary: ReactNode
+  children: ReactNode
+}) {
+  const [open, setOpen] = useState(() => streaming || preferOpen)
+  useEffect(() => {
+    if (streaming || preferOpen) setOpen(true)
+  }, [streaming, preferOpen])
+  return (
+    <details
+      className={className}
+      open={open}
+      onToggle={(e) => setOpen(e.currentTarget.open)}
+    >
+      {summary}
+      {children}
+    </details>
+  )
+}
+
+const LONG_PRESS_MS = 480
+
+/** Long-press (or secondary click) a bubble to copy its text. */
+function useLongPressCopy(getText: () => string, onCopied?: () => void) {
+  const timer = useRef<number | null>(null)
+  const moved = useRef(false)
+  const clear = () => {
+    if (timer.current != null) {
+      window.clearTimeout(timer.current)
+      timer.current = null
+    }
+  }
+  const fire = () => {
+    clear()
+    const text = getText().trim()
+    if (!text) return
+    void copyText(text).then((ok) => {
+      if (ok) onCopied?.()
+    })
+  }
+  return {
+    onPointerDown: (e: ReactPointerEvent) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return
+      moved.current = false
+      clear()
+      timer.current = window.setTimeout(fire, LONG_PRESS_MS)
+    },
+    onPointerMove: (e: ReactPointerEvent) => {
+      if (Math.abs(e.movementX) + Math.abs(e.movementY) > 6) {
+        moved.current = true
+        clear()
+      }
+    },
+    onPointerUp: clear,
+    onPointerCancel: clear,
+    onPointerLeave: clear,
+    onContextMenu: (e: ReactMouseEvent) => {
+      e.preventDefault()
+      fire()
+    },
+  }
+}
+
+function CopyFlash({ show }: { show: boolean }) {
+  if (!show) return null
+  return (
+    <span className="hb-copy-flash" role="status">
+      Copied
+    </span>
+  )
+}
+
+/** Inline phase chip: thinking / tool / writing / busy / done (+ live seconds while active). */
 function MsgPhaseBadge({
   kind,
   startedAt,
   durationMs,
   live = false,
 }: {
-  kind: 'thinking' | 'busy' | 'writing' | 'done'
+  kind: 'thinking' | 'tool' | 'busy' | 'writing' | 'done'
   startedAt?: number
   durationMs?: number
   live?: boolean
@@ -152,27 +258,69 @@ function contextChipLabel(path: string): string {
   return parts[parts.length - 1] || path
 }
 
+function todoStatusIcon(status: string): string {
+  if (status === 'completed') return '✓'
+  if (status === 'inProgress') return '▸'
+  if (status === 'cancelled') return '×'
+  return '○'
+}
+
 function MessageCard({
   m,
   onPresent,
   onCopy,
   onEdit,
   onRegenerate,
+  onPlanAction,
+  onApplyFix,
   canEdit,
   canRegenerate,
+  preferThinkingOpen = false,
 }: {
   m: ChatMsg
   onPresent?: (req: PresentRequest) => void
   onCopy?: (text: string) => void
   onEdit?: (text: string, contextPaths?: string[]) => void
   onRegenerate?: () => void
+  onPlanAction?: (messageId: string, action: 'build' | 'cancel') => void
+  onApplyFix?: (messageId: string, text: string) => void
   canEdit?: boolean
   canRegenerate?: boolean
+  /** Keep the latest turn's logic expanded so mobile can still read it. */
+  preferThinkingOpen?: boolean
 }) {
+  const [copied, setCopied] = useState(false)
+  const flashCopied = useCallback(() => {
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1100)
+  }, [])
+  const toolLabel = prettyToolName(m.tool?.name || 'tool')
+  const toolDetail = formatToolDetail(m.tool?.name || '', m.tool?.detail)
+  const copyBody = useMemo(() => {
+    if (m.role === 'tool') {
+      return [toolLabel, toolDetail].filter(Boolean).join('\n')
+    }
+    if (m.role === 'file') {
+      return `${m.file?.action || 'file'} ${m.file?.path || ''}`.trim()
+    }
+    if (m.role === 'thinking') {
+      return polishThinking(m.text || '')
+    }
+    if (m.role === 'todo' && m.todos?.length) {
+      return m.todos.map((t) => `${todoStatusIcon(t.status)} ${t.content}`).join('\n')
+    }
+    return m.text || ''
+  }, [m, toolDetail, toolLabel])
+  const lp = useLongPressCopy(() => copyBody, flashCopied)
+
   if (m.role === 'user') {
     return (
-      <div className="ml-6 min-w-0 max-w-full">
-        <div className="hb-chat-user rounded-2xl px-3.5 py-3 text-sm leading-relaxed shadow-sm whitespace-pre-wrap break-words">
+      <div className="ml-6 min-w-0 max-w-full relative">
+        <div
+          className="hb-chat-user hb-chat-copyable rounded-2xl px-3.5 py-3 text-sm leading-relaxed shadow-sm whitespace-pre-wrap break-words"
+          title="Hold to copy"
+          {...lp}
+        >
           {!!m.contextPaths?.length && (
             <div className="hb-chat-ctx-row mb-2">
               {m.contextPaths.map((p) => (
@@ -200,6 +348,7 @@ function MessageCard({
             </div>
           )}
           {m.text}
+          <CopyFlash show={copied} />
         </div>
         <MsgMeta at={m.at} align="end" />
         <MsgActions
@@ -224,52 +373,94 @@ function MessageCard({
   if (m.role === 'thinking') {
     const body = m.streaming ? m.text || '' : polishThinking(m.text || '')
     return (
-      <details
-        className={`hb-chat-thinking rounded-xl px-3 py-2 text-xs text-amber mr-8 min-w-0 max-w-full${
-          m.streaming ? ' hb-chat-thinking-live open' : ''
-        }`}
-        open={m.streaming || undefined}
-      >
-        <summary className="cursor-pointer select-none list-none flex items-center gap-2 flex-wrap min-w-0">
-          <MsgPhaseBadge
-            kind={m.streaming ? 'thinking' : 'done'}
-            startedAt={m.at}
-            durationMs={m.durationMs}
-            live={!!m.streaming}
-          />
-          {!m.streaming && (
-            <span className="text-mute opacity-70 normal-case tracking-normal text-[10px]">
-              tap to expand
-            </span>
-          )}
-          <MsgMeta at={m.at} />
-        </summary>
-        <div className="mt-1.5 whitespace-pre-wrap break-words leading-relaxed opacity-95 hb-chat-thinking-body">
-          {body}
-          {m.streaming && (
-            <span className="hb-chat-caret" aria-hidden>
-              ▍
-            </span>
-          )}
-        </div>
-      </details>
+      <div className="relative min-w-0 max-w-full" {...lp}>
+        <ThinkingDetails
+          streaming={!!m.streaming}
+          preferOpen={preferThinkingOpen}
+          className={`hb-chat-thinking hb-chat-bubble-inset hb-chat-copyable rounded-xl px-3 py-2 text-xs text-amber min-w-0 max-w-full${
+            m.streaming ? ' hb-chat-thinking-live' : ''
+          }`}
+          summary={
+            <summary className="cursor-pointer select-none list-none flex items-center gap-2 flex-wrap min-w-0">
+              <MsgPhaseBadge
+                kind={m.streaming ? 'thinking' : 'done'}
+                startedAt={m.at}
+                durationMs={m.durationMs}
+                live={!!m.streaming}
+              />
+              {!m.streaming && (
+                <span className="text-mute normal-case tracking-normal text-[11px]">
+                  {preferThinkingOpen ? 'logic · tap to hide' : 'tap to expand'}
+                </span>
+              )}
+              <MsgMeta at={m.at} />
+            </summary>
+          }
+        >
+          <div className="mt-1.5 whitespace-pre-wrap break-words leading-relaxed opacity-95 hb-chat-thinking-body">
+            {body}
+            {m.streaming && (
+              <span className="hb-chat-caret" aria-hidden>
+                ▍
+              </span>
+            )}
+          </div>
+        </ThinkingDetails>
+        <CopyFlash show={copied} />
+      </div>
     )
   }
   if (m.role === 'tool') {
-    const hint = presentFromTool(m.tool?.name || '', undefined, m.tool?.sessionId)
-    const label = prettyToolName(m.tool?.name || 'tool')
+    const hint = presentFromMessage(m) || presentFromTool(
+      m.tool?.name || '',
+      m.tool?.path,
+      m.tool?.sessionId,
+      {
+        command: m.tool?.command,
+        output: m.tool?.output,
+        before: m.tool?.before,
+        after: m.tool?.after,
+      },
+    )
     const status = m.tool?.status || 'running'
     const running = status === 'running' || status === 'pending'
+    const clickable = Boolean(hint && onPresent && (status === 'completed' || status === 'error' || m.tool?.sessionId))
     return (
-      <div className="mr-6 min-w-0 max-w-full">
-        <div className="hb-chat-tool rounded-xl px-3 py-2.5 text-xs">
+      <div className="hb-chat-bubble-inset min-w-0 max-w-full relative">
+        <div
+          className={`hb-chat-tool hb-chat-copyable rounded-xl px-3 py-2.5 text-xs${
+            clickable ? ' hb-chat-tool--clickable' : ''
+          }`}
+          title={clickable ? 'Tap to open · hold to copy' : 'Hold to copy'}
+          role={clickable ? 'button' : undefined}
+          tabIndex={clickable ? 0 : undefined}
+          onClick={
+            clickable
+              ? (e) => {
+                  if ((e.target as HTMLElement).closest('button')) return
+                  onPresent!(hint!)
+                }
+              : undefined
+          }
+          onKeyDown={
+            clickable
+              ? (e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onPresent!(hint!)
+                  }
+                }
+              : undefined
+          }
+          {...lp}
+        >
           <div className="flex items-center gap-2 flex-wrap min-w-0">
             <MsgPhaseBadge
-              kind={running ? 'busy' : 'done'}
+              kind={running ? 'tool' : 'done'}
               startedAt={m.at}
               live={running}
             />
-            <span className="text-violet font-semibold break-words min-w-0">{label}</span>
+            <span className="text-violet font-semibold break-words min-w-0">{toolLabel}</span>
             <span
               className={
                 status === 'completed'
@@ -281,28 +472,59 @@ function MessageCard({
             >
               {status === 'completed' ? 'done' : status === 'running' ? 'running…' : status}
             </span>
-            {hint && onPresent && (status === 'completed' || m.tool?.sessionId) && (
+            {clickable && (
               <button
                 type="button"
                 className="ml-auto text-accent font-semibold hover:underline shrink-0"
-                onClick={() => onPresent(hint)}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onPresent!(hint!)
+                }}
               >
-                {presentLabel(hint)}
+                {presentLabel(hint!)}
               </button>
             )}
           </div>
-          {m.tool?.detail && (
-            <p className="mt-1.5 text-[11px] text-mute leading-snug break-words">{m.tool.detail}</p>
+          {toolDetail && (
+            <pre className="hb-chat-tool-detail mt-1.5 text-[11px] text-mute leading-snug">
+              {toolDetail}
+            </pre>
           )}
+          <CopyFlash show={copied} />
         </div>
         <MsgMeta at={m.at} />
       </div>
     )
   }
   if (m.role === 'file') {
+    const hint = presentFromMessage(m)
+    const clickable = Boolean(hint && onPresent)
     return (
-      <div className="mr-6 min-w-0 max-w-full">
-        <div className="hb-chat-file rounded-xl px-3 py-2.5 text-xs shadow-sm">
+      <div className="hb-chat-bubble-inset min-w-0 max-w-full relative">
+        <div
+          className={`hb-chat-file hb-chat-copyable rounded-xl px-3 py-2.5 text-xs shadow-sm${
+            clickable ? ' hb-chat-file--clickable' : ''
+          }`}
+          title={clickable ? 'Tap to open changes · hold to copy' : 'Hold to copy'}
+          role={clickable ? 'button' : undefined}
+          tabIndex={clickable ? 0 : undefined}
+          onClick={
+            clickable
+              ? () => onPresent!(hint!)
+              : undefined
+          }
+          onKeyDown={
+            clickable
+              ? (e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onPresent!(hint!)
+                  }
+                }
+              : undefined
+          }
+          {...lp}
+        >
           <div className="flex items-center gap-2 min-w-0">
             <span className="text-sky font-semibold uppercase text-[10px] tracking-wide shrink-0">
               {m.file?.action || 'file'}
@@ -310,16 +532,137 @@ function MessageCard({
             <span className="text-text truncate flex-1 min-w-0 font-mono text-[11px]">
               {m.file?.path}
             </span>
-            {m.file?.path && onPresent && (
+            {clickable && (
               <button
                 type="button"
                 className="text-accent font-semibold shrink-0 hover:underline"
-                onClick={() => onPresent({ scene: 'files', path: m.file!.path })}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onPresent!(hint!)
+                }}
               >
-                Show
+                {presentLabel(hint!)}
               </button>
             )}
           </div>
+          <CopyFlash show={copied} />
+        </div>
+        <MsgMeta at={m.at} />
+      </div>
+    )
+  }
+  if (m.role === 'todo') {
+    const todos = m.todos || []
+    return (
+      <div className="hb-chat-bubble-inset min-w-0 max-w-full relative">
+        <div className="hb-chat-todo hb-chat-copyable rounded-2xl px-3.5 py-3 text-sm shadow-sm" {...lp}>
+          <div className="hb-msg-badge-row mb-2">
+            <span className="hb-chat-card-eyebrow">Todos</span>
+            <span className="text-mute text-[11px]">{m.text}</span>
+          </div>
+          <ul className="hb-chat-todo-list">
+            {todos.map((t, i) => (
+              <li key={t.id || `${i}-${t.content}`} data-status={t.status}>
+                <span className="hb-chat-todo-mark" aria-hidden>
+                  {todoStatusIcon(t.status)}
+                </span>
+                <span className={t.status === 'completed' || t.status === 'cancelled' ? 'opacity-60' : ''}>
+                  {t.content}
+                </span>
+              </li>
+            ))}
+            {!todos.length && (
+              <li className="text-mute text-xs">No tasks yet</li>
+            )}
+          </ul>
+          <CopyFlash show={copied} />
+        </div>
+        <MsgMeta at={m.at} />
+      </div>
+    )
+  }
+  if (m.role === 'plan') {
+    const state = m.planState || 'open'
+    const open = state === 'open' || state === 'building'
+    return (
+      <div className="hb-chat-bubble-inset min-w-0 max-w-full relative">
+        <div className="hb-chat-plan hb-chat-copyable rounded-2xl px-3.5 py-3 text-sm shadow-sm" {...lp}>
+          <div className="hb-msg-badge-row mb-2">
+            <span className="hb-chat-card-eyebrow">Plan</span>
+            <span className="text-mute text-[11px] capitalize">{state}</span>
+            {m.streaming && (
+              <MsgPhaseBadge kind="writing" startedAt={m.at} live />
+            )}
+          </div>
+          {m.streaming ? (
+            <div className="whitespace-pre-wrap break-words">
+              {m.text}
+              <span className="hb-chat-caret" aria-hidden>
+                ▍
+              </span>
+            </div>
+          ) : (
+            <ChatMarkdown text={m.text || ''} />
+          )}
+          {!m.streaming && open && onPlanAction && (
+            <div className="hb-chat-plan-actions mt-3 flex gap-2">
+              <button
+                type="button"
+                className="flex-1 rounded-lg hb-btn-primary text-xs font-semibold py-2 border-0"
+                disabled={state === 'building'}
+                onClick={() => onPlanAction(m.id, 'build')}
+              >
+                {state === 'building' ? 'Building…' : 'Build'}
+              </button>
+              <button
+                type="button"
+                className="flex-1 rounded-lg border border-danger/50 text-danger text-xs font-semibold py-2"
+                disabled={state === 'building'}
+                onClick={() => onPlanAction(m.id, 'cancel')}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+          <CopyFlash show={copied} />
+        </div>
+        <MsgMeta at={m.at} />
+      </div>
+    )
+  }
+  if (m.role === 'task') {
+    const st = m.task?.status || m.tool?.status || 'running'
+    const running = st === 'running' || st === 'pending'
+    return (
+      <div className="hb-chat-bubble-inset min-w-0 max-w-full relative">
+        <div className="hb-chat-task hb-chat-copyable rounded-xl px-3 py-2.5 text-xs" {...lp}>
+          <div className="flex items-center gap-2 flex-wrap">
+            <MsgPhaseBadge kind={running ? 'tool' : 'done'} startedAt={m.at} live={running} />
+            <span className="text-sky font-semibold">Task</span>
+            <span className="text-mute">{m.task?.name || m.text}</span>
+            <span className={running ? 'text-sky' : 'text-ok'}>{st}</span>
+          </div>
+          <CopyFlash show={copied} />
+        </div>
+        <MsgMeta at={m.at} />
+      </div>
+    )
+  }
+  if (m.role === 'mode_prompt') {
+    const mp = m.modePrompt
+    return (
+      <div className="hb-chat-bubble-inset min-w-0 max-w-full relative">
+        <div className="hb-chat-mode-prompt rounded-xl border border-amber/40 bg-amber/10 px-3 py-2.5 text-xs">
+          <div className="font-semibold text-amber uppercase tracking-wide text-[10px] mb-1">
+            Switch mode
+          </div>
+          <div className="text-text">
+            Switch to <strong>{mp?.to || 'agent'}</strong>
+            {mp?.reason ? ` — ${mp.reason}` : ''}
+          </div>
+          {mp?.status && mp.status !== 'pending' && (
+            <div className="text-mute mt-1 capitalize">{mp.status}</div>
+          )}
         </div>
         <MsgMeta at={m.at} />
       </div>
@@ -332,21 +675,32 @@ function MessageCard({
     const done = m.role === 'status' && /^done\b/i.test((m.text || '').trim())
     return (
       <div
-        className={`hb-chat-status flex items-baseline gap-2 px-1 min-w-0 max-w-full ${
+        className={`hb-chat-status hb-chat-copyable flex items-baseline gap-2 px-1 min-w-0 max-w-full relative ${
           err ? 'text-danger' : done ? 'text-mute' : 'text-mute'
         }`}
+        title="Hold to copy"
+        {...lp}
       >
         <span className="text-[11px] leading-snug whitespace-pre-wrap break-words flex-1 min-w-0">
           {m.text}
         </span>
         <MsgMeta at={m.at} />
+        <CopyFlash show={copied} />
       </div>
     )
   }
+  const modeChrome = m.role === 'ask' ? 'Ask' : m.role === 'debug' ? 'Debug' : null
   return (
-    <div className="mr-4 min-w-0 max-w-full">
-      <div className="hb-chat-assistant rounded-2xl px-3.5 py-3 text-sm leading-relaxed shadow-sm">
+    <div className="hb-chat-bubble-inset min-w-0 max-w-full relative">
+      <div
+        className={`hb-chat-assistant hb-chat-copyable rounded-2xl px-3.5 py-3 text-sm leading-relaxed shadow-sm${
+          m.role === 'ask' ? ' hb-chat-ask' : m.role === 'debug' ? ' hb-chat-debug' : ''
+        }`}
+        title="Hold to copy"
+        {...lp}
+      >
         <div className="hb-msg-badge-row">
+          {modeChrome && <span className="hb-chat-card-eyebrow">{modeChrome}</span>}
           <MsgPhaseBadge
             kind={m.streaming ? 'writing' : 'done'}
             startedAt={m.at}
@@ -363,6 +717,19 @@ function MessageCard({
         ) : (
           <ChatMarkdown text={m.text || ''} />
         )}
+        {!m.streaming && m.role === 'debug' && onApplyFix && m.text && (
+          <div className="hb-chat-plan-actions mt-3 flex gap-2">
+            <button
+              type="button"
+              className="flex-1 rounded-lg hb-btn-primary text-xs font-semibold py-2 border-0"
+              onClick={() => onApplyFix(m.id, m.text || '')}
+              title="Continue in Agent to apply a fix"
+            >
+              Apply in Agent
+            </button>
+          </div>
+        )}
+        <CopyFlash show={copied} />
       </div>
       <MsgMeta at={m.at} />
       {!m.streaming && (
@@ -381,6 +748,7 @@ function MessageCard({
   )
 }
 
+
 export function ChatPanel({
   projects,
   selectedId,
@@ -389,18 +757,24 @@ export function ChatPanel({
   onPresent,
   dockOpen: dockOpenProp,
   onDockOpenChange,
+  agentChatId,
+  onAgentBack,
 }: {
   projects: Project[]
   selectedId: string
   onSelect: (id: string) => void
-  /** page = full Chat tab; dock = bottom-right Work panel */
-  variant?: 'page' | 'dock'
+  /** page = full Chat tab; dock = bottom-right Work panel; agent = Home Agent minimal */
+  variant?: 'page' | 'dock' | 'agent'
   onPresent?: (req: PresentRequest) => void
   dockOpen?: boolean
   onDockOpenChange?: (open: boolean) => void
+  /** Lock Home Agent to one chat tab. */
+  agentChatId?: string
+  onAgentBack?: () => void
 }) {
   const project = projects.find((p) => p.id === selectedId) || projects[0]
   const isDock = variant === 'dock'
+  const isAgent = variant === 'agent'
 
   const [tabs, setTabs] = useState<ChatTab[]>([])
   const [activeId, setActiveId] = useState('')
@@ -455,6 +829,11 @@ export function ChatPanel({
   const [pickerEntries, setPickerEntries] = useState<FsEntry[]>([])
   const [pickingFolder, setPickingFolder] = useState(false)
   const [listening, setListening] = useState(false)
+  /** Home Agent: mic session stays armed until user turns it off; replies are spoken. */
+  const [voiceMode, setVoiceMode] = useState(false)
+  const voiceModeRef = useRef(false)
+  voiceModeRef.current = voiceMode
+  const canTts = useMemo(() => speechSynthesisSupported(), [])
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [activity, setActivity] = useState('')
   /** Durable agent phase for status chrome (survives brief empty activity). */
@@ -462,12 +841,19 @@ export function ChatPanel({
     'idle' | 'starting' | 'thinking' | 'tool' | 'streaming' | 'approval' | 'sudo' | 'done' | 'error' | 'busy'
   >('idle')
   const [runLog, setRunLog] = useState<string[]>([])
+  /** Mobile-friendly progress drawer (runLog is title-only on desktop hover). */
+  const [statusOpen, setStatusOpen] = useState(false)
   /** When the current agentPhase started — drives status-bar elapsed seconds. */
   const [phaseSince, setPhaseSince] = useState(() => Date.now())
   const [sudoOpen, setSudoOpen] = useState(false)
   const [sudoPassword, setSudoPassword] = useState('')
+  const [sudoCommand, setSudoCommand] = useState('')
+  const [sudoPromptLabel, setSudoPromptLabel] = useState('')
   const [sudoSessionId, setSudoSessionId] = useState<string | undefined>()
   const [sudoCallId, setSudoCallId] = useState<string | undefined>()
+  const [sudoId, setSudoId] = useState('')
+  const [sudoHasVault, setSudoHasVault] = useState(false)
+  const [sudoRemember, setSudoRemember] = useState(false)
   const [sudoCachedTtl, setSudoCachedTtl] = useState(0)
   const [sudoBusy, setSudoBusy] = useState(false)
   const [dockOpenLocal, setDockOpenLocal] = useState(false)
@@ -508,9 +894,14 @@ export function ChatPanel({
   const activeIdRef = useRef(activeId)
   /** Tool calls we already opened in Work, so a replay does not steal the scene. */
   const presentedCalls = useRef<Set<string>>(new Set())
+  /** After the user manually opens a present, stop auto-jumping to later files/shells. */
+  const allowAutoPresent = useRef(true)
   const importTried = useRef('')
   /** After this browser creates a chat, follow the server's new selection once. */
   const followServerActive = useRef(false)
+  const inputRef = useRef(input)
+  inputRef.current = input
+  const draftChatRef = useRef({ projectId: '', chatId: '' })
   const tabsRef = useRef(tabs)
   const speechRef = useRef<SpeechHandle | null>(null)
   const inputBeforeSpeech = useRef('')
@@ -518,6 +909,8 @@ export function ChatPanel({
   const phaseRef = useRef(agentPhase)
   const notifyRef = useRef(notify)
   const onPresentRef = useRef(onPresent)
+  const variantRef = useRef(variant)
+  variantRef.current = variant
   const doneClearTimer = useRef<number | null>(null)
   activeIdRef.current = activeId
   tabsRef.current = tabs
@@ -569,6 +962,7 @@ export function ChatPanel({
     setStreaming(false)
     setPhase('idle', '')
     setRunLog([])
+    setStatusOpen(false)
     stickBottom.current = true
     importTried.current = ''
     followServerActive.current = false
@@ -583,6 +977,32 @@ export function ChatPanel({
     if (tab.running) setPhase('busy', 'agent working…')
     else setPhase('idle', '')
   }, [activeId])
+
+  // Persist / restore composer drafts per chat (leave + come back keeps typing).
+  useEffect(() => {
+    const pid = project?.id || ''
+    const cid = activeId || ''
+    const prev = draftChatRef.current
+    if (prev.projectId && prev.chatId && (prev.projectId !== pid || prev.chatId !== cid)) {
+      writeChatDraft(prev.projectId, prev.chatId, inputRef.current)
+    }
+    draftChatRef.current = { projectId: pid, chatId: cid }
+    if (!pid || !cid) {
+      if (!cid) setInput('')
+      return
+    }
+    // Skip stale chat ids left over during a project switch before activeId clears.
+    if (tabsRef.current.length > 0 && !tabsRef.current.some((t) => t.id === cid)) return
+    setInput(readChatDraft(pid, cid))
+  }, [project?.id, activeId])
+
+  useEffect(() => {
+    if (!project?.id || !activeId) return
+    const pid = project.id
+    const cid = activeId
+    const t = window.setTimeout(() => writeChatDraft(pid, cid, input), 220)
+    return () => window.clearTimeout(t)
+  }, [input, project?.id, activeId])
 
   // Entering a chat tab → jump to bottom and stick unless user scrolls away
   useEffect(() => {
@@ -651,11 +1071,25 @@ export function ChatPanel({
   }, [isDock, dockOpen, dockClosing, newOpen, deleteId, sudoOpen])
 
   useEffect(() => {
-    void api.sudoStatus()
-      .then((s) => setSudoCachedTtl(s.ttlSec || 0))
-      .catch(() => undefined)
+    const pull = () => {
+      void api
+        .sudoStatus()
+        .then((s) => {
+          setSudoCachedTtl(s.ttlSec || 0)
+          setSudoHasVault(Boolean(s.cached || s.persistent || s.sessionCached))
+          if (s.askpassWaiting && s.pending) {
+            setSudoOpen(true)
+            setSudoId(String(s.pending.id || ''))
+            setSudoCommand(String(s.pending.command || '').trim())
+            setSudoPromptLabel(String(s.pending.prompt || '[sudo] password required'))
+          }
+        })
+        .catch(() => undefined)
+    }
+    pull()
     const t = window.setInterval(() => {
       setSudoCachedTtl((v) => (v > 0 ? Math.max(0, v - 5) : 0))
+      pull()
     }, 5000)
     return () => window.clearInterval(t)
   }, [])
@@ -722,9 +1156,28 @@ export function ChatPanel({
                 : String(msg.activeId || nextTabs[0]?.id || '')
             setActiveId(nextActive)
             const current = nextTabs.find((t) => t.id === nextActive) || nextTabs[0]
-            setStreaming(!!current?.running)
-            if (current?.running) setPhase('busy', 'agent working…')
-            else setPhase('idle', '')
+            const isRunning = !!current?.running
+            setStreaming(isRunning)
+            // Don't clobber a specific live phase (thinking/tool/writing) with generic busy.
+            const specificLive = new Set([
+              'thinking',
+              'tool',
+              'streaming',
+              'starting',
+              'approval',
+              'sudo',
+            ])
+            if (isRunning) {
+              if (!specificLive.has(phaseRef.current)) {
+                setPhase('busy', 'agent working…')
+              }
+            } else if (
+              phaseRef.current !== 'done' &&
+              phaseRef.current !== 'error' &&
+              phaseRef.current !== 'idle'
+            ) {
+              setPhase('idle', '')
+            }
             if (msg.approvalPolicy === 'auto' || msg.approvalPolicy === 'ask') {
               setApprovalPolicy(msg.approvalPolicy)
             }
@@ -814,6 +1267,11 @@ export function ChatPanel({
               setPhase('streaming', 'writing…')
             }
             const replace = msg.type === 'text-snapshot'
+            const textRole = (['ask', 'debug', 'plan', 'assistant'].includes(
+              String(msg.role || ''),
+            )
+              ? String(msg.role)
+              : 'assistant') as ChatMsg['role']
             setTabs((prev) =>
               prev.map((t) => {
                 if (t.id !== cid) return t
@@ -825,28 +1283,40 @@ export function ChatPanel({
                     break
                   }
                 }
-                let idx = -1
-                for (let i = messages.length - 1; i >= 0; i--) {
-                  if (messages[i]!.role === 'assistant' && messages[i]!.streaming) {
-                    idx = i
-                    break
+                const streamRoles = new Set(['assistant', 'ask', 'debug', 'plan'])
+                // Only append onto a streaming answer if it is still the last bubble
+                // (tools after it mean the next answer belongs at the bottom).
+                const last = messages[messages.length - 1]
+                const canContinue =
+                  !!last && last.role === textRole && !!last.streaming
+                if (!canContinue) {
+                  for (let i = 0; i < messages.length; i++) {
+                    const m = messages[i]!
+                    if (streamRoles.has(m.role) && m.streaming) {
+                      messages[i] = { ...m, streaming: false }
+                    }
                   }
                 }
-                if (idx < 0) {
+                if (canContinue && last) {
+                  messages[messages.length - 1] = {
+                    ...last,
+                    role: textRole,
+                    text: replace ? chunk : `${last.text || ''}${chunk}`,
+                    streaming: true,
+                    at: Date.now(),
+                    ...(textRole === 'plan'
+                      ? { planState: last.planState || ('open' as const) }
+                      : {}),
+                  }
+                } else {
                   messages.push({
                     id: `a-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-                    role: 'assistant',
+                    role: textRole,
                     text: chunk,
                     streaming: true,
                     at: Date.now(),
+                    ...(textRole === 'plan' ? { planState: 'open' as const } : {}),
                   })
-                } else {
-                  const cur = messages[idx]!
-                  messages[idx] = {
-                    ...cur,
-                    text: replace ? chunk : `${cur.text || ''}${chunk}`,
-                    streaming: true,
-                  }
                 }
                 return { ...t, messages, running: true }
               }),
@@ -931,11 +1401,31 @@ export function ChatPanel({
                 prev.map((t) => {
                   if (t.id !== cid) return t
                   const messages = t.messages.slice()
+                  // Seal open answers so follow-up text appears below this tool.
+                  const answerRoles = new Set(['assistant', 'ask', 'debug', 'plan'])
+                  for (let i = 0; i < messages.length; i++) {
+                    const m = messages[i]!
+                    if (answerRoles.has(m.role) && m.streaming) {
+                      messages[i] = { ...m, streaming: false }
+                    }
+                  }
                   let idx = -1
                   if (callId) {
                     idx = messages.findIndex(
                       (m) => m.role === 'tool' && m.tool?.callId === callId,
                     )
+                  }
+                  const toolPatch = {
+                    name,
+                    status: st || 'running',
+                    detail,
+                    callId: callId || undefined,
+                    sessionId: msg.sessionId ? String(msg.sessionId) : undefined,
+                    path: msg.path != null ? String(msg.path) : undefined,
+                    command: msg.command != null ? String(msg.command) : undefined,
+                    output: msg.output != null ? String(msg.output) : undefined,
+                    before: msg.before != null ? String(msg.before) : undefined,
+                    after: msg.after != null ? String(msg.after) : undefined,
                   }
                   if (idx < 0) {
                     messages.push({
@@ -943,19 +1433,16 @@ export function ChatPanel({
                       role: 'tool',
                       text: '',
                       at: Date.now(),
-                      tool: {
-                        name,
-                        status: st || 'running',
-                        detail,
-                        callId: callId || undefined,
-                        sessionId: msg.sessionId ? String(msg.sessionId) : undefined,
-                      },
+                      tool: toolPatch,
                     })
                   } else {
                     const cur = messages[idx]!
                     messages[idx] = {
                       ...cur,
+                      at: Date.now(),
                       tool: {
+                        ...cur.tool,
+                        ...toolPatch,
                         name,
                         status: st || cur.tool?.status || 'running',
                         detail: detail ?? cur.tool?.detail,
@@ -963,24 +1450,77 @@ export function ChatPanel({
                         sessionId: msg.sessionId
                           ? String(msg.sessionId)
                           : cur.tool?.sessionId,
+                        path: toolPatch.path ?? cur.tool?.path,
+                        command: toolPatch.command ?? cur.tool?.command,
+                        output: toolPatch.output ?? cur.tool?.output,
+                        before: toolPatch.before ?? cur.tool?.before,
+                        after: toolPatch.after ?? cur.tool?.after,
                       },
                     }
+                  }
+                  const filePayload = msg.file as
+                    | { path?: string; action?: string; before?: string; after?: string }
+                    | undefined
+                  if (filePayload?.path && st === 'completed') {
+                    messages.push({
+                      id: `file-${callId || Date.now().toString(36)}`,
+                      role: 'file',
+                      text: '',
+                      at: Date.now(),
+                      file: {
+                        path: String(filePayload.path),
+                        action: String(filePayload.action || name),
+                        before:
+                          filePayload.before != null
+                            ? String(filePayload.before)
+                            : undefined,
+                        after:
+                          filePayload.after != null
+                            ? String(filePayload.after)
+                            : undefined,
+                      },
+                    })
                   }
                   return { ...t, messages, running: true }
                 }),
               )
             }
-            if (st === 'completed' && forActive) {
+            // Work dock may auto-jump once; stop after the user manually opens/leaves a present.
+            // Home Agent is click-to-open only.
+            if (
+              st === 'completed' &&
+              forActive &&
+              variantRef.current !== 'agent' &&
+              allowAutoPresent.current
+            ) {
               if (!callId || !presentedCalls.current.has(callId)) {
                 if (callId) presentedCalls.current.add(callId)
-                const file = msg.file as { path?: string } | undefined
-                if (file?.path) onPresentRef.current?.({ scene: 'files', path: file.path })
+                const file = msg.file as {
+                  path?: string
+                  before?: string
+                  after?: string
+                  action?: string
+                } | undefined
+                if (file?.path) {
+                  onPresentRef.current?.({
+                    scene: 'files',
+                    path: file.path,
+                    minimal: true,
+                    before: file.before,
+                    after: file.after,
+                    action: file.action,
+                  })
+                }
                 const shellHint = presentFromTool(
                   name,
-                  undefined,
+                  msg.path ? String(msg.path) : undefined,
                   msg.sessionId ? String(msg.sessionId) : undefined,
+                  {
+                    command: msg.command ? String(msg.command) : undefined,
+                    output: msg.output ? String(msg.output) : undefined,
+                  },
                 )
-                if (shellHint) onPresentRef.current?.(shellHint)
+                if (shellHint?.scene === 'shell') onPresentRef.current?.(shellHint)
               }
             }
             if (!forActive) return
@@ -995,10 +1535,171 @@ export function ChatPanel({
               pushRunLog(`tool · ${toolLabel}`)
               setPhase('tool', `${toolLabel}…`)
             }
+          } else if (msg.type === 'todo-delta') {
+            const cid = chatId || activeIdRef.current
+            const todos = Array.isArray(msg.todos) ? msg.todos : []
+            if (cid && todos.length) {
+              setTabs((prev) =>
+                prev.map((t) => {
+                  if (t.id !== cid) return t
+                  const messages = t.messages.slice()
+                  for (let i = 0; i < messages.length; i++) {
+                    const m = messages[i]!
+                    if (
+                      (m.role === 'assistant' ||
+                        m.role === 'ask' ||
+                        m.role === 'debug' ||
+                        m.role === 'plan') &&
+                      m.streaming
+                    ) {
+                      messages[i] = { ...m, streaming: false }
+                    }
+                  }
+                  const callId = msg.callId ? String(msg.callId) : ''
+                  let idx = callId
+                    ? messages.findIndex((m) => m.role === 'todo' && m.tool?.callId === callId)
+                    : -1
+                  if (idx < 0) {
+                    idx = [...messages].reverse().findIndex((m) => m.role === 'todo')
+                    if (idx >= 0) idx = messages.length - 1 - idx
+                  }
+                  const summary =
+                    msg.detail != null
+                      ? String(msg.detail)
+                      : `${todos.filter((x: { status?: string }) => x.status === 'completed').length}/${todos.length} tasks`
+                  const next = {
+                    id: callId ? `todo-${callId}` : `todo-${Date.now().toString(36)}`,
+                    role: 'todo' as const,
+                    text: summary,
+                    at: Date.now(),
+                    todos: todos as ChatMsg['todos'],
+                    tool: {
+                      name: 'updateTodos',
+                      status: String(msg.status || 'completed'),
+                      detail: summary,
+                      callId: callId || undefined,
+                    },
+                  }
+                  if (idx < 0) messages.push(next)
+                  else messages[idx] = { ...messages[idx]!, ...next, id: messages[idx]!.id }
+                  return { ...t, messages, running: true }
+                }),
+              )
+            }
+            if (forActive) {
+              pushRunLog('todos updated')
+              setPhase('tool', 'todos…')
+            }
+          } else if (msg.type === 'plan-delta') {
+            const cid = chatId || activeIdRef.current
+            const plan = String(msg.plan || '')
+            if (cid && plan.trim()) {
+              setTabs((prev) =>
+                prev.map((t) => {
+                  if (t.id !== cid) return t
+                  const messages = t.messages.slice()
+                  const callId = msg.callId ? String(msg.callId) : ''
+                  let idx = callId
+                    ? messages.findIndex((m) => m.role === 'plan' && m.tool?.callId === callId)
+                    : -1
+                  if (idx < 0) {
+                    idx = [...messages]
+                      .reverse()
+                      .findIndex((m) => m.role === 'plan' && (m.planState || 'open') === 'open')
+                    if (idx >= 0) idx = messages.length - 1 - idx
+                  }
+                  const next: ChatMsg = {
+                    id: callId ? `plan-${callId}` : `plan-${Date.now().toString(36)}`,
+                    role: 'plan',
+                    text: plan,
+                    at: Date.now(),
+                    planState: 'open',
+                    tool: {
+                      name: 'createPlan',
+                      status: String(msg.status || 'completed'),
+                      callId: callId || undefined,
+                    },
+                  }
+                  if (idx < 0) messages.push(next)
+                  else messages[idx] = { ...messages[idx]!, ...next, id: messages[idx]!.id }
+                  return { ...t, messages, running: true }
+                }),
+              )
+            }
+            if (forActive) {
+              pushRunLog('plan ready')
+              setPhase('streaming', '')
+            }
+          } else if (msg.type === 'task-delta') {
+            const cid = chatId || activeIdRef.current
+            if (cid) {
+              const callId = msg.callId ? String(msg.callId) : ''
+              const detail = String(msg.detail || msg.taskName || 'Task')
+              const st = String(msg.status || 'running')
+              setTabs((prev) =>
+                prev.map((t) => {
+                  if (t.id !== cid) return t
+                  const messages = t.messages.slice()
+                  for (let i = 0; i < messages.length; i++) {
+                    const m = messages[i]!
+                    if (
+                      (m.role === 'assistant' ||
+                        m.role === 'ask' ||
+                        m.role === 'debug' ||
+                        m.role === 'plan') &&
+                      m.streaming
+                    ) {
+                      messages[i] = { ...m, streaming: false }
+                    }
+                  }
+                  let idx = callId
+                    ? messages.findIndex((m) => m.role === 'task' && m.tool?.callId === callId)
+                    : -1
+                  const next: ChatMsg = {
+                    id: callId ? `task-${callId}` : `task-${Date.now().toString(36)}`,
+                    role: 'task',
+                    text: detail,
+                    at: Date.now(),
+                    task: { status: st, name: String(msg.taskName || detail) },
+                    tool: { name: 'task', status: st, detail, callId: callId || undefined },
+                  }
+                  if (idx < 0) messages.push(next)
+                  else messages[idx] = { ...messages[idx]!, ...next, id: messages[idx]!.id }
+                  return { ...t, messages, running: true }
+                }),
+              )
+            }
+            if (forActive) pushRunLog(`task · ${String(msg.taskName || msg.detail || 'subagent')}`)
+          } else if (msg.type === 'mode') {
+            const nextMode = String(msg.mode || '')
+            if (CHAT_MODES.some((m) => m.id === nextMode)) {
+              setMode(nextMode as ChatMode)
+              try {
+                localStorage.setItem(MODE_STORAGE_KEY, nextMode)
+              } catch {
+                /* ignore */
+              }
+            }
+            const cid = chatId || (msg.chatId ? String(msg.chatId) : activeIdRef.current)
+            if (cid) {
+              setTabs((prev) =>
+                prev.map((t) =>
+                  t.id === cid ? { ...t, mode: nextMode as ChatMode } : t,
+                ),
+              )
+            }
           } else if (msg.type === 'shell-delta') {
             const chunk = String(msg.text || '')
             if (msg.sudoPrompt || /\[sudo\]\s+password/i.test(chunk)) {
               setSudoOpen(true)
+              const cleaned = chunk.replace(/\r/g, '')
+              const forMatch = cleaned.match(/\[sudo\]\s+password for:\s*(.+)/i)
+              const cmdHint =
+                String(msg.command || msg.sudoCommand || '').trim() ||
+                (forMatch?.[1] || '').trim() ||
+                cleaned.trim().slice(0, 200)
+              if (cmdHint) setSudoCommand(cmdHint)
+              setSudoPromptLabel('[sudo] password required')
               if (msg.sessionId) setSudoSessionId(String(msg.sessionId))
               if (msg.callId) setSudoCallId(String(msg.callId))
               setPhase('sudo', 'sudo password needed…')
@@ -1008,20 +1709,34 @@ export function ChatPanel({
             }
           } else if (msg.type === 'sudo-request') {
             setSudoOpen(true)
+            setSudoId(String(msg.id || ''))
+            setSudoCommand(String(msg.command || msg.detail || '').trim())
+            setSudoPromptLabel(String(msg.prompt || '[sudo] password required'))
+            setSudoHasVault(Boolean(msg.hasPersistent || msg.hasSession || msg.cached))
             if (msg.sessionId) setSudoSessionId(String(msg.sessionId))
             if (msg.callId) setSudoCallId(String(msg.callId))
             setPhase('sudo', 'sudo password needed…')
-            pushRunLog('sudo-request from server')
+            pushRunLog(
+              `sudo-request · ${String(msg.command || msg.prompt || 'elevated command').slice(0, 80)}`,
+            )
           } else if (msg.type === 'sudo-ack') {
             setSudoBusy(false)
             if (msg.ok) {
               setSudoPassword('')
               setSudoOpen(false)
-              setSudoCachedTtl(Number(msg.ttlSec) || 300)
+              setSudoCommand('')
+              setSudoPromptLabel('')
+              setSudoId('')
+              setSudoCachedTtl(Number(msg.ttlSec) || (msg.cleared || msg.denied ? 0 : 300))
+              setSudoHasVault(Boolean(msg.cached || msg.persistent) && !msg.cleared)
               pushRunLog(
                 msg.cleared
                   ? 'sudo vault cleared'
-                  : `sudo vaulted · ttl=${msg.ttlSec || '?'}s fed=${!!msg.fedSession}`,
+                  : msg.denied
+                    ? 'sudo denied'
+                    : msg.allowed
+                      ? 'sudo allowed (vault)'
+                      : `sudo vaulted · ttl=${msg.ttlSec || '?'}s fed=${!!msg.fedSession}`,
               )
               setPhase(streamingRef.current ? 'tool' : 'idle', streamingRef.current ? 'continuing…' : '')
             } else {
@@ -1085,19 +1800,46 @@ export function ChatPanel({
                 category: 'cursor',
               })
             }
+            // Home Agent talk mode: speak the assistant reply (works without mic).
+            if (!err && voiceModeRef.current && forActive) {
+              const tab = tabsRef.current.find((t) => t.id === (chatId || activeIdRef.current))
+              const lastAssistant = [...(tab?.messages || [])]
+                .reverse()
+                .find((m) => m.role === 'assistant' && (m.text || '').trim())
+              if (lastAssistant?.text) {
+                try {
+                  speakText(lastAssistant.text)
+                } catch (e) {
+                  console.error('[home-agent] speak failed', e)
+                }
+              }
+            }
           } else if (msg.type === 'error') {
             const detail = String(msg.error || 'Agent error')
-            const tip = msg.busy
-              ? detail
-              : `${detail} — chat is still open; cancel if stuck, then send again.`
+            const stuckBusy =
+              !!msg.busy || /already has active run|stuck run/i.test(detail)
+            const tip = stuckBusy
+              ? `${detail} — press Stop, then send again.`
+              : `${detail} — chat is still open; you can send again.`
             if (forActive) {
-              if (!msg.busy) setStreaming(false)
+              // Keep Stop visible for stuck SDK runs (Home Base lock may already be clear).
+              if (stuckBusy) {
+                setStreaming(true)
+                setTabs((prev) =>
+                  prev.map((t) =>
+                    t.id === (chatId || activeIdRef.current) ? { ...t, running: true } : t,
+                  ),
+                )
+                setPhase('busy', 'stuck — press Stop')
+              } else {
+                setStreaming(false)
+                setPhase('error', 'error')
+              }
               setError(tip)
-              setPhase(msg.busy ? 'busy' : 'error', msg.busy ? 'busy' : 'error')
               pushRunLog(`error · ${detail}`)
               console.error('[cursor]', tip, msg)
             }
-            if (!msg.busy && notifyRef.current) {
+            if (!stuckBusy && notifyRef.current) {
               notifyRef.current.ping({
                 title: 'Cursor error',
                 body: tip.slice(0, 160),
@@ -1108,13 +1850,31 @@ export function ChatPanel({
           } else if (msg.type === 'cancelled') {
             if (!forActive) return
             setQueuedCount(0)
+            const cid = chatId || activeIdRef.current
             if (msg.ok === false) {
+              setError(
+                'No live run on the server. Send again — orphaned agent runs are cleared automatically.',
+              )
+              setStreaming(false)
               setPhase('idle', '')
+              if (cid) {
+                setTabs((prev) =>
+                  prev.map((t) => (t.id === cid ? { ...t, running: false } : t)),
+                )
+              }
               return
             }
-            setStreaming(false)
             pushRunLog('stop requested — run is ending on the server')
             setPhase('busy', 'stopping…')
+            // Orphan-only cancels never emit done — clear chrome if still stopping.
+            window.setTimeout(() => {
+              if (phaseRef.current !== 'busy') return
+              const tab = tabsRef.current.find((t) => t.id === cid)
+              if (tab?.running) return // live run will clear via done/tab
+              setStreaming(false)
+              setPhase('idle', '')
+              setError('')
+            }, 2000)
           } else if (msg.type === 'queued') {
             if (!forActive) return
             setQueuedCount(Number(msg.position) || 0)
@@ -1169,8 +1929,46 @@ export function ChatPanel({
   }
 
   function decideApproval(id: string, decision: 'allow' | 'deny') {
-    wsRef.current?.send(JSON.stringify({ type: 'approve', id, decision }))
+    wsRef.current?.send(
+      JSON.stringify({
+        type: 'approve',
+        id,
+        decision,
+        allow: decision === 'allow',
+        denied: decision === 'deny',
+      }),
+    )
     setPendingApprovals((prev) => prev.filter((p) => p.id !== id))
+  }
+
+  function planAction(messageId: string, action: 'build' | 'cancel') {
+    if (!active?.id || !socketOpen()) return
+    wsRef.current?.send(
+      JSON.stringify({
+        type: 'plan_action',
+        chatId: active.id,
+        messageId,
+        action,
+        model,
+      }),
+    )
+    if (action === 'build') chooseMode('agent')
+  }
+
+  function applyFixFromDebug(_messageId: string, text: string) {
+    chooseMode('agent')
+    if (!active?.id || !socketOpen() || !text.trim()) return
+    wsRef.current?.send(
+      JSON.stringify({
+        type: 'send',
+        chatId: active.id,
+        prompt:
+          'Apply a fix based on this debug finding. Prefer a concrete patch over further diagnosis.\n\n' +
+          text.trim(),
+        model,
+        mode: 'agent',
+      }),
+    )
   }
 
   function socketOpen() {
@@ -1352,9 +2150,22 @@ export function ChatPanel({
     setShowJump(false)
     setEditingLast(false)
     setAtMention(null)
-    if (!opts?.prompt) setInput('')
+    allowAutoPresent.current = true
+    if (!opts?.prompt) {
+      setInput('')
+      if (project?.id && active.id) clearChatDraft(project.id, active.id)
+    }
     setDraftImages([])
     setDraftContext([])
+    // Voice mode: pause mic while sending, then resume listen if mic works.
+    if (isAgent && voiceModeRef.current) {
+      stopListening()
+      if (canSpeak) {
+        window.setTimeout(() => {
+          if (voiceModeRef.current) beginListen('')
+        }, 400)
+      }
+    }
     const chatId = active.id
     if (!opts?.skipOptimistic && !queueing) {
       setTabs((prev) =>
@@ -1416,8 +2227,10 @@ export function ChatPanel({
     if (!active) return
     pushRunLog('stop requested')
     setQueuedCount(0)
-    setStreaming(false)
-    setPhase('idle', '')
+    setError('')
+    // Keep Stop/busy chrome until the server acks; hide only on done/cancelled/idle.
+    setStreaming(true)
+    setPhase('busy', 'stopping…')
     wsRef.current?.send(JSON.stringify({ type: 'cancel', chatId: active.id }))
   }
 
@@ -1454,7 +2267,12 @@ export function ChatPanel({
         setAtMention(null)
         return
       }
-      if (streaming) {
+      const canStop =
+        streaming ||
+        !!active?.running ||
+        agentPhase === 'busy' ||
+        /stuck run|already has active run|press Stop/i.test(error)
+      if (canStop) {
         e.preventDefault()
         cancel()
       } else if (editingLast) {
@@ -1466,7 +2284,20 @@ export function ChatPanel({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streaming, editingLast, settingsOpen, active?.id, atMention])
+  }, [streaming, editingLast, settingsOpen, active?.id, atMention, agentPhase, error, active?.running])
+
+  // Outside click / tap dismisses the chat options sheet (gear).
+  useEffect(() => {
+    if (!settingsOpen) return
+    const onPointer = (e: PointerEvent) => {
+      const t = e.target
+      if (!(t instanceof Element)) return
+      if (t.closest('.hb-chat-sheet, .hb-chat-opt-btn')) return
+      setSettingsOpen(false)
+    }
+    document.addEventListener('pointerdown', onPointer, true)
+    return () => document.removeEventListener('pointerdown', onPointer, true)
+  }, [settingsOpen])
 
   // Restore mode/model when switching chats (per-tab when server has them).
   useEffect(() => {
@@ -1495,11 +2326,17 @@ export function ChatPanel({
     const pw = sudoPassword
     if (!pw || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
     setSudoBusy(true)
-    pushRunLog('submitting sudo password (not logged)')
+    pushRunLog(
+      sudoRemember
+        ? 'saving encrypted sudo password (not logged)'
+        : 'submitting sudo password (not logged)',
+    )
     wsRef.current.send(
       JSON.stringify({
         type: 'sudo',
         password: pw,
+        persistent: sudoRemember,
+        id: sudoId || undefined,
         sessionId: sudoSessionId,
         callId: sudoCallId,
         chatId: activeIdRef.current,
@@ -1507,57 +2344,152 @@ export function ChatPanel({
     )
   }
 
+  function allowSavedSudo() {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+    setSudoBusy(true)
+    pushRunLog('allowing vaulted sudo for this command')
+    wsRef.current.send(JSON.stringify({ type: 'sudo_allow', id: sudoId || undefined }))
+  }
+
+  function denySudoPrompt() {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'sudo_deny', id: sudoId || undefined }))
+    } else {
+      void api.denySudo(sudoId || undefined).catch(() => undefined)
+    }
+    setSudoOpen(false)
+    setSudoPassword('')
+    setSudoCommand('')
+    setSudoPromptLabel('')
+    setSudoId('')
+    setPhase(streamingRef.current ? 'tool' : 'idle', streamingRef.current ? 'continuing…' : '')
+  }
+
   function clearSudoVault() {
-    wsRef.current?.send(JSON.stringify({ type: 'sudo_clear' }))
+    wsRef.current?.send(JSON.stringify({ type: 'sudo_clear_persistent' }))
     setSudoCachedTtl(0)
+    setSudoHasVault(false)
     setSudoOpen(false)
     setSudoPassword('')
   }
 
   function presentFromChat(req: PresentRequest) {
+    // Manual open — don't auto-steal to later file/shell presents in this run.
+    allowAutoPresent.current = false
     pushRunLog(`present · ${req.scene}${req.path ? ` ${req.path}` : ''}`)
     onPresent?.(req)
     if (isDock) setDockOpen(false)
   }
 
+  const listenGen = useRef(0)
+
   function stopListening() {
-    speechRef.current?.stop()
+    listenGen.current += 1
+    const handle = speechRef.current
     speechRef.current = null
     setListening(false)
+    handle?.stop()
   }
 
-  function toggleListen() {
-    if (listening) {
-      stopListening()
-      return
-    }
+  function beginListen(prefix?: string) {
+    const gen = ++listenGen.current
+    const prev = speechRef.current
+    speechRef.current = null
+    setListening(false)
+    prev?.stop()
     notify?.unlockAudio()
     // Freeze composer prefix for the whole listen session — speech.ts owns the
     // cumulative transcript so words append instead of overwriting / doubling.
-    inputBeforeSpeech.current = input.trim()
+    inputBeforeSpeech.current = (prefix ?? input).trim()
     const applySpeech = (text: string) => {
+      if (gen !== listenGen.current) return
       const base = inputBeforeSpeech.current
       setInput(base ? `${base} ${text}` : text)
     }
     const handle = startSpeechDictation({
       onPartial: applySpeech,
       onFinal: applySpeech,
-      onError: (message) => setError(message),
+      onError: (message) => {
+        if (gen !== listenGen.current) return
+        if (isAgent) reportAgentIssue(message)
+        else setError(message)
+      },
       onEnd: () => {
+        if (gen !== listenGen.current) return
         speechRef.current = null
         setListening(false)
+        // Home Agent voice mode: engine ended — keep mode on, restart if still armed.
+        if (voiceModeRef.current && isAgent) {
+          window.setTimeout(() => {
+            if (voiceModeRef.current && listenGen.current === gen) beginListen()
+          }, 250)
+        }
       },
       lang: 'en-US',
     })
     if (!handle) return
+    if (gen !== listenGen.current) {
+      handle.stop()
+      return
+    }
     speechRef.current = handle
     setListening(true)
     setError('')
   }
 
+  function reportAgentIssue(message: string, level: 'error' | 'warn' = 'error') {
+    const text = message.trim()
+    if (!text) return
+    setError(text)
+    console.error('[home-agent]', text)
+    try {
+      notify?.ping({
+        title: level === 'error' ? 'Agent error' : 'Agent',
+        body: text.slice(0, 200),
+        level,
+        category: 'home-agent',
+      })
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function toggleListen() {
+    if (isAgent) {
+      if (voiceMode) {
+        setVoiceMode(false)
+        voiceModeRef.current = false
+        stopListening()
+        stopSpeaking()
+        return
+      }
+      // Talk mode always arms TTS for replies. Mic listen is optional.
+      setVoiceMode(true)
+      voiceModeRef.current = true
+      notify?.unlockAudio()
+      if (canSpeak) {
+        beginListen()
+      } else {
+        stopListening()
+        reportAgentIssue(
+          'Microphone dictation unavailable here — Talk will still speak AI replies.',
+          'warn',
+        )
+      }
+      return
+    }
+    if (listening) {
+      stopListening()
+      return
+    }
+    beginListen()
+  }
+
   useEffect(() => {
     return () => {
+      listenGen.current += 1
       speechRef.current?.stop()
+      stopSpeaking()
     }
   }, [])
 
@@ -1588,9 +2520,24 @@ export function ChatPanel({
     statusPhasePre === 'sudo'
   const statusNow = useNowTick(statusLivePre)
 
+  // Home Agent: keep the locked chat selected once the workspace arrives.
+  useEffect(() => {
+    if (!isAgent || !agentChatId || !tabs.some((t) => t.id === agentChatId)) return
+    if (activeId === agentChatId) return
+    followServerActive.current = false
+    setActiveId(agentChatId)
+    if (socketOpen()) {
+      wsRef.current?.send(JSON.stringify({ type: 'select', chatId: agentChatId }))
+    }
+  }, [isAgent, agentChatId, tabs, activeId])
+
   if (!project) {
     return (
-      <div className={isDock ? 'hb-chat-dock-body' : 'h-full flex flex-col min-h-0 hb-with-nav'}>
+      <div
+        className={
+          isDock ? 'hb-chat-dock-body' : isAgent ? 'h-full flex flex-col min-h-0' : 'h-full flex flex-col min-h-0 hb-with-nav'
+        }
+      >
         <p className="hb-page text-mute text-sm">
           {projects.length === 0 ? 'No projects loaded yet.' : 'Select a project.'}
         </p>
@@ -1738,7 +2685,47 @@ export function ChatPanel({
     </>
   )
 
-  const header = (
+  const header = isAgent ? (
+    <div className="hb-agent-bar shrink-0">
+      <button type="button" className="hb-btn hb-btn-ghost text-sm" onClick={() => onAgentBack?.()}>
+        ← Chats
+      </button>
+      <div className="min-w-0 flex-1">
+        <h1 className="hb-agent-bar-title truncate">{active?.title || 'Chat'}</h1>
+        <p className="text-mute text-xs truncate">
+          <span className={connected ? 'text-ok' : 'text-amber'}>{connStateLabel(connState)}</span>
+          {' · '}
+          <span className="text-sky">{cwdLabel}</span>
+        </p>
+      </div>
+      {streaming && (
+        <button type="button" className="hb-btn hb-btn-ghost text-sm text-danger" onClick={() => cancel()}>
+          Stop
+        </button>
+      )}
+      <button
+        type="button"
+        className="hb-agent-alerts"
+        onClick={() => {
+          notify?.unlockAudio()
+          if (notify?.toggleInbox) notify.toggleInbox()
+          else window.dispatchEvent(new Event('hb-open-inbox'))
+        }}
+        aria-label={
+          notify && notify.unread > 0 ? `Alerts, ${notify.unread} unread` : 'Alerts'
+        }
+        title="Alerts"
+      >
+        <svg className="hb-status-alerts-icon" viewBox="0 0 24 24" aria-hidden>
+          <path d="M15 17.5H5.5a1.5 1.5 0 0 1-1.3-2.25C5.3 13.4 6 11.8 6 10a6 6 0 1 1 12 0c0 1.8.7 3.4 1.8 5.25A1.5 1.5 0 0 1 18.5 17.5H15z" />
+          <path d="M10 17.5v.75a2 2 0 0 0 4 0v-.75" />
+        </svg>
+        {!!notify?.unread && (
+          <span className="hb-status-badge">{notify.unread > 9 ? '9+' : notify.unread}</span>
+        )}
+      </button>
+    </div>
+  ) : (
     <div className={`shrink-0 ${isDock ? 'hb-chat-dock-chrome' : 'hb-chrome'}`}>
       <div className={`${isDock ? 'px-3 py-2 space-y-2' : 'hb-chrome-inner space-y-2'}`}>
         {!isDock && (
@@ -1869,11 +2856,21 @@ export function ChatPanel({
         ? 'error'
         : statusPhase === 'thinking'
           ? 'thinking'
-          : statusLive
-            ? statusPhase === 'streaming'
-              ? 'writing'
-              : 'busy'
-            : ''
+          : statusPhase === 'streaming'
+            ? 'writing'
+            : statusPhase === 'tool'
+              ? 'tool'
+              : statusPhase === 'starting'
+                ? 'starting'
+                : statusPhase === 'approval'
+                  ? 'approval'
+                  : statusPhase === 'sudo'
+                    ? 'sudo'
+                    : statusPhase === 'busy'
+                      ? 'busy'
+                      : streaming
+                        ? 'busy'
+                        : ''
   const statusBadgeText =
     statusBadgeKind === 'done'
       ? 'done'
@@ -1881,7 +2878,7 @@ export function ChatPanel({
         ? 'error'
         : statusBadgeKind && statusElapsedLabel
           ? `${statusBadgeKind} · ${statusElapsedLabel}`
-          : statusBadgeKind || (streaming ? `busy · ${statusElapsedLabel}` : '')
+          : statusBadgeKind
 
   const statusLabel =
     pendingApprovals.length > 0
@@ -1901,13 +2898,21 @@ export function ChatPanel({
                   ? 'done'
                   : statusPhase === 'error'
                     ? 'error'
-                    : statusPhase === 'busy'
-                      ? 'busy — wait or Stop'
-                      : streaming
-                        ? 'agent working…'
-                        : connected
-                          ? 'ready'
-                          : connStateLabel(connState))
+                    : statusPhase === 'thinking'
+                      ? 'thinking…'
+                      : statusPhase === 'tool'
+                        ? 'running tools…'
+                        : statusPhase === 'streaming'
+                          ? 'writing…'
+                          : statusPhase === 'starting'
+                            ? 'starting…'
+                            : statusPhase === 'busy'
+                              ? 'agent working…'
+                              : streaming
+                                ? 'agent working…'
+                                : connected
+                                  ? 'ready'
+                                  : connStateLabel(connState))
 
   const messages = (
     <div
@@ -1926,12 +2931,12 @@ export function ChatPanel({
       {active && active.messages.length === 0 && (
         <div className="mt-2 max-w-md space-y-2">
           <p className="text-text font-semibold text-sm">
-            {isDock ? 'Work chat' : 'Local Cursor agent'}
+            {isAgent ? 'Agent' : isDock ? 'Work chat' : 'Local Cursor agent'}
           </p>
           <p className="text-mute text-xs leading-relaxed">
-            Server-backed chats stream like Cursor IDE. Queue follow-ups while it runs, Esc to
-            stop, Edit/Retry on messages, Copy on bubbles and code blocks. Gear → mode, model,
-            tool approvals.
+            {isAgent
+              ? 'Type a message, or tap the mic for talk mode — green Confirm sends, and replies are spoken while talk mode stays on.'
+              : 'Server-backed chats stream like Cursor IDE. Queue follow-ups while it runs, Esc to stop, Edit/Retry on messages, Copy on bubbles and code blocks. Gear → mode, model, tool approvals.'}
           </p>
         </div>
       )}
@@ -1941,9 +2946,19 @@ export function ChatPanel({
           return -1
         })()
         const lastAssistantIdx = (() => {
-          for (let j = arr.length - 1; j >= 0; j--) if (arr[j]!.role === 'assistant') return j
+          for (let j = arr.length - 1; j >= 0; j--) {
+            const r = arr[j]!.role
+            if (r === 'assistant' || r === 'ask' || r === 'debug' || r === 'plan') return j
+          }
           return -1
         })()
+        const lastThinkingIdx = (() => {
+          for (let j = arr.length - 1; j >= 0; j--) if (arr[j]!.role === 'thinking') return j
+          return -1
+        })()
+        // Keep the latest turn's logic open so phone view still shows progress/reasoning.
+        const preferThinkingOpen =
+          m.role === 'thinking' && i === lastThinkingIdx && lastUserIdx >= 0 && i > lastUserIdx
         return (
           <MessageCard
             key={m.id}
@@ -1954,8 +2969,11 @@ export function ChatPanel({
               editLastUser(text)
             }}
             onRegenerate={regenerate}
+            onPlanAction={planAction}
+            onApplyFix={applyFixFromDebug}
             canEdit={!streaming && i === lastUserIdx}
             canRegenerate={!streaming && i === lastAssistantIdx && lastUserIdx >= 0}
+            preferThinkingOpen={preferThinkingOpen}
           />
         )
       })}
@@ -1966,75 +2984,108 @@ export function ChatPanel({
           </button>
         </div>
       )}
-      {pendingApprovals.map((ap) => (
-        <div
-          key={ap.id}
-          className="rounded-xl border border-amber/40 bg-amber/10 px-3 py-2.5 space-y-2 mr-4 hb-chat-enter"
-        >
-          <div className="flex items-center gap-2 text-xs font-semibold">
-            <span className="text-amber uppercase tracking-wide text-[10px]">
-              Pending approval
-            </span>
-            <span className="font-mono text-text">{ap.tool}</span>
+      {pendingApprovals.map((ap) => {
+        const modeSwitch = ap.kind === 'mode_switch'
+        return (
+          <div
+            key={ap.id}
+            className="rounded-xl border border-amber/40 bg-amber/10 px-3 py-2.5 space-y-2 mr-4 hb-chat-enter"
+          >
+            <div className="flex items-center gap-2 text-xs font-semibold">
+              <span className="text-amber uppercase tracking-wide text-[10px]">
+                {modeSwitch ? 'Switch mode' : 'Pending approval'}
+              </span>
+              <span className="font-mono text-text">
+                {modeSwitch ? ap.tool : ap.tool}
+              </span>
+            </div>
+            <pre className="hb-chat-tool-detail text-[11px] text-mute max-h-28">
+              {modeSwitch
+                ? ap.detail || `Switch to ${ap.tool}?`
+                : formatToolDetail(ap.tool, ap.command || ap.detail || ap.tool)}
+            </pre>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="flex-1 rounded-lg hb-btn-primary text-xs font-semibold py-1.5 border-0"
+                onClick={() => decideApproval(ap.id, 'allow')}
+              >
+                {modeSwitch ? 'Switch' : 'Allow'}
+              </button>
+              <button
+                type="button"
+                className="flex-1 rounded-lg border border-danger/50 text-danger text-xs font-semibold py-1.5"
+                onClick={() => decideApproval(ap.id, 'deny')}
+              >
+                {modeSwitch ? 'Stay' : 'Deny'}
+              </button>
+            </div>
           </div>
-          <pre className="text-[11px] font-mono text-mute whitespace-pre-wrap break-all max-h-28 overflow-auto">
-            {ap.command || ap.detail || ap.tool}
-          </pre>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              className="flex-1 rounded-lg hb-btn-primary text-xs font-semibold py-1.5 border-0"
-              onClick={() => decideApproval(ap.id, 'allow')}
-            >
-              Allow
-            </button>
-            <button
-              type="button"
-              className="flex-1 rounded-lg border border-danger/50 text-danger text-xs font-semibold py-1.5"
-              onClick={() => decideApproval(ap.id, 'deny')}
-            >
-              Deny
-            </button>
-          </div>
-        </div>
-      ))}
+        )
+      })}
       {sudoOpen && (
         <form
           onSubmit={submitSudo}
           className="rounded-xl border border-amber/45 bg-amber/10 px-3 py-2.5 space-y-2 mr-4 hb-chat-enter"
         >
-          <div className="flex items-center gap-2 text-xs font-semibold">
+          <div className="flex items-center gap-2 text-xs font-semibold flex-wrap">
             <span className="text-amber uppercase tracking-wide text-[10px]">Sudo</span>
             <span className="text-mute font-normal">
-              Password for elevated commands — not saved in chat history
+              Encrypted at rest · never used without your OK
             </span>
           </div>
+          {(sudoCommand || sudoPromptLabel) && (
+            <div className="rounded-lg bg-panel-2/80 border border-line/80 px-2.5 py-2">
+              <div className="text-[10px] uppercase tracking-wide text-mute mb-1">
+                Needs elevation for
+              </div>
+              <pre className="hb-chat-tool-detail text-[11px] text-text whitespace-pre-wrap break-words m-0 max-h-24 overflow-y-auto">
+                {sudoCommand || sudoPromptLabel}
+              </pre>
+            </div>
+          )}
+          {sudoHasVault && (
+            <button
+              type="button"
+              disabled={sudoBusy}
+              onClick={allowSavedSudo}
+              className="w-full rounded-lg hb-btn-primary text-xs font-semibold py-2 border-0 disabled:opacity-40"
+            >
+              {sudoBusy ? 'Allowing…' : 'Allow saved password'}
+            </button>
+          )}
           <input
             type="password"
             value={sudoPassword}
             onChange={(e) => setSudoPassword(e.target.value)}
             autoComplete="current-password"
-            placeholder="sudo password"
+            placeholder={sudoHasVault ? 'Or enter a different password' : 'sudo password'}
             className="w-full rounded-lg bg-panel-2 border border-line px-3 py-2 text-sm outline-none focus:border-accent"
-            autoFocus
+            autoFocus={!sudoHasVault}
           />
+          <label className="flex items-center gap-2 text-[11px] text-mute cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={sudoRemember}
+              onChange={(e) => setSudoRemember(e.target.checked)}
+              className="rounded border-line"
+            />
+            Save encrypted (still requires Allow each time)
+          </label>
           <div className="flex gap-2">
             <button
               type="submit"
               disabled={sudoBusy || !sudoPassword}
               className="flex-1 rounded-lg hb-btn-primary text-xs font-semibold py-1.5 border-0 disabled:opacity-40"
             >
-              {sudoBusy ? 'Sending…' : 'Unlock sudo'}
+              {sudoBusy ? 'Sending…' : sudoRemember ? 'Save & use' : 'Use once'}
             </button>
             <button
               type="button"
-              className="rounded-lg border border-line text-mute text-xs font-semibold px-3 py-1.5"
-              onClick={() => {
-                setSudoOpen(false)
-                setSudoPassword('')
-              }}
+              className="rounded-lg border border-danger/40 text-danger text-xs font-semibold px-3 py-1.5"
+              onClick={denySudoPrompt}
             >
-              Dismiss
+              Deny
             </button>
           </div>
         </form>
@@ -2044,52 +3095,85 @@ export function ChatPanel({
     </div>
   )
 
+  const recentRunLog = runLog.slice(-8)
   const statusBar = (
-    <div
-      className={`hb-chat-status shrink-0 ${statusPhase}`}
-      title={runLog.slice(-8).join('\n') || statusLabel}
-      role="status"
-      aria-live="polite"
-    >
-      <span className={`hb-chat-status-dot ${statusPhase}`} aria-hidden />
-      <span className="hb-chat-status-label truncate">{statusLabel}</span>
-      {statusBadgeText && (
-        <span
-          className={`hb-chat-status-badge${
-            statusBadgeKind === 'done'
-              ? ' is-done'
-              : statusBadgeKind === 'error'
-                ? ' is-error'
-                : statusBadgeKind === 'thinking'
-                  ? ' is-thinking'
-                  : ' is-busy'
-          }`}
-        >
-          {statusBadgeKind && statusBadgeKind !== 'done' && statusBadgeKind !== 'error' ? (
-            <span className="hb-msg-badge-dot" aria-hidden />
-          ) : null}
-          {statusBadgeText}
-        </span>
-      )}
-      {sudoCachedTtl > 0 && (
+    <div className={`hb-chat-status-wrap shrink-0 ${statusPhase}`}>
+      <div
+        className={`hb-chat-status ${statusPhase}`}
+        title={recentRunLog.join('\n') || statusLabel}
+        role="status"
+        aria-live="polite"
+      >
         <button
           type="button"
-          className="hb-chat-status-sudo"
-          title="Clear vaulted sudo password"
-          onClick={clearSudoVault}
+          className="hb-chat-status-main"
+          aria-expanded={statusOpen}
+          aria-label={statusOpen ? 'Hide run progress' : 'Show run progress'}
+          onClick={() => setStatusOpen((o) => !o)}
         >
-          sudo {Math.ceil(sudoCachedTtl / 60)}m
+          <span className={`hb-chat-status-dot ${statusPhase}`} aria-hidden />
+          <span className="hb-chat-status-label truncate">{statusLabel}</span>
+          {statusBadgeText && (
+            <span
+              className={`hb-chat-status-badge${
+                statusBadgeKind === 'done'
+                  ? ' is-done'
+                  : statusBadgeKind === 'error'
+                    ? ' is-error'
+                    : statusBadgeKind === 'thinking'
+                      ? ' is-thinking'
+                      : statusBadgeKind === 'tool'
+                        ? ' is-tool'
+                        : statusBadgeKind === 'writing'
+                          ? ' is-writing'
+                          : ' is-busy'
+              }`}
+            >
+              {statusBadgeKind && statusBadgeKind !== 'done' && statusBadgeKind !== 'error' ? (
+                <span className="hb-msg-badge-dot" aria-hidden />
+              ) : null}
+              {statusBadgeText}
+            </span>
+          )}
+          <span className={`hb-chat-status-chevron${statusOpen ? ' open' : ''}`} aria-hidden>
+            ▾
+          </span>
         </button>
-      )}
-      {!sudoOpen && (
-        <button
-          type="button"
-          className="hb-chat-status-action"
-          title="Enter sudo password for agent shell"
-          onClick={() => setSudoOpen(true)}
-        >
-          Sudo…
-        </button>
+        {sudoCachedTtl > 0 && (
+          <button
+            type="button"
+            className="hb-chat-status-sudo"
+            title="Clear vaulted sudo password"
+            onClick={clearSudoVault}
+          >
+            sudo {Math.ceil(sudoCachedTtl / 60)}m
+          </button>
+        )}
+        {!sudoOpen && (
+          <button
+            type="button"
+            className="hb-chat-status-action"
+            title="Enter sudo password for agent shell"
+            onClick={() => setSudoOpen(true)}
+          >
+            Sudo…
+          </button>
+        )}
+      </div>
+      {statusOpen && (
+        <div className="hb-chat-status-log" role="log" aria-label="Run progress">
+          {recentRunLog.length === 0 ? (
+            <p className="hb-chat-status-log-empty">
+              {streaming ? 'Waiting for the next step…' : 'No recent steps — send a message to start.'}
+            </p>
+          ) : (
+            <ul>
+              {recentRunLog.map((line, idx) => (
+                <li key={`${idx}-${line.slice(0, 24)}`}>{line}</li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
     </div>
   )
@@ -2109,7 +3193,12 @@ export function ChatPanel({
             aria-label="Close chat options"
             onClick={() => setSettingsOpen(false)}
           />
-          <div className="hb-chat-sheet" role="dialog" aria-label="Chat options">
+          <div
+            className="hb-chat-sheet"
+            role="dialog"
+            aria-label="Chat options"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
             <div className="hb-chat-sheet-handle" aria-hidden />
             <p className="text-[10px] uppercase tracking-wider text-mute font-semibold px-0.5">
               Mode
@@ -2349,6 +3438,61 @@ export function ChatPanel({
           e.target.value = ''
         }}
       />
+      {isAgent && (
+        <div className="hb-agent-talk-row">
+          <span className="hb-agent-talk-hint truncate">
+            {voiceMode
+              ? listening
+                ? 'Listening… tap Confirm to send'
+                : canSpeak
+                  ? 'Talk on — speak, then Confirm'
+                  : canTts
+                    ? 'Talk on — AI replies will be spoken'
+                    : 'Talk on'
+              : canTts
+                ? 'Type below, or turn Talk on (speaks replies)'
+                : 'Type below, or turn Talk on'}
+          </span>
+          <button
+            type="button"
+            className={`hb-agent-talk-btn ${voiceMode ? 'hb-agent-talk-btn--on' : ''}`}
+            aria-pressed={voiceMode}
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              toggleListen()
+            }}
+            title={
+              voiceMode
+                ? 'Turn off talk mode'
+                : canSpeak
+                  ? 'Talk — dictate + speak replies'
+                  : 'Talk — speak AI replies (mic unavailable)'
+            }
+          >
+            <svg viewBox="0 0 24 24" className="hb-mic-icon" aria-hidden>
+              {voiceMode ? (
+                <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" />
+              ) : (
+                <>
+                  <path
+                    d="M12 3.5a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0v-5a3 3 0 0 0-3-3z"
+                    fill="currentColor"
+                  />
+                  <path
+                    d="M7 11a5 5 0 0 0 10 0M12 16v3.5M9 19.5h6"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.75"
+                    strokeLinecap="round"
+                  />
+                </>
+              )}
+            </svg>
+            <span>{voiceMode ? 'Talk on' : 'Talk'}</span>
+          </button>
+        </div>
+      )}
       <div
         className="flex gap-2 items-stretch"
         onDragOver={(e) => {
@@ -2360,7 +3504,7 @@ export function ChatPanel({
           void addDraftFiles(e.dataTransfer.files)
         }}
       >
-        <div className="flex-1 min-w-0 relative">
+        <div className="hb-chat-compose-field flex-1 min-w-0 relative">
           {project && atMention && (
             <AtMentionPicker
               projectId={project.id}
@@ -2386,7 +3530,7 @@ export function ChatPanel({
             }}
             rows={2}
             placeholder={
-              listening
+              listening || (isAgent && voiceMode)
                 ? 'Listening… speak in English'
                 : streaming
                   ? `Queue follow-up (${cwdLabel})…`
@@ -2396,8 +3540,8 @@ export function ChatPanel({
                       ? 'Add a note (optional)…'
                       : `Message (@ for files · ${cwdLabel})…`
             }
-            className={`w-full rounded-xl bg-panel-2 border px-3 py-2.5 pr-28 text-sm resize-none outline-none focus:border-accent ${
-              listening ? 'border-accent/60' : 'border-line'
+            className={`hb-chat-textarea w-full rounded-xl bg-panel-2 border px-3 py-2.5 text-sm resize-none outline-none focus:border-accent ${
+              listening || (isAgent && voiceMode) ? 'border-accent/60' : 'border-line'
             }`}
             enterKeyHint="send"
             autoComplete="off"
@@ -2427,74 +3571,76 @@ export function ChatPanel({
               }
             }}
           />
-          <button
-            type="button"
-            className="hb-at-btn"
-            aria-label="Attach file context"
-            title="@ attach file context"
-            onClick={insertAtMention}
-          >
-            @
-          </button>
-          <button
-            type="button"
-            className="hb-attach-btn"
-            aria-label="Attach image"
-            title="Attach image (or paste / drop)"
-            onClick={() => imageInputRef.current?.click()}
-          >
-            <svg viewBox="0 0 24 24" className="hb-attach-icon" aria-hidden>
-              <path
-                d="M8.5 13.5 11 11l2.5 2.5L17 10l3 3v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-1.5"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.75"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-              <rect
-                x="3"
-                y="5"
-                width="18"
-                height="14"
-                rx="2"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.75"
-              />
-            </svg>
-          </button>
-          {canSpeak && (
+          <div className="hb-chat-compose-tools">
             <button
               type="button"
-              onClick={toggleListen}
-              disabled={streaming}
-              className={`hb-mic-btn ${listening ? 'hb-mic-btn-live' : ''}`}
-              aria-pressed={listening}
-              aria-label={listening ? 'Stop dictation' : 'Dictate in English'}
-              title={listening ? 'Stop' : 'Speak (English → text)'}
+              className="hb-at-btn"
+              aria-label="Attach file context"
+              title="@ attach file context"
+              onClick={insertAtMention}
             >
-              <svg viewBox="0 0 24 24" className="hb-mic-icon" aria-hidden>
-                {listening ? (
-                  <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" />
-                ) : (
-                  <>
-                    <path
-                      d="M12 3.5a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0v-5a3 3 0 0 0-3-3z"
-                      fill="currentColor"
-                    />
-                    <path
-                      d="M7 11a5 5 0 0 0 10 0M12 16v3.5M9 19.5h6"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.75"
-                      strokeLinecap="round"
-                    />
-                  </>
-                )}
+              @
+            </button>
+            <button
+              type="button"
+              className="hb-attach-btn"
+              aria-label="Attach image"
+              title="Attach image (or paste / drop)"
+              onClick={() => imageInputRef.current?.click()}
+            >
+              <svg viewBox="0 0 24 24" className="hb-attach-icon" aria-hidden>
+                <path
+                  d="M8.5 13.5 11 11l2.5 2.5L17 10l3 3v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-1.5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.75"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <rect
+                  x="3"
+                  y="5"
+                  width="18"
+                  height="14"
+                  rx="2"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.75"
+                />
               </svg>
             </button>
-          )}
+            {!isAgent && canSpeak && (
+              <button
+                type="button"
+                onClick={toggleListen}
+                disabled={streaming}
+                className={`hb-mic-btn ${listening ? 'hb-mic-btn-live' : ''}`}
+                aria-pressed={listening}
+                aria-label={listening ? 'Stop dictation' : 'Dictate in English'}
+                title={listening ? 'Stop' : 'Speak (English → text)'}
+              >
+                <svg viewBox="0 0 24 24" className="hb-mic-icon" aria-hidden>
+                  {listening ? (
+                    <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" />
+                  ) : (
+                    <>
+                      <path
+                        d="M12 3.5a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0v-5a3 3 0 0 0-3-3z"
+                        fill="currentColor"
+                      />
+                      <path
+                        d="M7 11a5 5 0 0 0 10 0M12 16v3.5M9 19.5h6"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.75"
+                        strokeLinecap="round"
+                      />
+                    </>
+                  )}
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
         <div className="flex flex-col gap-2">
           <button
@@ -2502,11 +3648,24 @@ export function ChatPanel({
             disabled={
               !connected || (!input.trim() && !draftImages.length && !draftContext.length)
             }
-            className="rounded-xl hb-btn-primary font-semibold px-4 py-2.5 text-sm disabled:opacity-40 border-0"
+            className={`rounded-xl font-semibold px-4 py-2.5 text-sm disabled:opacity-40 border-0 ${
+              isAgent && voiceMode
+                ? 'hb-agent-confirm'
+                : 'hb-btn-primary'
+            }`}
           >
-            {streaming && !editingLast ? 'Queue' : editingLast ? 'Resend' : 'Send'}
+            {isAgent && voiceMode
+              ? 'Confirm'
+              : streaming && !editingLast
+                ? 'Queue'
+                : editingLast
+                  ? 'Resend'
+                  : 'Send'}
           </button>
-          {streaming && (
+          {(streaming ||
+            !!active?.running ||
+            agentPhase === 'busy' ||
+            /stuck run|already has active run|press Stop/i.test(error)) && (
             <button
               type="button"
               onClick={cancel}
@@ -2575,11 +3734,14 @@ export function ChatPanel({
   }
 
   return (
-    <div className="h-full flex flex-col min-h-0 hb-with-nav">
+    <div className={`h-full flex flex-col min-h-0${isAgent ? '' : ' hb-with-nav'}`}>
       {modals}
       {header}
       {messages}
       {statusBar}
+      {isAgent && error ? (
+        <p className="px-3 py-1 text-[0.7rem] text-danger shrink-0">{error}</p>
+      ) : null}
       {composer}
     </div>
   )

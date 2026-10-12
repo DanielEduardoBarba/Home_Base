@@ -42,6 +42,33 @@ export function speechSupported(): boolean {
   return !!getCtor()
 }
 
+export function speechSynthesisSupported(): boolean {
+  return typeof window !== 'undefined' && typeof window.speechSynthesis !== 'undefined'
+}
+
+/** Speak English (or lang) aloud; cancels any in-flight utterance first. */
+export function speakText(text: string, opts: { lang?: string } = {}): void {
+  if (!speechSynthesisSupported()) return
+  const clean = text.replace(/\s+/g, ' ').trim()
+  if (!clean) return
+  try {
+    window.speechSynthesis.cancel()
+    const u = new SpeechSynthesisUtterance(clean.slice(0, 4000))
+    u.lang = opts.lang || 'en-US'
+    window.speechSynthesis.speak(u)
+  } catch {
+    /* ignore */
+  }
+}
+
+export function stopSpeaking(): void {
+  try {
+    window.speechSynthesis?.cancel()
+  } catch {
+    /* ignore */
+  }
+}
+
 function joinSpeech(...parts: string[]): string {
   return parts
     .map((p) => p.replace(/\s+/g, ' ').trim())

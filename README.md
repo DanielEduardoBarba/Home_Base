@@ -48,7 +48,16 @@ Stop / restart prod: `sudo systemctl stop|restart homebased`.
 
 Fetch and WebSocket clients always use relative `/api/...` and `/ws/...` against `location.host`. Dev (Next proxy) and prod (Bun serves SPA + API) share the same client code. No open CORS — cross-origin browser API access is not supported.
 
-## Tabs
+## Areas (after login)
+
+| Area | Purpose |
+|------|---------|
+| **Home** | Dashboard — enter Home Agent, Homework, or Home Access |
+| **Home Agent** | Streamlined project chat (folder → chats → minimal talk/type UI) |
+| **Homework** | Full project control plane (former main app) |
+| **Home Access** | House panel: buttons / toggles / sliders / gauges + Chat dock |
+
+### Homework tabs
 
 | Tab | Purpose |
 |-----|---------|
@@ -61,6 +70,23 @@ Fetch and WebSocket clients always use relative `/api/...` and `/ws/...` against
 | Logs | Capped console ring (`/api/trace`) |
 | *(status bar)* Alerts | Bell in host/live bar; top→bottom inbox; History drawer |
 | More | Theme, notify prefs, Share/password (localhost), WireGuard VPN setup/manage, homebased restart, sign-out |
+
+### Home Access
+
+Add controls with **+** (or ask Chat / `homebase_access_*` tools). Each widget has a hook:
+
+| Hook | Use |
+|------|-----|
+| `script` | Run bash on the laptop (`{{value}}`, `{{on}}`, `{{json}}`) |
+| `http` | Call a local/LAN API |
+| `websocket` | Send a short-lived WS message |
+| `static` | Store UI state only |
+
+Gauges are read-only; tap or `pollMs` refreshes. Definitions persist in `/var/lib/homebased/.runtime/home_access.json`. Prefer configuring widgets over rewriting the panel framework.
+
+### Chat history
+
+Chats are stored on the server under `.runtime/chats/` and survive deploys/restarts. Streaming activity is flushed continuously (and on shutdown). Deleting a chat tab is the only intentional wipe.
 
 ## Projects
 

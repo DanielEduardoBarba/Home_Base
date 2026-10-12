@@ -1,6 +1,15 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import {
+  appPinStatus,
+  clearAppPin,
+  importAppPin,
+  lockAppPin,
+  setAppPin,
+  setAppPinIdleMs,
+  unlockAppPin,
+} from "./app_pin";
+import {
   HttpError,
   JWT_TTL_SEC,
   authStatusPayload,
@@ -32,6 +41,13 @@ import {
 import { listDir, readFile, writeFile } from "./files";
 import { logInfo } from "./console_log";
 import { formatGeo, geoCached, warmGeo } from "./geo";
+import {
+  deleteAccessWidget,
+  getAccessWidget,
+  invokeAccessWidget,
+  listAccessWidgets,
+  upsertAccessWidget,
+} from "./home_access";
 import { clientIp, jsonError, readJson, requireAuth } from "./http";
 import { readDailyLogs } from "./logging";
 import { clearRead, listNotifications, markRead } from "./notifications";
@@ -52,7 +68,18 @@ import {
   shareStatus,
 } from "./share";
 import { tryServeStatic } from "./static";
-import { clearSudo, setSudo, sudoStatus } from "./sudo";
+import {
+  allowSudoUse,
+  clearPersistentSudo,
+  clearSudo,
+  denySudoUse,
+  releaseSudoPassword,
+  requestSudoPrompt,
+  setPersistentSudo,
+  setSudo,
+  sudoStatus,
+} from "./sudo";
+import { noteSuspiciousRequest } from "./security";
 import {
   journalLines,
   restartHomebased,
@@ -262,6 +289,57 @@ app.post("/api/auth/password", async (c) => {
 
 app.get("/api/lockout", (c) => c.json(lockoutStatus()));
 
+app.get("/api/app-pin/status", async (c) => {
+  await requireAuth(c, { allowPinLocked: true });
+  return c.json(appPinStatus());
+});
+
+app.post("/api/app-pin/lock", async (c) => {
+  await requireAuth(c, { allowPinLocked: true });
+  return c.json({ ok: true, ...lockAppPin() });
+});
+
+app.post("/api/app-pin/unlock", async (c) => {
+  await requireAuth(c, { allowPinLocked: true });
+  const body = z.object({ pin: z.string() }).parse(await readJson(c));
+  return c.json({ ok: true, ...unlockAppPin(body.pin) });
+});
+
+app.post("/api/app-pin/set", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({
+      pin: z.string(),
+      currentPin: z.string().optional(),
+    })
+    .parse(await readJson(c));
+  return c.json({ ok: true, ...setAppPin(body.pin, body.currentPin) });
+});
+
+app.post("/api/app-pin/clear", async (c) => {
+  await requireAuth(c);
+  const body = z.object({ currentPin: z.string() }).parse(await readJson(c));
+  return c.json({ ok: true, ...clearAppPin(body.currentPin) });
+});
+
+app.post("/api/app-pin/idle", async (c) => {
+  await requireAuth(c);
+  const body = z.object({ idleMs: z.number() }).parse(await readJson(c));
+  return c.json({ ok: true, ...setAppPinIdleMs(body.idleMs) });
+});
+
+app.post("/api/app-pin/import", async (c) => {
+  await requireAuth(c, { allowPinLocked: true });
+  const body = z
+    .object({
+      salt: z.string(),
+      hash: z.string(),
+      idleMs: z.number().optional(),
+    })
+    .parse(await readJson(c));
+  return c.json({ ok: true, ...importAppPin(body) });
+});
+
 app.get("/api/share/status", async (c) => {
   await requireAuth(c);
   requireLocalhostBrowser(c.req.raw.headers);
@@ -445,6 +523,82 @@ app.post("/api/internal/hook-approve", async (c) => {
   );
 });
 
+/** SUDO_ASKPASS helper notifies Chat that a password is needed for a command. */
+app.post("/api/internal/sudo-prompt", async (c) => {
+  const host = (c.req.header("host") || "").split(":")[0];
+  const peer = clientIp(c);
+  const loopback =
+    peer === "127.0.0.1" ||
+    peer === "::1" ||
+    peer === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "localhost";
+  if (!loopback) {
+    noteSuspiciousRequest({
+      ip: peer,
+      path: "/api/internal/sudo-prompt",
+      reason: "non-loopback sudo-prompt",
+    });
+    throw new HttpError(403, "localhost only");
+  }
+  const body = await readJson<{
+    secret?: string;
+    command?: string;
+    prompt?: string;
+    id?: string;
+    chatId?: string;
+    sessionId?: string;
+    callId?: string;
+  }>(c);
+  if (!verifySecret(String(body.secret || ""))) {
+    noteSuspiciousRequest({
+      ip: peer,
+      path: "/api/internal/sudo-prompt",
+      reason: "bad hook secret",
+    });
+    throw new HttpError(403, "bad secret");
+  }
+  const pending = await requestSudoPrompt({
+    command: body.command,
+    prompt: body.prompt,
+    id: body.id,
+    chatId: body.chatId,
+    sessionId: body.sessionId,
+    callId: body.callId,
+  });
+  return c.json({ ok: true, pending });
+});
+
+/** Askpass polls until Chat Allow / typed password / Deny. */
+app.post("/api/internal/sudo-release", async (c) => {
+  const host = (c.req.header("host") || "").split(":")[0];
+  const peer = clientIp(c);
+  const loopback =
+    peer === "127.0.0.1" ||
+    peer === "::1" ||
+    peer === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "localhost";
+  if (!loopback) {
+    noteSuspiciousRequest({
+      ip: peer,
+      path: "/api/internal/sudo-release",
+      reason: "non-loopback sudo-release",
+    });
+    throw new HttpError(403, "localhost only");
+  }
+  const body = await readJson<{ secret?: string; id?: string }>(c);
+  if (!verifySecret(String(body.secret || ""))) {
+    noteSuspiciousRequest({
+      ip: peer,
+      path: "/api/internal/sudo-release",
+      reason: "bad hook secret",
+    });
+    throw new HttpError(403, "bad secret");
+  }
+  return c.json(releaseSudoPassword({ id: body.id }));
+});
+
 app.get("/api/cursor/:projectId", async (c) => {
   await requireAuth(c);
   return c.json({
@@ -529,8 +683,27 @@ app.get("/api/sudo/status", async (c) => {
 
 app.post("/api/sudo", async (c) => {
   await requireAuth(c);
-  const body = z.object({ password: z.string() }).parse(await readJson(c));
-  return c.json(setSudo(body.password));
+  const body = z
+    .object({
+      password: z.string().min(1),
+      ttlSec: z.number().int().positive().optional(),
+      persistent: z.boolean().optional(),
+    })
+    .parse(await readJson(c));
+  if (body.persistent) return c.json(setPersistentSudo(body.password));
+  return c.json(setSudo(body.password, body.ttlSec));
+});
+
+app.post("/api/sudo/allow", async (c) => {
+  await requireAuth(c);
+  const body = z.object({ id: z.string().optional() }).parse(await readJson(c));
+  return c.json(allowSudoUse(body.id));
+});
+
+app.post("/api/sudo/deny", async (c) => {
+  await requireAuth(c);
+  const body = z.object({ id: z.string().optional() }).parse(await readJson(c));
+  return c.json(denySudoUse(body.id));
 });
 
 app.delete("/api/sudo", async (c) => {
@@ -538,9 +711,49 @@ app.delete("/api/sudo", async (c) => {
   return c.json(clearSudo());
 });
 
+app.delete("/api/sudo/persistent", async (c) => {
+  await requireAuth(c);
+  clearPersistentSudo();
+  return c.json({ ok: true, ...sudoStatus() });
+});
+
 app.get("/api/view/status", async (c) => {
   await requireAuth(c);
   return c.json(await viewStatusAsync());
+});
+
+app.get("/api/home-access", async (c) => {
+  await requireAuth(c);
+  return c.json({ widgets: listAccessWidgets() });
+});
+
+app.post("/api/home-access/widgets", async (c) => {
+  await requireAuth(c);
+  const body = (await readJson(c)) as Record<string, unknown>;
+  return c.json({ widget: upsertAccessWidget(body) });
+});
+
+app.put("/api/home-access/widgets/:id", async (c) => {
+  await requireAuth(c);
+  const id = c.req.param("id");
+  const body = (await readJson(c)) as Record<string, unknown>;
+  const existing = getAccessWidget(id);
+  if (!existing) throw new HttpError(404, "widget not found");
+  return c.json({ widget: upsertAccessWidget({ ...body, id }) });
+});
+
+app.delete("/api/home-access/widgets/:id", async (c) => {
+  await requireAuth(c);
+  const id = c.req.param("id");
+  if (!deleteAccessWidget(id)) throw new HttpError(404, "widget not found");
+  return c.json({ ok: true });
+});
+
+app.post("/api/home-access/widgets/:id/invoke", async (c) => {
+  await requireAuth(c);
+  const id = c.req.param("id");
+  const body = (await readJson(c).catch(() => ({}))) as { value?: unknown };
+  return c.json({ widget: await invokeAccessWidget(id, { value: body.value }) });
 });
 
 app.get("*", async (c) => {
@@ -561,6 +774,8 @@ export async function authenticateWsToken(
   if (!token) token = bearerFromHeader(headers.get("authorization"));
   try {
     await verifyAccessToken(token);
+    // PIN lock does not drop auth — sockets may stay up so server work continues;
+    // message handlers refuse client commands until unlock (see entry.ts).
     return true;
   } catch {
     return false;

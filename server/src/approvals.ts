@@ -107,7 +107,10 @@ export async function requestApproval(opts: {
   cwd?: string;
   agentId?: string;
 }): Promise<{ permission: string; user_message: string; agent_message: string }> {
-  if (policy === "auto") {
+  // Mode switches must always get an explicit Switch/Stay — never auto-run.
+  const forceAsk = opts.kind === "mode_switch";
+
+  if (policy === "auto" && !forceAsk) {
     return {
       permission: "allow",
       user_message: "Auto-run tools enabled",
@@ -117,11 +120,18 @@ export async function requestApproval(opts: {
 
   // Lazy import avoids circular init with cursor.ts
   const { cursorSubscriberCount, broadcastAllCursor } = await import("./cursor");
-  if (cursorSubscriberCount() === 0) {
+  if (cursorSubscriberCount() === 0 && !forceAsk) {
     return {
       permission: "allow",
       user_message: "No Chat listener — allowed (ask policy fail-open)",
       agent_message: "Allowed without UI listener",
+    };
+  }
+  if (cursorSubscriberCount() === 0 && forceAsk) {
+    return {
+      permission: "deny",
+      user_message: "No Chat listener — cannot confirm mode switch",
+      agent_message: "Denied — open Chat to Switch/Stay",
     };
   }
 

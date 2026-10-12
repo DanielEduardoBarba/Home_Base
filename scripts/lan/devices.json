@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "devices": [
+    { "id": "gateway", "label": "Spectrum Gateway", "ip": "192.168.0.1", "mac": "0c:7f:b2:aa:b9:f7", "kind": "gateway", "group": "Network" },
+    { "id": "arris-modem", "label": "Arris .252", "ip": "192.168.0.252", "mac": "00:00:ca:01:02:03", "kind": "gateway", "group": "Network" },
+    { "id": "laptop", "label": "Dev laptop", "ip": "192.168.0.201", "kind": "host", "group": "Network" },
+    { "id": "myq", "label": "LiftMaster MyQ", "ip": "192.168.0.6", "mac": "0c:95:05:ac:c5:b0", "kind": "myq", "group": "IoT" },
+    { "id": "wyze-3", "label": "Wyze .3", "ip": "192.168.0.3", "mac": "d0:3f:27:fe:39:6c", "kind": "wyze", "group": "IoT" },
+    { "id": "wyze-4", "label": "Wyze .4", "ip": "192.168.0.4", "mac": "d0:3f:27:fd:32:6b", "kind": "wyze", "group": "IoT" },
+    { "id": "wyze-5", "label": "Wyze .5", "ip": "192.168.0.5", "mac": "d0:3f:27:fd:74:71", "kind": "wyze", "group": "IoT" },
+    { "id": "bilian", "label": "Bilian IoT", "ip": "192.168.0.10", "mac": "a8:b5:8e:12:5d:5d", "kind": "bilian", "group": "IoT" },
+    { "id": "iphone", "label": "Dan iPhone", "ip": "192.168.0.2", "kind": "phone", "group": "People" },
+    { "id": "apple-12", "label": "Apple .12", "ip": "192.168.0.12", "kind": "phone", "group": "People" },
+    { "id": "compal", "label": "Compal .13", "ip": "192.168.0.13", "mac": "98:29:a6:d2:4b:ed", "kind": "host", "group": "People" },
+    { "id": "unknown-9", "label": "Unknown .9", "ip": "192.168.0.9", "kind": "host", "group": "People" }
+  ]
+}

@@ -1,0 +1,36 @@
+---
+description: Home Access panel — house controls framework
+alwaysApply: true
+---
+
+# Home Access
+
+Post-login area **Home Access**: a durable panel of **button / toggle / slider / gauge** widgets that trip server-side hooks (script, HTTP, WebSocket, or static). Chat dock (bottom-right) helps wire them.
+
+## Leave the framework alone
+
+Once this area exists, **prefer adding or editing widgets** (UI `+`, REST, or `homebase_access_*` tools) over rewriting the panel framework.
+
+Do **not** casually reshape:
+
+- `server/src/home_access.ts` persistence model or invoke semantics
+- `/api/home-access*` routes
+- `homebase_access_list` / `_upsert` / `_delete` / `_invoke` tools
+- `web/src/components/HomeAccessTab.tsx` layout contract (grid + `+` editor + dock chat)
+
+Extend via new widgets and hooks. Only change the framework for clear bugs or explicit product requests.
+
+## Durability
+
+Widget definitions live under `HOMEBASE_HOME/.runtime/home_access.json` (production: `/var/lib/homebased/.runtime/`). They survive `--deploy` and process restart. Chats likewise live in `.runtime/chats/` and are flushed mid-run + on SIGTERM.
+
+## Hooks
+
+| `hook.type` | Behavior |
+|-------------|----------|
+| `script` | `bash -lc` with `{{value}}` / `{{on}}` / `{{json}}` |
+| `http` | fetch URL; optional body template |
+| `websocket` | connect, send message, optional one reply |
+| `static` | store value only (no side effect) |
+
+Gauges are non-interactive displays; tap refreshes; optional `pollMs` + `valuePath` for JSON polling.

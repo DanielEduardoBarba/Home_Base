@@ -4,9 +4,16 @@ import { javascript } from '@codemirror/lang-javascript'
 import { json } from '@codemirror/lang-json'
 import { markdown } from '@codemirror/lang-markdown'
 import { python } from '@codemirror/lang-python'
+import {
+  getChunks,
+  goToNextChunk,
+  goToPreviousChunk,
+  unifiedMergeView,
+} from '@codemirror/merge'
+import { EditorView } from '@codemirror/view'
 import { oneDark } from '@codemirror/theme-one-dark'
 import CodeMirror from '@uiw/react-codemirror'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../lib/api'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 import type { FsEntry, Project } from '../lib/types'
@@ -34,6 +41,29 @@ function langExt(language: string) {
     default:
       return []
   }
+}
+
+function guessLanguageFromPath(path: string): string {
+  const name = (path || '').split('/').pop()?.toLowerCase() || ''
+  const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')) : ''
+  const map: Record<string, string> = {
+    '.py': 'python',
+    '.js': 'javascript',
+    '.jsx': 'jsx',
+    '.mjs': 'javascript',
+    '.cjs': 'javascript',
+    '.ts': 'typescript',
+    '.tsx': 'tsx',
+    '.json': 'json',
+    '.md': 'markdown',
+    '.markdown': 'markdown',
+    '.html': 'html',
+    '.htm': 'html',
+    '.css': 'css',
+    '.scss': 'css',
+    '.less': 'css',
+  }
+  return map[ext] || 'plaintext'
 }
 
 /** Normalize to a host-absolute POSIX path (`/` …). */
@@ -102,6 +132,10 @@ export function FilesTab({
   embedded = false,
   focusPath = null,
   onFocusPathConsumed,
+  minimal = false,
+  diffBefore = null,
+  diffAfter = null,
+  diffAction = null,
 }: {
   projects: Project[]
   selectedId: string
@@ -111,6 +145,12 @@ export function FilesTab({
   /** Open this path (file or folder) once, then call onFocusPathConsumed. */
   focusPath?: string | null
   onFocusPathConsumed?: () => void
+  /** Home Agent present: editor only (no browser chrome). */
+  minimal?: boolean
+  /** Pre/post AI edit snapshots for +/- view. */
+  diffBefore?: string | null
+  diffAfter?: string | null
+  diffAction?: string | null
 }) {
   const project = projects.find((p) => p.id === selectedId) || projects[0]
   const projectRoot = project ? toAbs(project.path) : '/'
@@ -122,12 +162,113 @@ export function FilesTab({
   const [language, setLanguage] = useState('plaintext')
   const [dirty, setDirty] = useState(false)
   const [status, setStatus] = useState('')
-  const [navOpen, setNavOpen] = useState(true)
+  const [navOpen, setNavOpen] = useState(!minimal)
   const [error, setError] = useState('')
   const [filter, setFilter] = useState('')
   const [showAll, setShowAll] = useState(false)
   const [confirm, setConfirm] = useState<ConfirmKind>(null)
   const [busy, setBusy] = useState(false)
+  const hasDiff = diffBefore != null || diffAfter != null
+  const [viewMode, setViewMode] = useState<'diff' | 'file'>(hasDiff ? 'diff' : 'file')
+  const diffViewRef = useRef<EditorView | null>(null)
+  const [chunkNav, setChunkNav] = useState({ cur: 0, total: 0 })
+  const syncChunkNavRef = useRef<(view: EditorView) => void>(() => {})
+
+  useEffect(() => {
+    setViewMode(hasDiff ? 'diff' : 'file')
+  }, [hasDiff, focusPath, diffBefore, diffAfter])
+
+  const syncChunkNav = useCallback((view: EditorView) => {
+    const info = getChunks(view.state)
+    const chunks = info?.chunks ?? []
+    if (!chunks.length) {
+      setChunkNav({ cur: 0, total: 0 })
+      return
+    }
+    const head = view.state.selection.main.head
+    let cur = 0
+    for (let i = 0; i < chunks.length; i++) {
+      const c = chunks[i]!
+      const to = Math.max(c.toB, c.fromB)
+      if (head >= c.fromB && head <= to) {
+        cur = i
+        break
+      }
+      if (c.fromB > head) {
+        cur = Math.max(0, i - 1)
+        break
+      }
+      cur = i
+    }
+    setChunkNav({ cur: cur + 1, total: chunks.length })
+  }, [])
+
+  syncChunkNavRef.current = syncChunkNav
+
+  const editorLanguage = useMemo(() => {
+    if (language && language !== 'plaintext') return language
+    return guessLanguageFromPath(filePath || focusPath || '')
+  }, [language, filePath, focusPath])
+
+  const mergeExtensions = useMemo(() => {
+    if (!hasDiff) return []
+    return [
+      ...langExt(editorLanguage),
+      EditorView.lineWrapping,
+      unifiedMergeView({
+        original: diffBefore ?? '',
+        mergeControls: false,
+        gutter: true,
+        // Line highlight only — no green/red character underlines
+        highlightChanges: false,
+        syntaxHighlightDeletions: true,
+        collapseUnchanged: { margin: 3, minSize: 6 },
+      }),
+      EditorView.updateListener.of((u) => {
+        if (u.docChanged || u.selectionSet || u.viewportChanged) {
+          syncChunkNavRef.current(u.view)
+        }
+      }),
+    ]
+  }, [hasDiff, editorLanguage, diffBefore])
+
+  const jumpChunk = useCallback(
+    (dir: -1 | 1) => {
+      const view = diffViewRef.current
+      if (!view) return
+      if (dir < 0) goToPreviousChunk(view)
+      else goToNextChunk(view)
+      syncChunkNav(view)
+    },
+    [syncChunkNav],
+  )
+
+  const chunkNavControls =
+    viewMode === 'diff' && chunkNav.total > 0 ? (
+      <div className="hb-diff-nav" role="navigation" aria-label="Change hunks">
+        <button
+          type="button"
+          className="hb-diff-nav-btn"
+          onClick={() => jumpChunk(-1)}
+          aria-label="Previous change"
+          title="Previous change"
+        >
+          ↑
+        </button>
+        <span className="hb-diff-nav-count" aria-live="polite">
+          {chunkNav.cur} / {chunkNav.total}
+        </span>
+        <button
+          type="button"
+          className="hb-diff-nav-btn"
+          onClick={() => jumpChunk(1)}
+          aria-label="Next change"
+          title="Next change"
+        >
+          ↓
+        </button>
+      </div>
+    ) : null
 
   const loadDir = useCallback(
     async (path: string, opts?: { keepFile?: boolean }) => {
@@ -198,22 +339,40 @@ export function FilesTab({
         if (cancelled) return
         const opened = toAbs(data.path)
         setFilePath(opened)
-        setContent(data.content)
+        // Prefer post-edit snapshot when presenting an AI change.
+        const body = diffAfter != null ? diffAfter : data.content
+        setContent(body)
         setSavedContent(data.content)
         setLanguage(data.language)
-        setDirty(false)
-        setStatus(`${opened} · ${data.size}b`)
+        setDirty(diffAfter != null && diffAfter !== data.content)
+        setStatus(
+          hasDiff
+            ? `${opened} · AI ${diffAction || 'edit'}`
+            : `${opened} · ${data.size}b`,
+        )
         const parent = parentDir(opened)
         setDir(parent)
-        const listed = await api.fsList(project.id, parent, { all: showAll })
-        if (!cancelled) setEntries(listed.entries)
-        if (window.innerWidth < 768) setNavOpen(false)
+        if (!minimal) {
+          const listed = await api.fsList(project.id, parent, { all: showAll })
+          if (!cancelled) setEntries(listed.entries)
+        }
+        setNavOpen(minimal ? false : window.innerWidth >= 768)
       } catch {
         if (cancelled) return
-        try {
-          await loadDir(abs)
-        } catch {
-          /* ignore */
+        // Still show diff even if live read fails (deleted / path moved).
+        if (hasDiff) {
+          setFilePath(abs)
+          setContent(diffAfter ?? diffBefore ?? '')
+          setSavedContent(diffBefore ?? '')
+          setLanguage(guessLanguageFromPath(abs))
+          setStatus(`${abs} · AI ${diffAction || 'edit'}`)
+          setNavOpen(false)
+        } else if (!minimal) {
+          try {
+            await loadDir(abs)
+          } catch {
+            /* ignore */
+          }
         }
       } finally {
         if (!cancelled) onFocusPathConsumed?.()
@@ -223,7 +382,7 @@ export function FilesTab({
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusPath, project?.id])
+  }, [focusPath, project?.id, diffBefore, diffAfter, minimal])
 
   async function openFile(path: string) {
     if (!project) return
@@ -480,6 +639,182 @@ export function FilesTab({
     </ul>
   )
 
+  const onEditorChange = useCallback(
+    (v: string) => {
+      setContent(v)
+      setDirty(v !== savedContent)
+    },
+    [savedContent],
+  )
+
+  const confirmDialog = confirm ? (
+    <div className="fixed inset-0 z-40 hb-overlay backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
+      <div className="w-full max-w-sm hb-surface p-4 sm:p-5 space-y-4 hb-enter">
+        <h2 className="font-semibold text-sm">
+          {confirm.type === 'save'
+            ? 'Save this file?'
+            : confirm.type === 'revert'
+              ? 'Revert changes?'
+              : 'Discard unsaved changes?'}
+        </h2>
+        <p className="text-xs text-mute leading-relaxed">
+          {confirm.type === 'save'
+            ? filePath
+            : confirm.type === 'revert'
+              ? 'Unsaved edits will be lost.'
+              : 'You have unsaved edits. Continue without saving?'}
+        </p>
+        <div className="flex gap-2 justify-end">
+          <button
+            type="button"
+            className="hb-btn hb-btn-ghost text-sm"
+            onClick={() => setConfirm(null)}
+          >
+            Cancel
+          </button>
+          {confirm.type === 'save' ? (
+            <button
+              type="button"
+              className="hb-btn hb-btn-primary text-sm"
+              disabled={busy}
+              onClick={() => void doSave()}
+            >
+              Save
+            </button>
+          ) : confirm.type === 'revert' ? (
+            <button type="button" className="hb-btn hb-btn-danger text-sm" onClick={doRevert}>
+              Revert
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="hb-btn hb-btn-danger text-sm"
+              onClick={() => {
+                const path = confirm.path
+                setConfirm(null)
+                setDirty(false)
+                void loadDir(path)
+              }}
+            >
+              Discard
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  ) : null
+
+  const editorPane =
+    viewMode === 'diff' && hasDiff ? (
+      <div className="hb-diff hb-diff--cm flex-1 min-h-0 overflow-hidden">
+        <CodeMirror
+          key={`diff:${filePath || focusPath || 'file'}:${(diffBefore || '').length}`}
+          value={content}
+          height="100%"
+          theme={oneDark}
+          extensions={mergeExtensions}
+          onChange={onEditorChange}
+          onCreateEditor={(view) => {
+            diffViewRef.current = view
+            syncChunkNav(view)
+          }}
+          basicSetup={{
+            lineNumbers: true,
+            foldGutter: false,
+            highlightActiveLine: true,
+            highlightSelectionMatches: false,
+            bracketMatching: true,
+          }}
+          className="h-full min-h-0 text-[13px] overflow-hidden [&_.cm-editor]:h-full [&_.cm-scroller]:h-full [&_.cm-scroller]:overscroll-contain"
+        />
+      </div>
+    ) : filePath ? (
+      <CodeMirror
+        value={content}
+        height="100%"
+        theme={oneDark}
+        extensions={[...langExt(editorLanguage), EditorView.lineWrapping]}
+        onChange={onEditorChange}
+        basicSetup={{
+          lineNumbers: true,
+          foldGutter: true,
+          highlightActiveLine: true,
+        }}
+        className="flex-1 min-h-0 text-[13px] overflow-hidden [&_.cm-editor]:h-full [&_.cm-scroller]:h-full [&_.cm-scroller]:overscroll-contain"
+      />
+    ) : (
+      <div className="flex-1 flex items-center justify-center text-mute text-sm p-6 text-center">
+        <div>
+          <p className="text-text font-semibold mb-1">Select a file</p>
+          <p className="text-xs max-w-xs mx-auto leading-relaxed">
+            Left nav lists only this folder. Use the path bar or ← to move around.
+          </p>
+        </div>
+      </div>
+    )
+
+  if (minimal) {
+    return (
+      <div className="h-full flex flex-col min-h-0 hb-files-minimal">
+        <div className="hb-files-minimal-bar shrink-0">
+          <span
+            className={`truncate font-mono text-[11px] min-w-0 flex-1 ${
+              dirty ? 'text-amber' : 'text-mute'
+            }`}
+          >
+            {filePath || focusPath || 'file'}
+            {diffAction ? ` · ${diffAction}` : ''}
+            {dirty ? ' · edited' : ''}
+          </span>
+          {hasDiff && (
+            <div className="hb-seg shrink-0">
+              <button
+                type="button"
+                className="hb-seg-btn !py-1 !px-2.5 text-[11px]"
+                data-active={viewMode === 'diff'}
+                onClick={() => setViewMode('diff')}
+              >
+                Changes
+              </button>
+              <button
+                type="button"
+                className="hb-seg-btn !py-1 !px-2.5 text-[11px]"
+                data-active={viewMode === 'file'}
+                onClick={() => setViewMode('file')}
+              >
+                File
+              </button>
+            </div>
+          )}
+          {chunkNavControls}
+          {dirty && (
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setConfirm({ type: 'revert' })}
+                className="hb-btn hb-btn-ghost !min-h-8 !px-2 text-[11px] disabled:opacity-35"
+              >
+                Revert
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setConfirm({ type: 'save' })}
+                className="hb-btn hb-btn-primary !min-h-8 !px-2 text-[11px] disabled:opacity-35"
+              >
+                Save
+              </button>
+            </div>
+          )}
+          {error && <p className="text-danger text-[10px] shrink-0">{error}</p>}
+        </div>
+        {editorPane}
+        {confirmDialog}
+      </div>
+    )
+  }
+
   return (
     <div className={`h-full flex flex-col min-h-0 ${embedded ? '' : 'hb-with-nav'}`}>
       <div className="hb-chrome shrink-0">
@@ -584,92 +919,34 @@ export function FilesTab({
         <div
           className={`${navOpen ? 'hidden' : 'flex'} md:flex flex-1 min-w-0 flex-col min-h-0`}
         >
-          {filePath ? (
-            <CodeMirror
-              value={content}
-              height="100%"
-              theme={oneDark}
-              extensions={langExt(language)}
-              onChange={(v) => {
-                setContent(v)
-                setDirty(v !== savedContent)
-              }}
-              basicSetup={{
-                lineNumbers: true,
-                foldGutter: true,
-                highlightActiveLine: true,
-              }}
-              className="flex-1 min-h-0 text-[13px] overflow-hidden [&_.cm-editor]:h-full [&_.cm-scroller]:h-full"
-            />
-          ) : (
-            <div className="flex-1 flex items-center justify-center text-mute text-sm p-6 text-center">
-              <div>
-                <p className="text-text font-semibold mb-1">Select a file</p>
-                <p className="text-xs max-w-xs mx-auto leading-relaxed">
-                  Left nav lists only this folder. Use the path bar or ← to move around.
-                </p>
+          {hasDiff && (
+            <div className="shrink-0 px-3 py-1.5 border-b border-line flex items-center gap-2">
+              <div className="hb-seg">
+                <button
+                  type="button"
+                  className="hb-seg-btn !py-1 !px-2.5 text-[11px]"
+                  data-active={viewMode === 'diff'}
+                  onClick={() => setViewMode('diff')}
+                >
+                  Changes
+                </button>
+                <button
+                  type="button"
+                  className="hb-seg-btn !py-1 !px-2.5 text-[11px]"
+                  data-active={viewMode === 'file'}
+                  onClick={() => setViewMode('file')}
+                >
+                  File
+                </button>
               </div>
+              <div className="ml-auto">{chunkNavControls}</div>
             </div>
           )}
+          {editorPane}
         </div>
       </div>
 
-      {confirm && (
-        <div className="fixed inset-0 z-40 hb-overlay backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
-          <div className="w-full max-w-sm hb-surface p-4 sm:p-5 space-y-4 hb-enter">
-            <h2 className="font-semibold text-sm">
-              {confirm.type === 'save'
-                ? 'Save this file?'
-                : confirm.type === 'revert'
-                  ? 'Revert changes?'
-                  : 'Discard unsaved changes?'}
-            </h2>
-            <p className="text-xs text-mute leading-relaxed">
-              {confirm.type === 'save'
-                ? filePath
-                : confirm.type === 'revert'
-                  ? 'Unsaved edits will be lost.'
-                  : 'You have unsaved edits. Continue without saving?'}
-            </p>
-            <div className="flex gap-2 justify-end">
-              <button
-                type="button"
-                className="hb-btn hb-btn-ghost text-sm"
-                onClick={() => setConfirm(null)}
-              >
-                Cancel
-              </button>
-              {confirm.type === 'save' ? (
-                <button
-                  type="button"
-                  className="hb-btn hb-btn-primary text-sm"
-                  disabled={busy}
-                  onClick={() => void doSave()}
-                >
-                  Save
-                </button>
-              ) : confirm.type === 'revert' ? (
-                <button type="button" className="hb-btn hb-btn-danger text-sm" onClick={doRevert}>
-                  Revert
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="hb-btn hb-btn-danger text-sm"
-                  onClick={() => {
-                    const path = confirm.path
-                    setConfirm(null)
-                    setDirty(false)
-                    void loadDir(path)
-                  }}
-                >
-                  Discard
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      {confirmDialog}
     </div>
   )
 }

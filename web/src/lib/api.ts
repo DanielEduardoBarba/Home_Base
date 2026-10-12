@@ -1,5 +1,12 @@
 import { clearSession, getToken, type AuthLostReason } from './auth'
-import type { FsEntry, NotificationItem, Project, Session, TraceLine } from './types'
+import type {
+  AccessWidget,
+  FsEntry,
+  NotificationItem,
+  Project,
+  Session,
+  TraceLine,
+} from './types'
 
 /**
  * Same-origin paths only — identical in dev and prod:
@@ -54,6 +61,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       }
       const reason = reasons[code]
       if (reason) clearSession(reason)
+    }
+    // Server-side App PIN gate — tell PinLock to cover the UI
+    if (res.status === 423) {
+      try {
+        window.dispatchEvent(new Event('hb-pin-lock'))
+      } catch {
+        /* ignore */
+      }
     }
     throw err
   }
@@ -394,6 +409,21 @@ export const api = {
       models: { id: string; displayName: string; description: string }[]
       error?: string
     }>('/api/cursor/models'),
+  cursorWorkspace: (projectId: string) =>
+    request<{
+      configured: boolean
+      workspace: {
+        tabs: {
+          id: string
+          title: string
+          cwd: string
+          messages: { role: string }[]
+          updatedAt?: number
+          running?: boolean
+        }[]
+        activeId: string | null
+      }
+    }>(`/api/cursor/${encodeURIComponent(projectId)}`),
   fsList: (id: string, path = '', opts: { all?: boolean } = {}) => {
     const q = new URLSearchParams()
     // Allow "" (project-relative) and "/" (Linux root)
@@ -412,6 +442,34 @@ export const api = {
     request<{ ok: boolean }>(`/api/projects/${id}/fs/write`, {
       method: 'PUT',
       body: JSON.stringify({ path, content }),
+    }),
+  appPinStatus: () =>
+    request<{ enabled: boolean; locked: boolean; idleMs: number }>('/api/app-pin/status'),
+  appPinLock: () => request<{ ok: boolean; locked: boolean }>('/api/app-pin/lock', { method: 'POST' }),
+  appPinUnlock: (pin: string) =>
+    request<{ ok: boolean; locked: boolean }>('/api/app-pin/unlock', {
+      method: 'POST',
+      body: JSON.stringify({ pin }),
+    }),
+  appPinSet: (pin: string, currentPin?: string) =>
+    request<{ ok: boolean; enabled: boolean }>('/api/app-pin/set', {
+      method: 'POST',
+      body: JSON.stringify({ pin, currentPin }),
+    }),
+  appPinClear: (currentPin: string) =>
+    request<{ ok: boolean; enabled: boolean }>('/api/app-pin/clear', {
+      method: 'POST',
+      body: JSON.stringify({ currentPin }),
+    }),
+  appPinIdle: (idleMs: number) =>
+    request<{ ok: boolean; idleMs: number }>('/api/app-pin/idle', {
+      method: 'POST',
+      body: JSON.stringify({ idleMs }),
+    }),
+  appPinImport: (salt: string, hash: string, idleMs?: number) =>
+    request<{ ok: boolean; enabled: boolean; imported: boolean }>('/api/app-pin/import', {
+      method: 'POST',
+      body: JSON.stringify({ salt, hash, idleMs }),
     }),
   notifications: (opts: {
     offset?: number
@@ -453,8 +511,67 @@ export const api = {
   sudoStatus: () =>
     request<{
       cached: boolean
-      expiresAt: number
+      sessionCached?: boolean
+      persistent?: boolean
+      expiresAt: number | null
       ttlSec: number
       askpassWaiting: boolean
+      pending?: {
+        id: string
+        command?: string
+        prompt?: string
+        needsAllow?: boolean
+      } | null
     }>('/api/sudo/status'),
+  setSudo: (password: string, opts?: { ttlSec?: number; persistent?: boolean }) =>
+    request<{
+      cached: boolean
+      sessionCached?: boolean
+      persistent?: boolean
+      ttlSec: number
+      askpassWaiting: boolean
+    }>('/api/sudo', {
+      method: 'POST',
+      body: JSON.stringify({
+        password,
+        ttlSec: opts?.ttlSec,
+        persistent: opts?.persistent,
+      }),
+    }),
+  allowSudo: (id?: string) =>
+    request<{ ok: boolean; error?: string; ttlSec?: number; cached?: boolean }>(
+      '/api/sudo/allow',
+      { method: 'POST', body: JSON.stringify({ id }) },
+    ),
+  denySudo: (id?: string) =>
+    request<{ ok: boolean }>('/api/sudo/deny', {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    }),
+  clearSudo: () => request<{ ok: boolean }>('/api/sudo', { method: 'DELETE' }),
+  clearPersistentSudo: () =>
+    request<{ ok: boolean }>('/api/sudo/persistent', { method: 'DELETE' }),
+  homeAccess: () => request<{ widgets: AccessWidget[] }>('/api/home-access'),
+  homeAccessUpsert: (widget: Partial<AccessWidget> & { kind: string; label: string }) =>
+    request<{ widget: AccessWidget }>('/api/home-access/widgets', {
+      method: 'POST',
+      body: JSON.stringify(widget),
+    }),
+  homeAccessUpdate: (id: string, widget: Partial<AccessWidget>) =>
+    request<{ widget: AccessWidget }>(`/api/home-access/widgets/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(widget),
+    }),
+  homeAccessDelete: (id: string) =>
+    request<{ ok: boolean }>(`/api/home-access/widgets/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  homeAccessInvoke: (id: string, value?: unknown) =>
+    request<{ widget: AccessWidget }>(
+      `/api/home-access/widgets/${encodeURIComponent(id)}/invoke`,
+      {
+        method: 'POST',
+        body: JSON.stringify(value === undefined ? {} : { value }),
+      },
+    ),
 }

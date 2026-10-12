@@ -77,7 +77,13 @@ export const AUTH_PATH = join(RUNTIME_DIR, "auth.json");
 export const JWT_SECRET_PATH = join(RUNTIME_DIR, "jwt_secret");
 
 export function ensureRuntimeDirs(): void {
-  for (const d of [ROOT, RUNTIME_DIR, join(RUNTIME_DIR, "logs"), CONFIG_DIR]) {
+  for (const d of [
+    ROOT,
+    RUNTIME_DIR,
+    join(RUNTIME_DIR, "logs"),
+    join(RUNTIME_DIR, "chats"),
+    CONFIG_DIR,
+  ]) {
     try {
       mkdirSync(d, { recursive: true });
     } catch {

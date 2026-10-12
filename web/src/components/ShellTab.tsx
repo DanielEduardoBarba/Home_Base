@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { api } from '../lib/api'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 import {
@@ -27,6 +27,9 @@ export function ShellTab({
   /** Increment to open a fresh interactive PTY once. */
   startShellKey = 0,
   embedded = false,
+  minimal = false,
+  replayCommand = null,
+  replayOutput = null,
 }: {
   projects: Project[]
   selectedId: string
@@ -36,6 +39,10 @@ export function ShellTab({
   startShellKey?: number
   /** When true (Work tab), skip project picker — Work chrome owns it. */
   embedded?: boolean
+  /** Home Agent: command replay only. */
+  minimal?: boolean
+  replayCommand?: string | null
+  replayOutput?: string | null
 }) {
   const project = projects.find((p) => p.id === selectedId) || projects[0]
   const [sessions, setSessions] = useState<Session[]>([])
@@ -46,7 +53,38 @@ export function ShellTab({
   const [nonce, setNonce] = useState(() => (startShellKey > 0 ? startShellKey : 0))
   const [interactiveId, setInteractiveId] = useState('')
   const [error, setError] = useState('')
+  const [sudoOpen, setSudoOpen] = useState(false)
+  const [sudoPassword, setSudoPassword] = useState('')
+  const [sudoRemember, setSudoRemember] = useState(true)
+  const [sudoBusy, setSudoBusy] = useState(false)
+  const [sudoCached, setSudoCached] = useState(false)
+  const [sudoWaiting, setSudoWaiting] = useState(false)
+  const [sudoCommand, setSudoCommand] = useState('')
+  const [sudoId, setSudoId] = useState('')
+  const [sudoMsg, setSudoMsg] = useState('')
   const lastStartKey = useRef(startShellKey)
+
+  const refreshSudo = useCallback(async () => {
+    try {
+      const s = await api.sudoStatus()
+      setSudoCached(Boolean(s.cached || s.persistent || s.sessionCached))
+      setSudoWaiting(Boolean(s.askpassWaiting))
+      if (s.pending) {
+        setSudoId(String(s.pending.id || ''))
+        setSudoCommand(String(s.pending.command || ''))
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
+  useEffect(() => {
+    void refreshSudo()
+  }, [refreshSudo])
+
+  useVisibleInterval(() => {
+    void refreshSudo()
+  }, 6_000)
 
   const attachKey = attachSessionIds?.join(',') || ''
   useEffect(() => {
@@ -228,6 +266,66 @@ export function ShellTab({
     )
   }
 
+  if (minimal && (replayCommand || replayOutput)) {
+    const liveId = attach[0] || interactiveId
+    return (
+      <div className="h-full flex flex-col min-h-0 hb-shell-minimal">
+        <div className="hb-shell-minimal-bar shrink-0">
+          <span className="text-[10px] uppercase tracking-wide text-mute font-semibold">
+            Command
+          </span>
+          {liveId && (
+            <span className="text-[10px] text-mute ml-auto font-mono">
+              session {liveId.slice(0, 8)}
+            </span>
+          )}
+        </div>
+        <div className="hb-shell-replay flex-1 min-h-0 overflow-auto">
+          {replayCommand && (
+            <pre className="hb-shell-replay-cmd">
+              <span className="text-mute select-none">$ </span>
+              {replayCommand}
+            </pre>
+          )}
+          <pre className="hb-shell-replay-out">
+            {replayOutput || '(no output captured)'}
+          </pre>
+        </div>
+      </div>
+    )
+  }
+
+  if (minimal && (attach.length > 0 || interactive)) {
+    const liveId = attach[activeTab] || interactiveId
+    return (
+      <div className="h-full flex flex-col min-h-0 hb-shell-minimal">
+        <div className="hb-shell-minimal-bar shrink-0">
+          <span className="text-[10px] uppercase tracking-wide text-mute font-semibold">
+            Shell
+          </span>
+          {liveId && (
+            <span className="text-[10px] text-mute ml-auto font-mono">
+              {liveId.slice(0, 8)}
+            </span>
+          )}
+        </div>
+        {interactive ? (
+          <TerminalView
+            key={`${project.id}-${nonce}`}
+            path={`/ws/pty?project=${project.id}&cols=100&rows=36`}
+            className="flex-1 min-h-0"
+            onSession={(id) => {
+              setInteractiveId(id)
+              void refresh()
+            }}
+          />
+        ) : liveId ? (
+          <TerminalView sessionId={liveId} path="" className="flex-1 min-h-0" />
+        ) : null}
+      </div>
+    )
+  }
+
   return (
     <div className={`h-full flex flex-col min-h-0 ${embedded ? '' : 'hb-with-nav'}`}>
       <div className="hb-chrome shrink-0">
@@ -258,6 +356,25 @@ export function ShellTab({
                 ))}
               </div>
             )}
+            <button
+              type="button"
+              className="hb-shell-sudo-btn shrink-0"
+              data-cached={sudoCached ? '1' : '0'}
+              title={
+                sudoWaiting
+                  ? 'Sudo waiting for permission'
+                  : sudoCached
+                    ? 'Encrypted sudo vault ready — tap to manage'
+                    : 'Set encrypted sudo password for shell'
+              }
+              onClick={() => {
+                setSudoMsg('')
+                setSudoOpen(true)
+                void refreshSudo()
+              }}
+            >
+              {sudoWaiting ? 'Sudo!' : sudoCached ? 'Sudo ✓' : 'Sudo'}
+            </button>
             {!inTerminal ? (
               <IconBtn
                 label="New shell"
@@ -445,6 +562,137 @@ export function ShellTab({
               Open Run + Expo
             </button>
           )}
+        </div>
+      )}
+
+      {sudoOpen && (
+        <div className="fixed inset-0 z-40 hb-overlay backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
+          <form
+            className="w-full max-w-sm hb-surface p-4 space-y-3"
+            onSubmit={(e: FormEvent) => {
+              e.preventDefault()
+              if (!sudoPassword) return
+              setSudoBusy(true)
+              setSudoMsg('')
+              void api
+                .setSudo(sudoPassword, { persistent: sudoRemember })
+                .then(() => {
+                  setSudoPassword('')
+                  setSudoMsg(
+                    sudoRemember
+                      ? 'Encrypted password saved — still requires Allow each use'
+                      : 'Session vault ready',
+                  )
+                  setSudoCached(true)
+                  void refreshSudo()
+                })
+                .catch((err) =>
+                  setSudoMsg(err instanceof Error ? err.message : String(err)),
+                )
+                .finally(() => setSudoBusy(false))
+            }}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h2 className="font-semibold text-sm">Sudo vault</h2>
+                <p className="text-[11px] text-mute mt-0.5">
+                  AES-encrypted at rest · never auto-used without Allow
+                </p>
+              </div>
+              <button
+                type="button"
+                className="text-mute text-sm px-2 py-1"
+                onClick={() => setSudoOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+            {sudoWaiting && (
+              <div className="rounded-lg border border-amber/40 bg-amber/10 px-3 py-2 space-y-2">
+                <p className="text-xs text-mute">
+                  Waiting for permission
+                  {sudoCommand ? `: ${sudoCommand.slice(0, 120)}` : ''}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={sudoBusy || !sudoCached}
+                    className="hb-btn hb-btn-primary flex-1 text-xs !min-h-9 disabled:opacity-40"
+                    onClick={() => {
+                      setSudoBusy(true)
+                      void api
+                        .allowSudo(sudoId || undefined)
+                        .then((r) => {
+                          if (r.ok === false) setSudoMsg(r.error || 'No saved password')
+                          else {
+                            setSudoMsg('Allowed')
+                            setSudoWaiting(false)
+                          }
+                          void refreshSudo()
+                        })
+                        .finally(() => setSudoBusy(false))
+                    }}
+                  >
+                    Allow saved
+                  </button>
+                  <button
+                    type="button"
+                    className="hb-btn hb-btn-ghost text-xs !min-h-9 text-danger"
+                    onClick={() => {
+                      void api.denySudo(sudoId || undefined).then(() => {
+                        setSudoWaiting(false)
+                        setSudoMsg('Denied')
+                        void refreshSudo()
+                      })
+                    }}
+                  >
+                    Deny
+                  </button>
+                </div>
+              </div>
+            )}
+            <input
+              type="password"
+              value={sudoPassword}
+              onChange={(e) => setSudoPassword(e.target.value)}
+              autoComplete="current-password"
+              placeholder="sudo password"
+              className="w-full rounded-lg bg-panel-2 border border-line px-3 py-2 text-sm outline-none focus:border-accent"
+            />
+            <label className="flex items-center gap-2 text-[11px] text-mute cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={sudoRemember}
+                onChange={(e) => setSudoRemember(e.target.checked)}
+              />
+              Save encrypted on this host
+            </label>
+            <div className="flex gap-2">
+              <button
+                type="submit"
+                disabled={sudoBusy || !sudoPassword}
+                className="hb-btn hb-btn-primary flex-1 text-sm !min-h-10 disabled:opacity-40"
+              >
+                {sudoBusy ? 'Saving…' : sudoRemember ? 'Save & ready' : 'Use this session'}
+              </button>
+              {sudoCached && (
+                <button
+                  type="button"
+                  className="hb-btn hb-btn-ghost text-sm !min-h-10"
+                  onClick={() => {
+                    void Promise.all([api.clearSudo(), api.clearPersistentSudo()]).then(() => {
+                      setSudoCached(false)
+                      setSudoMsg('Vault cleared')
+                      void refreshSudo()
+                    })
+                  }}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            {sudoMsg && <p className="text-xs text-sky">{sudoMsg}</p>}
+          </form>
         </div>
       )}
     </div>

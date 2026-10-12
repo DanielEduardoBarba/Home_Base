@@ -232,7 +232,7 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
                 />
               </label>
               {password.length > 0 && (
-                <ul className="text-[11px] font-mono space-y-0.5 pt-0.5">
+                <ul className="text-xs font-mono space-y-0.5 pt-0.5">
                   {['10+ characters', 'lowercase', 'uppercase', 'digit', 'special character'].map(
                     (label) => {
                       const key =

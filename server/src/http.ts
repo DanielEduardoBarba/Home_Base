@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import { isAppPinLocked } from "./app_pin";
 import { HttpError, bearerFromHeader, verifyAccessToken } from "./auth";
 import { logError, logWarn } from "./console_log";
 import { formatGeo, geoCached, normalizeIp, warmGeo } from "./geo";
@@ -23,12 +24,22 @@ export function clientIpFields(c: Context): Record<string, unknown> {
   return { ip, geo: formatGeo(geo) };
 }
 
-export async function requireAuth(c: Context): Promise<Record<string, unknown>> {
+export async function requireAuth(
+  c: Context,
+  opts?: { allowPinLocked?: boolean },
+): Promise<Record<string, unknown>> {
   const token =
     bearerFromHeader(c.req.header("authorization")) ||
     c.req.query("token") ||
     undefined;
-  return verifyAccessToken(token, clientIp(c));
+  const claims = await verifyAccessToken(token, clientIp(c));
+  if (!opts?.allowPinLocked && isAppPinLocked()) {
+    throw new HttpError(423, {
+      code: "pin_locked",
+      message: "App PIN required",
+    });
+  }
+  return claims;
 }
 
 export function jsonError(c: Context, err: unknown): Response {
@@ -58,7 +69,12 @@ export function jsonError(c: Context, err: unknown): Response {
         source: "http",
         fields: ipFields,
       });
-    } else if (err.status === 401 || err.status === 403 || err.status === 429) {
+    } else if (
+      err.status === 401 ||
+      err.status === 403 ||
+      err.status === 423 ||
+      err.status === 429
+    ) {
       // /api/login failures are already journaled by auth.recordFailure
       if (!(err.status === 401 && path === "/api/login")) {
         logWarn(`${method} ${path} → ${err.status} ${detail}`, {

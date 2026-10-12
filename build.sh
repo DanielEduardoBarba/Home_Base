@@ -151,11 +151,32 @@ ensure_priv_session() {
     echo "    (pkexec is intentionally unused — it prompts once per command)" >&2
     exit 1
   fi
+  # Prefer Home Base Chat SUDO_ASKPASS (no TTY) when available.
+  if [[ -z "${SUDO_ASKPASS:-}" ]]; then
+    for _ask in \
+      "${HOMEBASE_HOME:-/var/lib/homebased}/.runtime/sudo-askpass" \
+      "/var/lib/homebased/.runtime/sudo-askpass"; do
+      if [[ -x "$_ask" ]]; then
+        export SUDO_ASKPASS="$_ask"
+        export SUDO_ASKPASS_REQUIRE=1
+        break
+      fi
+    done
+  fi
+  export HOMEBASE_SUDO_FOR="$why"
   if sudo -n true 2>/dev/null; then
     PRIV_MODE="sudo"
   else
     echo "==> Elevating once for $why (single sudo password; cached for this run)"
-    if ! sudo -v; then
+    if [[ -n "${SUDO_ASKPASS:-}" && -x "${SUDO_ASKPASS}" ]]; then
+      echo "    → enter password in Home Base Chat sudo card (for: $why)"
+      # -A uses askpass (Chat UI); never hang on a non-interactive TTY.
+      if ! sudo -A -v; then
+        echo "Error: sudo authentication failed for $why" >&2
+        echo "    Open Chat and unlock sudo when the card appears, then retry." >&2
+        exit 1
+      fi
+    elif ! sudo -v; then
       echo "Error: sudo authentication failed for $why" >&2
       exit 1
     fi
@@ -620,8 +641,28 @@ dev_session_alive() {
   return 1
 }
 
+# systemd oneshots often lack ~/.bun/bin — resolve bun into PATH when missing.
+ensure_bun_on_path() {
+  if command -v bun >/dev/null 2>&1; then
+    return 0
+  fi
+  local candidate
+  for candidate in \
+    "${BUN_INSTALL:+$BUN_INSTALL/bin/bun}" \
+    "$HOME/.bun/bin/bun" \
+    /home/daniel/.bun/bin/bun \
+    /usr/local/bin/bun \
+    /usr/bin/bun; do
+    if [[ -n "$candidate" && -x "$candidate" ]]; then
+      export PATH="$(dirname "$candidate"):$PATH"
+      return 0
+    fi
+  done
+  return 1
+}
+
 ensure_bun_server() {
-  if ! command -v bun >/dev/null 2>&1; then
+  if ! ensure_bun_on_path; then
     echo "Error: bun not found on PATH (install from https://bun.sh)" >&2
     exit 1
   fi
@@ -1301,11 +1342,14 @@ under_homebased_service() {
 schedule_detached_deploy() {
   echo "==> Detected deploy inside homebased — scheduling detached systemd oneshot"
   ensure_priv_session "homebased detached deploy"
+  ensure_bun_on_path || true
   local unit="homebased-self-deploy-$(date +%s%N)"
   local cmd
-  cmd="cd $(printf %q "$ROOT") && export HOMEBASE_DETACHED_DEPLOY=1 && exec ./build.sh --deploy --from-detached"
+  # Carry PATH (incl. ~/.bun/bin) so the oneshot can find bun/node.
+  cmd="cd $(printf %q "$ROOT") && export HOMEBASE_DETACHED_DEPLOY=1 PATH=$(printf %q "$PATH") && exec ./build.sh --deploy --from-detached"
+  # --no-block: return immediately so Chat/agent isn't killed when homebased restarts.
   if ! run_priv systemd-run \
-      --collect \
+      --no-block \
       --unit="$unit" \
       --property=Type=oneshot \
       --property=TimeoutStartSec=900 \

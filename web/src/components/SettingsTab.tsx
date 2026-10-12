@@ -13,6 +13,7 @@ import {
   type ThemeMode,
 } from '../lib/theme'
 import { isLocalHostPage } from '../lib/types'
+import { readPinIdleMs, writePinIdleMs } from '../lib/uiPrefs'
 import { HoldButton } from './HoldButton'
 import { SharingTab } from './SharingTab'
 import { WireGuardPanel } from './WireGuardPanel'
@@ -30,6 +31,95 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
   const [busy, setBusy] = useState('')
   const [vpnUrl, setVpnUrl] = useState<string | null>(null)
   const [lanUrl, setLanUrl] = useState<string | null>(null)
+  const [pinEnabled, setPinEnabled] = useState(false)
+  const [pinIdleMin, setPinIdleMin] = useState(() => Math.round(readPinIdleMs() / 60_000))
+  const [pinCurrent, setPinCurrent] = useState('')
+  const [pinDraft, setPinDraft] = useState('')
+  const [pinConfirm, setPinConfirm] = useState('')
+  const [pinMsg, setPinMsg] = useState('')
+  const [pinBusy, setPinBusy] = useState(false)
+
+  useEffect(() => {
+    void api
+      .appPinStatus()
+      .then((s) => {
+        setPinEnabled(s.enabled)
+        setPinIdleMin(Math.round(s.idleMs / 60_000))
+        writePinIdleMs(s.idleMs)
+      })
+      .catch(() => undefined)
+  }, [])
+
+  const pinDigits = (v: string) => v.replace(/\D/g, '').slice(0, 4)
+  const pinInputClass =
+    'w-full rounded-lg bg-panel-2 border border-line px-3 py-2.5 text-sm !min-h-11 font-mono tracking-[0.35em] outline-none focus:border-accent'
+
+  function clearPinFields() {
+    setPinCurrent('')
+    setPinDraft('')
+    setPinConfirm('')
+  }
+
+  function pinErrMessage(e: unknown): string {
+    if (!(e instanceof Error)) return String(e)
+    try {
+      const d = JSON.parse(e.message) as { message?: string }
+      if (d?.message) return d.message
+    } catch {
+      /* plain */
+    }
+    return e.message
+  }
+
+  async function submitPin() {
+    setPinMsg('')
+    if (pinDraft.length !== 4 || pinConfirm.length !== 4) {
+      setPinMsg('Enter the new PIN twice')
+      return
+    }
+    if (pinDraft !== pinConfirm) {
+      setPinMsg('New PINs do not match')
+      return
+    }
+    if (pinEnabled && pinCurrent.length !== 4) {
+      setPinMsg('Enter your current PIN')
+      return
+    }
+    setPinBusy(true)
+    try {
+      await api.appPinSet(pinDraft, pinEnabled ? pinCurrent : undefined)
+      clearPinFields()
+      setPinEnabled(true)
+      setPinMsg(pinEnabled ? 'PIN updated' : 'PIN enabled')
+      window.dispatchEvent(new Event('hb-pin-changed'))
+    } catch (e) {
+      setPinMsg(pinErrMessage(e))
+      if (/incorrect|bad_pin/i.test(pinErrMessage(e))) setPinCurrent('')
+    } finally {
+      setPinBusy(false)
+    }
+  }
+
+  async function turnOffPin() {
+    setPinMsg('')
+    if (pinCurrent.length !== 4) {
+      setPinMsg('Enter your current PIN to turn it off')
+      return
+    }
+    setPinBusy(true)
+    try {
+      await api.appPinClear(pinCurrent)
+      clearPinFields()
+      setPinEnabled(false)
+      setPinMsg('PIN turned off')
+      window.dispatchEvent(new Event('hb-pin-changed'))
+    } catch (e) {
+      setPinMsg(pinErrMessage(e))
+      setPinCurrent('')
+    } finally {
+      setPinBusy(false)
+    }
+  }
   const local = isLocalHostPage()
   const cacheCount = useMemo(() => listCacheKeys().length, [cacheMsg])
   const {
@@ -162,6 +252,113 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
           </div>
         </section>
 
+        <section className="hb-surface p-3.5 space-y-3">
+          <h2 className="hb-label">App PIN</h2>
+          <p className="text-xs text-mute leading-relaxed">
+            4-digit lock after idle or when you leave and come back. Hash and lock state live on the
+            server so a refresh cannot clear the lock.
+          </p>
+          <label className="flex items-center gap-2 text-sm">
+            <span className="text-mute text-xs w-24 shrink-0">Idle</span>
+            <select
+              className="flex-1 rounded-lg bg-panel-2 border border-line px-3 py-2.5 text-sm !min-h-11 outline-none focus:border-accent"
+              value={pinIdleMin}
+              onChange={(e) => {
+                const mins = Math.max(1, Number(e.target.value) || 5)
+                setPinIdleMin(mins)
+                const ms = mins * 60_000
+                writePinIdleMs(ms)
+                void api
+                  .appPinIdle(ms)
+                  .then(() => window.dispatchEvent(new Event('hb-pin-changed')))
+                  .catch(() => undefined)
+              }}
+            >
+              {[1, 2, 5, 10, 15, 30].map((m) => (
+                <option key={m} value={m}>
+                  {m} min
+                </option>
+              ))}
+            </select>
+          </label>
+          {pinEnabled && (
+            <label className="block space-y-1.5">
+              <span className="text-xs text-mute">Current PIN</span>
+              <input
+                type="password"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={4}
+                autoComplete="current-password"
+                placeholder="••••"
+                value={pinCurrent}
+                onChange={(e) => setPinCurrent(pinDigits(e.target.value))}
+                className={pinInputClass}
+              />
+            </label>
+          )}
+          <label className="block space-y-1.5">
+            <span className="text-xs text-mute">{pinEnabled ? 'New PIN' : 'PIN'}</span>
+            <input
+              type="password"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={4}
+              autoComplete="new-password"
+              placeholder="••••"
+              value={pinDraft}
+              onChange={(e) => setPinDraft(pinDigits(e.target.value))}
+              className={pinInputClass}
+            />
+          </label>
+          <label className="block space-y-1.5">
+            <span className="text-xs text-mute">Confirm PIN</span>
+            <input
+              type="password"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={4}
+              autoComplete="new-password"
+              placeholder="••••"
+              value={pinConfirm}
+              onChange={(e) => setPinConfirm(pinDigits(e.target.value))}
+              className={pinInputClass}
+            />
+          </label>
+          <button
+            type="button"
+            className="hb-btn hb-btn-primary text-sm !min-h-11 w-full"
+            disabled={
+              pinBusy ||
+              pinDraft.length !== 4 ||
+              pinConfirm.length !== 4 ||
+              (pinEnabled && pinCurrent.length !== 4)
+            }
+            onClick={() => void submitPin()}
+          >
+            {pinEnabled ? 'Update PIN' : 'Enable PIN'}
+          </button>
+          {pinEnabled && (
+            <button
+              type="button"
+              className="hb-btn hb-btn-ghost text-sm !min-h-11 w-full"
+              disabled={pinBusy || pinCurrent.length !== 4}
+              onClick={() => void turnOffPin()}
+            >
+              Turn off PIN
+            </button>
+          )}
+          {pinMsg && (
+            <p
+              className={`text-xs ${
+                /incorrect|match|Enter|must/i.test(pinMsg) ? 'text-danger' : 'text-sky'
+              }`}
+            >
+              {pinMsg}
+            </p>
+          )}
+        </section>
+
         <section className="hb-surface p-3.5 space-y-2.5">
           <h2 className="hb-label">Notifications</h2>
           <p className="text-xs text-mute leading-relaxed">
@@ -185,21 +382,15 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
           >
             <span className="min-w-0">
               <span className="block text-sm font-semibold">Ping sound</span>
-              <span className="block text-[11px] text-mute mt-0.5 leading-snug">
+              <span className="block text-xs text-mute mt-0.5 leading-snug">
                 Short beep when Cursor finishes or an alert arrives
               </span>
             </span>
             <span
-              className={`shrink-0 relative w-11 h-6 rounded-full transition-colors ${
-                prefs.sound ? 'bg-accent' : 'bg-line'
-              }`}
+              className={`hb-switch shrink-0 ${prefs.sound ? 'hb-switch--on' : ''}`}
               aria-hidden
             >
-              <span
-                className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
-                  prefs.sound ? 'translate-x-5' : 'translate-x-0'
-                }`}
-              />
+              <span className="hb-switch-knob" />
             </span>
           </button>
 
@@ -238,7 +429,7 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
           >
             <span className="min-w-0">
               <span className="block text-sm font-semibold">Browser / lock screen</span>
-              <span className="block text-[11px] text-mute mt-0.5 leading-snug">
+              <span className="block text-xs text-mute mt-0.5 leading-snug">
                 Status:{' '}
                 {permission === 'granted'
                   ? prefs.os
@@ -252,16 +443,12 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
               </span>
             </span>
             <span
-              className={`shrink-0 relative w-11 h-6 rounded-full transition-colors ${
-                prefs.os && permission === 'granted' ? 'bg-accent' : 'bg-line'
+              className={`hb-switch shrink-0 ${
+                prefs.os && permission === 'granted' ? 'hb-switch--on' : ''
               }`}
               aria-hidden
             >
-              <span
-                className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
-                  prefs.os && permission === 'granted' ? 'translate-x-5' : 'translate-x-0'
-                }`}
-              />
+              <span className="hb-switch-knob" />
             </span>
           </button>
           {notifyMsg && <p className="text-xs text-sky">{notifyMsg}</p>}
@@ -279,21 +466,12 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
           >
             <span className="min-w-0">
               <span className="block text-sm font-semibold">Top safe area</span>
-              <span className="block text-[11px] text-mute mt-0.5 leading-snug">
+              <span className="block text-xs text-mute mt-0.5 leading-snug">
                 Extra top padding for iPhone island / notch. Turn off if you don’t need it.
               </span>
             </span>
-            <span
-              className={`shrink-0 relative w-11 h-6 rounded-full transition-colors ${
-                safeTop ? 'bg-accent' : 'bg-line'
-              }`}
-              aria-hidden
-            >
-              <span
-                className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
-                  safeTop ? 'translate-x-5' : 'translate-x-0'
-                }`}
-              />
+            <span className={`hb-switch shrink-0 ${safeTop ? 'hb-switch--on' : ''}`} aria-hidden>
+              <span className="hb-switch-knob" />
             </span>
           </button>
         </section>
@@ -337,7 +515,7 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
             title="Hold to restart Home Base — brief disconnect"
             onConfirm={() => void restartHb()}
           />
-          <p className="text-[10px] text-mute">Hold to confirm — won’t fire on a tap.</p>
+          <p className="text-xs text-mute">Hold to confirm — won’t fire on a tap.</p>
           {sysMsg && <p className="text-xs text-sky">{sysMsg}</p>}
         </section>
 
@@ -351,7 +529,7 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
             >
               Clear cache
             </button>
-            <span className="text-[11px] text-mute">{cacheCount} items</span>
+            <span className="text-xs text-mute">{cacheCount} items</span>
           </div>
           {cacheMsg && <p className="text-xs text-sky">{cacheMsg}</p>}
         </section>

@@ -17,7 +17,7 @@ export function ToastStack() {
         <button
           key={t.id}
           type="button"
-          className="hb-toast"
+          className={`hb-toast${t.category === 'security' ? ' hb-notify-security' : ''}`}
           aria-label={`${t.title}. Dismiss`}
           title="Dismiss"
           onClick={() => {
