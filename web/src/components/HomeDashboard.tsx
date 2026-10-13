@@ -11,10 +11,11 @@ type Props = {
   onOpenHomework: () => void
   onOpenAccess: () => void
   onOpenAgent: () => void
+  onOpenVision: () => void
 }
 
 /**
- * Post-login landing — Work, Access, or Agent.
+ * Post-login landing — Agent, Work, Access, Vision.
  */
 export function HomeDashboard({
   version,
@@ -24,6 +25,7 @@ export function HomeDashboard({
   onOpenHomework,
   onOpenAccess,
   onOpenAgent,
+  onOpenVision,
 }: Props) {
   const { displayName } = useServerIdentity()
   const linkLabel =
@@ -87,6 +89,13 @@ export function HomeDashboard({
             <span className="hb-home-card-label">Access</span>
             <span className="hb-home-card-desc">
               Buttons, toggles, sliders, and gauges that trip scripts and APIs around the house.
+            </span>
+            <span className="hb-home-card-go">Open →</span>
+          </button>
+          <button type="button" className="hb-home-card hb-home-card--vision" onClick={onOpenVision}>
+            <span className="hb-home-card-label">Vision</span>
+            <span className="hb-home-card-desc">
+              Live desktop + chat — Arm to let the agent drive mouse and keyboard on Ubuntu X11.
             </span>
             <span className="hb-home-card-go">Open →</span>
           </button>

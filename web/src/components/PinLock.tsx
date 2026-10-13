@@ -99,11 +99,12 @@ export function PinLock({ children }: { children: ReactNode }) {
     }
     const onChanged = () => void refreshPrefs()
     const onForceLock = () => {
-      if (enabledRef.current) {
-        setLocked(true)
-        writeCachedGate(true, true)
-        setDigits('')
-      }
+      if (!enabledRef.current) return
+      // Already locked: keep partial PIN entry (423 polls must not wipe digits).
+      if (lockedRef.current) return
+      setLocked(true)
+      writeCachedGate(true, true)
+      setDigits('')
     }
     window.addEventListener('storage', onStorage)
     window.addEventListener('hb-pin-changed', onChanged)
@@ -121,9 +122,13 @@ export function PinLock({ children }: { children: ReactNode }) {
 
   const lock = useCallback(() => {
     if (!enabledRef.current) return
+    const alreadyLocked = lockedRef.current
     setLocked(true)
     writeCachedGate(true, true)
-    setDigits('')
+    // Only clear on unlocked → locked. Re-lock (idle tick, tab return, 423)
+    // must not wipe digits the user is mid-entering.
+    if (!alreadyLocked) setDigits('')
+    if (alreadyLocked) return
     void api.appPinLock().catch(() => {
       /* UI still locked; next API call returns 423 */
     })
@@ -143,8 +148,9 @@ export function PinLock({ children }: { children: ReactNode }) {
     }
     const onVis = () => {
       if (document.visibilityState === 'hidden') {
-        lastActive.current = 0
+        if (!lockedRef.current) lastActive.current = 0
       } else if (document.visibilityState === 'visible') {
+        if (lockedRef.current) return
         if (Date.now() - lastActive.current >= idleMs.current) lock()
         else markActive()
       }

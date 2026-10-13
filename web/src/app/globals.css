@@ -2932,6 +2932,12 @@ html.hb-view-max .hb-status-bar {
   gap: 0.85rem;
 }
 
+@media (min-width: 640px) {
+  .hb-home-actions {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
 .hb-home-card {
   appearance: none;
   text-align: left;
@@ -2998,6 +3004,94 @@ html.hb-view-max .hb-status-bar {
 
 .hb-home-card--agent .hb-home-card-go {
   color: var(--hb-ok);
+}
+
+.hb-home-card--vision .hb-home-card-go {
+  color: var(--hb-amber, #d4a017);
+}
+
+.hb-vision {
+  background: linear-gradient(165deg, var(--hb-bg-0), var(--hb-bg-1) 45%, var(--hb-bg-2));
+}
+
+.hb-vision-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.55rem 0.85rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--hb-line) 80%, transparent);
+  background: color-mix(in srgb, var(--hb-panel) 92%, transparent);
+}
+
+.hb-vision-bar-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.hb-vision-title {
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  margin: 0;
+  line-height: 1.2;
+}
+
+.hb-vision-sub {
+  margin: 0.1rem 0 0;
+  font-size: 0.68rem;
+  color: var(--hb-mute);
+  line-height: 1.35;
+}
+
+.hb-vision-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.hb-vision-banner {
+  margin: 0;
+  padding: 0.4rem 0.85rem;
+  font-size: 0.72rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--hb-line) 70%, transparent);
+}
+
+.hb-vision-body {
+  min-height: 0;
+}
+
+.hb-vision-stage {
+  min-height: 0;
+}
+
+.hb-view-embedded .hb-chrome {
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+}
+
+.hb-vision-hint {
+  margin: 0;
+  padding: 0.35rem 0.85rem 0.45rem;
+  font-size: 0.65rem;
+  line-height: 1.35;
+  color: var(--hb-mute);
+  border-top: 1px solid color-mix(in srgb, var(--hb-line) 70%, transparent);
+  background: color-mix(in srgb, var(--hb-panel) 88%, transparent);
+}
+
+.hb-vision-hint code {
+  font-size: 0.62rem;
+  color: var(--hb-text);
+}
+
+.hb-vision-unavailable {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
 }
 
 .hb-agent {

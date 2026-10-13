@@ -54,7 +54,7 @@ import {
 } from "./onboarding_state";
 import {
   clearCursorApiKey,
-  cursorApiKeyConfigured,
+  getCursorCredentialsMeta,
   setCursorApiKey,
 } from "./secrets_vault";
 import {
@@ -83,6 +83,12 @@ import {
   listAccessWidgets,
   upsertAccessWidget,
 } from "./home_access";
+import {
+  armVision,
+  disarmVision,
+  visionArmStatus,
+  visionStatus,
+} from "./vision";
 import { clientIp, jsonError, readJson, requireAuth } from "./http";
 import { readDailyLogs } from "./logging";
 import { clearRead, listNotifications, markRead } from "./notifications";
@@ -495,7 +501,12 @@ app.delete("/api/projects/:projectId", async (c) => {
 
 app.get("/api/cursor/credentials", async (c) => {
   await requireAuth(c);
-  return c.json({ configured: cursorApiKeyConfigured() || cursorConfigured() });
+  // hint is a first/last-4 placeholder only — never the decrypted key
+  const meta = getCursorCredentialsMeta();
+  return c.json({
+    configured: meta.configured || cursorConfigured(),
+    hint: meta.hint,
+  });
 });
 
 app.post("/api/cursor/credentials", async (c) => {
@@ -960,6 +971,28 @@ app.delete("/api/sudo/persistent", async (c) => {
 app.get("/api/view/status", async (c) => {
   await requireAuth(c);
   return c.json(await viewStatusAsync());
+});
+
+app.get("/api/vision/status", async (c) => {
+  await requireAuth(c);
+  return c.json(await visionStatus());
+});
+
+app.get("/api/vision/arm", async (c) => {
+  await requireAuth(c);
+  return c.json(visionArmStatus());
+});
+
+app.post("/api/vision/arm", async (c) => {
+  await requireAuth(c);
+  const body = (await readJson(c).catch(() => ({}))) as Record<string, unknown>;
+  const ttlSec = body.ttlSec != null ? Number(body.ttlSec) : undefined;
+  return c.json(armVision(ttlSec));
+});
+
+app.post("/api/vision/disarm", async (c) => {
+  await requireAuth(c);
+  return c.json(disarmVision("api"));
 });
 
 app.get("/api/home-access", async (c) => {

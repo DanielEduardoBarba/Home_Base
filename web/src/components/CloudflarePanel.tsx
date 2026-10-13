@@ -90,12 +90,15 @@ export function CloudflarePanel({ embedded = false }: { embedded?: boolean }) {
         <div className="space-y-2">
           <label className="block space-y-1">
             <span className="text-xs text-mute">Tunnel token (from Cloudflare Zero Trust)</span>
+            {status?.tokenHint && !token && (
+              <p className="text-[11px] font-mono text-mute">Stored token {status.tokenHint}</p>
+            )}
             <input
               type="password"
               className="w-full rounded-[var(--radius-control)] bg-panel-2 border border-line px-3 py-2.5 text-sm font-mono"
               value={token}
               onChange={(e) => setToken(e.target.value)}
-              placeholder="Paste token"
+              placeholder={status?.tokenHint || 'Paste token'}
               autoComplete="off"
             />
           </label>
@@ -113,12 +116,13 @@ export function CloudflarePanel({ embedded = false }: { embedded?: boolean }) {
             className="hb-btn hb-btn-primary text-sm !min-h-10 w-full"
             disabled={!!busy || !token.trim()}
             onClick={() =>
-              void run('cfg', () =>
-                api.cloudflareConfigure({
+              void run('cfg', async () => {
+                await api.cloudflareConfigure({
                   token: token.trim(),
                   hostname: hostname.trim() || undefined,
-                }),
-              )
+                })
+                setToken('')
+              })
             }
           >
             {busy === 'cfg' ? '…' : 'Save & start tunnel'}

@@ -11,6 +11,7 @@ alwaysApply: false
 - Work = Apps/Shell/Files scene switcher + bottom-right ChatPanel dock (present shell/files from chat).
 - Chat tab = full-page ChatPanel; can present into Work (+ Shell / Apps / Files).
 - View = live laptop screen + pointer/keyboard (`/ws/view`); mark stage `data-hb-no-ptr` so pull-to-refresh does not steal gestures.
+- Vision (Home area) = View embed + Chat dock + Arm/Disarm for AI desktop control; reuse `data-hb-no-ptr` on the stage.
 - Alerts = bell in the thin top status bar; inbox slides top→bottom as a near-full modal; History is a right-side drawer.
 - Chat composer supports English speech→text (Web Speech API mic). Cursor done → toast + ping + optional browser Notification.
 - Share / password + WireGuard VPN setup/manage + homebased restart live under **More/Settings** (localhost for share).

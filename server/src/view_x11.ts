@@ -551,6 +551,139 @@ export class X11Session {
     xtst!.XTestFakeKeyEvent(this.dpy!, keycode, pressed ? 1 : 0, 0n);
     x11!.XFlush(this.dpy!);
   }
+
+  /**
+   * Type a string via XTest key events (US-ish layout). Uppercase / shifted
+   * punctuation hold Shift. Non-mappable chars are skipped.
+   */
+  typeText(text: string): { typed: number; skipped: number } {
+    let typed = 0;
+    let skipped = 0;
+    const shifted: Record<string, string> = {
+      "!": "1",
+      "@": "2",
+      "#": "3",
+      $: "4",
+      "%": "5",
+      "^": "6",
+      "&": "7",
+      "*": "8",
+      "(": "9",
+      ")": "0",
+      _: "-",
+      "+": "=",
+      "{": "[",
+      "}": "]",
+      "|": "\\",
+      ":": ";",
+      '"': "'",
+      "<": ",",
+      ">": ".",
+      "?": "/",
+      "~": "`",
+    };
+    for (const ch of text) {
+      if (ch === "\n" || ch === "\r") {
+        this.key("Enter", "Enter", true);
+        this.key("Enter", "Enter", false);
+        typed += 1;
+        continue;
+      }
+      if (ch === "\t") {
+        this.key("Tab", "Tab", true);
+        this.key("Tab", "Tab", false);
+        typed += 1;
+        continue;
+      }
+      const needsShift = /[A-Z]/.test(ch) || ch in shifted;
+      const base = shifted[ch] ?? (/[A-Z]/.test(ch) ? ch.toLowerCase() : ch);
+      const code = charToKeyCode(base);
+      if (!browserToKeysym(base, code)) {
+        skipped += 1;
+        continue;
+      }
+      if (needsShift) this.key("Shift", "ShiftLeft", true);
+      this.key(base, code, true);
+      this.key(base, code, false);
+      if (needsShift) this.key("Shift", "ShiftLeft", false);
+      typed += 1;
+    }
+    return { typed, skipped };
+  }
+
+  /** Chord: hold all keys, then release in reverse (e.g. Control+c, Super+a). */
+  hotkey(keys: Array<{ key: string; code: string }>): void {
+    for (const k of keys) this.key(k.key, k.code, true);
+    for (let i = keys.length - 1; i >= 0; i--) {
+      const k = keys[i]!;
+      this.key(k.key, k.code, false);
+    }
+  }
+}
+
+/** Map a single printable base char to a KeyboardEvent.code-like string. */
+export function charToKeyCode(ch: string): string {
+  if (ch.length !== 1) return ch;
+  if (/[a-z]/.test(ch)) return `Key${ch.toUpperCase()}`;
+  if (/[0-9]/.test(ch)) return `Digit${ch}`;
+  const table: Record<string, string> = {
+    " ": "Space",
+    "-": "Minus",
+    "=": "Equal",
+    "[": "BracketLeft",
+    "]": "BracketRight",
+    "\\": "Backslash",
+    ";": "Semicolon",
+    "'": "Quote",
+    "`": "Backquote",
+    ",": "Comma",
+    ".": "Period",
+    "/": "Slash",
+  };
+  return table[ch] || ch;
+}
+
+/** Resolve agent/tool key names ("ctrl", "super", "c", "Enter") to key+code. */
+export function resolveKeyName(name: string): { key: string; code: string } | null {
+  const raw = String(name || "").trim();
+  if (!raw) return null;
+  const lower = raw.toLowerCase();
+  const aliases: Record<string, { key: string; code: string }> = {
+    ctrl: { key: "Control", code: "ControlLeft" },
+    control: { key: "Control", code: "ControlLeft" },
+    alt: { key: "Alt", code: "AltLeft" },
+    shift: { key: "Shift", code: "ShiftLeft" },
+    meta: { key: "Meta", code: "MetaLeft" },
+    super: { key: "Meta", code: "MetaLeft" },
+    win: { key: "Meta", code: "MetaLeft" },
+    cmd: { key: "Meta", code: "MetaLeft" },
+    enter: { key: "Enter", code: "Enter" },
+    return: { key: "Enter", code: "Enter" },
+    esc: { key: "Escape", code: "Escape" },
+    escape: { key: "Escape", code: "Escape" },
+    tab: { key: "Tab", code: "Tab" },
+    space: { key: " ", code: "Space" },
+    backspace: { key: "Backspace", code: "Backspace" },
+    delete: { key: "Delete", code: "Delete" },
+    up: { key: "ArrowUp", code: "ArrowUp" },
+    down: { key: "ArrowDown", code: "ArrowDown" },
+    left: { key: "ArrowLeft", code: "ArrowLeft" },
+    right: { key: "ArrowRight", code: "ArrowRight" },
+  };
+  if (aliases[lower]) return aliases[lower]!;
+  if (raw.length === 1) {
+    const code = charToKeyCode(raw.toLowerCase());
+    return { key: raw, code };
+  }
+  if (/^f\d{1,2}$/i.test(raw)) {
+    const f = raw.toUpperCase();
+    return { key: f, code: f };
+  }
+  // Pass through KeyboardEvent.key / .code pairs when caller sent a code-like name.
+  if (raw in KEY_CODE_MAP || /^Key[A-Z]$/.test(raw) || /^Digit\d$/.test(raw)) {
+    return { key: raw, code: raw };
+  }
+  return { key: raw, code: raw };
 }
 
 /** Convert X11 ZPixmap BGRX/BGRA rows into tightly packed RGBA for jpeg-js. */

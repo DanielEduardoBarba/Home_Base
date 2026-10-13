@@ -421,14 +421,14 @@ export const api = {
       method: 'DELETE',
     }),
   cursorCredentials: () =>
-    request<{ configured: boolean }>('/api/cursor/credentials'),
+    request<{ configured: boolean; hint: string | null }>('/api/cursor/credentials'),
   setCursorCredentials: (apiKey: string) =>
-    request<{ configured: boolean }>('/api/cursor/credentials', {
+    request<{ configured: boolean; hint: string | null }>('/api/cursor/credentials', {
       method: 'POST',
       body: JSON.stringify({ apiKey }),
     }),
   clearCursorCredentials: () =>
-    request<{ configured: boolean }>('/api/cursor/credentials', {
+    request<{ configured: boolean; hint: string | null }>('/api/cursor/credentials', {
       method: 'DELETE',
     }),
   onboarding: () =>
@@ -461,6 +461,8 @@ export const api = {
       installed: boolean
       binary: string | null
       loggedIn: boolean
+      /** Client-safe first/last-4 placeholder; never the full token. */
+      tokenHint: string | null
       tunnelName: string | null
       hostname: string | null
       running: boolean
@@ -718,6 +720,44 @@ export const api = {
   clearSudo: () => request<{ ok: boolean }>('/api/sudo', { method: 'DELETE' }),
   clearPersistentSudo: () =>
     request<{ ok: boolean }>('/api/sudo/persistent', { method: 'DELETE' }),
+  visionStatus: () =>
+    request<{
+      ok: boolean
+      armed: boolean
+      remainingSec: number
+      until: number | null
+      linux: boolean
+      platform: string
+      display?: string
+      screenW?: number
+      screenH?: number
+      error?: string | null
+      guidance?: string
+    }>('/api/vision/status'),
+  visionArmStatus: () =>
+    request<{
+      armed: boolean
+      remainingSec: number
+      until: number | null
+      linux: boolean
+      platform: string
+    }>('/api/vision/arm'),
+  visionArm: (ttlSec?: number) =>
+    request<{
+      ok: boolean
+      armed: boolean
+      remainingSec: number
+      until: number | null
+      error?: string
+    }>('/api/vision/arm', {
+      method: 'POST',
+      body: JSON.stringify(ttlSec != null ? { ttlSec } : {}),
+    }),
+  visionDisarm: () =>
+    request<{ ok: boolean; armed: boolean }>('/api/vision/disarm', {
+      method: 'POST',
+      body: '{}',
+    }),
   homeAccess: () => request<{ widgets: AccessWidget[] }>('/api/home-access'),
   homeAccessUpsert: (widget: Partial<AccessWidget> & { kind: string; label: string }) =>
     request<{ widget: AccessWidget }>('/api/home-access/widgets', {

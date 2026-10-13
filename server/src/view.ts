@@ -347,6 +347,9 @@ class ViewHub {
   private lastRemotePx = Number.NaN;
   private lastRemotePy = Number.NaN;
   private lastRemoteMonitor = 0;
+  /** Vision/agent tools keep the seat-user worker alive without a View WS client. */
+  private agentHoldUntil = 0;
+  private agentIdleTimer: ReturnType<typeof setTimeout> | null = null;
 
   status(): Record<string, unknown> {
     const { display, xauthority } = discoverX11Env();
@@ -402,7 +405,7 @@ class ViewHub {
     } catch (e) {
       err = e instanceof Error ? e.message : String(e);
     }
-    if (!streaming && this.clients.size === 0) {
+    if (!streaming && this.clients.size === 0 && !this.isAgentHeld()) {
       this.bridge.stop();
     }
     return {
@@ -418,7 +421,77 @@ class ViewHub {
       ...this.stats,
       clients: this.clients.size,
       worker: "bun-x11-ffi",
+      agentHold: this.isAgentHeld(),
     };
+  }
+
+  /** Keep the X11 worker up for Vision tool calls (no View WS required). */
+  setAgentHold(ms: number): void {
+    const hold = Math.max(0, Math.floor(ms));
+    this.agentHoldUntil = hold > 0 ? Date.now() + hold : 0;
+    if (this.agentIdleTimer) {
+      clearTimeout(this.agentIdleTimer);
+      this.agentIdleTimer = null;
+    }
+    if (this.agentHoldUntil > 0) {
+      try {
+        this.bridge.start();
+      } catch {
+        /* status surfaces errors */
+      }
+      this.agentIdleTimer = setTimeout(() => {
+        this.agentIdleTimer = null;
+        this.releaseBridgeIfIdle();
+      }, hold + 250);
+    } else {
+      this.releaseBridgeIfIdle();
+    }
+  }
+
+  isAgentHeld(): boolean {
+    return Date.now() < this.agentHoldUntil;
+  }
+
+  private releaseBridgeIfIdle(): void {
+    if (this.clients.size === 0 && !this.isAgentHeld()) {
+      if (this.loop) {
+        clearTimeout(this.loop);
+        this.loop = null;
+      }
+      this.bridge.stop();
+    }
+  }
+
+  /**
+   * One-shot IPC for Vision tools. Extends agent hold so the worker stays warm
+   * between screenshot → click → type sequences.
+   */
+  async agentCall(
+    msg: Record<string, unknown>,
+    timeoutSec = 8,
+  ): Promise<Record<string, unknown>> {
+    this.setAgentHold(Math.max(30_000, this.agentHoldUntil - Date.now()));
+    try {
+      this.bridge.start();
+    } catch (e) {
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      };
+    }
+    if (msg.cmd === "pointer" || msg.cmd === "key" || msg.cmd === "type" || msg.cmd === "hotkey") {
+      this.remoteControlUntil = Date.now() + 900;
+      if (msg.cmd === "pointer" && msg.mode !== "rel" && msg.px != null && msg.py != null) {
+        this.lastRemotePx = Math.round(Number(msg.px));
+        this.lastRemotePy = Math.round(Number(msg.py));
+        this.lastRemoteMonitor = Number(msg.monitor || 0);
+      }
+    }
+    const resp = await this.bridge.call(msg, timeoutSec);
+    if (msg.cmd === "pointer") {
+      this.broadcastCursor(resp, false, "remote");
+    }
+    return resp;
   }
 
   async connect(ws: ClientState["ws"]): Promise<ClientState> {
@@ -496,7 +569,7 @@ class ViewHub {
         clearTimeout(this.loop);
         this.loop = null;
       }
-      this.bridge.stop();
+      if (!this.isAgentHeld()) this.bridge.stop();
     }
     viewClientDisconnected();
   }

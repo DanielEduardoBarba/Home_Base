@@ -28,7 +28,7 @@ SPA fetch/WebSocket paths are always relative (`/api/...`, `/ws/...` via `locati
 
 ## UI areas (after login)
 
-**Home** dashboard → **Home Agent** (streamlined chat) · **Homework** (full control plane) · **Home Access** (house panel).
+**Home** dashboard → **Home Agent** (streamlined chat) · **Homework** (full control plane) · **Home Access** (house panel) · **Vision** (live desktop + AI control).
 
 ### Homework tabs
 
@@ -47,6 +47,10 @@ Minimal Work+Chat: pick project → folder (app / recent / browse) → chat list
 ### Home Access
 
 Panel of **button / toggle / slider / gauge** widgets backed by `/api/home-access*` and `homebase_access_*` tools. Hooks: `script` · `http` · `websocket` · `static`. State in `.runtime/home_access.json`. Floating Chat dock helps wire IoT/scripts. Prefer adding widgets over rewriting the framework (see `.cursor/rules/home-access.mdc`).
+
+### Vision
+
+Live laptop screen (same `/ws/view` X11 worker) plus a Chat dock. **Arm** (JWT, default 15m) unlocks AI mouse/keyboard via `homebase_vision_*` tools; disarmed is look-only (screenshot/status). Linux X11 / XWayland only — not on Mac. Prefer Shell/Files for terminals and file edits; use Vision for GUI apps and desktop navigation. Screenshots under `.runtime/vision/`. See `.cursor/rules/vision.mdc`.
 
 ### Chat persistence
 
@@ -103,7 +107,7 @@ Writable state: `/var/lib/homebased` (`HOMEBASE_HOME`). Unit **homebased** runs 
 
 ## Capabilities vs non-goals
 
-- **Supports:** local Cursor agents (Home Base context + `homebase_*` in-process tools), project actions/PTY, Files (project + absolute host with JWT), View (X11 screen + input over JWT WS), WireGuard setup/manage (QR onboarding) + homebased restart, Home Access widgets (`homebase_access_*`), durable chat under `.runtime/chats/`
+- **Supports:** local Cursor agents (Home Base context + `homebase_*` in-process tools), project actions/PTY, Files (project + absolute host with JWT), View (X11 screen + input over JWT WS), Vision (Armed AI desktop control via `homebase_vision_*`), WireGuard setup/manage (QR onboarding) + homebased restart, Home Access widgets (`homebase_access_*`), durable chat under `.runtime/chats/`
 - **Self-deploy / restart:** `./build.sh --deploy` from a Chat/Shell PTY under homebased schedules a detached systemd oneshot (not killed by `KillMode=control-group`). API `POST /api/system/restart/homebased` and tool `homebase_restart_homebased` use `systemd-run --on-active=1s` the same way.
 - **Does not:** Cursor IDE buffer sync, cloud agents, public internet exposure, Wayland capture (X11 / XWayland only)
 

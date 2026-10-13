@@ -20,6 +20,59 @@ import { RUNTIME_DIR, ensureRuntimeDirs } from "./config";
 
 const KEY_PATH = join(RUNTIME_DIR, "secrets_vault.key");
 const CURSOR_KEY_PATH = join(RUNTIME_DIR, "cursor_api_key.enc");
+/** Non-secret display placeholder only (first/last 4). Never store the full key here. */
+const CURSOR_HINT_PATH = join(RUNTIME_DIR, "cursor_api_key.hint");
+
+/** Min length before first/last 4 are safe (shorter secrets would be fully revealed). */
+const HINT_MIN_LEN = 12;
+const HINT_BULLETS = "••••";
+const HINT_OPAQUE = "••••••••";
+
+/**
+ * Client-safe placeholder: first 4 + bullets + last 4.
+ * Never returns the full secret. Short secrets get opaque bullets only.
+ */
+export function secretDisplayHint(plain: string): string {
+  const s = plain.trim();
+  if (!s) return HINT_OPAQUE;
+  if (s.length < HINT_MIN_LEN) return HINT_OPAQUE;
+  return `${s.slice(0, 4)}${HINT_BULLETS}${s.slice(-4)}`;
+}
+
+/** Reject anything that could be a full secret written to the hint file by mistake. */
+export function isValidSecretHint(hint: string): boolean {
+  const h = hint.trim();
+  if (h === HINT_OPAQUE) return true;
+  if (h.length > 4 + HINT_BULLETS.length + 4) return false;
+  const mid = h.indexOf(HINT_BULLETS);
+  if (mid < 1 || mid > 4) return false;
+  const suffix = h.slice(mid + HINT_BULLETS.length);
+  return suffix.length >= 1 && suffix.length <= 4;
+}
+
+function writeHintFile(path: string, plain: string): string {
+  const hint = secretDisplayHint(plain);
+  writePrivate(path, hint);
+  return hint;
+}
+
+function readHintFile(path: string): string | null {
+  if (!existsSync(path)) return null;
+  try {
+    const hint = readFileSync(path, "utf8").trim();
+    return isValidSecretHint(hint) ? hint : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearHintFile(path: string): void {
+  try {
+    if (existsSync(path)) unlinkSync(path);
+  } catch {
+    /* ignore */
+  }
+}
 
 function vaultKey(): Buffer {
   ensureRuntimeDirs();
@@ -112,22 +165,48 @@ export function hydrateCursorApiKeyFromVault(): void {
   if (key) process.env.CURSOR_API_KEY = key;
 }
 
-export function setCursorApiKey(apiKey: string): { configured: boolean } {
+export type CursorCredentialsMeta = {
+  configured: boolean;
+  /** Client-safe first/last-4 placeholder; never the full key. */
+  hint: string | null;
+};
+
+/**
+ * Metadata for Settings UI. Decrypts only when migrating a pre-hint vault entry;
+ * never returns the plaintext key.
+ */
+export function getCursorCredentialsMeta(): CursorCredentialsMeta {
+  const configured = cursorApiKeyConfigured();
+  if (!configured) return { configured: false, hint: null };
+
+  const stored = readHintFile(CURSOR_HINT_PATH);
+  if (stored) return { configured: true, hint: stored };
+
+  // One-time migration: derive hint server-side, persist, discard plaintext.
+  const plain = loadCursorApiKey();
+  if (!plain) return { configured: true, hint: null };
+  const hint = writeHintFile(CURSOR_HINT_PATH, plain);
+  return { configured: true, hint };
+}
+
+export function setCursorApiKey(apiKey: string): CursorCredentialsMeta {
   const trimmed = apiKey.trim();
   if (!trimmed) throw new Error("apiKey required");
   writePrivate(CURSOR_KEY_PATH, encryptSecret(trimmed));
+  const hint = writeHintFile(CURSOR_HINT_PATH, trimmed);
   process.env.CURSOR_API_KEY = trimmed;
-  return { configured: true };
+  return { configured: true, hint };
 }
 
-export function clearCursorApiKey(): { configured: boolean } {
+export function clearCursorApiKey(): CursorCredentialsMeta {
   try {
     if (existsSync(CURSOR_KEY_PATH)) unlinkSync(CURSOR_KEY_PATH);
   } catch {
     /* ignore */
   }
+  clearHintFile(CURSOR_HINT_PATH);
   delete process.env.CURSOR_API_KEY;
-  return { configured: false };
+  return { configured: false, hint: null };
 }
 
 export function encryptToFile(path: string, plain: string): void {

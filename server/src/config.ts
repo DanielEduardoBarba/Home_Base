@@ -93,6 +93,7 @@ export function ensureRuntimeDirs(): void {
     RUNTIME_DIR,
     join(RUNTIME_DIR, "logs"),
     join(RUNTIME_DIR, "chats"),
+    join(RUNTIME_DIR, "vision"),
     CONFIG_DIR,
   ]) {
     try {

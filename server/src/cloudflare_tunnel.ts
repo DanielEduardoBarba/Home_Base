@@ -17,6 +17,8 @@ import { HttpError } from "./auth";
 import {
   decryptFromFile,
   encryptToFile,
+  isValidSecretHint,
+  secretDisplayHint,
 } from "./secrets_vault";
 import { appendTrace } from "./trace";
 
@@ -29,6 +31,8 @@ type CfState = {
   tunnelId?: string;
   installedAt?: number;
   mode?: "token" | "named" | null;
+  /** Client-safe first/last-4 placeholder; never the full token. */
+  tokenHint?: string | null;
 };
 
 function loadState(): CfState {
@@ -111,16 +115,31 @@ function unitActive(): boolean {
   return r.ok && r.out.trim() === "active";
 }
 
+/** Returns a client-safe hint; decrypts at most once for legacy migration. */
+function resolveTokenHint(state: CfState): string | null {
+  if (!existsSync(TOKEN_PATH)) return null;
+  const stored = state.tokenHint?.trim() || "";
+  if (stored && isValidSecretHint(stored)) return stored;
+  const plain = decryptFromFile(TOKEN_PATH);
+  if (!plain) return null;
+  const hint = secretDisplayHint(plain);
+  saveState({ ...state, tokenHint: hint });
+  return hint;
+}
+
 export function cloudflareStatus(): Record<string, unknown> {
   const bin = cloudflaredPath();
   const state = loadState();
-  const hasToken = !!decryptFromFile(TOKEN_PATH);
+  const tokenHint = resolveTokenHint(state);
+  const hasToken = !!tokenHint || existsSync(TOKEN_PATH);
   const running = unitActive();
   const hostname = state.hostname || null;
   return {
     installed: !!bin,
     binary: bin,
     loggedIn: hasToken || !!state.tunnelId,
+    /** Client-safe placeholder only — never the full tunnel token. */
+    tokenHint,
     tunnelName: state.tunnelName || null,
     tunnelId: state.tunnelId || null,
     hostname,
@@ -195,6 +214,7 @@ export function configureCloudflareToken(input: {
     hostname: input.hostname?.trim() || loadState().hostname,
     tunnelName: input.tunnelName?.trim() || loadState().tunnelName || "homebase",
     installedAt: Date.now(),
+    tokenHint: secretDisplayHint(token),
   };
   saveState(state);
 

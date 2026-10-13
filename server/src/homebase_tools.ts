@@ -18,6 +18,14 @@ import { projectPublic, runAction, stopProject, tailLogs } from "./process";
 import { listSessions } from "./pty";
 import { restartHomebased, systemStatus } from "./system";
 import {
+  visionHotkey,
+  visionKey,
+  visionPointer,
+  visionScreenshot,
+  visionStatus,
+  visionType,
+} from "./vision";
+import {
   restartWireguardIface,
   startWireguard,
   stopWireguard,
@@ -54,11 +62,24 @@ export function wrapPrompt(
     `Prefer homebase_restart_homebased over a raw systemctl restart. ` +
     `Home Access panel widgets (buttons/toggles/sliders/gauges) use homebase_access_* tools ` +
     `or edit server/src/home_access.ts / the Home Access UI — leave the framework intact once wired. ` +
+    `Vision (Linux X11 desktop): use homebase_vision_screenshot then homebase_vision_click/type/hotkey ` +
+    `while the user has Armed desktop control in the Vision UI. Prefer Shell/Files/normal tools for ` +
+    `terminals and file edits — never drive GNOME Terminal or a GUI editor with the mouse. ` +
     `When the task needs planning vs implementing (or Ask/Debug), call homebase_propose_mode ` +
     `so the user can Switch/Stay mid-chat — do not only narrate a mode change. ` +
     `Answer the user message below in a normal concise voice.\n---\n` +
     text
   );
+}
+
+async function visionTool(
+  fn: () => Promise<Record<string, unknown>>,
+): Promise<string> {
+  try {
+    return json(await fn());
+  } catch (e) {
+    return json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+  }
 }
 
 type ToolFn = (args: Record<string, unknown>) => Promise<string> | string;
@@ -208,6 +229,36 @@ export function buildHomebaseTools(
         "List Home Access panel widgets (button/toggle/slider/gauge) and their hooks",
       parameters: { type: "object", properties: {} },
       execute: async () => json({ widgets: listAccessWidgets() }),
+    },
+    homebase_vision_status: {
+      description:
+        "Vision desktop status: X11 display, monitors, whether control is Armed, capture health. Linux only.",
+      parameters: { type: "object", properties: {} },
+      execute: async () => visionTool(() => visionStatus()),
+    },
+    homebase_vision_screenshot: {
+      description:
+        "Capture the Linux desktop (JPEG) via X11. Returns a filesystem path — Read that image " +
+        "before clicking. Works while Vision is disarmed (look-only). Prefer after each GUI action.",
+      parameters: {
+        type: "object",
+        properties: {
+          monitor: {
+            type: "number",
+            description: "0 = all displays / primary region; else monitor index",
+          },
+          maxWidth: { type: "number", description: "Max encode width (default 1280)" },
+          quality: { type: "number", description: "JPEG quality 30–85 (default 62)" },
+        },
+      },
+      execute: async (args) =>
+        visionTool(() =>
+          visionScreenshot({
+            monitor: args.monitor != null ? Number(args.monitor) : undefined,
+            maxWidth: args.maxWidth != null ? Number(args.maxWidth) : undefined,
+            quality: args.quality != null ? Number(args.quality) : undefined,
+          }),
+        ),
     },
   };
 
@@ -387,6 +438,73 @@ export function buildHomebaseTools(
             value: args.value,
           }),
         }),
+    };
+    tools.homebase_vision_click = {
+      description:
+        "Click or move the X11 pointer (requires Vision Armed). Use normalized x,y in 0..1 " +
+        "or px,py in monitor pixels. action=click|move|down|up|wheel. button: 0 left, 1 middle, 2 right.",
+      parameters: {
+        type: "object",
+        properties: {
+          x: { type: "number", description: "Normalized 0..1" },
+          y: { type: "number", description: "Normalized 0..1" },
+          px: { type: "number" },
+          py: { type: "number" },
+          action: { type: "string" },
+          button: { type: "number" },
+          deltaY: { type: "number", description: "For wheel" },
+          monitor: { type: "number" },
+        },
+      },
+      execute: async (args) =>
+        visionTool(() =>
+          visionPointer({
+            ...args,
+            action: String(args.action || "click"),
+          }),
+        ),
+    };
+    tools.homebase_vision_type = {
+      description:
+        "Type text into the focused X11 window (requires Vision Armed). ASCII/US-layout; " +
+        "for shell/files prefer Home Base Shell/Files tools instead of a GUI terminal.",
+      parameters: {
+        type: "object",
+        properties: { text: { type: "string" } },
+        required: ["text"],
+      },
+      execute: async (args) => visionTool(() => visionType(args)),
+    };
+    tools.homebase_vision_key = {
+      description:
+        "Press a key on the X11 display (requires Vision Armed). key: Enter, Escape, Tab, " +
+        "Backspace, super, ctrl, a-z, F1… action: press|down|up.",
+      parameters: {
+        type: "object",
+        properties: {
+          key: { type: "string" },
+          action: { type: "string" },
+        },
+        required: ["key"],
+      },
+      execute: async (args) => visionTool(() => visionKey(args)),
+    };
+    tools.homebase_vision_hotkey = {
+      description:
+        "Chord keys on X11 (requires Vision Armed). keys e.g. [\"ctrl\",\"c\"] or [\"super\",\"a\"] " +
+        "for GNOME Activities. Prefer this over clicking OS chrome when possible.",
+      parameters: {
+        type: "object",
+        properties: {
+          keys: {
+            type: "array",
+            items: { type: "string" },
+            description: 'e.g. ["super","a"] or ["ctrl","shift","t"]',
+          },
+        },
+        required: ["keys"],
+      },
+      execute: async (args) => visionTool(() => visionHotkey(args)),
     };
   }
 

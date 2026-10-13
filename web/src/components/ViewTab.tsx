@@ -120,8 +120,13 @@ function dist(a: { x: number; y: number }, b: { x: number; y: number }) {
   return Math.hypot(dx, dy)
 }
 
+export type ViewTabProps = {
+  /** Vision embed: auto-start stream, tighter chrome title, fill parent. */
+  embedded?: boolean
+}
+
 /** View — connect explicitly; maximize hides chrome; touch trackpad + zoom/pan. */
-export function ViewTab() {
+export function ViewTab({ embedded = false }: ViewTabProps = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const cursorElRef = useRef<HTMLDivElement>(null)
@@ -195,7 +200,7 @@ export function ViewTab() {
   })
   const longTimerRef = useRef(0)
 
-  const [wanted, setWanted] = useState(false)
+  const [wanted, setWanted] = useState(() => embedded)
   const [conn, setConn] = useState<WsConnState>('offline')
   const [error, setError] = useState('')
   const [preset, setPreset] = useState<QualityPreset>(() => loadQuality())
@@ -1327,7 +1332,9 @@ export function ViewTab() {
 
   return (
     <div
-      className={`h-full min-h-0 flex flex-col ${maximized ? 'hb-view-root-max' : 'hb-with-nav'}`}
+      className={`h-full min-h-0 flex flex-col ${
+        maximized ? 'hb-view-root-max' : embedded ? 'hb-view-embedded' : 'hb-with-nav'
+      }`}
       style={{ minHeight: '100%' }}
     >
       {/* Compact chrome: actions stay tappable; quality/display/mode live in Menu sheet */}
@@ -1346,7 +1353,9 @@ export function ViewTab() {
               </button>
             ) : (
               <div className="hb-view-toolbar-meta min-w-0">
-                <p className="text-xs font-semibold tracking-tight">View</p>
+                <p className="text-xs font-semibold tracking-tight">
+                  {embedded ? 'Desktop' : 'View'}
+                </p>
                 <p className="text-[0.65rem] text-mute truncate">
                   {wanted ? (
                     <>

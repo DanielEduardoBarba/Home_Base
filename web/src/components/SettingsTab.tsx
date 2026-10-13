@@ -47,6 +47,7 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
   const [pinMsg, setPinMsg] = useState('')
   const [pinBusy, setPinBusy] = useState(false)
   const [cursorConfigured, setCursorConfigured] = useState(false)
+  const [cursorHint, setCursorHint] = useState<string | null>(null)
   const [cursorKey, setCursorKey] = useState('')
   const [cursorMsg, setCursorMsg] = useState('')
   const [cursorBusy, setCursorBusy] = useState(false)
@@ -66,7 +67,10 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
       .catch(() => undefined)
     void api
       .cursorCredentials()
-      .then((s) => setCursorConfigured(s.configured))
+      .then((s) => {
+        setCursorConfigured(s.configured)
+        setCursorHint(s.hint)
+      })
       .catch(() => undefined)
   }, [])
 
@@ -545,13 +549,21 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
         <section className="hb-surface p-3.5 space-y-3">
           <h2 className="hb-label">Cursor API key</h2>
           <p className="text-xs text-mute">
-            {cursorConfigured ? 'Key is set and encrypted on this laptop.' : 'Required for Chat.'}
+            {cursorConfigured
+              ? cursorHint
+                ? `Stored key ${cursorHint} — encrypted on this laptop.`
+                : 'Key is set and encrypted on this laptop.'
+              : 'Required for Chat.'}
           </p>
           <input
             type="password"
             autoComplete="off"
             className="w-full rounded-[var(--radius-control)] bg-panel-2 border border-line px-3 py-2.5 text-sm font-mono"
-            placeholder={cursorConfigured ? 'Replace key…' : 'Paste key'}
+            placeholder={
+              cursorConfigured
+                ? cursorHint || 'Replace key…'
+                : 'Paste key'
+            }
             value={cursorKey}
             onChange={(e) => setCursorKey(e.target.value)}
           />
@@ -565,8 +577,9 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
                 setCursorMsg('')
                 void api
                   .setCursorCredentials(cursorKey.trim())
-                  .then(() => {
+                  .then((s) => {
                     setCursorConfigured(true)
+                    setCursorHint(s.hint)
                     setCursorKey('')
                     setCursorMsg('Saved')
                   })
@@ -587,6 +600,7 @@ export function SettingsTab({ onSignedOut }: { onSignedOut: () => void }) {
                     .clearCursorCredentials()
                     .then(() => {
                       setCursorConfigured(false)
+                      setCursorHint(null)
                       setCursorMsg('Cleared')
                     })
                     .catch((e) => setCursorMsg(e instanceof Error ? e.message : String(e)))

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { AppsTab } from './components/AppsTab'
 import { HomeAccessTab } from './components/HomeAccessTab'
 import { HomeDashboard } from './components/HomeDashboard'
+import { HomeVisionTab } from './components/HomeVisionTab'
 import { Login } from './components/Login'
 import { NotificationCenter } from './components/NotificationCenter'
 import { PullToRefresh } from './components/PullToRefresh'
@@ -485,6 +486,10 @@ function AuthedApp() {
               unlockAudio()
               goArea('access')
             }}
+            onOpenVision={() => {
+              unlockAudio()
+              goArea('vision')
+            }}
           />
         </main>
         <ToastStack />
@@ -527,6 +532,29 @@ function AuthedApp() {
         )}
         <main className="flex-1 min-h-0 overflow-hidden">
           <HomeAccessTab
+            projects={projects}
+            selectedId={selectedId}
+            onSelect={selectProject}
+            onHome={() => goArea('home')}
+          />
+        </main>
+        <ToastStack />
+        <NotificationCenter />
+      </div>
+    )
+  }
+
+  if (area === 'vision') {
+    return (
+      <div className="hb-app-shell h-full flex flex-col">
+        <PullToRefresh onRefresh={refresh} />
+        {refreshing && (
+          <div className="hb-refresh-overlay" role="status" aria-live="polite" aria-label="Refreshing">
+            <div className="hb-spinner" />
+          </div>
+        )}
+        <main className="flex-1 min-h-0 overflow-hidden">
+          <HomeVisionTab
             projects={projects}
             selectedId={selectedId}
             onSelect={selectProject}

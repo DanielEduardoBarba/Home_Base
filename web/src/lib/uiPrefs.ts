@@ -15,7 +15,7 @@ const VALID_TABS: Tab[] = [
   'settings',
 ]
 
-const VALID_AREAS: AppArea[] = ['home', 'homework', 'access', 'agent']
+const VALID_AREAS: AppArea[] = ['home', 'homework', 'access', 'agent', 'vision']
 
 const AGENT_RECENT_KEY = 'hb-agent-recent-dirs'
 const AGENT_RECENT_ABS_KEY = 'hb-agent-recent-abs'

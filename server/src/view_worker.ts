@@ -9,6 +9,7 @@ import {
   domButtonToX,
   packFrameHeader,
   resizeRgba,
+  resolveKeyName,
   type MonitorInfo,
 } from "./view_x11";
 
@@ -267,7 +268,44 @@ function dispatch(
       const code = String(msg.code || "");
       if (action === "down") xin.key(key, code, true);
       else if (action === "up") xin.key(key, code, false);
+      else if (action === "press") {
+        xin.key(key, code, true);
+        xin.key(key, code, false);
+      }
       return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+  if (cmd === "type") {
+    try {
+      xin.open();
+      const text = String(msg.text ?? "");
+      const result = xin.typeText(text);
+      return { ok: true, ...result };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+  if (cmd === "hotkey") {
+    try {
+      xin.open();
+      const keys = Array.isArray(msg.keys) ? msg.keys : [];
+      const resolved: Array<{ key: string; code: string }> = [];
+      for (const item of keys) {
+        if (item && typeof item === "object") {
+          const o = item as { key?: string; code?: string };
+          const key = String(o.key || "");
+          const code = String(o.code || o.key || "");
+          if (key || code) resolved.push({ key: key || code, code: code || key });
+        } else {
+          const r = resolveKeyName(String(item || ""));
+          if (r) resolved.push(r);
+        }
+      }
+      if (!resolved.length) return { ok: false, error: "no keys" };
+      xin.hotkey(resolved);
+      return { ok: true, keys: resolved.length };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
