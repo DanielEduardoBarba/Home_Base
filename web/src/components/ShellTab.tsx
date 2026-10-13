@@ -1,3 +1,4 @@
+import dynamic from 'next/dynamic'
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { api } from '../lib/api'
 import { useSceneRefresh } from '../lib/sceneRefresh'
@@ -11,7 +12,12 @@ import { useVisibleInterval } from '../lib/visibility'
 import { HoldButton } from './HoldButton'
 import { IconBtn } from './IconBtn'
 import { ProjectSelect } from './ProjectSelect'
-import { TerminalView } from './Terminal'
+
+/** xterm’s UMD build reads `self` at import time; keep it out of static export. */
+const TerminalView = dynamic(() => import('./Terminal').then((m) => m.TerminalView), {
+  ssr: false,
+  loading: () => <div className="flex-1 min-h-0" />,
+})
 
 /**
  * Shell = interactive PTY + managed sessions.
