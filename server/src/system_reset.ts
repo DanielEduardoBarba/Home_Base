@@ -20,6 +20,7 @@ import {
   RUNTIME_DIR,
   ensureRuntimeDirs,
 } from "./config";
+import { clearLegal } from "./legal_state";
 import { clearOnboarding } from "./onboarding_state";
 import { clearCursorApiKey } from "./secrets_vault";
 
@@ -36,6 +37,7 @@ const KEEP_SOFT = new Set([
   "cloudflare_tunnel.json",
   "cloudflare_token.enc",
   "onboarding.json",
+  "legal.json",
   "server_identity.json",
   "logs",
 ]);
@@ -109,6 +111,7 @@ export function hardReset(): { ok: boolean; removed: number } {
   removed += wipeDirContents(join(RUNTIME_DIR, "logs"));
   clearCursorApiKey();
   clearOnboarding();
+  clearLegal();
   for (const p of [AUTH_PATH, JWT_SECRET_PATH]) {
     if (existsSync(p)) {
       try {

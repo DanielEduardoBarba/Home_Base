@@ -12,10 +12,11 @@ type Props = {
   onOpenAccess: () => void
   onOpenAgent: () => void
   onOpenVision: () => void
+  onOpenSettings: () => void
 }
 
 /**
- * Post-login landing — Agent, Work, Access, Vision.
+ * Post-login landing — Agent, Work, Access, Vision, Settings.
  */
 export function HomeDashboard({
   version,
@@ -26,6 +27,7 @@ export function HomeDashboard({
   onOpenAccess,
   onOpenAgent,
   onOpenVision,
+  onOpenSettings,
 }: Props) {
   const { displayName } = useServerIdentity()
   const linkLabel =
@@ -96,6 +98,17 @@ export function HomeDashboard({
             <span className="hb-home-card-label">Vision</span>
             <span className="hb-home-card-desc">
               Live desktop + chat — Arm to let the agent drive mouse and keyboard on Ubuntu X11.
+            </span>
+            <span className="hb-home-card-go">Open →</span>
+          </button>
+          <button
+            type="button"
+            className="hb-home-card hb-home-card--settings"
+            onClick={onOpenSettings}
+          >
+            <span className="hb-home-card-label">Settings</span>
+            <span className="hb-home-card-desc">
+              Theme, PIN, sudo vault, Cursor key, VPN, tunnel, storage, and legal — focused scenes.
             </span>
             <span className="hb-home-card-go">Open →</span>
           </button>

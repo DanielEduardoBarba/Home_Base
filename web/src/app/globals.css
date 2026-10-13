@@ -262,6 +262,11 @@ html[data-safe-top='1'] {
   padding: 1.25rem 1rem calc(6.5rem + env(safe-area-inset-bottom));
 }
 
+/* Top-level areas without the Work bottom dock (e.g. Settings). */
+.hb-page--no-nav {
+  padding-bottom: calc(1.75rem + env(safe-area-inset-bottom, 0px));
+}
+
 @media (min-width: 768px) {
   .hb-page {
     max-width: 48rem;
@@ -1549,6 +1554,45 @@ html[data-hb-keyboard] .hb-at-picker {
   background: var(--hb-overlay);
 }
 
+/*
+ * Modal host pinned to the visual viewport.
+ * With soft keyboard open, --hb-app-height / --hb-vv-top shrink to the visible
+ * area so the sheet stays centered above the keyboard (not under it).
+ */
+.hb-vv-overlay {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: var(--hb-vv-top, 0px);
+  height: var(--hb-app-height, 100dvh);
+  max-height: var(--hb-app-height, 100dvh);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: max(0.75rem, env(safe-area-inset-top, 0px)) 1rem
+    max(0.75rem, env(safe-area-inset-bottom, 0px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+.hb-vv-overlay-panel {
+  width: 100%;
+  max-width: 26rem;
+  max-height: 100%;
+  margin: auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+html[data-hb-keyboard] .hb-vv-overlay-panel {
+  /* Panel fills the visible area above the keyboard; inputs scroll into view */
+  max-height: calc(var(--hb-app-height, 100dvh) - 0.75rem);
+}
+
 .hb-refresh-overlay {
   position: fixed;
   inset: 0;
@@ -2468,6 +2512,7 @@ html[data-hb-keyboard] .hb-chat-composer {
 
 /* Guarantee the transcript claims leftover height above status + composer */
 .hb-chat-dock > .flex-1,
+.hb-chat-dock > .flex-1 > .flex-1,
 .hb-with-nav > .flex-1 {
   flex: 1 1 0;
   min-height: 0;
@@ -3008,6 +3053,10 @@ html.hb-view-max .hb-status-bar {
 
 .hb-home-card--vision .hb-home-card-go {
   color: var(--hb-amber, #d4a017);
+}
+
+.hb-home-card--settings .hb-home-card-go {
+  color: var(--hb-mute);
 }
 
 .hb-vision {
@@ -4023,5 +4072,53 @@ html.hb-view-max .hb-status-bar {
   justify-content: flex-end;
   gap: 0.5rem;
   margin-top: 0.35rem;
+}
+
+/* Settings hub → subscene list */
+.hb-settings-group {
+  border: 1px solid color-mix(in srgb, var(--hb-line) 90%, transparent);
+  background: color-mix(in srgb, var(--hb-panel) 94%, var(--hb-surface-tint));
+  border-radius: var(--radius-surface);
+  overflow: hidden;
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--hb-text) 4%, transparent) inset,
+    0 10px 28px rgba(0, 0, 0, 0.1);
+}
+
+.hb-settings-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.85rem 1rem;
+  min-height: 3.25rem;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--hb-line) 70%, transparent);
+  transition: background 0.15s ease;
+}
+
+.hb-settings-row:last-child {
+  border-bottom: 0;
+}
+
+.hb-settings-row:hover,
+.hb-settings-row:focus-visible {
+  background: color-mix(in srgb, var(--hb-panel-2) 70%, transparent);
+  outline: none;
+}
+
+.hb-settings-row:active {
+  background: color-mix(in srgb, var(--hb-panel-2) 90%, transparent);
+}
+
+.hb-settings-chevron {
+  flex-shrink: 0;
+  color: var(--hb-mute);
+  font-size: 1.25rem;
+  line-height: 1;
+  font-weight: 400;
+  opacity: 0.7;
 }
 

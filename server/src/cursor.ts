@@ -7,6 +7,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -20,6 +21,7 @@ import {
 } from "./approvals";
 import { listDir, readFile } from "./files";
 import { buildHomebaseTools, wrapPrompt } from "./homebase_tools";
+import { recordUsageFromUpdate } from "./usage_stats";
 import {
   allowSudoUse,
   clearPersistentSudo,
@@ -290,6 +292,20 @@ function unmapAgentId(projectId: string, chatId: string): string | null {
   return agentId;
 }
 
+/** Drop every agents.json key belonging to a project (current + legacy separators). */
+function stripAgentIdsForProject(projectId: string): number {
+  const ids = loadAgentIds();
+  let n = 0;
+  for (const k of Object.keys(ids)) {
+    if (k.startsWith(`${projectId}::`) || k.startsWith(`${projectId}:`)) {
+      delete ids[k];
+      n += 1;
+    }
+  }
+  if (n) saveAgentIds(ids);
+  return n;
+}
+
 function resolveChatCwd(projectId: string, tabCwd?: string | null): string {
   const project = loadProjects().get(projectId);
   const raw = (tabCwd || "").trim();
@@ -484,6 +500,46 @@ export function deleteChat(
   })();
 
   return { ok: true, deleted, activeId };
+}
+
+/**
+ * Wipe chat workspace state for a removed project: tabs/agents, disk file, subscribers.
+ * Does not touch the app repo on disk. Safe to call when nothing exists yet.
+ */
+export function purgeProjectWorkspace(projectId: string): {
+  chatsDeleted: number;
+  agentsUnmapped: number;
+} {
+  const id = String(projectId || "").trim();
+  if (!id) return { chatsDeleted: 0, agentsUnmapped: 0 };
+
+  const pending = saveTimers.get(id);
+  if (pending) {
+    clearTimeout(pending);
+    saveTimers.delete(id);
+  }
+
+  // Prefer per-chat delete so live runs abort and SDK agents dispose in background.
+  let chatsDeleted = 0;
+  if (workspaces.has(id) || existsSync(chatPath(id))) {
+    const ws = loadWorkspace(id);
+    for (const tab of [...ws.tabs]) {
+      if (deleteChat(id, tab.id).deleted) chatsDeleted += 1;
+    }
+  }
+
+  const agentsUnmapped = stripAgentIdsForProject(id);
+
+  workspaces.delete(id);
+  subscribers.delete(id);
+  try {
+    const path = chatPath(id);
+    if (existsSync(path)) unlinkSync(path);
+  } catch {
+    /* ignore */
+  }
+
+  return { chatsDeleted, agentsUnmapped };
 }
 
 export function cursorConfigured(): boolean {
@@ -2021,6 +2077,15 @@ async function startRun(
       mode: opts.mode === "plan" ? "plan" : "agent",
       onDelta: async ({ update }: { update: Record<string, unknown> }) => {
         if (ac.signal.aborted) return;
+        try {
+          recordUsageFromUpdate(update, {
+            projectId,
+            chatId: opts.chatId,
+            model: opts.model,
+          });
+        } catch {
+          /* ignore */
+        }
         const mapped = mapDeltaUpdate(update);
         if (!mapped) return;
         mapped.chatId = opts.chatId;

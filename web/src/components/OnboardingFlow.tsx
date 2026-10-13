@@ -163,6 +163,10 @@ export function OnboardingFlow({ onDone }: Props) {
                 Your project is ready. A few quick steps and you can chat, run apps, and
                 reach this laptop from your phone.
               </p>
+              <p className="text-xs text-mute leading-relaxed border border-line rounded-[var(--radius-control)] p-3">
+                You already accepted the Terms of Use and Privacy Policy. Home Base can
+                control shell, files, and screen — use remains AS IS at your own risk.
+              </p>
               <button
                 type="button"
                 className="hb-btn hb-btn-primary w-full !min-h-12 text-base"

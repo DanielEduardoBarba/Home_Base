@@ -3,7 +3,8 @@
 Control your laptop from your phone — run apps, shell, files, and chat with local Cursor agents.
 
 **License:** MIT · [DevCon1 Solutions](https://devcon1solutions.com) · daniel@devcon1solutions.com  
-**Use at your own risk.** Home Base can control shell, files, and screen. Provided AS IS with no liability.
+**Use at your own risk.** Home Base can control shell, files, and screen. Provided AS IS with no liability.  
+**Legal:** [Terms of Use](docs/TERMS.md) · [Privacy Policy](docs/PRIVACY.md) — the app blocks use until you accept.
 
 ---
 
@@ -26,7 +27,7 @@ That’s it.
 
 ### Phone access (in the app)
 
-Pick one during setup (or later in More):
+Pick one during setup (or later in Settings):
 
 | Choice | What you do |
 |--------|-------------|
@@ -64,10 +65,10 @@ Safe to run again. It won’t wipe other projects.
 |------|---------|
 | **Home** | Dashboard |
 | **Home Agent** | Simple project chat |
-| **Homework** | Full control plane (Apps, Work, Chat, Shell, Files, View, Logs, More) |
+| **Homework** | Full control plane (Apps, Work, Chat, Shell, Files, View, Logs) |
+| **Settings** | Theme, PIN, Cursor key, WireGuard, Cloudflare, reset / erase, About |
 | **Home Access** | House widgets (buttons / toggles / sliders / gauges) |
 
-**More / Settings:** theme, PIN, Cursor key, WireGuard, Cloudflare Tunnel, replay setup, reset / erase, About & legal.
 
 ---
 
@@ -86,6 +87,7 @@ Registry: `config/projects.json` (gitignored). Presets live in `config/presets/`
 
 ## Auth & security
 
+- Terms of Use + Privacy Policy must be accepted (install-level) before bootstrap / continued use
 - Password (localhost only to set/change) → JWT (24h)
 - Optional App PIN (server-side lock)
 - Cursor API key stored **encrypted** in `.runtime/` (set in the app)
@@ -127,7 +129,7 @@ sudo systemctl status|restart homebased
 | Symptom | Try |
 |---------|-----|
 | Can’t reach from phone | VPN up? Tunnel running? Prefer WireGuard IP or Cloudflare HTTPS URL |
-| Chat says key missing | More → Cursor API key |
+| Chat says key missing | Settings → Cursor API key |
 | Session expired | Sign in again (24h TTL or password changed) |
 | Deploy on Mac fails | Expected — use `./build.sh --run` on Mac; deploy on Linux |
 

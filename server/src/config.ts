@@ -3,6 +3,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -213,6 +214,10 @@ export function upsertProjectFromInput(input: {
 }): Project {
   const abs = resolve(String(input.path || "").trim());
   if (!abs) throw new Error("path required");
+  if (!abs.startsWith("/")) throw new Error("path must be absolute");
+  if (!existsSync(abs) || !statSync(abs).isDirectory()) {
+    throw new Error(`path does not exist or is not a directory: ${abs}`);
+  }
   let raw: Record<string, unknown>;
   if (input.preset) {
     raw = { ...loadPreset(input.preset) };

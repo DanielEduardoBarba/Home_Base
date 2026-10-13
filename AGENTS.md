@@ -28,17 +28,17 @@ SPA fetch/WebSocket paths are always relative (`/api/...`, `/ws/...` via `locati
 
 ## UI areas (after login)
 
-**Home** dashboard → **Home Agent** (streamlined chat) · **Homework** (full control plane) · **Home Access** (house panel) · **Vision** (live desktop + AI control).
+**Home** dashboard → **Home Agent** · **Homework** (Work) · **Home Access** · **Vision** · **Settings**.
 
 ### Homework tabs
 
-Apps · **Work** · Chat · Shell · Files · **View** · Logs · **More/Settings**. Alerts live in the status bar (host/live). Status bar **Home** returns to the dashboard.
+Apps · **Work** · Chat · Shell · Files · **View** · Logs. **Settings** is its own Home dashboard card (not in the Work dock). Alerts live in the status bar (host/live). Status bar **Home** returns to the dashboard.
 
-- **Work** — switch Apps / Shell / Files in one workspace with a bottom-right chat dock (Cursor-like). Chat can present a shell or file into the scene.
+- **Work** — switch Apps / Shell / Files in one workspace with a bottom-right chat dock (Cursor-like). File/shell present is click-to-open only (no auto-jump while the agent runs).
 - **Chat** — full-page agent; same engine as the Work dock; can jump into Work to show Apps/Shell/Files.
 - **Shell** — standalone PTY + session attach. Under systemd root, Shell/Run/Expo PTYs `setpriv` to the seat user and load that user’s login+interactive env (nvm/pnpm/cargo) so they match a native laptop terminal.
 - **View** — JWT-gated live laptop screen (`/ws/view`) with pointer/keyboard; Bun seat-user `--view-worker` (libX11 `XGetImage` + XTest via `bun:ffi`). Root systemd uses setpriv/runuser to the seat owner (cannot open the user display as root). Explicit Connect/Disconnect; maximize mode; adaptive JPEG. Capture runs only while connected.
-- Alerts bell in the thin top status bar opens a top→bottom near-full inbox; History is a right drawer. Chat supports English speech→text; Cursor done pings toast/sound and optional browser notifications. More: theme, PIN, Cursor key, WireGuard / Cloudflare, replay setup, reset/erase, Share/password, About/legal.
+- Alerts bell in the thin top status bar opens a top→bottom near-full inbox; History is a right drawer. Chat supports English speech→text; Cursor done pings toast/sound and optional browser notifications. Home → **Settings** is a hub of grouped rows that drill into focused sub-scenes (Appearance, PIN, Sudo vault, Cursor key, WireGuard / Cloudflare, Storage, About/legal, etc.).
 
 ### Home Agent
 
@@ -50,7 +50,7 @@ Panel of **button / toggle / slider / gauge** widgets backed by `/api/home-acces
 
 ### Vision
 
-Live laptop screen (same `/ws/view` X11 worker) plus a Chat dock. **Arm** (JWT, default 15m) unlocks AI mouse/keyboard via `homebase_vision_*` tools; disarmed is look-only (screenshot/status). Linux X11 / XWayland only — not on Mac. Prefer Shell/Files for terminals and file edits; use Vision for GUI apps and desktop navigation. Screenshots under `.runtime/vision/`. See `.cursor/rules/vision.mdc`.
+Live laptop screen (same `/ws/view` X11 worker) plus a Chat dock. **Arm** (JWT, default 15m) unlocks AI mouse/keyboard via `homebase_vision_*` tools; disarmed is look-only (screenshot/status). Linux X11 / XWayland only — not on Mac. Chat cwd is seat-user `~/.homebase` (created on demand). Prefer GUI apps via Vision; use Shell/Files/CLI when that is clearly better. Screenshots under `.runtime/vision/`. See `.cursor/rules/vision.mdc`.
 
 ### Chat persistence
 
@@ -72,6 +72,7 @@ Committed presets: `config/presets/example.json` and `config/presets/homebase.js
 
 ## Security
 
+- Terms of Use + Privacy Policy (`docs/TERMS.md`, `docs/PRIVACY.md`, in-app) — install-level accept in `.runtime/legal.json`; UI blocks Login/app until current `LEGAL_DOC_VERSION` is accepted; bootstrap refuses without it
 - Password (set/changed only on localhost) → JWT session (24h TTL) in `localStorage`
 - Password stored as scrypt hash in `.runtime/auth.json`; JWT HMAC key in `.runtime/jwt_secret`
 - `authEpoch` in `auth.json` is embedded in JWTs (`ae`); password rewrite bumps epoch and invalidates old sessions

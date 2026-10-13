@@ -1,6 +1,5 @@
 import type { Project } from "./config";
 import {
-  deleteProject,
   listPresets,
   loadProjects,
   readVersion,
@@ -18,6 +17,8 @@ import { projectPublic, runAction, stopProject, tailLogs } from "./process";
 import { listSessions } from "./pty";
 import { restartHomebased, systemStatus } from "./system";
 import {
+  VISION_GUIDANCE,
+  ensureVisionWorkspace,
   visionHotkey,
   visionKey,
   visionPointer,
@@ -51,6 +52,21 @@ export function wrapPrompt(
   const name = p?.name || projectId;
   const path = p?.path || "?";
   const cwdBit = opts.cwd ? ` · cwd ${opts.cwd}` : "";
+  let visionWorkspace = "";
+  try {
+    visionWorkspace = ensureVisionWorkspace();
+  } catch {
+    visionWorkspace = "";
+  }
+  const cwdNorm = (opts.cwd || "").replace(/\/+$/, "");
+  const inVisionWs =
+    Boolean(visionWorkspace) &&
+    (cwdNorm === visionWorkspace || cwdNorm.endsWith("/.homebase"));
+  const visionBit = inVisionWs
+    ? `Vision workspace chat (cwd ${visionWorkspace || "~/.homebase"}): ${VISION_GUIDANCE} ` +
+      `Use homebase_vision_screenshot then click/type/hotkey while Armed. `
+    : `Vision (Linux X11 desktop): use homebase_vision_screenshot then homebase_vision_click/type/hotkey ` +
+      `while the user has Armed desktop control in the Vision UI. ${VISION_GUIDANCE} `;
   return (
     `${CONTEXT_MARKER}\n` +
     `Private metadata (do not quote, paraphrase, or repeat):\n` +
@@ -62,9 +78,7 @@ export function wrapPrompt(
     `Prefer homebase_restart_homebased over a raw systemctl restart. ` +
     `Home Access panel widgets (buttons/toggles/sliders/gauges) use homebase_access_* tools ` +
     `or edit server/src/home_access.ts / the Home Access UI — leave the framework intact once wired. ` +
-    `Vision (Linux X11 desktop): use homebase_vision_screenshot then homebase_vision_click/type/hotkey ` +
-    `while the user has Armed desktop control in the Vision UI. Prefer Shell/Files/normal tools for ` +
-    `terminals and file edits — never drive GNOME Terminal or a GUI editor with the mouse. ` +
+    visionBit +
     `When the task needs planning vs implementing (or Ask/Debug), call homebase_propose_mode ` +
     `so the user can Switch/Stay mid-chat — do not only narrate a mode change. ` +
     `Answer the user message below in a normal concise voice.\n---\n` +
@@ -297,15 +311,17 @@ export function buildHomebaseTools(
       },
     };
     tools.homebase_project_delete = {
-      description: "Remove a project from Home Base (does not delete files on disk)",
+      description:
+        "Remove a project from Home Base: stop sessions/ports, wipe chat runtime, drop registry entry (does not delete files on disk)",
       parameters: {
         type: "object",
         properties: { projectId: { type: "string" } },
         required: ["projectId"],
       },
       execute: async (args) => {
-        const id = String(args.projectId || "");
-        return json({ ok: deleteProject(id), id });
+        // Dynamic import avoids a static cycle (cursor → homebase_tools).
+        const { removeRegisteredProject } = await import("./project_remove");
+        return json(removeRegisteredProject(String(args.projectId || "")));
       },
     };
     tools.homebase_run_action = {
@@ -466,8 +482,8 @@ export function buildHomebaseTools(
     };
     tools.homebase_vision_type = {
       description:
-        "Type text into the focused X11 window (requires Vision Armed). ASCII/US-layout; " +
-        "for shell/files prefer Home Base Shell/Files tools instead of a GUI terminal.",
+        "Type text into the focused X11 window (requires Vision Armed). ASCII/US-layout. " +
+        "Prefer GUI apps via Vision; use Shell/Files/CLI when that is clearly better.",
       parameters: {
         type: "object",
         properties: { text: { type: "string" } },

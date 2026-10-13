@@ -22,6 +22,7 @@ type ArmInfo = {
   display?: string
   screenW?: number
   screenH?: number
+  workspace?: string
 }
 
 function formatRemain(sec: number): string {
@@ -34,6 +35,7 @@ function formatRemain(sec: number): string {
 
 /**
  * Vision — live X11 desktop + chat dock. Arm unlocks AI mouse/keyboard tools.
+ * Chat cwd defaults to the seat-user ~/.homebase workspace.
  */
 export function HomeVisionTab({
   projects,
@@ -56,6 +58,7 @@ export function HomeVisionTab({
   })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [workspace, setWorkspace] = useState('')
 
   function setDockOpen(open: boolean) {
     writeDockOpen(open)
@@ -74,7 +77,9 @@ export function HomeVisionTab({
         display: st.display,
         screenW: st.screenW,
         screenH: st.screenH,
+        workspace: st.workspace,
       })
+      if (st.workspace) setWorkspace(String(st.workspace))
       setError('')
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -111,6 +116,9 @@ export function HomeVisionTab({
     projects.find((p) => p.id === selectedId) ||
     projects.find((p) => p.id === 'homebase') ||
     projects[0]
+  const wsLabel = workspace
+    ? `~/.homebase (${workspace.split('/').filter(Boolean).slice(-2).join('/')})`
+    : '~/.homebase'
 
   return (
     <div className="hb-vision h-full min-h-0 flex flex-col">
@@ -146,6 +154,12 @@ export function HomeVisionTab({
                 look-only until you Arm
               </>
             )}
+            {workspace ? (
+              <>
+                <span className="hb-status-sep">·</span>
+                <span className="font-mono text-[11px]">{wsLabel}</span>
+              </>
+            ) : null}
           </p>
         </div>
         <div className="hb-vision-bar-actions shrink-0">
@@ -203,18 +217,27 @@ export function HomeVisionTab({
         </div>
 
         <p className="hb-vision-hint shrink-0">
-          Chat drives the desktop with <code>homebase_vision_*</code> while Armed. Use Shell/Files
-          for terminals and editing — not the GNOME Terminal app.
+          Chat starts in <code>~/.homebase</code>. Prefer GUI apps via{' '}
+          <code>homebase_vision_*</code> while Armed; use Shell/Files/CLI when that is clearly
+          better.
         </p>
 
-        <ChatPanel
-          projects={projects}
-          selectedId={project?.id || selectedId}
-          onSelect={onSelect}
-          variant="dock"
-          dockOpen={dockOpen}
-          onDockOpenChange={setDockOpen}
-        />
+        {workspace ? (
+          <ChatPanel
+            projects={projects}
+            selectedId={project?.id || selectedId}
+            onSelect={onSelect}
+            variant="dock"
+            dockOpen={dockOpen}
+            onDockOpenChange={setDockOpen}
+            defaultCwd={workspace}
+            defaultCwdLabel="Vision (~/.homebase)"
+          />
+        ) : (
+          <p className="hb-vision-hint shrink-0 text-mute text-xs">
+            Preparing Vision workspace (~/.homebase)…
+          </p>
+        )}
       </div>
     </div>
   )

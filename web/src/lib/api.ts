@@ -317,7 +317,55 @@ export const api = {
       canBootstrap: boolean
       jwtTtlSec: number
       lockout: { locked: boolean; retryAfter: number; failCount: number }
+      legal?: {
+        version: string
+        accepted: boolean
+        acceptedVersion: string | null
+        acceptedAt: number | null
+      }
     }>('/api/auth/status'),
+  legalStatus: () =>
+    fetch('/api/legal')
+      .then(async (res) => {
+        const body = await res.json().catch(() => ({}))
+        if (!res.ok) {
+          const err = new Error(
+            typeof body.detail === 'string' ? body.detail : 'Legal status failed',
+          ) as Error & { status?: number }
+          err.status = res.status
+          throw err
+        }
+        return body as {
+          version: string
+          accepted: boolean
+          acceptedVersion: string | null
+          acceptedAt: number | null
+        }
+      }),
+  acceptLegal: (version: string) =>
+    fetch('/api/legal/accept', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version }),
+    }).then(async (res) => {
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        const err = new Error(
+          typeof body.detail === 'string'
+            ? body.detail
+            : JSON.stringify(body.detail || body),
+        ) as Error & { status?: number; detail?: unknown }
+        err.status = res.status
+        err.detail = body.detail || body
+        throw err
+      }
+      return body as {
+        version: string
+        accepted: boolean
+        acceptedVersion: string | null
+        acceptedAt: number | null
+      }
+    }),
   login: async (password: string) => {
     const res = await fetch('/api/login', {
       method: 'POST',
@@ -417,7 +465,13 @@ export const api = {
       body: JSON.stringify(body),
     }),
   deleteProject: (id: string) =>
-    request<{ ok: boolean; id: string }>(`/api/projects/${encodeURIComponent(id)}`, {
+    request<{
+      ok: boolean
+      id: string
+      killedSessions?: string[]
+      chatsDeleted?: number
+      agentsUnmapped?: number
+    }>(`/api/projects/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
   cursorCredentials: () =>
@@ -431,6 +485,83 @@ export const api = {
     request<{ configured: boolean; hint: string | null }>('/api/cursor/credentials', {
       method: 'DELETE',
     }),
+  usage: (opts?: { refresh?: boolean }) =>
+    request<{
+      generatedAt: number
+      projects: number
+      homebase: {
+        chats: number
+        projectsWithChats: number
+        userMessages: number
+        assistantMessages: number
+        thinkingMessages: number
+        thinkingMs: number
+        toolCalls: number
+        toolErrors: number
+        fileEdits: number
+        imagesAttached: number
+        models: { id: string; chats: number }[]
+        modes: { id: string; chats: number }[]
+        byDay: {
+          day: string
+          userMessages: number
+          assistantMessages: number
+          thinkingMs: number
+          toolCalls: number
+          inputTokens: number
+          outputTokens: number
+        }[]
+        tokens: {
+          input: number
+          output: number
+          cacheRead: number
+          cacheWrite: number
+          total: number
+          events: number
+          ledgerOnly: boolean
+        }
+        oldestAt: number | null
+        newestAt: number | null
+      }
+      cursor: {
+        ok: boolean
+        configured: boolean
+        keyHint: string | null
+        me: {
+          apiKeyName?: string
+          createdAt?: string
+          userId?: number
+          userEmail?: string
+          userFirstName?: string
+          userLastName?: string
+        } | null
+        meError?: string
+        billing: {
+          available: boolean
+          error?: string
+          spendCents?: number
+          overallSpendCents?: number
+          members?: Array<{
+            email?: string
+            name?: string
+            spendCents?: number
+            overallSpendCents?: number
+          }>
+          events?: {
+            count: number
+            chargedCents: number
+            inputTokens: number
+            outputTokens: number
+            cacheReadTokens: number
+            cacheWriteTokens: number
+            byModel: { model: string; count: number; chargedCents: number }[]
+          }
+          range?: { startMs: number; endMs: number }
+        } | null
+        dashboardUrl: string
+        note: string
+      }
+    }>(`/api/usage${opts?.refresh ? '?refresh=1' : ''}`),
   onboarding: () =>
     request<{
       complete: boolean
@@ -733,6 +864,8 @@ export const api = {
       screenH?: number
       error?: string | null
       guidance?: string
+      /** Seat-user ~/.homebase — default Vision chat cwd */
+      workspace?: string
     }>('/api/vision/status'),
   visionArmStatus: () =>
     request<{

@@ -3,7 +3,7 @@ import { api } from '../lib/api'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 import type { ActionDef, Project } from '../lib/types'
 import { useServerIdentity } from '../lib/serverIdentity'
-import { AddProjectWizard } from './AddProjectWizard'
+import { AddProjectWizard, type AddProjectResult } from './AddProjectWizard'
 import { BrandTitle } from './BrandTitle'
 import { HoldButton } from './HoldButton'
 import { IconBtn } from './IconBtn'
@@ -49,6 +49,7 @@ export function AppsTab({
   onSelect,
   onRefresh,
   onOpenShell,
+  onAskAiWire,
   embedded = false,
 }: {
   projects: Project[]
@@ -56,6 +57,8 @@ export function AppsTab({
   onSelect: (id: string) => void
   onRefresh: () => void | Promise<void>
   onOpenShell: (sessionIds?: string | string[]) => void
+  /** After Add app with Chat wiring — open Work dock / Cursor. */
+  onAskAiWire?: (projectId: string) => void
   /** When true (Work tab), skip brand header — Work chrome owns project. */
   embedded?: boolean
 }) {
@@ -132,6 +135,33 @@ export function AppsTab({
     }
   }
 
+  async function doRemove() {
+    if (!project) return
+    if (project.id === 'homebase') {
+      setMsg('Home Base app cannot be removed')
+      return
+    }
+    setBusy('Remove')
+    setMsg('')
+    try {
+      await api.deleteProject(project.id)
+      const next = projects.find((p) => p.id !== project.id)
+      if (next) onSelect(next.id)
+      setMsg('Removed from Home Base')
+      await onRefresh()
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy('')
+    }
+  }
+
+  async function handleAdded(result: AddProjectResult) {
+    onSelect(result.projectId)
+    await onRefresh()
+    if (result.askAi) onAskAiWire?.(result.projectId)
+  }
+
   async function doRun(action: ActionDef) {
     if (!project) return
     setBusy(action.label)
@@ -189,9 +219,8 @@ export function AppsTab({
         <AddProjectWizard
           open={addOpen}
           onClose={() => setAddOpen(false)}
-          onAdded={(id) => {
-            onSelect(id)
-            void onRefresh()
+          onAdded={(result) => {
+            void handleAdded(result)
           }}
         />
       </div>
@@ -218,7 +247,21 @@ export function AppsTab({
           <div className="space-y-1">
             <div className="flex items-center justify-between gap-2">
               <span className="hb-label">App</span>
-              <IconBtn label="Add app" onClick={() => setAddOpen(true)} className="!w-9 !h-9" />
+              <div className="flex items-center gap-1.5">
+                {project.id !== 'homebase' && (
+                  <HoldButton
+                    label={busy === 'Remove' ? '…' : 'Remove'}
+                    holdLabel="Hold…"
+                    holdMs={1200}
+                    tone="danger"
+                    disabled={!!busy}
+                    className="!min-h-9 !px-3 text-xs shrink-0"
+                    title="Hold to remove app from Home Base (keeps files on disk)"
+                    onConfirm={() => void doRemove()}
+                  />
+                )}
+                <IconBtn label="Add app" onClick={() => setAddOpen(true)} className="!w-9 !h-9" />
+              </div>
             </div>
             <ProjectSelect
               projects={projects}
@@ -229,7 +272,19 @@ export function AppsTab({
           </div>
         )}
         {embedded && (
-          <div className="flex justify-end">
+          <div className="flex items-center justify-end gap-1.5">
+            {project.id !== 'homebase' && (
+              <HoldButton
+                label={busy === 'Remove' ? '…' : 'Remove'}
+                holdLabel="Hold…"
+                holdMs={1200}
+                tone="danger"
+                disabled={!!busy}
+                className="!min-h-9 !px-3 text-xs shrink-0"
+                title="Hold to remove app from Home Base (keeps files on disk)"
+                onConfirm={() => void doRemove()}
+              />
+            )}
             <IconBtn label="Add app" onClick={() => setAddOpen(true)} className="!w-9 !h-9" />
           </div>
         )}
@@ -462,9 +517,8 @@ export function AppsTab({
       <AddProjectWizard
         open={addOpen}
         onClose={() => setAddOpen(false)}
-        onAdded={(id) => {
-          onSelect(id)
-          void onRefresh()
+        onAdded={(result) => {
+          void handleAdded(result)
         }}
       />
     </div>

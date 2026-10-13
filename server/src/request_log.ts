@@ -15,6 +15,7 @@ const QUIET_EXACT = new Set([
   "/api/notifications",
   "/api/view/status",
   "/api/auth/status",
+  "/api/legal",
   "/api/sudo/status",
   "/api/share/status",
   "/api/system/status",

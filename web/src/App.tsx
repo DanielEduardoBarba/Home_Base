@@ -6,12 +6,14 @@ import { AppsTab } from './components/AppsTab'
 import { HomeAccessTab } from './components/HomeAccessTab'
 import { HomeDashboard } from './components/HomeDashboard'
 import { HomeVisionTab } from './components/HomeVisionTab'
+import { LegalGate } from './components/LegalGate'
 import { Login } from './components/Login'
 import { NotificationCenter } from './components/NotificationCenter'
 import { PullToRefresh } from './components/PullToRefresh'
 import { ToastStack } from './components/ToastStack'
 import { api } from './lib/api'
 import { clearSession, isSessionValid, watchSessionExpiry } from './lib/auth'
+import { LEGAL_DOC_VERSION } from './lib/legalDocs'
 import type { PresentRequest } from './lib/chatTypes'
 import { installClientLog } from './lib/clientLog'
 import { NotifyProvider, useNotify } from './lib/NotifyContext'
@@ -26,6 +28,7 @@ import {
   writeLastProjectId,
   writeLastTab,
 } from './lib/uiPrefs'
+import { writeDockOpen } from './components/ChatPanel'
 import { useVisibleInterval } from './lib/visibility'
 
 const tabFallback = () => (
@@ -72,12 +75,11 @@ const OnboardingFlow = dynamic(
   { ssr: false },
 )
 
-/** Primary dock: Work (expandable) · View · Logs · More (Alerts = status-bar bell) */
+/** Primary dock: Work (expandable) · View · Logs (Alerts = status-bar bell; Settings = Home card) */
 const PRIMARY_TABS: { id: Tab; label: string }[] = [
   { id: 'work', label: 'Work' },
   { id: 'view', label: 'View' },
   { id: 'logs', label: 'Logs' },
-  { id: 'settings', label: 'More' },
 ]
 
 /** Nested under Work — first Work tap expands; second tap opens the Work scene */
@@ -145,13 +147,6 @@ function TabIcon({ id }: { id: Tab }) {
       return (
         <svg {...common}>
           <path d="M5 7h14M5 12h10M5 17h12" />
-        </svg>
-      )
-    case 'settings':
-      return (
-        <svg {...common}>
-          <circle cx="12" cy="12" r="3" />
-          <path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M5.8 5.8l1.6 1.6M16.6 16.6l1.6 1.6M5.8 18.2l1.6-1.6M16.6 7.4l1.6-1.6" />
         </svg>
       )
     default:
@@ -385,6 +380,11 @@ function AuthedApp() {
           selectedId={selectedId}
           onSelect={selectProject}
           onRefresh={refreshProjects}
+          onAskAiWire={(id) => {
+            selectProject(id)
+            writeDockOpen(true)
+            presentInWork({ scene: 'apps' })
+          }}
           onOpenShell={(ids) => {
             const list = Array.isArray(ids) ? ids : ids ? [ids] : []
             setAttachSessionIds(list.length ? list : null)
@@ -432,15 +432,6 @@ function AuthedApp() {
     )
   } else if (tab === 'logs') {
     body = <LogsTab />
-  } else if (tab === 'settings') {
-    body = (
-      <SettingsTab
-        onSignedOut={() => {
-          goTab('apps')
-          goArea('home')
-        }}
-      />
-    )
   }
 
   if (onboardingReady && showOnboarding) {
@@ -489,6 +480,34 @@ function AuthedApp() {
             onOpenVision={() => {
               unlockAudio()
               goArea('vision')
+            }}
+            onOpenSettings={() => {
+              unlockAudio()
+              goArea('settings')
+            }}
+          />
+        </main>
+        <ToastStack />
+        <NotificationCenter />
+      </div>
+    )
+  }
+
+  if (area === 'settings') {
+    return (
+      <div className="hb-app-shell h-full flex flex-col">
+        <PullToRefresh onRefresh={refresh} />
+        {refreshing && (
+          <div className="hb-refresh-overlay" role="status" aria-live="polite" aria-label="Refreshing">
+            <div className="hb-spinner" />
+          </div>
+        )}
+        <main className="flex-1 min-h-0 overflow-hidden">
+          <SettingsTab
+            onHome={() => goArea('home')}
+            onSignedOut={() => {
+              goTab('apps')
+              goArea('home')
             }}
           />
         </main>
@@ -640,7 +659,7 @@ function AuthedApp() {
                     ? vpnHostHint
                       ? `WireGuard up · ${vpnHostHint}`
                       : 'WireGuard up'
-                    : 'WireGuard configured but down — open More → VPN'
+                    : 'WireGuard configured but down — open Settings → WireGuard'
                 }
               >
                 VPN {vpnActive ? 'up' : 'down'}
@@ -749,6 +768,7 @@ function AuthedApp() {
 export default function App() {
   const [authed, setAuthed] = useState(false)
   const [authReady, setAuthReady] = useState(false)
+  const [legalOk, setLegalOk] = useState<boolean | null>(null)
 
   useEffect(() => {
     installClientLog()
@@ -764,6 +784,25 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (!authed) {
+      setLegalOk(null)
+      return
+    }
+    let cancelled = false
+    void api
+      .legalStatus()
+      .then((l) => {
+        if (!cancelled) setLegalOk(!!l.accepted && l.version === LEGAL_DOC_VERSION)
+      })
+      .catch(() => {
+        if (!cancelled) setLegalOk(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [authed])
+
+  useEffect(() => {
     if (!authed) return
     return watchSessionExpiry()
   }, [authed])
@@ -774,6 +813,14 @@ export default function App() {
 
   if (!authed) {
     return <Login onAuthed={() => setAuthed(true)} />
+  }
+
+  if (legalOk === null) {
+    return <div className="min-h-dvh bg-panel" aria-busy="true" />
+  }
+
+  if (!legalOk) {
+    return <LegalGate onAccepted={() => setLegalOk(true)} />
   }
 
   return (

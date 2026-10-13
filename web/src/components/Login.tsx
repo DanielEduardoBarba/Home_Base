@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { api } from '../lib/api'
 import { setSession, takeAuthLostReason } from '../lib/auth'
+import { LEGAL_DOC_VERSION } from '../lib/legalDocs'
 import { isLocalHostPage } from '../lib/types'
 import { BrandTitle } from './BrandTitle'
 import { LegalAbout } from './LegalAbout'
+import { LegalGate } from './LegalGate'
 import { useServerIdentity } from '../lib/serverIdentity'
 
 const AUTH_REASON_COPY: Record<string, string> = {
@@ -61,6 +63,7 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
   const [retryAfter, setRetryAfter] = useState(0)
   const [autoStatus, setAutoStatus] = useState('')
   const [canBootstrap, setCanBootstrap] = useState<boolean | null>(null)
+  const [legalOk, setLegalOk] = useState<boolean | null>(null)
   const local = isLocalHostPage()
   const { displayName } = useServerIdentity()
 
@@ -81,8 +84,23 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
       .then((s) => {
         setCanBootstrap(!!s.canBootstrap)
         if (s.lockout?.locked) setRetryAfter(s.lockout.retryAfter)
+        const legal = s.legal
+        if (legal) {
+          setLegalOk(!!legal.accepted && legal.version === LEGAL_DOC_VERSION)
+        } else {
+          void api
+            .legalStatus()
+            .then((l) => setLegalOk(!!l.accepted && l.version === LEGAL_DOC_VERSION))
+            .catch(() => setLegalOk(false))
+        }
       })
-      .catch(() => setCanBootstrap(false))
+      .catch(() => {
+        setCanBootstrap(false)
+        void api
+          .legalStatus()
+          .then((l) => setLegalOk(!!l.accepted && l.version === LEGAL_DOC_VERSION))
+          .catch(() => setLegalOk(false))
+      })
   }, [])
 
   useEffect(() => {
@@ -172,6 +190,14 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
       setError(message)
       if (wait > 0) setRetryAfter(wait)
     }
+  }
+
+  if (legalOk === null) {
+    return <div className="min-h-dvh bg-panel" aria-busy="true" />
+  }
+
+  if (!legalOk) {
+    return <LegalGate onAccepted={() => setLegalOk(true)} />
   }
 
   return (

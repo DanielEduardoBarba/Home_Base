@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { RUNTIME_DIR, ensureRuntimeDirs } from "./config";
+import { detectSeatUser } from "./shell_env";
 import { appendTrace } from "./trace";
 import { resolveKeyName } from "./view_x11";
 import { viewHub, viewStatusAsync } from "./view";
@@ -21,6 +22,34 @@ const DEFAULT_ARM_SEC = 15 * 60;
 const MAX_ARM_SEC = 60 * 60;
 const MAX_SHOTS = 8;
 const HEADER_LEN = 20;
+
+/** Agent guidance for Vision chats / status. */
+export const VISION_GUIDANCE =
+  "Prefer driving desktop apps through the GUI with homebase_vision_* (screenshot → act → screenshot). " +
+  "Use Shell/Files/CLI tools when that is clearly faster or more reliable (scripts, installs, bulk edits). " +
+  "Do not mouse-drive GNOME Terminal or a GUI editor for routine terminal/file work.";
+
+/**
+ * Seat-user `~/.homebase` — default Cursor cwd for Vision chats.
+ * Creates the directory (and chowns to the seat user when running as root).
+ */
+export function ensureVisionWorkspace(): string {
+  const seat = detectSeatUser();
+  const dir = join(seat.home, ".homebase");
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+  } catch {
+    /* ignore */
+  }
+  if (process.getuid?.() === 0 && seat.uid > 0) {
+    try {
+      Bun.spawnSync(["chown", `${seat.uid}:${seat.gid}`, dir]);
+    } catch {
+      /* ignore */
+    }
+  }
+  return dir;
+}
 
 type ArmState = {
   armed: boolean;
@@ -151,12 +180,13 @@ export async function visionStatus(): Promise<Record<string, unknown>> {
     return { ok: false, error: plat.error, ...armSt };
   }
   const view = await viewStatusAsync();
+  const workspace = ensureVisionWorkspace();
   return {
     ...view,
     ...armSt,
     visionDir: VISION_DIR,
-    guidance:
-      "Prefer Home Base Shell/Files tools for terminals and file edits — do not drive the GNOME Terminal or a GUI editor via the mouse. Use homebase_vision_* for GUI apps and desktop navigation only.",
+    workspace,
+    guidance: VISION_GUIDANCE,
   };
 }
 

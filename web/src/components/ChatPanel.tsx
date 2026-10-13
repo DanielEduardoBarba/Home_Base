@@ -26,7 +26,13 @@ import { chatImageSrc } from '../lib/chatTypes'
 import { useNotifyOptional } from '../lib/NotifyContext'
 import { presentFromMessage, presentFromTool, presentLabel } from '../lib/present'
 import { useSceneRefresh } from '../lib/sceneRefresh'
-import { clearChatDraft, readChatDraft, writeChatDraft } from '../lib/uiPrefs'
+import {
+  clearChatDraft,
+  peekPendingCompose,
+  readChatDraft,
+  takePendingCompose,
+  writeChatDraft,
+} from '../lib/uiPrefs'
 import {
   speakText,
   speechSupported,
@@ -49,8 +55,10 @@ import {
   type WsReconnectHandle,
 } from '../lib/wsReconnect'
 import { AtMentionPicker, detectAtMention, type AtPick } from './AtMentionPicker'
+import { FilesTab } from './FilesTab'
 import { IconBtn } from './IconBtn'
 import { ProjectSelect } from './ProjectSelect'
+import { ShellTab } from './ShellTab'
 
 const MAX_DRAFT_CONTEXT = 12
 
@@ -759,6 +767,8 @@ export function ChatPanel({
   onDockOpenChange,
   agentChatId,
   onAgentBack,
+  defaultCwd,
+  defaultCwdLabel,
 }: {
   projects: Project[]
   selectedId: string
@@ -771,6 +781,10 @@ export function ChatPanel({
   /** Lock Home Agent to one chat tab. */
   agentChatId?: string
   onAgentBack?: () => void
+  /** Absolute cwd for new chats when the caller skips the folder picker (e.g. Vision ~/.homebase). */
+  defaultCwd?: string
+  /** Primary new-chat button label when defaultCwd is set. */
+  defaultCwdLabel?: string
 }) {
   const project = projects.find((p) => p.id === selectedId) || projects[0]
   const isDock = variant === 'dock'
@@ -789,6 +803,8 @@ export function ChatPanel({
   const [editingLast, setEditingLast] = useState(false)
   const [draftImages, setDraftImages] = useState<ChatImage[]>([])
   const [draftContext, setDraftContext] = useState<string[]>([])
+  /** Work dock: file/shell “Show” stays in the chat sheet (Home Agent–style). */
+  const [dockPresent, setDockPresent] = useState<PresentRequest | null>(null)
   const [atMention, setAtMention] = useState<{ start: number; query: string } | null>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -892,25 +908,27 @@ export function ChatPanel({
   /** Follow new messages only while the user is near the bottom. */
   const stickBottom = useRef(true)
   const activeIdRef = useRef(activeId)
-  /** Tool calls we already opened in Work, so a replay does not steal the scene. */
-  const presentedCalls = useRef<Set<string>>(new Set())
-  /** After the user manually opens a present, stop auto-jumping to later files/shells. */
-  const allowAutoPresent = useRef(true)
   const importTried = useRef('')
   /** After this browser creates a chat, follow the server's new selection once. */
   const followServerActive = useRef(false)
+  /** Vision (etc.): seed/select defaultCwd chat once per project+cwd after workspace load. */
+  const defaultCwdSeeded = useRef('')
+  const defaultCwdRef = useRef(defaultCwd || '')
+  const defaultCwdLabelRef = useRef(defaultCwdLabel || '')
+  defaultCwdRef.current = defaultCwd || ''
+  defaultCwdLabelRef.current = defaultCwdLabel || ''
   const inputRef = useRef(input)
   inputRef.current = input
   const draftChatRef = useRef({ projectId: '', chatId: '' })
+  /** Avoid re-applying the same pending compose seed twice. */
+  const pendingComposeApplied = useRef('')
+  const pendingComposeCreating = useRef('')
   const tabsRef = useRef(tabs)
   const speechRef = useRef<SpeechHandle | null>(null)
   const inputBeforeSpeech = useRef('')
   const streamingRef = useRef(false)
   const phaseRef = useRef(agentPhase)
   const notifyRef = useRef(notify)
-  const onPresentRef = useRef(onPresent)
-  const variantRef = useRef(variant)
-  variantRef.current = variant
   const doneClearTimer = useRef<number | null>(null)
   activeIdRef.current = activeId
   tabsRef.current = tabs
@@ -918,7 +936,6 @@ export function ChatPanel({
   phaseRef.current = agentPhase
   connStateRef.current = connState
   notifyRef.current = notify
-  onPresentRef.current = onPresent
 
   function pushRunLog(line: string) {
     const stamp = new Date().toLocaleTimeString()
@@ -966,7 +983,6 @@ export function ChatPanel({
     stickBottom.current = true
     importTried.current = ''
     followServerActive.current = false
-    presentedCalls.current = new Set()
   }, [project?.id])
 
   // Switching chats follows that chat's server run, not whatever the last tab was doing.
@@ -1038,8 +1054,14 @@ export function ChatPanel({
       dockOpenedAt.current = Date.now()
     } else if (dockMounted && !dockClosing) {
       setDockClosing(true)
+      setDockPresent(null)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount/closing flags are sync'd from dockOpen only
   }, [isDock, dockOpen])
+
+  useEffect(() => {
+    setDockPresent(null)
+  }, [project?.id])
 
   // Force-unmount if animationend never fires (keeps FAB reachable; clears blank overlay)
   useEffect(() => {
@@ -1163,10 +1185,39 @@ export function ChatPanel({
             const held = activeIdRef.current
             const follow = followServerActive.current
             followServerActive.current = false
-            const nextActive =
+            let nextActive =
               !follow && nextTabs.some((t) => t.id === held)
                 ? held
                 : String(msg.activeId || nextTabs[0]?.id || '')
+            // Vision: prefer/create seat-user ~/.homebase chat once per connect.
+            const seedCwd = (defaultCwdRef.current || '').replace(/\/+$/, '')
+            if (seedCwd) {
+              const seedKey = `${projectId}:${seedCwd}`
+              if (defaultCwdSeeded.current !== seedKey) {
+                const match = nextTabs.find(
+                  (t) => (t.cwd || '').replace(/\/+$/, '') === seedCwd,
+                )
+                if (match) {
+                  nextActive = match.id
+                  if (wsRef.current?.readyState === WebSocket.OPEN) {
+                    wsRef.current.send(
+                      JSON.stringify({ type: 'select', chatId: match.id }),
+                    )
+                  }
+                  defaultCwdSeeded.current = seedKey
+                } else if (wsRef.current?.readyState === WebSocket.OPEN) {
+                  followServerActive.current = true
+                  wsRef.current.send(
+                    JSON.stringify({
+                      type: 'new',
+                      cwd: seedCwd,
+                      title: defaultCwdLabelRef.current || 'Vision',
+                    }),
+                  )
+                  defaultCwdSeeded.current = seedKey
+                }
+              }
+            }
             setActiveId(nextActive)
             const current = nextTabs.find((t) => t.id === nextActive) || nextTabs[0]
             const isRunning = !!current?.running
@@ -1497,44 +1548,6 @@ export function ChatPanel({
                   return { ...t, messages, running: true }
                 }),
               )
-            }
-            // Work dock may auto-jump once; stop after the user manually opens/leaves a present.
-            // Home Agent is click-to-open only.
-            if (
-              st === 'completed' &&
-              forActive &&
-              variantRef.current !== 'agent' &&
-              allowAutoPresent.current
-            ) {
-              if (!callId || !presentedCalls.current.has(callId)) {
-                if (callId) presentedCalls.current.add(callId)
-                const file = msg.file as {
-                  path?: string
-                  before?: string
-                  after?: string
-                  action?: string
-                } | undefined
-                if (file?.path) {
-                  onPresentRef.current?.({
-                    scene: 'files',
-                    path: file.path,
-                    minimal: true,
-                    before: file.before,
-                    after: file.after,
-                    action: file.action,
-                  })
-                }
-                const shellHint = presentFromTool(
-                  name,
-                  msg.path ? String(msg.path) : undefined,
-                  msg.sessionId ? String(msg.sessionId) : undefined,
-                  {
-                    command: msg.command ? String(msg.command) : undefined,
-                    output: msg.output ? String(msg.output) : undefined,
-                  },
-                )
-                if (shellHint?.scene === 'shell') onPresentRef.current?.(shellHint)
-              }
             }
             if (!forActive) return
             const toolLabel = prettyToolName(name)
@@ -1993,8 +2006,16 @@ export function ChatPanel({
       setError('Reconnecting to the server — try again in a moment.')
       return
     }
+    const resolvedCwd = (cwd || defaultCwd || '').trim()
+    const resolvedTitle =
+      title ||
+      (resolvedCwd && defaultCwd && resolvedCwd === defaultCwd.trim()
+        ? defaultCwdLabel || 'Vision'
+        : '')
     followServerActive.current = true
-    wsRef.current?.send(JSON.stringify({ type: 'new', cwd, title: title || '' }))
+    wsRef.current?.send(
+      JSON.stringify({ type: 'new', cwd: resolvedCwd, title: resolvedTitle || '' }),
+    )
     setNewOpen(false)
     setPickingFolder(false)
   }
@@ -2163,7 +2184,6 @@ export function ChatPanel({
     setShowJump(false)
     setEditingLast(false)
     setAtMention(null)
-    allowAutoPresent.current = true
     if (!opts?.prompt) {
       setInput('')
       if (project?.id && active.id) clearChatDraft(project.id, active.id)
@@ -2235,6 +2255,46 @@ export function ChatPanel({
       }),
     )
   }
+
+  // Add-app → Ask Chat: seed (and optionally send) once the project socket is live.
+  useEffect(() => {
+    if (!project?.id || !connected) return
+    const pending = peekPendingCompose()
+    if (!pending || pending.projectId !== project.id) return
+    const applyKey = `${pending.projectId}:${pending.text.slice(0, 48)}`
+    if (pendingComposeApplied.current === applyKey) return
+
+    if (!activeId) {
+      if (pendingComposeCreating.current !== applyKey && socketOpen()) {
+        pendingComposeCreating.current = applyKey
+        followServerActive.current = true
+        wsRef.current?.send(
+          JSON.stringify({
+            type: 'new',
+            cwd: '',
+            title: pending.title || 'Wire app',
+          }),
+        )
+      }
+      return
+    }
+
+    const taken = takePendingCompose(project.id)
+    if (!taken) return
+    pendingComposeApplied.current = applyKey
+    pendingComposeCreating.current = ''
+    setInput(taken.text)
+    writeChatDraft(project.id, activeId, taken.text)
+    if (taken.autoSend) {
+      window.setTimeout(() => {
+        if (!socketOpen() || streamingRef.current) return
+        send(undefined, { prompt: taken.text })
+        clearChatDraft(project.id, activeId)
+        setInput('')
+      }, 180)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- send/socketOpen close over latest active chat
+  }, [project?.id, connected, activeId])
 
   function cancel() {
     if (!active) return
@@ -2387,9 +2447,19 @@ export function ChatPanel({
   }
 
   function presentFromChat(req: PresentRequest) {
-    // Manual open — don't auto-steal to later file/shell presents in this run.
-    allowAutoPresent.current = false
     pushRunLog(`present · ${req.scene}${req.path ? ` ${req.path}` : ''}`)
+    // Message/tool “Show” sets minimal — keep it inside the Work chat dock.
+    // Settings Apps/Files/Sessions omit minimal → real Work navigation.
+    if (
+      isDock &&
+      (req.scene === 'shell' || req.scene === 'files') &&
+      req.minimal === true
+    ) {
+      setDockPresent({ ...req, minimal: true })
+      setDockOpen(true)
+      return
+    }
+    setDockPresent(null)
     onPresent?.(req)
     if (isDock) setDockOpen(false)
   }
@@ -2595,7 +2665,9 @@ export function ChatPanel({
                   className="hb-btn hb-btn-primary w-full !min-h-11"
                   onClick={() => createChat()}
                 >
-                  Whole app ({project.name})
+                  {defaultCwd
+                    ? defaultCwdLabel || `Vision workspace (${defaultCwd})`
+                    : `Whole app (${project.name})`}
                 </button>
                 <button
                   type="button"
@@ -3716,6 +3788,15 @@ export function ChatPanel({
 
   if (isDock) {
     const panelOpen = dockOpen && !dockClosing
+    const presentTitle = !dockPresent
+      ? ''
+      : dockPresent.scene === 'shell'
+        ? dockPresent.command
+          ? 'Command'
+          : 'Shell'
+        : dockPresent.before != null || dockPresent.after != null
+          ? 'Changes'
+          : 'File'
     return (
       <>
         <button
@@ -3736,11 +3817,61 @@ export function ChatPanel({
             setDockClosing(false)
           }}
         >
-          {modals}
-          {header}
-          {messages}
-          {statusBar}
-          {composer}
+          <div
+            className={`flex-1 min-h-0 flex flex-col${
+              dockPresent ? ' invisible pointer-events-none absolute inset-0' : ''
+            }`}
+            aria-hidden={!!dockPresent}
+          >
+            {modals}
+            {header}
+            {messages}
+            {statusBar}
+            {composer}
+          </div>
+          {dockPresent && project && (
+            <div className="absolute inset-0 z-20 flex flex-col min-h-0 bg-[var(--hb-bg)]">
+              <div className="hb-agent-bar hb-agent-bar--minimal shrink-0">
+                <button
+                  type="button"
+                  className="hb-btn hb-btn-ghost text-sm"
+                  onClick={() => setDockPresent(null)}
+                >
+                  ← Chat
+                </button>
+                <span className="hb-agent-bar-title truncate">{presentTitle}</span>
+              </div>
+              <div className="flex-1 min-h-0">
+                {dockPresent.scene === 'shell' ? (
+                  <ShellTab
+                    projects={projects}
+                    selectedId={project.id}
+                    onSelect={onSelect}
+                    embedded
+                    minimal
+                    replayCommand={dockPresent.command || null}
+                    replayOutput={dockPresent.output || null}
+                    attachSessionIds={dockPresent.sessionIds || null}
+                    startShellKey={dockPresent.newShell ? Date.now() : 0}
+                    onClearAttach={() => undefined}
+                  />
+                ) : (
+                  <FilesTab
+                    projects={projects}
+                    selectedId={project.id}
+                    onSelect={onSelect}
+                    embedded
+                    minimal
+                    focusPath={dockPresent.path || null}
+                    diffBefore={dockPresent.before ?? null}
+                    diffAfter={dockPresent.after ?? null}
+                    diffAction={dockPresent.action || null}
+                    onFocusPathConsumed={() => undefined}
+                  />
+                )}
+              </div>
+            </div>
+          )}
         </aside>
       </>
     )

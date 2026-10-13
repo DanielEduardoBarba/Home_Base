@@ -19,11 +19,13 @@ Home dashboard area **Vision**: live View stream + Chat dock. Agent drives the U
 - Ask mode: status + screenshot only (no pointer/keyboard tools).
 - Linux / X11 (or XWayland) only — Mac and non-X hosts get a clear error; Arm stays disabled in the UI.
 - Actions are traced under source `vision`. Screenshots land in `HOMEBASE_HOME/.runtime/vision/` (mode 0600, pruned).
+- Vision chat cwd is the seat-user `~/.homebase` (created on demand via `ensureVisionWorkspace()`).
 
 ## Agent guidance
 
 - Screenshot → Read the image path → act → screenshot again.
-- Prefer Home Base Shell / Files / normal tools for terminals and file edits — do **not** drive GNOME Terminal or a GUI editor with the mouse.
+- Prefer driving desktop apps through the GUI with `homebase_vision_*`. Use Shell / Files / CLI when that is clearly faster or more reliable.
+- Do **not** mouse-drive GNOME Terminal or a GUI editor for routine terminal/file work.
 - Prefer `homebase_vision_hotkey` (e.g. Super+a) over hunting OS chrome when possible.
 
 ## Leave the X11 path alone

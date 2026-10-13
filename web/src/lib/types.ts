@@ -1,5 +1,5 @@
-/** Top-level areas after login (dashboard / homework / access / agent / vision). */
-export type AppArea = 'home' | 'homework' | 'access' | 'agent' | 'vision'
+/** Top-level areas after login (dashboard / homework / access / agent / vision / settings). */
+export type AppArea = 'home' | 'homework' | 'access' | 'agent' | 'vision' | 'settings'
 
 export type Tab =
   | 'apps'
@@ -9,7 +9,6 @@ export type Tab =
   | 'view'
   | 'cursor'
   | 'logs'
-  | 'settings'
 
 export type AccessWidgetKind = 'button' | 'toggle' | 'slider' | 'gauge'
 export type AccessHookType = 'script' | 'http' | 'websocket' | 'static'

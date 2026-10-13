@@ -12,10 +12,16 @@ const VALID_TABS: Tab[] = [
   'view',
   'cursor',
   'logs',
-  'settings',
 ]
 
-const VALID_AREAS: AppArea[] = ['home', 'homework', 'access', 'agent', 'vision']
+const VALID_AREAS: AppArea[] = [
+  'home',
+  'homework',
+  'access',
+  'agent',
+  'vision',
+  'settings',
+]
 
 const AGENT_RECENT_KEY = 'hb-agent-recent-dirs'
 const AGENT_RECENT_ABS_KEY = 'hb-agent-recent-abs'
@@ -231,6 +237,52 @@ export function writeChatDraft(projectId: string, chatId: string, text: string):
 
 export function clearChatDraft(projectId: string, chatId: string): void {
   writeChatDraft(projectId, chatId, '')
+}
+
+const PENDING_COMPOSE_KEY = 'hb-pending-compose'
+
+/** One-shot composer seed (e.g. after Add app → Ask Chat to wire). */
+export type PendingCompose = {
+  projectId: string
+  text: string
+  autoSend?: boolean
+  title?: string
+}
+
+export function setPendingCompose(pending: PendingCompose): void {
+  try {
+    if (!pending.projectId || !pending.text.trim()) {
+      localStorage.removeItem(PENDING_COMPOSE_KEY)
+      return
+    }
+    localStorage.setItem(PENDING_COMPOSE_KEY, JSON.stringify(pending))
+  } catch {
+    /* ignore */
+  }
+}
+
+export function peekPendingCompose(): PendingCompose | null {
+  try {
+    const raw = localStorage.getItem(PENDING_COMPOSE_KEY)
+    if (!raw) return null
+    const p = JSON.parse(raw) as PendingCompose
+    if (!p?.projectId || typeof p.text !== 'string' || !p.text.trim()) return null
+    return p
+  } catch {
+    return null
+  }
+}
+
+export function takePendingCompose(projectId?: string): PendingCompose | null {
+  const p = peekPendingCompose()
+  if (!p) return null
+  if (projectId && p.projectId !== projectId) return null
+  try {
+    localStorage.removeItem(PENDING_COMPOSE_KEY)
+  } catch {
+    /* ignore */
+  }
+  return p
 }
 
 const PIN_HASH_KEY = 'hb-pin-hash'

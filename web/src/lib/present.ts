@@ -51,7 +51,7 @@ export function presentFromTool(
       newShell: extra?.newShell,
     }
   }
-  // Bare tool name without path/session — do not auto-jump to an empty Shell.
+  // Bare tool name without path/session — no empty Shell present.
   return null
 }
 

@@ -150,6 +150,10 @@ export function WorkTab({
                 onSelect={onSelect}
                 onRefresh={onRefresh}
                 embedded
+                onAskAiWire={() => {
+                  setScene('apps')
+                  setDockOpen(true)
+                }}
                 onOpenShell={(ids) => {
                   const list = Array.isArray(ids) ? ids : ids ? [ids] : []
                   applyPresent({

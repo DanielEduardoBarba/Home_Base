@@ -31,13 +31,13 @@ import {
 } from "./approvals";
 import {
   bindPort,
-  deleteProject,
   isBackupBinary,
   listPresets,
   loadProjects,
   readVersion,
   upsertProjectFromInput,
 } from "./config";
+import { removeRegisteredProject } from "./project_remove";
 import {
   clearCloudflareTunnel,
   cloudflareStatus,
@@ -47,6 +47,11 @@ import {
   stopCloudflareTunnel,
   updateCloudflareHostname,
 } from "./cloudflare_tunnel";
+import {
+  acceptLegal,
+  legalPublic,
+  requireLegalAccepted,
+} from "./legal_state";
 import {
   loadOnboarding,
   resetOnboardingForReplay,
@@ -93,6 +98,7 @@ import { clientIp, jsonError, readJson, requireAuth } from "./http";
 import { readDailyLogs } from "./logging";
 import { clearRead, listNotifications, markRead } from "./notifications";
 import { projectPublic, runAction, stopProject, tailLogs } from "./process";
+import { usageOverview } from "./usage_stats";
 import {
   interruptSession,
   killSession,
@@ -311,7 +317,18 @@ app.post("/api/wireguard/uninstall", async (c) => {
 
 app.get("/api/auth/status", (c) => {
   const local = isLocalhostBrowser(c.req.raw.headers);
-  return c.json(authStatusPayload(local));
+  return c.json({ ...authStatusPayload(local), legal: legalPublic() });
+});
+
+/** Public — Terms / Privacy acceptance status for this install. */
+app.get("/api/legal", (c) => c.json(legalPublic()));
+
+/** Record acceptance of current doc version (no auth — install-level gate). */
+app.post("/api/legal/accept", async (c) => {
+  const body = z
+    .object({ version: z.string().min(1).max(32) })
+    .parse(await readJson(c));
+  return c.json(acceptLegal(body.version));
 });
 
 app.post("/api/login", async (c) => {
@@ -328,6 +345,7 @@ app.post("/api/login", async (c) => {
 
 app.post("/api/auth/bootstrap", async (c) => {
   requireLocalhostBrowser(c.req.raw.headers);
+  requireLegalAccepted();
   const body = z.object({ password: z.string() }).parse(await readJson(c));
   bootstrapPassword(body.password);
   const session = await issueJwt({ kind: "session" });
@@ -494,9 +512,12 @@ app.patch("/api/projects/:projectId", async (c) => {
 
 app.delete("/api/projects/:projectId", async (c) => {
   await requireAuth(c);
-  const id = c.req.param("projectId");
-  if (!deleteProject(id)) throw new HttpError(404, "Project not found");
-  return c.json({ ok: true, id });
+  const result = removeRegisteredProject(c.req.param("projectId"));
+  if (!result.ok) {
+    const status = result.error === "cannot remove the Home Base project" ? 400 : 404;
+    throw new HttpError(status, result.error || "Project not found");
+  }
+  return c.json(result);
 });
 
 app.get("/api/cursor/credentials", async (c) => {
@@ -518,6 +539,12 @@ app.post("/api/cursor/credentials", async (c) => {
 app.delete("/api/cursor/credentials", async (c) => {
   await requireAuth(c);
   return c.json(clearCursorApiKey());
+});
+
+app.get("/api/usage", async (c) => {
+  await requireAuth(c);
+  const force = c.req.query("refresh") === "1";
+  return c.json(await usageOverview({ force }));
 });
 
 app.get("/api/onboarding", async (c) => {
