@@ -122,7 +122,7 @@ export function ShellTab({
           setInteractive(false)
           writeShellAttach(project.id, ids)
         } else {
-          clearShellAttach()
+          clearShellAttach(project.id)
         }
       } catch {
         /* ignore */
@@ -168,7 +168,7 @@ export function ShellTab({
     setAttach([])
     setInteractive(false)
     setInteractiveId('')
-    clearShellAttach()
+    if (project?.id) clearShellAttach(project.id)
     onClearAttach?.()
     void refresh()
   }

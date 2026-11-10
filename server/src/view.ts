@@ -3,7 +3,7 @@
  * (libX11 XGetImage + XTest via bun:ffi) over JSON length-prefixed IPC.
  */
 import { spawn, type Subprocess } from "bun";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { detectSeatUser } from "./shell_env";
 import { appendTrace } from "./trace";
@@ -12,23 +12,81 @@ export const FRAME_MAGIC = 0x48425646;
 
 const MSG_HDR = new DataView(new ArrayBuffer(4));
 
+/** Newest existing cookie file. A stale ~/.Xauthority loses to a live Xwayland auth. */
+export function pickNewestExisting(paths: string[]): string {
+  let best = "";
+  let bestMtime = -1;
+  const seen = new Set<string>();
+  for (const p of paths) {
+    if (!p || seen.has(p)) continue;
+    seen.add(p);
+    if (!existsSync(p)) continue;
+    let mtime = 0;
+    try {
+      mtime = statSync(p).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (mtime >= bestMtime) {
+      best = p;
+      bestMtime = mtime;
+    }
+  }
+  return best;
+}
+
+export function x11AuthorityCandidates(opts: {
+  uid: number;
+  home: string;
+  envPaths?: string[];
+}): string[] {
+  const out: string[] = [];
+  const runtime = `/run/user/${opts.uid}`;
+  if (existsSync(runtime)) {
+    try {
+      for (const name of readdirSync(runtime)) {
+        if (name.startsWith(".mutter-Xwaylandauth.")) out.push(join(runtime, name));
+      }
+    } catch {
+      /* ignore */
+    }
+    out.push(join(runtime, "gdm", "Xauthority"));
+  }
+  for (const p of opts.envPaths || []) {
+    if (p) out.push(p);
+  }
+  if (opts.home) out.push(join(opts.home, ".Xauthority"));
+  return out;
+}
+
+export function x11AuthorityKind(xauthority: string): string {
+  if (!xauthority || !existsSync(xauthority)) return "missing";
+  const base = basename(xauthority);
+  if (base.startsWith(".mutter-Xwaylandauth")) return "mutter";
+  if (xauthority.includes("/gdm/")) return "gdm";
+  if (base === ".Xauthority") return "home";
+  return "other";
+}
+
 export function discoverX11Env(): { display: string; xauthority: string } {
   let display = (
     process.env.HOMEBASE_DISPLAY ||
     process.env.DISPLAY ||
     ""
   ).trim();
-  let xauth = (
-    process.env.HOMEBASE_XAUTHORITY ||
-    process.env.XAUTHORITY ||
-    ""
-  ).trim();
   if (!display) display = ":0";
-  if (!xauth || !existsSync(xauth)) {
-    const seat = detectSeatUser();
-    const cand = join(seat.home, ".Xauthority");
-    xauth = existsSync(cand) ? cand : "/home/daniel/.Xauthority";
-  }
+  const seat = detectSeatUser();
+  const envPaths = [
+    process.env.HOMEBASE_XAUTHORITY || "",
+    process.env.XAUTHORITY || "",
+  ];
+  const xauth = pickNewestExisting(
+    x11AuthorityCandidates({
+      uid: seat.uid,
+      home: seat.home,
+      envPaths,
+    }),
+  );
   return { display, xauthority: xauth };
 }
 

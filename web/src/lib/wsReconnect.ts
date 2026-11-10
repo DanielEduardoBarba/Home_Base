@@ -41,14 +41,21 @@ export function connectWithReconnect(opts: {
   maxBackoffMs?: number
   /** Stop after this many failures while offline (0 = unlimited). Default 0. */
   maxAttempts?: number
+  /**
+   * App-level JSON ping interval while live (ms). Keeps VPN/NAT mappings and
+   * Bun idleTimeout warm during long quiet agent runs. 0 disables. Default 25s.
+   */
+  pingIntervalMs?: number
 }): WsReconnectHandle {
   const maxBackoff = opts.maxBackoffMs ?? 30_000
   const maxAttempts = opts.maxAttempts ?? 0
+  const pingEvery = opts.pingIntervalMs ?? 25_000
   let disposed = false
   let ws: WebSocket | null = null
   let state: WsConnState = 'connecting'
   let attempt = 0
   let timer: ReturnType<typeof setTimeout> | undefined
+  let pingTimer: ReturnType<typeof setInterval> | undefined
   /** Bumped on every intentional close / dispose so stale onclose cannot schedule. */
   let epoch = 0
   let visHandler: (() => void) | null = null
@@ -57,6 +64,29 @@ export function connectWithReconnect(opts: {
     if (state === next) return
     state = next
     opts.onState?.(next)
+  }
+
+  const stopPing = () => {
+    if (pingTimer) {
+      clearInterval(pingTimer)
+      pingTimer = undefined
+    }
+  }
+
+  const startPing = (socket: WebSocket) => {
+    stopPing()
+    if (pingEvery <= 0) return
+    pingTimer = setInterval(() => {
+      if (disposed || ws !== socket || socket.readyState !== WebSocket.OPEN) {
+        stopPing()
+        return
+      }
+      try {
+        socket.send(JSON.stringify({ type: 'ping', t: Date.now() }))
+      } catch {
+        /* onclose will reconnect */
+      }
+    }, pingEvery)
   }
 
   const clearTimer = () => {
@@ -73,6 +103,7 @@ export function connectWithReconnect(opts: {
   const open = () => {
     if (disposed) return
     clearTimer()
+    stopPing()
     if (!getToken()) {
       setState('auth')
       return
@@ -100,6 +131,7 @@ export function connectWithReconnect(opts: {
       if (disposed || myEpoch !== epoch || ws !== socket) return
       attempt = 0
       setState('live')
+      startPing(socket)
       opts.onOpen?.(socket)
     }
 
@@ -115,6 +147,7 @@ export function connectWithReconnect(opts: {
     socket.onclose = (ev) => {
       if (myEpoch !== epoch) return
       if (ws === socket) ws = null
+      stopPing()
       if (disposed) return
       const authReason = parseAuthReason(ev.code, ev.reason || '')
       if (authReason) {
@@ -163,6 +196,7 @@ export function connectWithReconnect(opts: {
     disposed = true
     epoch += 1
     clearTimer()
+    stopPing()
     try {
       ws?.close(1000, 'auth-lost')
     } catch {
@@ -180,6 +214,7 @@ export function connectWithReconnect(opts: {
       disposed = true
       epoch += 1
       clearTimer()
+      stopPing()
       window.removeEventListener('hb-auth-lost', onAuthLost)
       try {
         ws?.close(1000, 'dispose')
@@ -194,6 +229,7 @@ export function connectWithReconnect(opts: {
       if (state === 'auth' && !getToken()) return
       epoch += 1
       clearTimer()
+      stopPing()
       try {
         ws?.close(1000, 'manual-reconnect')
       } catch {

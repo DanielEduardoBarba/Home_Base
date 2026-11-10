@@ -8,7 +8,7 @@ import {
   readVersion,
 } from "./config";
 import { logError, logInfo, logWarn } from "./console_log";
-import { flushAllChatWorkspaces, subscribeCursor } from "./cursor";
+import { compactLargeChats, flushAllChatWorkspaces, subscribeCursor } from "./cursor";
 import { formatGeo, geoCached, normalizeIp, warmGeo } from "./geo";
 import { PEER_IP_HEADER } from "./http";
 import {
@@ -74,6 +74,16 @@ if (process.argv.includes("--view-worker")) {
 const hostname = bindHost();
 const port = bindPort();
 
+try {
+  compactLargeChats();
+} catch (e) {
+  appendTrace(
+    "warn",
+    `chat compact at boot failed: ${e instanceof Error ? e.message : String(e)}`,
+    "boot",
+  );
+}
+
 /** Strip client-spoofed peer header; inject Bun's real remote address. */
 function withPeerIp(req: Request, peer: string | undefined): Request {
   const headers = new Headers(req.headers);
@@ -128,6 +138,10 @@ const server = Bun.serve<WsData>({
     return app.fetch(withPeerIp(req, peer === "unknown" ? undefined : peer));
   },
   websocket: {
+    // VPN / iOS Safari can go quiet for minutes during long agent tool runs.
+    // Bun's default 120s idle close drops the cursor socket mid-prompt.
+    idleTimeout: 300,
+    sendPings: true,
     async open(ws) {
       const data = ws.data;
       const ok = await authenticateWsToken(data.url, data.headers);
@@ -310,8 +324,10 @@ const server = Bun.serve<WsData>({
       if (data.kind === "cursor" && data.projectId) {
         const t = String(msg.type || "");
         if (
+          t === "send" ||
           t === "prompt" ||
           t === "abort" ||
+          t === "cancel" ||
           t === "reset" ||
           t === "approve" ||
           t === "deny" ||
@@ -319,7 +335,10 @@ const server = Bun.serve<WsData>({
         ) {
           logInfo(`cursor ${t}`, {
             source: "ws",
-            fields: wsFields(data, { type: t }),
+            fields: wsFields(data, {
+              type: t,
+              chatId: msg.chatId ? String(msg.chatId).slice(0, 16) : undefined,
+            }),
           });
         }
         handleCursorMessage(data.projectId, msg, (out) =>

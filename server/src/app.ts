@@ -69,10 +69,10 @@ import {
 import { hardReset, softReset } from "./system_reset";
 import { accessHosts } from "./network";
 import {
+  clientWorkspace,
   createChat,
   cursorConfigured,
   deleteChat,
-  getWorkspace,
   handleCursorMessage,
   listChatSummaries,
   listModels,
@@ -127,6 +127,7 @@ import {
   sudoStatus,
 } from "./sudo";
 import { noteSuspiciousRequest } from "./security";
+import { seatToolHealth } from "./shell_env";
 import {
   journalLines,
   restartHomebased,
@@ -134,7 +135,7 @@ import {
   systemStatus,
 } from "./system";
 import { appendTrace, listTrace } from "./trace";
-import { viewStatusAsync } from "./view";
+import { discoverX11Env, viewStatusAsync, x11AuthorityKind } from "./view";
 import {
   addWireguardClient,
   adoptWireguard,
@@ -170,6 +171,8 @@ app.get("/api/health", (c) => {
     runtime: "bun",
     displayName: identity.displayName,
     wireguard: wireguardHealthSummary(),
+    tools: seatToolHealth(),
+    x11Auth: x11AuthorityKind(discoverX11Env().xauthority),
     ...access,
   });
 });
@@ -881,7 +884,7 @@ app.get("/api/cursor/:projectId", async (c) => {
   await requireAuth(c);
   return c.json({
     configured: cursorConfigured(),
-    workspace: getWorkspace(c.req.param("projectId")),
+    workspace: clientWorkspace(c.req.param("projectId")),
   });
 });
 

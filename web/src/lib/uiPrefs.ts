@@ -138,6 +138,63 @@ export function writeLastProjectId(id: string): void {
   }
 }
 
+/** Work workspace pane. Chat is the full chat view inside Work. */
+export type WorkItem = 'apps' | 'shell' | 'files' | 'chat'
+
+export type WorkPlace = {
+  item: WorkItem
+  /** Last folder in Files. */
+  dir?: string
+  /** Last open file in Files. Empty clears it. */
+  file?: string
+}
+
+const WORK_ITEMS: WorkItem[] = ['apps', 'shell', 'files', 'chat']
+const WORK_PLACE_PREFIX = 'hb-work-place:'
+
+export function readWorkPlace(projectId: string): WorkPlace {
+  if (!projectId) return { item: 'apps' }
+  try {
+    const raw = localStorage.getItem(`${WORK_PLACE_PREFIX}${projectId}`)
+    if (!raw) return { item: 'apps' }
+    const p = JSON.parse(raw) as WorkPlace
+    const item = WORK_ITEMS.includes(p?.item) ? p.item : 'apps'
+    return {
+      item,
+      dir: typeof p.dir === 'string' && p.dir.startsWith('/') ? p.dir : undefined,
+      file: typeof p.file === 'string' && p.file.startsWith('/') ? p.file : undefined,
+    }
+  } catch {
+    return { item: 'apps' }
+  }
+}
+
+export function writeWorkPlace(projectId: string, patch: Partial<WorkPlace>): void {
+  if (!projectId) return
+  try {
+    const prev = readWorkPlace(projectId)
+    const next: WorkPlace = { ...prev, ...patch }
+    if (!WORK_ITEMS.includes(next.item)) next.item = 'apps'
+    if (!next.dir) delete next.dir
+    if (!next.file) delete next.file
+    localStorage.setItem(`${WORK_PLACE_PREFIX}${projectId}`, JSON.stringify(next))
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Older builds stored Apps / Shell / Files / Chat as their own tabs.
+ * Fold those into Work and remember the pane for this project.
+ */
+export function migrateLegacyWorkTab(tab: Tab, projectId: string): Tab {
+  const item: WorkItem | null =
+    tab === 'cursor' ? 'chat' : tab === 'apps' || tab === 'shell' || tab === 'files' ? tab : null
+  if (!item) return tab
+  if (projectId) writeWorkPlace(projectId, { item })
+  return 'work'
+}
+
 const AGENT_SCENE_KEY = 'hb-agent-scene'
 const AGENT_LAST_CHAT_KEY = 'hb-agent-last-chat'
 
@@ -237,6 +294,32 @@ export function writeChatDraft(projectId: string, chatId: string, text: string):
 
 export function clearChatDraft(projectId: string, chatId: string): void {
   writeChatDraft(projectId, chatId, '')
+}
+
+const CHAT_DRAFT_SCRATCH_KEY = 'hb-chat-draft-scratch'
+
+/**
+ * Unsent text typed before a chat id exists (tabs still loading, or the
+ * panel unmounted mid-keystroke). Applied to the chat once it is known.
+ */
+export function readChatDraftScratch(projectId: string): string {
+  if (!projectId) return ''
+  try {
+    return localStorage.getItem(`${CHAT_DRAFT_SCRATCH_KEY}:${projectId}`) || ''
+  } catch {
+    return ''
+  }
+}
+
+export function writeChatDraftScratch(projectId: string, text: string): void {
+  if (!projectId) return
+  try {
+    const key = `${CHAT_DRAFT_SCRATCH_KEY}:${projectId}`
+    if (!text) localStorage.removeItem(key)
+    else localStorage.setItem(key, text)
+  } catch {
+    /* ignore */
+  }
 }
 
 const PENDING_COMPOSE_KEY = 'hb-pending-compose'

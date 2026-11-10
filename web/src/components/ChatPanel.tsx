@@ -30,8 +30,10 @@ import {
   clearChatDraft,
   peekPendingCompose,
   readChatDraft,
+  readChatDraftScratch,
   takePendingCompose,
   writeChatDraft,
+  writeChatDraftScratch,
 } from '../lib/uiPrefs'
 import {
   speakText,
@@ -756,6 +758,24 @@ function MessageCard({
   )
 }
 
+function isHistoryStub(id: string): boolean {
+  return id === 'hb-wire-trim' || id === 'hb-history-trim' || /-r\d+$/.test(id)
+}
+
+function countableMessages(messages: ChatMsg[]): ChatMsg[] {
+  return messages.filter((m) => m.id && !isHistoryStub(m.id))
+}
+
+/** Keep older pages already fetched when a newer tail arrives from the server. */
+function mergeChatMessages(prev: ChatMsg[] | undefined, incoming: ChatMsg[]): ChatMsg[] {
+  const next = incoming.filter((m) => m.id !== 'hb-wire-trim')
+  if (!prev?.length) return next
+  const realPrev = prev.filter((m) => m.id && !isHistoryStub(m.id))
+  if (!realPrev.length) return next
+  const ids = new Set(next.map((m) => m.id))
+  const older = realPrev.filter((m) => !ids.has(m.id))
+  return [...older, ...next]
+}
 
 export function ChatPanel({
   projects,
@@ -791,7 +811,19 @@ export function ChatPanel({
   const isAgent = variant === 'agent'
 
   const [tabs, setTabs] = useState<ChatTab[]>([])
-  const [activeId, setActiveId] = useState('')
+  const [activeId, setActiveId] = useState(() => agentChatId || '')
+  /** False until the server workspace message (or the HTTP fallback) arrives. */
+  const [workspaceReady, setWorkspaceReady] = useState(false)
+  const workspaceReadyRef = useRef(false)
+  const historyFlight = useRef('')
+  const pendingPromptRef = useRef<{
+    prompt: string
+    images: ChatImage[]
+    contextPaths: string[]
+    model: string
+    mode: ChatMode
+    approvalPolicy: ApprovalPolicy
+  } | null>(null)
   const [input, setInput] = useState('')
   const [connState, setConnState] = useState<WsConnState>('connecting')
   const connStateRef = useRef<WsConnState>('connecting')
@@ -918,8 +950,11 @@ export function ChatPanel({
   defaultCwdRef.current = defaultCwd || ''
   defaultCwdLabelRef.current = defaultCwdLabel || ''
   const inputRef = useRef(input)
-  inputRef.current = input
   const draftChatRef = useRef({ projectId: '', chatId: '' })
+  /** Text the user typed before any chat id was bound (tabs still loading). */
+  const typedWhileUnbound = useRef(false)
+  const agentChatIdRef = useRef(agentChatId || '')
+  agentChatIdRef.current = agentChatId || ''
   /** Avoid re-applying the same pending compose seed twice. */
   const pendingComposeApplied = useRef('')
   const pendingComposeCreating = useRef('')
@@ -930,12 +965,50 @@ export function ChatPanel({
   const phaseRef = useRef(agentPhase)
   const notifyRef = useRef(notify)
   const doneClearTimer = useRef<number | null>(null)
+  /** Outbound WS frames queued while the VPN/socket is reconnecting. */
+  const outboxRef = useRef<string[]>([])
   activeIdRef.current = activeId
   tabsRef.current = tabs
   streamingRef.current = streaming
   phaseRef.current = agentPhase
   connStateRef.current = connState
   notifyRef.current = notify
+
+  function flushOutbox(ws?: WebSocket | null) {
+    const sock = ws || wsRef.current
+    if (!sock || sock.readyState !== WebSocket.OPEN) return
+    const queued = outboxRef.current
+    if (!queued.length) return
+    outboxRef.current = []
+    for (const raw of queued) {
+      try {
+        sock.send(raw)
+      } catch {
+        outboxRef.current.push(raw)
+        break
+      }
+    }
+  }
+
+  /** Send now, or queue until the cursor socket is live again (VPN flaps). */
+  function sendWs(payload: Record<string, unknown>, opts?: { queue?: boolean }): boolean {
+    const raw = JSON.stringify(payload)
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      try {
+        wsRef.current.send(raw)
+        return true
+      } catch {
+        /* fall through to queue */
+      }
+    }
+    if (opts?.queue === false) return false
+    outboxRef.current.push(raw)
+    // Cap so a stuck offline phone cannot grow forever.
+    if (outboxRef.current.length > 40) {
+      outboxRef.current = outboxRef.current.slice(-40)
+    }
+    return false
+  }
 
   function pushRunLog(line: string) {
     const stamp = new Date().toLocaleTimeString()
@@ -973,8 +1046,12 @@ export function ChatPanel({
   useEffect(() => {
     if (!project) return
     setTabs([])
-    setActiveId('')
-    setInput('')
+    setActiveId(agentChatIdRef.current || '')
+    workspaceReadyRef.current = false
+    setWorkspaceReady(false)
+    pendingPromptRef.current = null
+    outboxRef.current = []
+    historyFlight.current = ''
     setError('')
     setStreaming(false)
     setPhase('idle', '')
@@ -994,31 +1071,85 @@ export function ChatPanel({
     else setPhase('idle', '')
   }, [activeId])
 
-  // Persist / restore composer drafts per chat (leave + come back keeps typing).
+  function persistComposer(text: string) {
+    inputRef.current = text
+    const pid = draftChatRef.current.projectId || project?.id || ''
+    const cid = draftChatRef.current.chatId || ''
+    if (!cid) typedWhileUnbound.current = true
+    if (pid && cid) writeChatDraft(pid, cid, text)
+    else if (pid) writeChatDraftScratch(pid, text)
+  }
+
+  function setComposerText(text: string) {
+    persistComposer(text)
+    setInput(text)
+  }
+
+  // Persist / restore composer drafts per chat. Unsent text survives tab
+  // switches, workspace reloads, and leaving the screen.
   useEffect(() => {
     const pid = project?.id || ''
     const cid = activeId || ''
     const prev = draftChatRef.current
+    const text = inputRef.current
     if (prev.projectId && prev.chatId && (prev.projectId !== pid || prev.chatId !== cid)) {
-      writeChatDraft(prev.projectId, prev.chatId, inputRef.current)
+      writeChatDraft(prev.projectId, prev.chatId, text)
+      typedWhileUnbound.current = false
+    } else if (prev.projectId && !prev.chatId && prev.projectId !== pid) {
+      writeChatDraftScratch(prev.projectId, text)
     }
+
+    const sameProject = prev.projectId === pid
+    const carryUnbound = sameProject && !prev.chatId && !!cid && typedWhileUnbound.current
     draftChatRef.current = { projectId: pid, chatId: cid }
-    if (!pid || !cid) {
-      if (!cid) setInput('')
+
+    if (!pid) return
+    if (!cid) return
+
+    // Stale id from the previous project while its tabs are still in memory.
+    if (
+      !sameProject &&
+      tabsRef.current.length > 0 &&
+      !tabsRef.current.some((t) => t.id === cid)
+    ) {
       return
     }
-    // Skip stale chat ids left over during a project switch before activeId clears.
-    if (tabsRef.current.length > 0 && !tabsRef.current.some((t) => t.id === cid)) return
-    setInput(readChatDraft(pid, cid))
+
+    if (carryUnbound && text) {
+      typedWhileUnbound.current = false
+      writeChatDraft(pid, cid, text)
+      writeChatDraftScratch(pid, '')
+      return
+    }
+    typedWhileUnbound.current = false
+
+    const stored = readChatDraft(pid, cid)
+    const scratch = readChatDraftScratch(pid)
+    const next = stored || scratch
+    if (!stored && scratch) writeChatDraft(pid, cid, scratch)
+    if (scratch) writeChatDraftScratch(pid, '')
+    inputRef.current = next
+    setInput(next)
   }, [project?.id, activeId])
 
   useEffect(() => {
-    if (!project?.id || !activeId) return
-    const pid = project.id
-    const cid = activeId
-    const t = window.setTimeout(() => writeChatDraft(pid, cid, input), 220)
-    return () => window.clearTimeout(t)
-  }, [input, project?.id, activeId])
+    const flush = () => {
+      const { projectId, chatId } = draftChatRef.current
+      const text = inputRef.current
+      if (projectId && chatId) writeChatDraft(projectId, chatId, text)
+      else if (projectId) writeChatDraftScratch(projectId, text)
+    }
+    const onHide = () => {
+      if (document.visibilityState === 'hidden') flush()
+    }
+    window.addEventListener('pagehide', flush)
+    document.addEventListener('visibilitychange', onHide)
+    return () => {
+      flush()
+      window.removeEventListener('pagehide', flush)
+      document.removeEventListener('visibilitychange', onHide)
+    }
+  }, [])
 
   // Entering a chat tab → jump to bottom and stick unless user scrolls away
   useEffect(() => {
@@ -1140,6 +1271,59 @@ export function ChatPanel({
     void refreshModels()
   }, [refreshModels])
 
+  function deliverPending(chatId: string, cwd?: string) {
+    const pending = pendingPromptRef.current
+    if (!pending || !chatId) return
+    pendingPromptRef.current = null
+    setStreaming(true)
+    setPhase('starting', 'starting…')
+    sendWs({
+      type: 'send',
+      prompt: pending.prompt,
+      model: pending.model || defaultModel,
+      mode: pending.mode,
+      approvalPolicy: pending.approvalPolicy,
+      chatId,
+      cwd: cwd || undefined,
+      queueIfBusy: true,
+      images: pending.images,
+      contextPaths: pending.contextPaths,
+    })
+  }
+
+  async function hydrateChats(projectId: string) {
+    if (workspaceReadyRef.current) return
+    try {
+      const data = await api.cursorChats(projectId)
+      if (workspaceReadyRef.current) return
+      const next: ChatTab[] = (data.chats || []).map((c) => ({
+        id: c.id,
+        title: c.title,
+        cwd: c.cwd,
+        updatedAt: c.updatedAt,
+        running: c.running,
+        messages: (c.recent || []).map((r, i) => ({
+          id: `${c.id}-r${i}`,
+          role: r.role as ChatMsg['role'],
+          text: r.text || r.tool?.detail || '',
+        })),
+      }))
+      setTabs(next)
+      const nextActive =
+        data.activeId && next.some((t) => t.id === data.activeId)
+          ? data.activeId
+          : next[0]?.id || ''
+      setActiveId(nextActive)
+      workspaceReadyRef.current = true
+      setWorkspaceReady(true)
+      if (nextActive) deliverPending(nextActive, next.find((t) => t.id === nextActive)?.cwd)
+    } catch (e) {
+      if (!workspaceReadyRef.current) {
+        setError(e instanceof Error ? e.message : 'Could not load workspace')
+      }
+    }
+  }
+
   useEffect(() => {
     if (!project) return
     const projectId = project.id
@@ -1160,10 +1344,27 @@ export function ChatPanel({
       },
       onOpen: (ws) => {
         wsRef.current = ws
+        flushOutbox(ws)
+        // After a VPN flap the server already pushes workspace on connect, but
+        // ask again if we were mid-run so missed done/tab events resync.
+        if (workspaceReadyRef.current) {
+          try {
+            ws.send(JSON.stringify({ type: 'workspace' }))
+          } catch {
+            /* ignore */
+          }
+        } else {
+          window.setTimeout(() => {
+            if (workspaceReadyRef.current) return
+            if (wsRef.current !== ws) return
+            void hydrateChats(projectId)
+          }, 2000)
+        }
       },
       onMessage: (ev) => {
         try {
           const msg = JSON.parse(ev.data as string)
+          if (msg.type === 'pong') return
           const chatId = String(msg.chatId || '')
           const forActive = !chatId || chatId === activeIdRef.current
           if (msg.type === 'deleted') {
@@ -1180,7 +1381,51 @@ export function ChatPanel({
             return
           }
           if (msg.type === 'workspace') {
-            const nextTabs = (Array.isArray(msg.tabs) ? msg.tabs : []) as ChatTab[]
+            const incoming = (Array.isArray(msg.tabs) ? msg.tabs : []) as ChatTab[]
+            const nextTabs = incoming.map((tab) => {
+              const prev = tabsRef.current.find((t) => t.id === tab.id)
+              const messages = mergeChatMessages(prev?.messages, tab.messages || [])
+              // Server says idle → clear any client-only streaming leftovers from
+              // a disconnect that missed the done event.
+              const cleaned =
+                tab.running
+                  ? messages
+                  : messages.map((m) =>
+                      m.streaming ||
+                      m.tool?.status === 'running' ||
+                      m.tool?.status === 'pending' ||
+                      m.task?.status === 'running' ||
+                      m.task?.status === 'pending'
+                        ? {
+                            ...m,
+                            streaming: false,
+                            tool: m.tool
+                              ? {
+                                  ...m.tool,
+                                  status:
+                                    m.tool.status === 'running' || m.tool.status === 'pending'
+                                      ? 'cancelled'
+                                      : m.tool.status,
+                                }
+                              : m.tool,
+                            task: m.task
+                              ? {
+                                  ...m.task,
+                                  status:
+                                    m.task.status === 'running' || m.task.status === 'pending'
+                                      ? 'cancelled'
+                                      : m.task.status,
+                                }
+                              : m.task,
+                          }
+                        : m,
+                    )
+              return {
+                ...tab,
+                messages: cleaned,
+                historyTotal: tab.historyTotal ?? prev?.historyTotal,
+              }
+            })
             setTabs(nextTabs)
             const held = activeIdRef.current
             const follow = followServerActive.current
@@ -1218,8 +1463,13 @@ export function ChatPanel({
                 }
               }
             }
+            const locked = agentChatIdRef.current
+            if (locked && nextTabs.some((t) => t.id === locked)) nextActive = locked
             setActiveId(nextActive)
+            workspaceReadyRef.current = true
+            setWorkspaceReady(true)
             const current = nextTabs.find((t) => t.id === nextActive) || nextTabs[0]
+            if (nextActive) deliverPending(nextActive, current?.cwd)
             const isRunning = !!current?.running
             setStreaming(isRunning)
             // Don't clobber a specific live phase (thinking/tool/writing) with generic busy.
@@ -1274,16 +1524,64 @@ export function ChatPanel({
             }
           } else if (msg.type === 'import-ack') {
             clearLocalChats(projectId)
+          } else if (msg.type === 'history') {
+            const chatId = String(msg.chatId || '')
+            const batch = (Array.isArray(msg.messages) ? msg.messages : []) as ChatMsg[]
+            const total = Number(msg.total)
+            historyFlight.current = ''
+            const el = listRef.current
+            const stick = stickBottom.current
+            const prevHeight = el?.scrollHeight ?? 0
+            const prevTop = el?.scrollTop ?? 0
+            setTabs((prev) =>
+              prev.map((t) => {
+                if (t.id !== chatId) return t
+                const have = new Set(t.messages.map((m) => m.id))
+                const older = batch.filter((m) => m.id && !have.has(m.id))
+                if (!older.length) {
+                  return {
+                    ...t,
+                    historyTotal: countableMessages(t.messages).length,
+                    historyFrom: 0,
+                  }
+                }
+                const messages = [...older, ...t.messages]
+                const loaded = countableMessages(messages).length
+                return {
+                  ...t,
+                  messages,
+                  historyTotal: Number.isFinite(total) ? total : t.historyTotal,
+                  historyFrom: msg.done ? 0 : Math.max(0, (Number.isFinite(total) ? total : loaded) - loaded),
+                }
+              }),
+            )
+            requestAnimationFrame(() => {
+              const node = listRef.current
+              if (!node) return
+              if (stick) node.scrollTop = node.scrollHeight
+              else node.scrollTop = prevTop + (node.scrollHeight - prevHeight)
+            })
           } else if (msg.type === 'tab' && msg.tab?.id) {
             const tab = msg.tab as ChatTab
             setTabs((prev) => {
               const idx = prev.findIndex((t) => t.id === tab.id)
-              if (idx < 0) return [...prev, tab]
+              const merged: ChatTab = {
+                ...tab,
+                messages: mergeChatMessages(prev[idx]?.messages, tab.messages || []),
+                historyTotal: tab.historyTotal ?? prev[idx]?.historyTotal,
+              }
+              if (idx < 0) return [...prev, merged]
               const next = prev.slice()
-              next[idx] = tab
+              next[idx] = merged
               return next
             })
-            if (tab.id === activeIdRef.current) {
+            if (!activeIdRef.current || followServerActive.current) {
+              followServerActive.current = false
+              setActiveId(tab.id)
+              workspaceReadyRef.current = true
+              setWorkspaceReady(true)
+              deliverPending(tab.id, tab.cwd)
+            } else if (tab.id === activeIdRef.current) {
               setStreaming(!!tab.running)
               if (!tab.running && phaseRef.current === 'busy') setPhase('idle', '')
             }
@@ -1910,8 +2208,10 @@ export function ChatPanel({
             if (!forActive) return
             if (msg.agentId) setAgentId(String(msg.agentId))
           }
-        } catch {
-          /* ignore */
+        } catch (e) {
+          console.error('[cursor] message failed', e)
+          setError('Workspace update failed. Retrying…')
+          void hydrateChats(projectId)
         }
       },
     })
@@ -2002,10 +2302,6 @@ export function ChatPanel({
   }
 
   function createChat(cwd = '', title?: string) {
-    if (!socketOpen()) {
-      setError('Reconnecting to the server — try again in a moment.')
-      return
-    }
     const resolvedCwd = (cwd || defaultCwd || '').trim()
     const resolvedTitle =
       title ||
@@ -2013,9 +2309,11 @@ export function ChatPanel({
         ? defaultCwdLabel || 'Vision'
         : '')
     followServerActive.current = true
-    wsRef.current?.send(
-      JSON.stringify({ type: 'new', cwd: resolvedCwd, title: resolvedTitle || '' }),
-    )
+    if (
+      !sendWs({ type: 'new', cwd: resolvedCwd, title: resolvedTitle || '' })
+    ) {
+      setPhase('busy', 'queued — reconnecting…')
+    }
     setNewOpen(false)
     setPickingFolder(false)
   }
@@ -2106,7 +2404,7 @@ export function ChatPanel({
       const before = input.slice(0, atMention.start)
       const after = input.slice(atMention.start + 1 + atMention.query.length)
       const next = `${before}${after.replace(/^\s/, '')}`
-      setInput(next)
+      setComposerText(next)
       const caret = before.length
       requestAnimationFrame(() => {
         const ta = textareaRef.current
@@ -2128,7 +2426,7 @@ export function ChatPanel({
     const start = ta?.selectionStart ?? input.length
     const end = ta?.selectionEnd ?? start
     const next = `${input.slice(0, start)}@${input.slice(end)}`
-    setInput(next)
+    setComposerText(next)
     const caret = start + 1
     setAtMention({ start, query: '' })
     requestAnimationFrame(() => {
@@ -2157,10 +2455,37 @@ export function ChatPanel({
           ? 'Please review the attached file.'
           : `Please review the ${contextPaths.length} attached paths.`
     }
-    if ((!prompt && !images.length && !contextPaths.length) || !active) return
-    if (!socketOpen()) {
-      setError('Reconnecting to the server — try again in a moment.')
+    if (!prompt && !images.length && !contextPaths.length) return
+    if (!active) {
+      pendingPromptRef.current = {
+        prompt,
+        images: images.map((img) => ({
+          mimeType: img.mimeType,
+          data: img.data,
+          name: img.name,
+          width: img.width,
+          height: img.height,
+        })),
+        contextPaths,
+        model: model || defaultModel,
+        mode,
+        approvalPolicy,
+      }
+      setError('')
+      if (!opts?.prompt) setComposerText('')
+      setDraftImages([])
+      setDraftContext([])
+      setStreaming(true)
+      setPhase('starting', 'starting…')
+      followServerActive.current = true
+      createChat()
       return
+    }
+    if (!socketOpen()) {
+      // Keep the optimistic UI + queue the frame — VPN flaps should not drop prompts.
+      setError('')
+      setPhase('busy', 'queued — reconnecting…')
+      pushRunLog('send queued — socket reconnecting')
     }
     const replaceLastUser = opts?.replaceLastUser ?? editingLast
     setError('')
@@ -2185,7 +2510,7 @@ export function ChatPanel({
     setEditingLast(false)
     setAtMention(null)
     if (!opts?.prompt) {
-      setInput('')
+      setComposerText('')
       if (project?.id && active.id) clearChatDraft(project.id, active.id)
     }
     setDraftImages([])
@@ -2233,27 +2558,25 @@ export function ChatPanel({
         }),
       )
     }
-    wsRef.current?.send(
-      JSON.stringify({
-        type: 'send',
-        prompt,
-        model: model || defaultModel,
-        mode,
-        approvalPolicy,
-        chatId: active.id,
-        cwd: active.cwd || undefined,
-        replaceLastUser,
-        queueIfBusy: true,
-        images: images.map((img) => ({
-          mimeType: img.mimeType,
-          data: img.data,
-          name: img.name,
-          width: img.width,
-          height: img.height,
-        })),
-        contextPaths,
-      }),
-    )
+    sendWs({
+      type: 'send',
+      prompt,
+      model: model || defaultModel,
+      mode,
+      approvalPolicy,
+      chatId: active.id,
+      cwd: active.cwd || undefined,
+      replaceLastUser,
+      queueIfBusy: true,
+      images: images.map((img) => ({
+        mimeType: img.mimeType,
+        data: img.data,
+        name: img.name,
+        width: img.width,
+        height: img.height,
+      })),
+      contextPaths,
+    })
   }
 
   // Add-app → Ask Chat: seed (and optionally send) once the project socket is live.
@@ -2283,14 +2606,14 @@ export function ChatPanel({
     if (!taken) return
     pendingComposeApplied.current = applyKey
     pendingComposeCreating.current = ''
-    setInput(taken.text)
+    setComposerText(taken.text)
     writeChatDraft(project.id, activeId, taken.text)
     if (taken.autoSend) {
       window.setTimeout(() => {
         if (!socketOpen() || streamingRef.current) return
         send(undefined, { prompt: taken.text })
         clearChatDraft(project.id, activeId)
-        setInput('')
+        setComposerText('')
       }, 180)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- send/socketOpen close over latest active chat
@@ -2325,7 +2648,7 @@ export function ChatPanel({
   }
 
   function editLastUser(text: string, contextPaths?: string[]) {
-    setInput(text)
+    setComposerText(text)
     setDraftContext(contextPaths ? [...contextPaths] : [])
     setEditingLast(true)
     setSettingsOpen(false)
@@ -2487,7 +2810,7 @@ export function ChatPanel({
     const applySpeech = (text: string) => {
       if (gen !== listenGen.current) return
       const base = inputBeforeSpeech.current
-      setInput(base ? `${base} ${text}` : text)
+      setComposerText(base ? `${base} ${text}` : text)
     }
     const handle = startSpeechDictation({
       onPartial: applySpeech,
@@ -2602,6 +2925,28 @@ export function ChatPanel({
     statusPhasePre === 'approval' ||
     statusPhasePre === 'sudo'
   const statusNow = useNowTick(statusLivePre)
+
+  // Backfill older messages after the first window is on screen.
+  useEffect(() => {
+    if (!workspaceReady || !active) return
+    const total = active.historyTotal
+    const loaded = countableMessages(active.messages).length
+    if (total == null || loaded >= total) return
+    const oldest = countableMessages(active.messages)[0]
+    if (!oldest?.id) return
+    const key = `${active.id}:${oldest.id}`
+    if (historyFlight.current === key) return
+    const ws = wsRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    historyFlight.current = key
+    ws.send(
+      JSON.stringify({ type: 'history', chatId: active.id, beforeId: oldest.id, limit: 40 }),
+    )
+    const timer = window.setTimeout(() => {
+      if (historyFlight.current === key) historyFlight.current = ''
+    }, 8000)
+    return () => window.clearTimeout(timer)
+  }, [workspaceReady, active, connState])
 
   // Home Agent: keep the locked chat selected once the workspace arrives.
   useEffect(() => {
@@ -2857,14 +3202,14 @@ export function ChatPanel({
                     setActiveId(t.id)
                     wsRef.current?.send(JSON.stringify({ type: 'select', chatId: t.id }))
                   }}
-                  className="px-2.5 py-1.5 text-[11px] font-semibold max-w-[7.5rem] truncate"
+                  className="hb-chat-tab px-3 text-[11px] font-semibold max-w-[9rem] truncate"
                   title={t.cwd ? `Folder: ${t.cwd}` : `App: ${project.name}`}
                 >
                   {t.title}
                 </button>
                 <button
                   type="button"
-                  className="pr-2 pl-0.5 text-mute hover:text-danger text-sm leading-none"
+                  className="hb-chat-tab-x text-mute hover:text-danger text-sm leading-none"
                   onClick={() => setDeleteId(t.id)}
                   aria-label={`Delete ${t.title}`}
                   disabled={tabs.length <= 1}
@@ -2999,10 +3344,33 @@ export function ChatPanel({
                                   ? 'ready'
                                   : connStateLabel(connState))
 
+  const historyLoaded = countableMessages(active?.messages || []).length
+  const historyTotal = active?.historyTotal
+  const openingWorkspace = !workspaceReady
+  const backfilling =
+    workspaceReady && !!active && typeof historyTotal === 'number' && historyTotal > historyLoaded
+  const showChatLoad = openingWorkspace || backfilling
+  const chatLoadPct = openingWorkspace
+    ? connState === 'live'
+      ? 22
+      : connState === 'reconnecting'
+        ? 14
+        : 8
+    : !historyTotal
+      ? 100
+      : Math.max(4, Math.min(100, Math.round((historyLoaded / historyTotal) * 100)))
+  const chatLoadLabel = openingWorkspace
+    ? connState === 'live'
+      ? 'Opening workspace'
+      : connState === 'reconnecting'
+        ? 'Reconnecting'
+        : 'Connecting'
+    : `Earlier messages · ${historyLoaded} of ${historyTotal}`
+
   const messages = (
     <div
       ref={listRef}
-      className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-3 space-y-3"
+      className="relative flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-3 space-y-3"
       onScroll={(e) => {
         const el = e.currentTarget
         const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 72
@@ -3010,8 +3378,31 @@ export function ChatPanel({
         setShowJump(!nearBottom && el.scrollHeight > el.clientHeight + 120)
       }}
     >
-      {!active && (
+      {showChatLoad && (
+        <div
+          className="hb-chat-load"
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={chatLoadPct}
+          aria-label={chatLoadLabel}
+        >
+          <div className="hb-chat-load-track">
+            <div className="hb-chat-load-fill" style={{ width: `${chatLoadPct}%` }} />
+          </div>
+          <span className="hb-chat-load-label">{chatLoadLabel}</span>
+        </div>
+      )}
+      {!workspaceReady && !active && (
         <p className="text-mute text-xs">Loading workspace…</p>
+      )}
+      {workspaceReady && !active && (
+        <div className="mt-2 max-w-md space-y-2">
+          <p className="text-text font-semibold text-sm">No chat yet</p>
+          <p className="text-mute text-xs leading-relaxed">
+            Send a message to open this workspace. The composer works as soon as the server is connected.
+          </p>
+        </div>
       )}
       {active && active.messages.length === 0 && (
         <div className="mt-2 max-w-md space-y-2">
@@ -3605,7 +3996,7 @@ export function ChatPanel({
             value={input}
             onChange={(e) => {
               const v = e.target.value
-              setInput(v)
+              setComposerText(v)
               if (editingLast && !v.trim()) setEditingLast(false)
               syncAtMention(v, e.target.selectionStart ?? v.length)
             }}

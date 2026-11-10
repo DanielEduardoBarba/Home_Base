@@ -173,6 +173,17 @@ export function HomeAgentTab({
     return selectedId || projects[0]?.id || ''
   })
   const [projectRecents, setProjectRecents] = useState<string[]>([])
+  /**
+   * Keep the last chat's ChatPanel (and /ws/cursor) mounted after ← Back so a
+   * VPN mid-run leave still receives done/tab events until the user opens
+   * another chat or leaves Agent.
+   */
+  const [heldChat, setHeldChat] = useState<{
+    projectId: string
+    cwd: string
+    chatId: string
+    fromAll?: boolean
+  } | null>(null)
   const lastChatId =
     scene.kind === 'chats' ? readAgentLastChat(scene.projectId, scene.cwd) : ''
 
@@ -372,6 +383,7 @@ export function HomeAgentTab({
       const { chat } = await api.cursorCreateChat(projectId, { cwd, title })
       if (cwd.startsWith('/')) pushAgentRecentAbs({ path: cwd, projectId })
       else pushAgentRecentDir(projectId, cwd)
+      setHeldChat(null)
       setScene({ kind: 'chat', projectId, cwd, chatId: chat.id })
     } catch (e) {
       reportError(e instanceof Error ? e.message : String(e))
@@ -401,6 +413,7 @@ export function HomeAgentTab({
 
   function openChatRow(c: ChatRow, fromAll = false) {
     onSelect(c.projectId)
+    setHeldChat(null)
     setScene({
       kind: 'chat',
       projectId: c.projectId,
@@ -437,13 +450,14 @@ export function HomeAgentTab({
             onSelect={onSelect}
             variant="agent"
             agentChatId={chatId}
-            onAgentBack={() =>
+            onAgentBack={() => {
+              setHeldChat({ projectId, cwd, chatId, fromAll })
               setScene(
                 fromAll
                   ? { kind: 'all' }
                   : { kind: 'chats', projectId, cwd },
               )
-            }
+            }}
             onPresent={(req) => {
               if (req.scene !== 'shell' && req.scene !== 'files') return
               setScene((prev) => {
@@ -521,14 +535,34 @@ export function HomeAgentTab({
   }
 
   return (
-    <div className="hb-agent h-full flex flex-col min-h-0">
+    <div className="hb-agent h-full flex flex-col min-h-0 relative">
+      {heldChat && (
+        <div
+          className="invisible pointer-events-none absolute inset-0 overflow-hidden"
+          aria-hidden
+        >
+          <ChatPanel
+            projects={projects}
+            selectedId={heldChat.projectId}
+            onSelect={onSelect}
+            variant="agent"
+            agentChatId={heldChat.chatId}
+            onAgentBack={() => setHeldChat(null)}
+          />
+        </div>
+      )}
       <div className="hb-agent-bar">
         <button
           type="button"
           className="hb-btn hb-btn-ghost text-sm"
           onClick={() => {
-            if (scene.kind === 'chats' || scene.kind === 'all') setScene({ kind: 'setup' })
-            else onHome()
+            if (scene.kind === 'chats' || scene.kind === 'all') {
+              setHeldChat(null)
+              setScene({ kind: 'setup' })
+            } else {
+              setHeldChat(null)
+              onHome()
+            }
           }}
         >
           ← {scene.kind === 'setup' ? 'Home' : 'Back'}

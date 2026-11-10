@@ -21,12 +21,16 @@ import { runSceneRefresh } from './lib/sceneRefresh'
 import { applyMobileSafeTop } from './lib/theme'
 import { type AppArea, type Project, type Tab } from './lib/types'
 import {
+  migrateLegacyWorkTab,
   readLastArea,
   readLastProjectId,
   readLastTab,
+  readWorkPlace,
   writeLastArea,
   writeLastProjectId,
   writeLastTab,
+  writeWorkPlace,
+  type WorkItem,
 } from './lib/uiPrefs'
 import { writeDockOpen } from './components/ChatPanel'
 import { useVisibleInterval } from './lib/visibility'
@@ -158,9 +162,10 @@ type HostLink = 'live' | 'reconnecting' | 'unreachable'
 
 function AuthedApp() {
   const [area, setArea] = useState<AppArea>('home')
-  const [tab, setTab] = useState<Tab>('apps')
+  const [tab, setTab] = useState<Tab>('work')
   const [projects, setProjects] = useState<Project[]>([])
   const [selectedId, setSelectedId] = useState('')
+  const [workItem, setWorkItem] = useState<WorkItem>('apps')
   const [attachSessionIds, setAttachSessionIds] = useState<string[] | null>(null)
   const [workPresent, setWorkPresent] = useState<PresentRequest | null>(null)
   /** Bumps so Work re-applies even if the same scene is requested twice. */
@@ -184,8 +189,13 @@ function AuthedApp() {
 
   useEffect(() => {
     setArea(readLastArea('home'))
-    setTab(readLastTab('apps'))
-    setSelectedId(readLastProjectId())
+    const pid = readLastProjectId()
+    const savedTab = readLastTab('work')
+    const nextTab = migrateLegacyWorkTab(savedTab, pid)
+    if (nextTab !== savedTab) writeLastTab(nextTab)
+    setTab(nextTab)
+    setSelectedId(pid)
+    if (pid) setWorkItem(readWorkPlace(pid).item)
     setHostLabel(location.hostname || 'host')
   }, [])
 
@@ -242,32 +252,50 @@ function AuthedApp() {
       unlockAudio()
       closeInbox()
       if (id === 'work') {
-        if (!workMenuOpen) {
-          setWorkMenuOpen(true)
+        if (tab !== 'work') {
+          setWorkMenuOpen(false)
+          goTab('work')
           return
         }
-        // Second tap on Work → Work scene
-        setWorkPresent(null)
-        goTab('work')
+        // Already in Work — tray switches Apps / Chat / Shell / Files
+        setWorkMenuOpen((open) => !open)
         return
       }
       setWorkMenuOpen(false)
       setWorkPresent(null)
       goTab(id)
     },
-    [closeInbox, goTab, unlockAudio, workMenuOpen],
+    [closeInbox, goTab, tab, unlockAudio],
+  )
+
+  const chooseWorkItem = useCallback(
+    (item: WorkItem) => {
+      setWorkItem(item)
+      if (selectedId) writeWorkPlace(selectedId, { item })
+      setWorkPresent(null)
+      setWorkMenuOpen(false)
+      goTab('work')
+    },
+    [goTab, selectedId],
   )
 
   const onWorkSubNav = useCallback(
     (id: Tab) => {
       unlockAudio()
       closeInbox()
-      setWorkPresent(null)
-      setWorkMenuOpen(false)
-      goTab(id)
+      const item: WorkItem | null =
+        id === 'cursor' ? 'chat' : id === 'apps' || id === 'shell' || id === 'files' ? id : null
+      if (!item) return
+      chooseWorkItem(item)
     },
-    [closeInbox, goTab, unlockAudio],
+    [chooseWorkItem, closeInbox, unlockAudio],
   )
+
+  // Each project keeps its own Apps / Shell / Files / Chat pane.
+  useEffect(() => {
+    if (!selectedId) return
+    setWorkItem(readWorkPlace(selectedId).item)
+  }, [selectedId])
 
   // Close Work submenu on outside tap / Escape
   useEffect(() => {
@@ -299,8 +327,10 @@ function AuthedApp() {
     workPresentSeq.current += 1
     setWorkPresent(req)
     setWorkPresentKey(workPresentSeq.current)
+    setWorkItem(req.scene)
+    if (selectedId) writeWorkPlace(selectedId, { item: req.scene })
     goTab('work')
-  }, [goTab])
+  }, [goTab, selectedId])
 
   const refreshProjects = useCallback(async () => {
     try {
@@ -327,7 +357,11 @@ function AuthedApp() {
           setVpnHostHint(health.vpnHost || null)
         }
       }
-      if (!data.projects.find((p) => p.id === selectedId)) {
+      const preferred = selectedId || readLastProjectId()
+      const found = data.projects.find((p) => p.id === preferred)
+      if (found) {
+        if (found.id !== selectedId) setSelectedId(found.id)
+      } else {
         const next = data.projects[0]?.id || ''
         setSelectedId(next)
         if (next) writeLastProjectId(next)
@@ -387,8 +421,11 @@ function AuthedApp() {
           }}
           onOpenShell={(ids) => {
             const list = Array.isArray(ids) ? ids : ids ? [ids] : []
-            setAttachSessionIds(list.length ? list : null)
-            goTab('shell')
+            presentInWork({
+              scene: 'shell',
+              sessionIds: list.length ? list : undefined,
+              newShell: !list.length,
+            })
           }}
         />
       </div>
@@ -400,6 +437,8 @@ function AuthedApp() {
         selectedId={selectedId}
         onSelect={selectProject}
         onRefresh={refreshProjects}
+        item={workItem}
+        onItemChange={chooseWorkItem}
         present={workPresent}
         presentKey={workPresentKey}
       />
@@ -506,7 +545,7 @@ function AuthedApp() {
           <SettingsTab
             onHome={() => goArea('home')}
             onSignedOut={() => {
-              goTab('apps')
+              goTab('work')
               goArea('home')
             }}
           />
@@ -721,19 +760,28 @@ function AuthedApp() {
             role="group"
             aria-label="Work"
           >
-            {workSubtabs.map((t) => (
+            {workSubtabs.map((t) => {
+              const item: WorkItem | null =
+                t.id === 'cursor'
+                  ? 'chat'
+                  : t.id === 'apps' || t.id === 'shell' || t.id === 'files'
+                    ? t.id
+                    : null
+              const subActive = tab === 'work' && item != null && workItem === item
+              return (
               <button
                 key={t.id}
                 type="button"
                 onClick={() => onWorkSubNav(t.id)}
                 className="hb-nav-item hb-nav-item--sub"
-                data-active={tab === t.id}
-                aria-current={tab === t.id ? 'page' : undefined}
+                data-active={subActive}
+                aria-current={subActive ? 'page' : undefined}
               >
                 <TabIcon id={t.id} />
                 <span className="truncate max-w-full px-0.5">{t.label}</span>
               </button>
-            ))}
+              )
+            })}
           </div>
         )}
         <div

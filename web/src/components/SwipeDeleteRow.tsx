@@ -10,6 +10,8 @@ import {
 } from 'react'
 
 const SWIPE_DELETE_WIDTH = 88
+/** Horizontal travel before a touch is a swipe instead of a tap. */
+const SWIPE_ARM_PX = 18
 
 type Props = {
   children: ReactNode
@@ -22,9 +24,12 @@ type Props = {
   className?: string
 }
 
+const PHONE_MQ = '(max-width: 640px)'
+
 /**
- * Shared swipe-left → Delete card (touch + mouse/pointer). Reveals a rounded
- * Delete action, then an in-row confirm step before calling `onDelete`.
+ * Phone: swipe left to reveal Delete, then confirm.
+ * Wider than a phone: a small top-right × opens the same confirm step.
+ * A click on the row still opens the chat.
  */
 export function SwipeDeleteRow({
   children,
@@ -36,6 +41,7 @@ export function SwipeDeleteRow({
 }: Props) {
   const [dx, setDx] = useState(0)
   const [confirming, setConfirming] = useState(false)
+  const [phone, setPhone] = useState(false)
   const dxRef = useRef(0)
   const startX = useRef(0)
   const startY = useRef(0)
@@ -43,6 +49,7 @@ export function SwipeDeleteRow({
   const axis = useRef<'x' | 'y' | null>(null)
   const dragging = useRef(false)
   const didSwipe = useRef(false)
+  const captured = useRef(false)
   const frontRef = useRef<HTMLDivElement | null>(null)
   const revealing = !confirming && dx < -6
 
@@ -57,9 +64,18 @@ export function SwipeDeleteRow({
   }, [setOffset])
 
   useEffect(() => {
+    const mq = window.matchMedia(PHONE_MQ)
+    const apply = () => setPhone(mq.matches)
+    apply()
+    mq.addEventListener('change', apply)
+    return () => mq.removeEventListener('change', apply)
+  }, [])
+
+  useEffect(() => {
+    if (!phone) closeSwipe()
     if (disabled || deleting) return
     if (!confirming) closeSwipe()
-  }, [disabled, deleting, confirming, closeSwipe])
+  }, [phone, disabled, deleting, confirming, closeSwipe])
 
   function requestDelete() {
     closeSwipe()
@@ -83,16 +99,20 @@ export function SwipeDeleteRow({
   }
 
   function onPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
-    if (disabled || deleting || confirming) return
-    // Left mouse / primary touch / pen only
-    if (e.pointerType === 'mouse' && e.button !== 0) return
+    if (disabled || deleting || confirming || !phone) return
+    // Mouse clicks must hit the row. Pointer capture on pointerdown would
+    // swallow the click so the chat never opens.
+    if (e.pointerType === 'mouse') return
+    if (e.button !== 0) return
+    const target = e.target
+    if (target instanceof Element && target.closest('button.hb-swipe-delete-btn')) return
     dragging.current = true
     didSwipe.current = false
+    captured.current = false
     startX.current = e.clientX
     startY.current = e.clientY
     baseDx.current = dxRef.current
     axis.current = null
-    frontRef.current?.setPointerCapture(e.pointerId)
   }
 
   function onPointerMove(e: ReactPointerEvent<HTMLDivElement>) {
@@ -100,22 +120,26 @@ export function SwipeDeleteRow({
     const mx = e.clientX - startX.current
     const my = e.clientY - startY.current
     if (!axis.current) {
-      if (Math.abs(mx) < 6 && Math.abs(my) < 6) return
+      if (Math.abs(mx) < 8 && Math.abs(my) < 8) return
       axis.current = Math.abs(mx) > Math.abs(my) ? 'x' : 'y'
       if (axis.current === 'y') {
-        // Vertical scroll — release capture so the list can scroll
         dragging.current = false
-        try {
-          frontRef.current?.releasePointerCapture(e.pointerId)
-        } catch {
-          /* ignore */
-        }
         return
       }
     }
     if (axis.current !== 'x') return
+    // A short horizontal wobble is still a tap.
+    if (!captured.current && Math.abs(mx) < SWIPE_ARM_PX) return
+    if (!captured.current) {
+      captured.current = true
+      didSwipe.current = true
+      try {
+        frontRef.current?.setPointerCapture(e.pointerId)
+      } catch {
+        /* ignore */
+      }
+    }
     e.preventDefault()
-    didSwipe.current = true
     const next = Math.min(0, Math.max(-SWIPE_DELETE_WIDTH, baseDx.current + mx))
     setOffset(next)
   }
@@ -138,8 +162,19 @@ export function SwipeDeleteRow({
   }
 
   function onClickCapture(e: React.MouseEvent) {
-    // After a horizontal drag, don't open the chat row
-    if (didSwipe.current || dxRef.current < -6) {
+    const target = e.target
+    if (target instanceof Element && target.closest('button.hb-swipe-x, button.hb-swipe-delete')) {
+      return
+    }
+    // An open swipe should close on tap, not open the chat.
+    if (dxRef.current < -6) {
+      e.preventDefault()
+      e.stopPropagation()
+      closeSwipe()
+      didSwipe.current = false
+      return
+    }
+    if (didSwipe.current) {
       e.preventDefault()
       e.stopPropagation()
       didSwipe.current = false
@@ -174,7 +209,7 @@ export function SwipeDeleteRow({
       >
         {confirming ? (
           <div className="hb-agent-row hb-agent-row--confirm">
-            <span className="hb-agent-row-label truncate">Delete this chat?</span>
+            <span className="hb-agent-row-label truncate">Are you sure?</span>
             {confirmLabel ? (
               <span className="hb-agent-row-meta truncate">{confirmLabel}</span>
             ) : null}
@@ -198,7 +233,23 @@ export function SwipeDeleteRow({
             </div>
           </div>
         ) : (
-          children
+          <>
+            {children}
+            <button
+              type="button"
+              className="hb-swipe-x"
+              aria-label="Delete chat"
+              disabled={disabled || deleting}
+              onPointerDown={(ev) => ev.stopPropagation()}
+              onClick={(ev) => {
+                ev.preventDefault()
+                ev.stopPropagation()
+                requestDelete()
+              }}
+            >
+              ×
+            </button>
+          </>
         )}
       </div>
     </div>

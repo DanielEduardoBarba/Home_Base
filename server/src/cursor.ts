@@ -1,12 +1,15 @@
 /**
  * Cursor chat workspace + @cursor/sdk local agent streaming.
  */
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -21,6 +24,7 @@ import {
 } from "./approvals";
 import { listDir, readFile } from "./files";
 import { buildHomebaseTools, wrapPrompt } from "./homebase_tools";
+import { applySeatEnvForAgents } from "./shell_env";
 import { recordUsageFromUpdate } from "./usage_stats";
 import {
   allowSudoUse,
@@ -107,6 +111,10 @@ export type ChatTab = {
   agentId?: string | null;
   running?: boolean;
   updatedAt?: number;
+  /** Full transcript length. Set only on the copy sent to the client. */
+  historyTotal?: number;
+  /** Index of the first message included in this copy. */
+  historyFrom?: number;
 };
 
 type Workspace = {
@@ -160,11 +168,36 @@ function loadWorkspace(projectId: string): Workspace {
   mkdirSync(join(RUNTIME_DIR, "chats"), { recursive: true });
   let ws: Workspace = { tabs: [], activeId: null };
   const path = chatPath(projectId);
+  let fileBytes = 0;
   if (existsSync(path)) {
+    try {
+      fileBytes = statSync(path).size;
+    } catch {
+      fileBytes = 0;
+    }
     try {
       ws = JSON.parse(readFileSync(path, "utf8")) as Workspace;
     } catch {
       /* empty */
+    }
+  }
+  if (!Array.isArray(ws.tabs)) ws.tabs = [];
+  if (fileBytes >= COMPACT_FILE_BYTES) {
+    try {
+      if (compactWorkspace(ws)) {
+        saveWorkspaceNow(projectId, ws);
+        appendTrace(
+          "info",
+          `chat compact ${projectId} ${fileBytes} bytes → ${statSync(chatPath(projectId)).size}`,
+          "cursor",
+        );
+      }
+    } catch (e) {
+      appendTrace(
+        "warn",
+        `chat compact ${projectId} failed: ${e instanceof Error ? e.message : String(e)}`,
+        "cursor",
+      );
     }
   }
   // Disk may still say running after a crash/restart — no live controllers yet.
@@ -173,6 +206,7 @@ function loadWorkspace(projectId: string): Workspace {
   // (classic post-crash / locking-protocol hang left overnight).
   for (const tab of ws.tabs) {
     if (tab.running) continue;
+    if (!Array.isArray(tab.messages)) tab.messages = [];
     const before = JSON.stringify(
       tab.messages.map((m) => [m.streaming, m.tool?.status, m.task?.status]),
     );
@@ -210,6 +244,13 @@ function saveWorkspaceNow(projectId: string, ws?: Workspace): void {
     chmodSync(path, 0o600);
   } catch {
     /* ignore */
+  }
+  // chmod 0600 clears the ACL mask, which locks the seat user out of a
+  // default ACL that otherwise grants them access. Restore the mask.
+  try {
+    spawnSync("setfacl", ["-m", "m::rwx", path], { encoding: "utf8" });
+  } catch {
+    /* setfacl optional */
   }
 }
 
@@ -615,12 +656,28 @@ export function broadcastAllCursor(payload: unknown): void {
   }
 }
 
+function outbound(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object") return payload;
+  const msg = payload as { type?: string; tab?: ChatTab };
+  if (msg.type !== "tab" || !msg.tab) return payload;
+  const [tab] = slimTabsForClient([msg.tab]);
+  if (!tab) return payload;
+  return {
+    ...msg,
+    tab: {
+      ...tab,
+      messages: tab.messages.filter((m) => m.id !== "hb-wire-trim"),
+    },
+  };
+}
+
 function broadcast(projectId: string, payload: unknown): void {
   const set = subscribers.get(projectId);
   if (!set) return;
+  const wire = outbound(payload);
   for (const send of set) {
     try {
-      send(payload);
+      send(wire);
     } catch {
       /* ignore */
     }
@@ -773,6 +830,216 @@ function toSdkImages(images: ChatImage[]): Array<{
 
 const promptQueues = new Map<string, QueuedPrompt[]>();
 
+/** On-disk chats above this are slimmed before they are sent to a phone. */
+const COMPACT_FILE_BYTES = 1_500_000;
+const MAX_STORED_MESSAGES = 200;
+const MAX_STORED_TEXT = 32_000;
+const MAX_STORED_TOOL = 12_000;
+const MAX_WIRE_BYTES = 1_200_000;
+const MAX_WIRE_MESSAGES = 80;
+const MAX_WIRE_TEXT = 48_000;
+const MAX_WIRE_TOOL = 16_000;
+const TRUNC_MARK = "\n…[truncated]";
+
+function clipField(value: string | undefined, max: number): { value?: string; changed: boolean } {
+  if (!value || value.length <= max) return { value, changed: false };
+  const keep = Math.max(0, max - TRUNC_MARK.length);
+  return { value: value.slice(0, keep) + TRUNC_MARK, changed: true };
+}
+
+function clipMsgFields(msg: ChatMsg, textMax: number, toolMax: number): boolean {
+  let changed = false;
+  const text = clipField(msg.text, textMax);
+  if (text.changed) {
+    msg.text = text.value || "";
+    changed = true;
+  }
+  if (msg.tool) {
+    const detail = clipField(msg.tool.detail, toolMax);
+    const output = clipField(msg.tool.output, toolMax);
+    const before = clipField(msg.tool.before, toolMax);
+    const after = clipField(msg.tool.after, toolMax);
+    const command = clipField(msg.tool.command, 2_000);
+    if (detail.changed || output.changed || before.changed || after.changed || command.changed) {
+      msg.tool = {
+        ...msg.tool,
+        detail: detail.value,
+        output: output.value,
+        before: before.value,
+        after: after.value,
+        command: command.value,
+      };
+      changed = true;
+    }
+  }
+  if (msg.file) {
+    const before = clipField(msg.file.before, toolMax);
+    const after = clipField(msg.file.after, toolMax);
+    if (before.changed || after.changed) {
+      msg.file = { ...msg.file, before: before.value, after: after.value };
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+/**
+ * Shrink a workspace that can no longer be opened on a phone (multi‑MB tool
+ * logs and base64 screenshots). Recent messages and the last couple of images
+ * stay. Idempotent once the file is under the caps.
+ */
+export function compactWorkspace(ws: Workspace): boolean {
+  if (!Array.isArray(ws.tabs)) {
+    ws.tabs = [];
+    return true;
+  }
+  let changed = false;
+  for (const tab of ws.tabs) {
+    if (!Array.isArray(tab.messages)) {
+      tab.messages = [];
+      changed = true;
+      continue;
+    }
+    const imageIdx: number[] = [];
+    tab.messages.forEach((m, i) => {
+      if (m.images?.some((img) => img.data && img.data.length > 0)) imageIdx.push(i);
+    });
+    const keepImages = new Set(imageIdx.slice(-2));
+    for (let i = 0; i < tab.messages.length; i++) {
+      const msg = tab.messages[i]!;
+      if (clipMsgFields(msg, MAX_STORED_TEXT, MAX_STORED_TOOL)) changed = true;
+      if (!msg.images?.length) continue;
+      const drop =
+        !keepImages.has(i) ||
+        msg.images.some((img) => (img.data?.length || 0) > 400_000);
+      if (!drop) continue;
+      delete msg.images;
+      changed = true;
+    }
+    if (tab.messages.length > MAX_STORED_MESSAGES) {
+      const kept = tab.messages.slice(-(MAX_STORED_MESSAGES - 1));
+      const omitted = tab.messages.length - kept.length;
+      tab.messages = [
+        {
+          id: "hb-history-trim",
+          role: "system",
+          text: `${omitted} older messages were trimmed so this workspace can open on a phone.`,
+          at: Date.now(),
+        },
+        ...kept,
+      ];
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function slimMsgForWire(msg: ChatMsg): ChatMsg {
+  const copy: ChatMsg = { ...msg };
+  const text = clipField(copy.text, MAX_WIRE_TEXT);
+  if (text.value !== undefined) copy.text = text.value;
+  if (copy.tool) {
+    copy.tool = { ...copy.tool };
+    copy.tool.detail = clipField(copy.tool.detail, MAX_WIRE_TOOL).value;
+    copy.tool.output = clipField(copy.tool.output, MAX_WIRE_TOOL).value;
+    copy.tool.before = clipField(copy.tool.before, 8_000).value;
+    copy.tool.after = clipField(copy.tool.after, 8_000).value;
+    copy.tool.command = clipField(copy.tool.command, 2_000).value;
+  }
+  if (copy.file) {
+    copy.file = { ...copy.file };
+    copy.file.before = clipField(copy.file.before, 8_000).value;
+    copy.file.after = clipField(copy.file.after, 8_000).value;
+  }
+  if (copy.images?.length) {
+    copy.images = copy.images.map((img) => {
+      if ((img.data?.length || 0) > 100_000) {
+        return { ...img, data: "" };
+      }
+      return img;
+    });
+  }
+  return copy;
+}
+
+function withHistoryWindow(tab: ChatTab, messages: ChatMsg[], keep: number): ChatTab {
+  const total = tab.historyTotal ?? messages.length;
+  const from = tab.historyFrom ?? Math.max(0, messages.length - keep);
+  const recent = messages.slice(-keep);
+  const dropped = messages.length - recent.length;
+  return {
+    ...tab,
+    messages: recent,
+    historyTotal: total,
+    historyFrom: from + dropped,
+  };
+}
+
+/** Phone-sized workspace tabs. Does not mutate the stored chat. */
+export function slimTabsForClient(tabs: ChatTab[]): ChatTab[] {
+  const slim = tabs.map((tab) => {
+    const messages = Array.isArray(tab.messages) ? tab.messages : [];
+    const recent = messages.slice(-MAX_WIRE_MESSAGES).map(slimMsgForWire);
+    return {
+      ...tab,
+      messages: recent,
+      historyTotal: messages.length,
+      historyFrom: Math.max(0, messages.length - recent.length),
+    };
+  });
+  let encoded = JSON.stringify(slim);
+  if (encoded.length <= MAX_WIRE_BYTES) return slim;
+  const next = slim.map((tab) =>
+    withHistoryWindow(tab, tab.messages, Math.max(12, Math.floor(tab.messages.length / 2))),
+  );
+  encoded = JSON.stringify(next);
+  if (encoded.length <= MAX_WIRE_BYTES) return next;
+  return next.map((tab) => {
+    const shrunk = withHistoryWindow(tab, tab.messages, 12);
+    return {
+      ...shrunk,
+      messages: shrunk.messages.map((m) => ({
+        ...m,
+        text: clipField(m.text, 4_000).value || "",
+        images: undefined,
+        tool: m.tool
+          ? { name: m.tool.name, status: m.tool.status, path: m.tool.path }
+          : undefined,
+      })),
+    };
+  });
+}
+
+/** Older messages that come strictly before `beforeId`, newest of that page last. */
+export function historySlice(
+  messages: ChatMsg[],
+  beforeId: string,
+  limit: number,
+): { messages: ChatMsg[]; total: number; done: boolean } {
+  const total = messages.length;
+  const size = Math.min(80, Math.max(1, Math.floor(limit) || 40));
+  let end = total;
+  if (beforeId) {
+    const idx = messages.findIndex((m) => m.id === beforeId);
+    if (idx < 0) return { messages: [], total, done: true };
+    end = idx;
+  }
+  const start = Math.max(0, end - size);
+  return {
+    messages: messages.slice(start, end).map(slimMsgForWire),
+    total,
+    done: start === 0,
+  };
+}
+
+/** HTTP/WS view of a workspace. Never the raw on-disk transcript. */
+export function clientWorkspace(projectId: string): Record<string, unknown> {
+  const payload = workspacePayload(projectId, loadWorkspace(projectId));
+  const workspace: Record<string, unknown> = { ...payload };
+  delete workspace.type;
+  return workspace;
+}
+
 function workspacePayload(projectId: string, ws: Workspace): Record<string, unknown> {
   if (reconcileTabRunning(projectId, ws)) {
     try {
@@ -781,19 +1048,47 @@ function workspacePayload(projectId: string, ws: Workspace): Record<string, unkn
       /* ignore */
     }
   }
+  const tabs = slimTabsForClient(ws.tabs).map((t) => ({
+    ...t,
+    running: running.has(sessionKey(projectId, t.id)),
+  }));
   return {
     type: "workspace",
     ...ws,
     // Always advertise live run state, never a stale persisted flag.
-    tabs: ws.tabs.map((t) => ({
-      ...t,
-      running: running.has(sessionKey(projectId, t.id)),
-    })),
+    // Tabs are a phone-sized copy — the stored workspace is not mutated here.
+    tabs,
     configured: cursorConfigured(),
     importable: ws.tabs.length === 0,
     approvalPolicy: getPolicy(),
     pendingApprovals: listPending(),
   };
+}
+
+/** Compact every on-disk chat once at boot so the first phone connect is small. */
+export function compactLargeChats(): void {
+  const dir = join(RUNTIME_DIR, "chats");
+  if (!existsSync(dir)) return;
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    const id = name.slice(0, -".json".length);
+    if (!id || id.includes(".")) continue;
+    try {
+      loadWorkspace(id);
+    } catch (e) {
+      appendTrace(
+        "warn",
+        `chat compact boot ${id} failed: ${e instanceof Error ? e.message : String(e)}`,
+        "cursor",
+      );
+    }
+  }
 }
 
 function isAgentBusyError(err: unknown): boolean {
@@ -870,6 +1165,20 @@ async function clearStuckAgentRuns(agentId: string, cwd: string): Promise<number
   return cleared;
 }
 
+let seatAgentEnvReady = false;
+function ensureSeatAgentEnv(): void {
+  if (seatAgentEnvReady) return;
+  const seat = applySeatEnvForAgents();
+  seatAgentEnvReady = true;
+  if (seat.applied && seat.seat) {
+    appendTrace(
+      "info",
+      `agent env seat=${seat.seat.name} home=${seat.seat.home}`,
+      "cursor",
+    );
+  }
+}
+
 async function createAgentHandle(opts: {
   projectId: string;
   chatId: string;
@@ -899,6 +1208,11 @@ async function createAgentHandle(opts: {
     [Symbol.asyncDispose]?: () => Promise<void>;
   };
 }> {
+  // Cursor SDK shells inherit process.env. Under systemd root that means
+  // /root + dubious ownership on seat worktrees — apply seat HOME/PATH/git
+  // once so field prompts (git fetch, gh, etc.) match a laptop terminal.
+  ensureSeatAgentEnv();
+
   const { Agent } = await import("@cursor/sdk");
   const apiKey = loadCursorApiKey() || (process.env.CURSOR_API_KEY || "").trim();
   const readonly = opts.mode === "ask";
@@ -1598,8 +1912,52 @@ export async function handleCursorMessage(
   const ws = loadWorkspace(projectId);
   const type = String(msg.type || "");
 
+  if (type === "history") {
+    const chatId = String(msg.chatId || ws.activeId || "");
+    const tab = ws.tabs.find((t) => t.id === chatId);
+    if (!tab) {
+      send({ type: "history", chatId, messages: [], total: 0, done: true });
+      return;
+    }
+    const page = historySlice(
+      tab.messages || [],
+      String(msg.beforeId || ""),
+      Number(msg.limit) || 40,
+    );
+    send({ type: "history", chatId, ...page });
+    return;
+  }
+
+  if (type === "ping") {
+    send({ type: "pong", t: Date.now() });
+    return;
+  }
+
   if (type === "workspace" || !type) {
-    send(workspacePayload(projectId, ws));
+    try {
+      send(workspacePayload(projectId, ws));
+    } catch (e) {
+      appendTrace(
+        "error",
+        `workspace send failed: ${e instanceof Error ? e.message : String(e)}`,
+        "cursor",
+      );
+      const fallback = ws.tabs.slice(-1).map((t) => ({
+        ...t,
+        messages: (t.messages || []).slice(-12).map((m) => ({
+          id: m.id,
+          role: m.role,
+          text: (m.text || "").slice(0, 2000),
+        })),
+      }));
+      send({
+        type: "workspace",
+        tabs: fallback,
+        activeId: ws.activeId || fallback[0]?.id || null,
+        configured: cursorConfigured(),
+        importable: ws.tabs.length === 0,
+      });
+    }
     return;
   }
 

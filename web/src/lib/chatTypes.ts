@@ -120,6 +120,10 @@ export type ChatTab = {
   /** True while the server is still running this chat's agent. */
   running?: boolean
   updatedAt: number
+  /** Full transcript length on the server, when the payload is only a window. */
+  historyTotal?: number
+  /** Index of the first message included in the latest server window. */
+  historyFrom?: number
 }
 
 /** What Work / Shell / Files should show when chat asks to present. */

@@ -956,10 +956,21 @@ ensure_bun_on_path() {
   if command -v bun >/dev/null 2>&1; then
     return 0
   fi
-  local candidate
+  local candidate home owner_home
+  home="${HOME:-}"
+  owner_home=""
+  # systemd oneshots often have no HOME; bun lives in the repo owner's home.
+  if [[ -n "${ROOT:-}" ]]; then
+    local owner
+    owner="$(stat -c '%U' "$ROOT" 2>/dev/null || true)"
+    if [[ -n "$owner" ]]; then
+      owner_home="$(getent passwd "$owner" 2>/dev/null | cut -d: -f6 || true)"
+    fi
+  fi
   for candidate in \
     "${BUN_INSTALL:+$BUN_INSTALL/bin/bun}" \
-    "$HOME/.bun/bin/bun" \
+    ${home:+"$home/.bun/bin/bun"} \
+    ${owner_home:+"$owner_home/.bun/bin/bun"} \
     /opt/homebrew/bin/bun \
     /usr/local/bin/bun \
     /usr/bin/bun; do

@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../lib/api'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 import type { FsEntry, Project } from '../lib/types'
+import { readWorkPlace, writeWorkPlace } from '../lib/uiPrefs'
 
 function langExt(language: string) {
   switch (language) {
@@ -64,6 +65,14 @@ function guessLanguageFromPath(path: string): string {
     '.less': 'css',
   }
   return map[ext] || 'plaintext'
+}
+
+/** True when `path` is `root` or a descendant. */
+function underRoot(path: string, root: string): boolean {
+  const p = toAbs(path)
+  const r = toAbs(root)
+  if (r === '/') return p.startsWith('/')
+  return p === r || p.startsWith(`${r}/`)
 }
 
 /** Normalize to a host-absolute POSIX path (`/` …). */
@@ -328,17 +337,59 @@ export function FilesTab({
 
   useSceneRefresh(refreshScene)
 
+  const placeReady = useRef<string | null>(null)
+
   useEffect(() => {
+    if (!project) return
+    // Chat asked us to open a specific path — don't overwrite it with the saved place.
+    if (focusPath) {
+      placeReady.current = project.id
+      return
+    }
+    const root = projectRoot
+    const place = minimal ? null : readWorkPlace(project.id)
+    const savedDir = place?.dir && underRoot(place.dir, root) ? toAbs(place.dir) : root
+    const savedFile = place?.file && underRoot(place.file, root) ? toAbs(place.file) : null
     setFilePath(null)
     clearBuffer()
-    setDir(projectRoot)
+    setDir(savedDir)
     setEntries([])
-    setNavOpen(true)
+    setNavOpen(!minimal)
     setConfirm(null)
-    setStatus(projectRoot)
-    void loadDir(projectRoot)
+    setStatus(savedDir)
+    placeReady.current = project.id
+    if (savedFile && !minimal) {
+      void (async () => {
+        try {
+          const data = await api.fsRead(project.id, savedFile)
+          const opened = toAbs(data.path)
+          setFilePath(opened)
+          adoptBuffer(data.content, data.content)
+          setLanguage(data.language)
+          setStatus(`${opened} · ${data.size}b`)
+          const parent = parentDir(opened)
+          setDir(parent)
+          const listed = await api.fsList(project.id, parent, { all: showAll })
+          setEntries(listed.entries)
+          if (window.innerWidth < 768) setNavOpen(false)
+        } catch {
+          void loadDir(savedDir)
+        }
+      })()
+    } else {
+      void loadDir(savedDir)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.id, showAll])
+
+  useEffect(() => {
+    if (minimal || !project?.id || !dir) return
+    if (placeReady.current !== project.id) return
+    // Initial state is `/` before the saved folder is applied — don't clobber it.
+    if (toAbs(dir) === '/' && toAbs(projectRoot) !== '/') return
+    if (focusPath && !filePath) return
+    writeWorkPlace(project.id, { dir: toAbs(dir), file: filePath ? toAbs(filePath) : '' })
+  }, [dir, filePath, project?.id, projectRoot, minimal, focusPath])
 
   // Chat / Work can ask us to open a path
   useEffect(() => {

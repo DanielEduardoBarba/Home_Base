@@ -2,6 +2,8 @@
  * Real PTY sessions via Bun.Terminal (Bun.spawn `{ terminal }`).
  * Falls back to pipes if openpty fails (e.g. restricted sandboxes).
  */
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { Subprocess, Terminal } from "bun";
 import {
@@ -285,7 +287,14 @@ export function spawnShell(opts: {
   const onExit = (exitCode: number) => {
     session.exited = true;
     broadcast(session, JSON.stringify({ type: "exit", code: exitCode }));
-    appendTrace("info", `pty exit ${id} code=${exitCode}`, "pty");
+    const tail = session.ring.replace(/\s+/g, " ").trim().slice(-360);
+    appendTrace(
+      exitCode === 0 ? "info" : "warn",
+      tail
+        ? `pty exit ${id} code=${exitCode} tail=${tail}`
+        : `pty exit ${id} code=${exitCode}`,
+      "pty",
+    );
     // Keep the row so the SPA can show dead + dismiss (X); DELETE removes it.
   };
 
@@ -314,6 +323,12 @@ export function spawnShell(opts: {
   };
   sessions.set(id, session);
   appendTrace("info", `pty spawn ${id} cwd=${opts.cwd} mode=${backend.mode}`, "pty");
+  if (opts.command?.length) {
+    const bins = (baseEnv.PATH || "").split(":");
+    if (!bins.some((b) => b && existsSync(join(b, "pnpm")))) {
+      appendTrace("warn", `pty spawn ${id} PATH has no pnpm — Run/Expo scripts will exit`, "pty");
+    }
+  }
   return info;
 }
 

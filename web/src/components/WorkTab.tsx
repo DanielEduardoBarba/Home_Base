@@ -1,27 +1,32 @@
 import { useEffect, useState } from 'react'
 import type { PresentRequest, WorkScene } from '../lib/chatTypes'
 import type { Project } from '../lib/types'
+import type { WorkItem } from '../lib/uiPrefs'
 import { AppsTab } from './AppsTab'
 import { ChatPanel, readDockOpen, writeDockOpen } from './ChatPanel'
+import { CursorTab } from './CursorTab'
 import { FilesTab } from './FilesTab'
 import { ProjectSelect } from './ProjectSelect'
 import { ShellTab } from './ShellTab'
 
-const SCENES: { id: WorkScene; label: string }[] = [
+const ITEMS: { id: WorkItem; label: string }[] = [
   { id: 'apps', label: 'Apps' },
   { id: 'shell', label: 'Shell' },
   { id: 'files', label: 'Files' },
+  { id: 'chat', label: 'Chat' },
 ]
 
 /**
- * Work = workspace like Cursor IDE:
- * project + scene dropdowns, chat dock bottom-right.
+ * Work = one workspace: project + Apps / Shell / Files / Chat.
+ * The parent remembers the project and the pane across visits.
  */
 export function WorkTab({
   projects,
   selectedId,
   onSelect,
   onRefresh,
+  item,
+  onItemChange,
   present,
   presentKey = 0,
 }: {
@@ -29,12 +34,13 @@ export function WorkTab({
   selectedId: string
   onSelect: (id: string) => void
   onRefresh: () => void | Promise<void>
+  item: WorkItem
+  onItemChange: (item: WorkItem) => void
   /** Latest present request (from Chat tab or dock). */
   present?: PresentRequest | null
   /** Increments on each present — survives Strict Mode remounts. */
   presentKey?: number
 }) {
-  const [scene, setScene] = useState<WorkScene>(() => present?.scene || 'apps')
   const [attachSessionIds, setAttachSessionIds] = useState<string[] | null>(() =>
     present?.sessionIds?.length ? present.sessionIds : null,
   )
@@ -89,24 +95,28 @@ export function WorkTab({
     setDiffAction(req.action || null)
   }
 
+  function showScene(scene: WorkScene) {
+    onItemChange(scene)
+  }
+
   // Apply present when key changes (Chat → Work, or dock buttons while here)
   useEffect(() => {
     if (!present || !presentKey || presentKey === lastPresentKey) return
     setLastPresentKey(presentKey)
-    setScene(present.scene)
+    showScene(present.scene)
     if (present.scene === 'shell') applyShellPresent(present, presentKey)
     if (present.scene === 'files') applyFilesPresent(present)
-    // Show file/shell → focus the workspace; minimize chat so it doesn't cover it
     setDockOpen(false)
+    // showScene writes the remembered pane; present identity is presentKey.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [present, presentKey, lastPresentKey])
 
   function applyPresent(req: PresentRequest) {
     const key = Date.now()
     setLastPresentKey(key)
-    setScene(req.scene)
+    showScene(req.scene)
     if (req.scene === 'shell') applyShellPresent(req, key)
     if (req.scene === 'files') applyFilesPresent(req)
-    // Message "Show" / Present → minimize chat so the scene is visible
     setDockOpen(false)
   }
 
@@ -121,28 +131,31 @@ export function WorkTab({
               onSelect={onSelect}
               className="hb-work-project-select"
             />
-            <select
-              value={scene}
-              onChange={(e) => setScene(e.target.value as WorkScene)}
-              className="hb-select hb-work-scene-select"
-              aria-label="Workspace view"
-            >
-              {SCENES.map((s) => (
-                <option key={s.id} value={s.id}>
+            <div className="hb-work-scenes" role="tablist" aria-label="Workspace">
+              {ITEMS.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={item === s.id}
+                  data-active={item === s.id}
+                  className="hb-work-scene"
+                  onClick={() => onItemChange(s.id)}
+                >
                   {s.label}
-                </option>
+                </button>
               ))}
-            </select>
+            </div>
           </div>
         </div>
       </div>
 
       <div className="hb-work-body flex-1 min-h-0 relative">
         <div
-          key={`${scene}-${presentKey || 0}-${focusPath || ''}-${startShellKey || 0}`}
+          key={item === 'shell' ? `shell-${startShellKey}` : item}
           className="hb-work-main hb-work-scene-enter h-full min-h-0 overflow-hidden"
         >
-          {scene === 'apps' && (
+          {item === 'apps' && (
             <div className="h-full overflow-y-auto">
               <AppsTab
                 projects={projects}
@@ -151,7 +164,7 @@ export function WorkTab({
                 onRefresh={onRefresh}
                 embedded
                 onAskAiWire={() => {
-                  setScene('apps')
+                  onItemChange('apps')
                   setDockOpen(true)
                 }}
                 onOpenShell={(ids) => {
@@ -165,7 +178,7 @@ export function WorkTab({
               />
             </div>
           )}
-          {scene === 'shell' && (
+          {item === 'shell' && (
             <ShellTab
               projects={projects}
               selectedId={selectedId}
@@ -176,7 +189,7 @@ export function WorkTab({
               onClearAttach={() => setAttachSessionIds(null)}
             />
           )}
-          {scene === 'files' && (
+          {item === 'files' && (
             <FilesTab
               projects={projects}
               selectedId={selectedId}
@@ -189,17 +202,27 @@ export function WorkTab({
               onFocusPathConsumed={() => setFocusPath(null)}
             />
           )}
+          {item === 'chat' && (
+            <CursorTab
+              projects={projects}
+              selectedId={selectedId}
+              onSelect={onSelect}
+              onPresent={applyPresent}
+            />
+          )}
         </div>
 
-        <ChatPanel
-          projects={projects}
-          selectedId={selectedId}
-          onSelect={onSelect}
-          variant="dock"
-          dockOpen={dockOpen}
-          onDockOpenChange={setDockOpen}
-          onPresent={applyPresent}
-        />
+        {item !== 'chat' && (
+          <ChatPanel
+            projects={projects}
+            selectedId={selectedId}
+            onSelect={onSelect}
+            variant="dock"
+            dockOpen={dockOpen}
+            onDockOpenChange={setDockOpen}
+            onPresent={applyPresent}
+          />
+        )}
       </div>
     </div>
   )

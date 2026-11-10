@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import jpeg from "jpeg-js";
 import {
   FRAME_MAGIC,
@@ -8,7 +11,7 @@ import {
   packFrameHeader,
   resizeRgba,
 } from "../../src/view_x11";
-import { resolveViewWorkerCmd } from "../../src/view";
+import { pickNewestExisting, resolveViewWorkerCmd, x11AuthorityKind } from "../../src/view";
 
 describe("view_x11 helpers", () => {
   test("browserToKeysym maps common codes", () => {
@@ -44,6 +47,25 @@ describe("view_x11 helpers", () => {
     expect(hdr.readUInt32LE(0)).toBe(FRAME_MAGIC);
     expect(hdr.readUInt16LE(8)).toBe(1280);
     expect(hdr.readUInt8(17)).toBe(55);
+  });
+
+  test("pickNewestExisting prefers the live cookie over a stale home file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hb-xauth-"));
+    try {
+      const stale = join(dir, ".Xauthority");
+      const live = join(dir, ".mutter-Xwaylandauth.ABC");
+      writeFileSync(stale, "old");
+      writeFileSync(live, "new");
+      const old = new Date("2020-01-01T00:00:00Z");
+      const fresh = new Date("2026-11-05T00:00:00Z");
+      utimesSync(stale, old, old);
+      utimesSync(live, fresh, fresh);
+      expect(pickNewestExisting([stale, live, join(dir, "missing")])).toBe(live);
+      expect(x11AuthorityKind(live)).toBe("mutter");
+      expect(x11AuthorityKind(stale)).toBe("home");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("resolveViewWorkerCmd uses bun run entry", () => {

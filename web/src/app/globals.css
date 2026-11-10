@@ -1830,8 +1830,16 @@ html[data-hb-keyboard] .hb-vv-overlay-panel {
 /* —— Work workspace + chat dock —— */
 .hb-work-chrome-row {
   display: flex;
-  gap: 0.5rem;
-  align-items: center;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+@media (min-width: 768px) {
+  .hb-work-chrome-row {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.5rem;
+  }
 }
 
 .hb-work-project-select {
@@ -1842,13 +1850,35 @@ html[data-hb-keyboard] .hb-vv-overlay-panel {
   font-size: 0.875rem;
 }
 
-.hb-work-scene-select {
-  flex: 0 0 auto;
-  width: 6.75rem;
-  min-height: 2.5rem;
-  padding-block: 0.45rem;
-  font-size: 0.875rem;
-  font-weight: 600;
+.hb-work-scenes {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 0.15rem;
+  padding: 0.15rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--hb-line);
+  background: var(--hb-panel-2);
+  overflow-x: auto;
+}
+
+.hb-work-scene {
+  flex: 1 1 0;
+  min-height: 2.15rem;
+  padding: 0.3rem 0.55rem;
+  border: 0;
+  border-radius: 0.6rem;
+  background: transparent;
+  color: var(--hb-mute);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.hb-work-scene[data-active='true'] {
+  background: var(--hb-panel);
+  color: var(--hb-accent);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--hb-text) 6%, transparent);
 }
 
 .hb-shell-back {
@@ -2172,6 +2202,45 @@ html[data-hb-keyboard] .hb-chat-composer {
 
 .hb-chat-fab-dot-warn {
   background: var(--hb-amber, #d4a017);
+}
+
+.hb-chat-load {
+  position: sticky;
+  top: 0.15rem;
+  z-index: 6;
+  width: min(15rem, 72%);
+  margin: 0 auto 0.35rem;
+  padding: 0.28rem 0.45rem 0.22rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--hb-bg) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--hb-line) 80%, transparent);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--hb-text) 8%, transparent);
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+}
+
+.hb-chat-load-track {
+  height: 3px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--hb-text) 12%, transparent);
+}
+
+.hb-chat-load-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--hb-accent);
+  transition: width 160ms ease;
+}
+
+.hb-chat-load-label {
+  display: block;
+  margin-top: 3px;
+  text-align: center;
+  font-size: 10px;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+  color: var(--hb-mute);
 }
 
 .hb-chat-status-wrap {
@@ -3328,12 +3397,71 @@ html.hb-view-max .hb-status-bar {
   border-radius: 0.85rem;
   background: var(--hb-bg);
   overflow: hidden;
-  cursor: grab;
+  cursor: pointer;
   user-select: none;
 }
 
-.hb-swipe-front:active {
-  cursor: grabbing;
+.hb-chat-tab,
+.hb-chat-tab-x {
+  min-height: 2.75rem;
+  touch-action: manipulation;
+  cursor: pointer;
+}
+
+.hb-chat-tab {
+  padding-top: 0.55rem;
+  padding-bottom: 0.55rem;
+}
+
+.hb-chat-tab-x {
+  min-width: 2.75rem;
+  padding: 0 0.35rem 0 0;
+}
+
+.hb-swipe-x {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  z-index: 2;
+  width: 1.65rem;
+  height: 1.65rem;
+  margin: 0;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--hb-line) 80%, transparent);
+  background: color-mix(in srgb, var(--hb-panel) 92%, transparent);
+  color: var(--hb-mute);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.hb-swipe-x:hover:not(:disabled) {
+  color: #fff;
+  border-color: transparent;
+  background: color-mix(in srgb, var(--hb-danger, #d64545) 88%, #000);
+}
+
+.hb-swipe-x:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+@media (min-width: 641px) {
+  .hb-swipe-actions {
+    display: none;
+  }
+
+  .hb-swipe-front .hb-agent-row {
+    padding-right: 2.35rem;
+  }
+}
+
+@media (max-width: 640px) {
+  .hb-swipe-x {
+    display: none;
+  }
 }
 
 .hb-swipe-front .hb-agent-row {
