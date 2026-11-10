@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Dev front door on DEV_WEB_PORT (default 3081):
- *   /api + /ws  → HOMEBASE_PORT (8081)
+ *   /api + /ws + /mcp  → HOMEBASE_PORT (8081)
  *   everything else → next dev (internal)
  * Same-origin relative paths work like production.
  */
@@ -29,7 +29,7 @@ proxy.on('error', (err, _req, res) => {
 })
 
 function isApi(url = '') {
-  return url.startsWith('/api') || url.startsWith('/ws')
+  return url.startsWith('/api') || url.startsWith('/ws') || url.startsWith('/mcp')
 }
 
 const next = spawn(
@@ -59,7 +59,7 @@ server.on('upgrade', (req, socket, head) => {
 
 server.listen(WEB_PORT, '0.0.0.0', () => {
   console.log(
-    `[web] http://0.0.0.0:${WEB_PORT} → next :${NEXT_PORT} · /api|/ws → :${API_PORT}`,
+    `[web] http://0.0.0.0:${WEB_PORT} → next :${NEXT_PORT} · /api|/ws|/mcp → :${API_PORT}`,
   )
 })
 

@@ -22,6 +22,8 @@ import { CloudflarePanel } from './CloudflarePanel'
 import { LegalAbout } from './LegalAbout'
 import { UsageBillingPanel } from './UsageBillingPanel'
 import { WireGuardPanel } from './WireGuardPanel'
+import { McpServerPanel } from './McpServerPanel'
+import { ActivityHistoryPanel } from './ActivityHistoryPanel'
 
 type SettingsScene =
   | 'hub'
@@ -35,6 +37,8 @@ type SettingsScene =
   | 'setup'
   | 'wireguard'
   | 'cloudflare'
+  | 'mcp'
+  | 'activity'
   | 'services'
   | 'storage'
   | 'session'
@@ -160,6 +164,8 @@ export function SettingsTab({
   const [nameDraft, setNameDraft] = useState('')
   const [nameMsg, setNameMsg] = useState('')
   const [nameBusy, setNameBusy] = useState(false)
+  const [mcpEnabled, setMcpEnabled] = useState(true)
+  const [mcpTokenCount, setMcpTokenCount] = useState(0)
 
   const refreshSudo = useCallback(() => {
     void api
@@ -190,6 +196,13 @@ export function SettingsTab({
       })
       .catch(() => undefined)
     refreshSudo()
+    void api
+      .mcpServerStatus()
+      .then((s) => {
+        setMcpEnabled(s.enabled !== false)
+        setMcpTokenCount(s.tokenCount || s.tokens?.length || 0)
+      })
+      .catch(() => undefined)
   }, [refreshSudo])
 
   useEffect(() => {
@@ -421,6 +434,11 @@ export function SettingsTab({
               : 'Empty',
           },
           {
+            id: 'activity',
+            title: 'Activity history',
+            hint: 'Web + MCP audit · humans only',
+          },
+          {
             id: 'share',
             title: 'Share & password',
             hint: 'QR login · change password',
@@ -433,6 +451,13 @@ export function SettingsTab({
         rows: [
           { id: 'wireguard', title: 'WireGuard VPN', hint: 'Phone tunnel · peers · QR' },
           { id: 'cloudflare', title: 'Cloudflare Tunnel', hint: 'HTTPS link without port-forward' },
+          {
+            id: 'mcp',
+            title: 'MCP Server',
+            hint: mcpEnabled
+              ? `On · ${mcpTokenCount} token${mcpTokenCount === 1 ? '' : 's'}`
+              : 'Off',
+          },
           {
             id: 'services',
             title: 'Services',
@@ -482,6 +507,8 @@ export function SettingsTab({
     identity.displayName,
     cursorConfigured,
     cursorHint,
+    mcpEnabled,
+    mcpTokenCount,
     pinEnabled,
     pinIdleMin,
     sudoPersistent,
@@ -1257,6 +1284,45 @@ export function SettingsTab({
           onBack={goHub}
         >
           <CloudflarePanel embedded />
+        </SceneShell>
+        {modals}
+      </>
+    )
+  }
+
+  if (scene === 'mcp') {
+    return (
+      <>
+        <SceneShell
+          title="MCP Server"
+          hint="Network tools for AI clients — ops only; security stays in Settings."
+          onBack={() => {
+            void api
+              .mcpServerStatus()
+              .then((s) => {
+                setMcpEnabled(s.enabled !== false)
+                setMcpTokenCount(s.tokenCount || s.tokens?.length || 0)
+              })
+              .catch(() => undefined)
+            goHub()
+          }}
+        >
+          <McpServerPanel />
+        </SceneShell>
+        {modals}
+      </>
+    )
+  }
+
+  if (scene === 'activity') {
+    return (
+      <>
+        <SceneShell
+          title="Activity history"
+          hint="Secure audit of remotes — Web GUI and MCP. Not visible to AI."
+          onBack={goHub}
+        >
+          <ActivityHistoryPanel />
         </SceneShell>
         {modals}
       </>

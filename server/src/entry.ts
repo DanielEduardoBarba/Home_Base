@@ -44,6 +44,12 @@ try {
   /* vault optional at boot */
 }
 startSecurityMonitor();
+try {
+  const { startPresenceWindowManager } = await import("./presence_window");
+  startPresenceWindowManager();
+} catch {
+  /* presence window optional at boot */
+}
 
 function selfTest(): number {
   try {

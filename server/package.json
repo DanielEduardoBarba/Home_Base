@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@cursor/sdk": "^1.0.24",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "hono": "^4.7.2",
     "jose": "^6.0.8",
     "jpeg-js": "^0.4.4",

@@ -38,7 +38,7 @@ Apps · **Work** · Chat · Shell · Files · **View** · Logs. **Settings** is 
 - **Chat** — full-page agent; same engine as the Work dock; can jump into Work to show Apps/Shell/Files.
 - **Shell** — standalone PTY + session attach. Under systemd root, Shell/Run/Expo PTYs `setpriv` to the seat user and load that user’s login+interactive env (nvm/pnpm/cargo) so they match a native laptop terminal.
 - **View** — JWT-gated live laptop screen (`/ws/view`) with pointer/keyboard; Bun seat-user `--view-worker` (libX11 `XGetImage` + XTest via `bun:ffi`). Root systemd uses setpriv/runuser to the seat owner (cannot open the user display as root). Explicit Connect/Disconnect; maximize mode; adaptive JPEG. Capture runs only while connected.
-- Alerts bell in the thin top status bar opens a top→bottom near-full inbox; History is a right drawer. Chat supports English speech→text; Cursor done pings toast/sound and optional browser notifications. Home → **Settings** is a hub of grouped rows that drill into focused sub-scenes (Appearance, PIN, Sudo vault, Cursor key, WireGuard / Cloudflare, Storage, About/legal, etc.).
+- Alerts bell in the thin top status bar opens a top→bottom near-full inbox; History is a right drawer. Chat supports English speech→text; Cursor done pings toast/sound and optional browser notifications. Home → **Settings** is a hub of grouped rows that drill into focused sub-scenes (Appearance, PIN, Sudo vault, Cursor key, WireGuard / Cloudflare / MCP Server, Storage, About/legal, etc.).
 
 ### Home Agent
 
@@ -108,7 +108,7 @@ Writable state: `/var/lib/homebased` (`HOMEBASE_HOME`). Unit **homebased** runs 
 
 ## Capabilities vs non-goals
 
-- **Supports:** local Cursor agents (Home Base context + `homebase_*` in-process tools), project actions/PTY, Files (project + absolute host with JWT), View (X11 screen + input over JWT WS), Vision (Armed AI desktop control via `homebase_vision_*`), WireGuard setup/manage (QR onboarding) + homebased restart, Home Access widgets (`homebase_access_*`), durable chat under `.runtime/chats/`
+- **Supports:** local Cursor agents (Home Base context + `homebase_*` in-process tools), optional network **MCP** at `/mcp` (master ON; feature groups incl. presence ON / vision OFF; MCP tokens blocked from Web `/api`; desktop presence window + presence chat tools; human-only activity audit), project actions/PTY, Files, View, Vision (Armed), WireGuard/Cloudflare, Home Access, durable chats under `.runtime/chats/`
 - **Self-deploy / restart:** `./build.sh --deploy` from a Chat/Shell PTY under homebased schedules a detached systemd oneshot (not killed by `KillMode=control-group`). API `POST /api/system/restart/homebased` and tool `homebase_restart_homebased` use `systemd-run --on-active=1s` the same way.
 - **Does not:** Cursor IDE buffer sync, cloud agents, public internet exposure, Wayland capture (X11 / XWayland only)
 

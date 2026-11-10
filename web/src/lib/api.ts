@@ -165,6 +165,178 @@ export const api = {
       port?: number
       urls?: { lan: string | null; vpn: string | null }
     }>('/api/system/status'),
+  presenceHeartbeat: (body?: { area?: string; tab?: string; label?: string }) =>
+    request<{ ok: boolean }>('/api/presence/heartbeat', {
+      method: 'POST',
+      body: JSON.stringify(body || {}),
+    }),
+  logActivity: (
+    kind: string,
+    summary: string,
+    detail?: Record<string, unknown>,
+  ) =>
+    request<{ ok: boolean }>('/api/activity', {
+      method: 'POST',
+      body: JSON.stringify({ kind, summary, detail }),
+    }),
+  activityHistory: (opts?: {
+    day?: string
+    source?: string
+    limit?: number
+    offset?: number
+  }) => {
+    const q = new URLSearchParams()
+    if (opts?.day) q.set('day', opts.day)
+    if (opts?.source) q.set('source', opts.source)
+    if (opts?.limit != null) q.set('limit', String(opts.limit))
+    if (opts?.offset != null) q.set('offset', String(opts.offset))
+    const qs = q.toString()
+    return request<{
+      day: string
+      days: string[]
+      total: number
+      events: {
+        at: number
+        source: string
+        kind: string
+        summary: string
+        actor?: string
+        peerIp?: string
+        detail?: Record<string, unknown>
+      }[]
+    }>(`/api/activity${qs ? `?${qs}` : ''}`)
+  },
+  clearActivityDay: (day: string) =>
+    request<{ ok: boolean; removed: boolean }>('/api/activity', {
+      method: 'DELETE',
+      body: JSON.stringify({ day }),
+    }),
+  mcpServerStatus: () =>
+    request<{
+      enabled: boolean
+      features: {
+        projects: boolean
+        notifications: boolean
+        status: boolean
+        homeAccess: boolean
+        vision: boolean
+        presence: boolean
+      }
+      featureMeta: {
+        id:
+          | 'projects'
+          | 'notifications'
+          | 'status'
+          | 'homeAccess'
+          | 'vision'
+          | 'presence'
+        label: string
+        hint: string
+        defaultOn: boolean
+      }[]
+      updatedAt?: number
+      endpointPath: string
+      url: string | null
+      version: string
+      tokenCount: number
+      tokens: { id: string; prefix: string; label: string; createdAt: number }[]
+      catalog: {
+        allowed: {
+          name: string
+          description: string
+          feature: string
+        }[]
+        disabled: {
+          name: string
+          description: string
+          feature: string
+        }[]
+        humanOnly: string[]
+        features: Record<string, boolean>
+      }
+      clientConfigs: { cursorMcpJson: string; genericUrl: string }
+      grokGuide: string
+    }>('/api/mcp-server'),
+  setMcpServer: (body: {
+    enabled?: boolean
+    features?: Partial<{
+      projects: boolean
+      notifications: boolean
+      status: boolean
+      homeAccess: boolean
+      vision: boolean
+      presence: boolean
+    }>
+  }) =>
+    request<{
+      ok: boolean
+      enabled: boolean
+      features: {
+        projects: boolean
+        notifications: boolean
+        status: boolean
+        homeAccess: boolean
+        vision: boolean
+        presence: boolean
+      }
+      url: string | null
+      tokenCount: number
+      tokens: { id: string; prefix: string; label: string; createdAt: number }[]
+      catalog: {
+        allowed: { name: string; description: string; feature: string }[]
+        disabled: { name: string; description: string; feature: string }[]
+        humanOnly: string[]
+      }
+      clientConfigs: { cursorMcpJson: string; genericUrl: string }
+      grokGuide: string
+      endpointPath: string
+    }>('/api/mcp-server', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  setMcpServerEnabled: (enabled: boolean) =>
+    request<{
+      ok: boolean
+      enabled: boolean
+      url: string | null
+      tokenCount: number
+      tokens: { id: string; prefix: string; label: string; createdAt: number }[]
+      catalog: {
+        allowed: { name: string; description: string; feature: string }[]
+        disabled: { name: string; description: string; feature: string }[]
+        humanOnly: string[]
+      }
+      clientConfigs: { cursorMcpJson: string; genericUrl: string }
+      endpointPath: string
+    }>('/api/mcp-server', {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    }),
+  mintMcpToken: (label?: string) =>
+    request<{
+      ok: boolean
+      id: string
+      token: string
+      prefix: string
+      label: string
+      createdAt: number
+      tokens: { id: string; prefix: string; label: string; createdAt: number }[]
+      clientConfigs: { cursorMcpJson: string; genericUrl: string }
+      url: string | null
+    }>('/api/mcp-server/tokens', {
+      method: 'POST',
+      body: JSON.stringify({ label: label || undefined }),
+    }),
+  revokeMcpToken: (id: string) =>
+    request<{
+      ok: boolean
+      tokens: { id: string; prefix: string; label: string; createdAt: number }[]
+    }>(`/api/mcp-server/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  revokeAllMcpTokens: () =>
+    request<{ ok: boolean; revoked: number; tokens: unknown[] }>(
+      '/api/mcp-server/tokens/revoke-all',
+      { method: 'POST', body: '{}' },
+    ),
   restartHomebased: () =>
     request<{ ok: boolean; unit: string; active: boolean }>('/api/system/restart/homebased', {
       method: 'POST',

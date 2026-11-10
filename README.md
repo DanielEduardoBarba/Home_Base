@@ -66,7 +66,7 @@ Safe to run again. It won’t wipe other projects.
 | **Home** | Dashboard |
 | **Home Agent** | Simple project chat |
 | **Homework** | Full control plane (Apps, Work, Chat, Shell, Files, View, Logs) |
-| **Settings** | Theme, PIN, Cursor key, WireGuard, Cloudflare, reset / erase, About |
+| **Settings** | Theme, PIN, Cursor key, WireGuard, Cloudflare, MCP Server, reset / erase, About |
 | **Home Access** | House widgets (buttons / toggles / sliders / gauges) |
 
 
@@ -93,6 +93,7 @@ Registry: `config/projects.json` (gitignored). Presets live in `config/presets/`
 - Cursor API key stored **encrypted** in `.runtime/` (set in the app)
 - Share QR: one-time redeem (20s) → JWT — never embeds the password
 - Same-origin API only (`/api`, `/ws`)
+- **MCP Server** (Settings → Remote access, master default On): Streamable HTTP at `/mcp` for AI clients on VPN/LAN (e.g. Grok bots). Mint revocable Bearer tokens — session JWTs are not accepted on `/mcp`; MCP tokens are rejected on `/api` (Web GUI is humans-only via password + optional PIN). Feature toggles include presence (On) and vision (Off by default). Desktop presence window pops up when remotes are active. Activity history (Settings → Security) audits Web + MCP for humans only.
 
 ---
 

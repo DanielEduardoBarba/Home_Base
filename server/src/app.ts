@@ -157,6 +157,44 @@ export const app = new Hono();
 app.onError((err, c) => jsonError(c, err));
 app.use("*", requestLogMiddleware);
 
+/** MCP Bearer tokens must not call the human Web GUI API. */
+app.use("/api/*", async (c, next) => {
+  const auth = c.req.header("authorization") || "";
+  const q = c.req.query("token") || "";
+  const looksMcp =
+    /bearer\s+hb_mcp_/i.test(auth) || q.startsWith("hb_mcp_");
+  if (looksMcp) {
+    const { recordFailure } = await import("./auth");
+    const { recordActivity } = await import("./activity_audit");
+    const { desktopNotify } = await import("./desktop_notify");
+    const { pushNotification } = await import("./notifications");
+    const ip = clientIp(c);
+    recordFailure(ip, "mcp_token_on_web_api");
+    recordActivity({
+      source: "auth",
+      kind: "mcp_blocked_from_web",
+      summary: `MCP token rejected on Web API ${c.req.method} ${c.req.path}`,
+      peerIp: ip,
+    });
+    pushNotification(
+      "MCP token blocked from Web GUI",
+      `An MCP Bearer tried to call ${c.req.path} from ${ip}. Web GUI is for humans only.`,
+      { level: "error", category: "security", meta: { ip, path: c.req.path } },
+    );
+    desktopNotify(
+      "MCP blocked from Web GUI",
+      `Token used on ${c.req.path} from ${ip}`,
+      { urgency: "critical", dedupeKey: `mcp-web:${ip}`, dedupeMs: 10_000 },
+    );
+    throw new HttpError(403, {
+      code: "mcp_not_for_web",
+      message:
+        "MCP tokens cannot access the Web GUI API. Use /mcp only. Password/PIN gate the human UI.",
+    });
+  }
+  await next();
+});
+
 app.get("/api/health", (c) => {
   const access = accessHosts(bindPort());
   const identity = identityPublic();
@@ -343,6 +381,32 @@ app.post("/api/login", async (c) => {
     source: "auth",
     fields: { ip, geo: formatGeo(geoCached(ip)), ttlSec: JWT_TTL_SEC },
   });
+  try {
+    const { recordActivity } = await import("./activity_audit");
+    const { upsertPresence } = await import("./presence");
+    const { desktopNotify } = await import("./desktop_notify");
+    recordActivity({
+      source: "auth",
+      kind: "login_ok",
+      summary: `Web GUI login from ${ip}`,
+      peerIp: ip,
+    });
+    upsertPresence({
+      id: `web:${ip}`,
+      kind: "human",
+      name: "Remote user",
+      label: "Web GUI",
+      peerIp: ip === "unknown" ? undefined : ip,
+      announce: true,
+    });
+    desktopNotify("Web GUI login", `Signed in from ${ip}`, {
+      urgency: "critical",
+      dedupeKey: `login:${ip}`,
+      dedupeMs: 15_000,
+    });
+  } catch {
+    /* ignore */
+  }
   return c.json({ ok: true, ...session });
 });
 
@@ -362,6 +426,8 @@ app.post("/api/auth/password", async (c) => {
     .object({ password: z.string(), currentPassword: z.string() })
     .parse(await readJson(c));
   changePassword(body.password, body.currentPassword);
+  const { revokeAllMcpTokens } = await import("./mcp_server");
+  revokeAllMcpTokens();
   const session = await issueJwt({ kind: "session" });
   return c.json({ ok: true, ...session });
 });
@@ -381,7 +447,7 @@ app.post("/api/app-pin/lock", async (c) => {
 app.post("/api/app-pin/unlock", async (c) => {
   await requireAuth(c, { allowPinLocked: true });
   const body = z.object({ pin: z.string() }).parse(await readJson(c));
-  return c.json({ ok: true, ...unlockAppPin(body.pin) });
+  return c.json({ ok: true, ...unlockAppPin(body.pin, clientIp(c)) });
 });
 
 app.post("/api/app-pin/set", async (c) => {
@@ -1025,6 +1091,173 @@ app.post("/api/vision/disarm", async (c) => {
   return c.json(disarmVision("api"));
 });
 
+app.get("/api/mcp-server", async (c) => {
+  await requireAuth(c);
+  const { mcpServerPublic } = await import("./mcp_server");
+  return c.json(mcpServerPublic());
+});
+
+app.post("/api/mcp-server", async (c) => {
+  await requireAuth(c);
+  const featureBool = z.boolean().optional();
+  const body = z
+    .object({
+      enabled: z.boolean().optional(),
+      features: z
+        .object({
+          projects: featureBool,
+          notifications: featureBool,
+          status: featureBool,
+          homeAccess: featureBool,
+          vision: featureBool,
+          presence: featureBool,
+        })
+        .optional(),
+    })
+    .parse(await readJson(c));
+  if (body.enabled === undefined && !body.features) {
+    throw new HttpError(400, "enabled or features required");
+  }
+  const { saveMcpServer, mcpServerPublic } = await import("./mcp_server");
+  saveMcpServer({
+    ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
+    ...(body.features ? { features: body.features } : {}),
+  });
+  return c.json({ ok: true, ...mcpServerPublic() });
+});
+
+app.post("/api/mcp-server/tokens", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({ label: z.string().optional() })
+    .parse(await readJson(c).catch(() => ({})));
+  const { mintMcpToken, mcpServerPublic } = await import("./mcp_server");
+  const minted = mintMcpToken(body.label);
+  return c.json({ ok: true, ...minted, ...mcpServerPublic() });
+});
+
+app.delete("/api/mcp-server/tokens/:id", async (c) => {
+  await requireAuth(c);
+  const id = c.req.param("id");
+  const { revokeMcpToken, mcpServerPublic } = await import("./mcp_server");
+  if (!revokeMcpToken(id)) throw new HttpError(404, "token not found");
+  return c.json({ ok: true, ...mcpServerPublic() });
+});
+
+app.post("/api/mcp-server/tokens/revoke-all", async (c) => {
+  await requireAuth(c);
+  const { revokeAllMcpTokens, mcpServerPublic } = await import("./mcp_server");
+  const revoked = revokeAllMcpTokens();
+  return c.json({ ok: true, revoked, ...mcpServerPublic() });
+});
+
+app.all("/mcp", async (c) => {
+  const { handleMcpHttp } = await import("./mcp_http");
+  return handleMcpHttp(c);
+});
+
+app.get("/presence", async (c) => {
+  const { verifyPresenceUiToken } = await import("./presence");
+  const { presencePageHtml } = await import("./presence_page");
+  const k = c.req.query("k") || "";
+  if (!verifyPresenceUiToken(k)) {
+    return c.text("Unauthorized", 401);
+  }
+  return c.html(presencePageHtml());
+});
+
+app.get("/api/presence/ui", async (c) => {
+  const { verifyPresenceUiToken, presencePublic } = await import("./presence");
+  if (!verifyPresenceUiToken(c.req.query("k"))) {
+    throw new HttpError(401, "invalid presence token");
+  }
+  return c.json(presencePublic());
+});
+
+app.post("/api/presence/ui/chat", async (c) => {
+  const { verifyPresenceUiToken, pushPresenceChat } = await import("./presence");
+  const { recordActivity } = await import("./activity_audit");
+  if (!verifyPresenceUiToken(c.req.query("k"))) {
+    throw new HttpError(401, "invalid presence token");
+  }
+  const body = z.object({ text: z.string().min(1).max(500) }).parse(await readJson(c));
+  const msg = pushPresenceChat({ from: "operator", text: body.text });
+  recordActivity({
+    source: "web",
+    kind: "presence_chat",
+    summary: `Operator → AI: ${body.text.slice(0, 120)}`,
+    detail: { messageId: msg.id },
+  });
+  return c.json({ ok: true, message: msg });
+});
+
+app.post("/api/presence/heartbeat", async (c) => {
+  await requireAuth(c, { allowPinLocked: true });
+  const { upsertPresence } = await import("./presence");
+  const ip = clientIp(c);
+  const body = z
+    .object({
+      area: z.string().optional(),
+      tab: z.string().optional(),
+      label: z.string().optional(),
+    })
+    .parse(await readJson(c).catch(() => ({})));
+  const actor = upsertPresence({
+    id: `web:${ip}`,
+    kind: "human",
+    name: body.label || "Remote user",
+    label:
+      body.area || body.tab
+        ? `Web GUI · ${body.area || ""}${body.tab ? `/${body.tab}` : ""}`
+        : "Web GUI",
+    peerIp: ip === "unknown" ? undefined : ip,
+    announce: true,
+  });
+  return c.json({ ok: true, actor });
+});
+
+app.post("/api/activity", async (c) => {
+  await requireAuth(c);
+  const { recordActivity } = await import("./activity_audit");
+  const body = z
+    .object({
+      kind: z.string().min(1).max(64),
+      summary: z.string().min(1).max(400),
+      detail: z.record(z.unknown()).optional(),
+    })
+    .parse(await readJson(c));
+  recordActivity({
+    source: "web",
+    kind: body.kind,
+    summary: body.summary,
+    detail: body.detail,
+    peerIp: clientIp(c),
+  });
+  return c.json({ ok: true });
+});
+
+app.get("/api/activity", async (c) => {
+  await requireAuth(c);
+  const { listActivity } = await import("./activity_audit");
+  const day = c.req.query("day") || undefined;
+  const source = (c.req.query("source") || "all") as
+    | "all"
+    | "web"
+    | "mcp"
+    | "system"
+    | "auth";
+  const limit = Number(c.req.query("limit") || 100);
+  const offset = Number(c.req.query("offset") || 0);
+  return c.json(listActivity({ day, source, limit, offset }));
+});
+
+app.delete("/api/activity", async (c) => {
+  await requireAuth(c);
+  const { clearActivityDay } = await import("./activity_audit");
+  const body = z.object({ day: z.string() }).parse(await readJson(c));
+  return c.json(clearActivityDay(body.day));
+});
+
 app.get("/api/home-access", async (c) => {
   await requireAuth(c);
   return c.json({ widgets: listAccessWidgets() });
@@ -1061,7 +1294,12 @@ app.post("/api/home-access/widgets/:id/invoke", async (c) => {
 
 app.get("*", async (c) => {
   const path = new URL(c.req.url).pathname;
-  if (path.startsWith("/api/") || path.startsWith("/ws/")) {
+  if (
+    path.startsWith("/api/") ||
+    path.startsWith("/ws/") ||
+    path === "/mcp" ||
+    path === "/presence"
+  ) {
     return c.json({ detail: "Not found" }, 404);
   }
   const res = tryServeStatic(path, c.req.header("accept-encoding") || "");

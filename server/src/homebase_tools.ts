@@ -1,4 +1,3 @@
-import type { Project } from "./config";
 import {
   listPresets,
   loadProjects,
@@ -14,8 +13,7 @@ import {
 } from "./home_access";
 import { listNotifications, pushNotification } from "./notifications";
 import { projectPublic, runAction, stopProject, tailLogs } from "./process";
-import { listSessions } from "./pty";
-import { restartHomebased, systemStatus } from "./system";
+import { systemStatus } from "./system";
 import {
   VISION_GUIDANCE,
   ensureVisionWorkspace,
@@ -26,19 +24,175 @@ import {
   visionStatus,
   visionType,
 } from "./vision";
-import {
-  restartWireguardIface,
-  startWireguard,
-  stopWireguard,
-  wireguardStatus,
-} from "./wireguard";
+import { wireguardStatus } from "./wireguard";
 
 const CONTEXT_MARKER = "[Home Base context]";
+
+export type HomebaseToolSurface = "cursor" | "mcp";
 
 export type HomebaseToolContext = {
   chatId?: string;
   getMode?: () => string;
 };
+
+export type HomebaseToolDef = {
+  description: string;
+  parameters: Record<string, unknown>;
+  execute: (args: Record<string, unknown>) => Promise<string> | string;
+};
+
+/** Security / Settings controls — human GUI only (never AI / MCP). */
+export const AI_DENIED_TOOLS = [
+  "homebase_wireguard_control",
+  "homebase_restart_homebased",
+] as const;
+
+export const AI_DENIED_TOOL_SET = new Set<string>(AI_DENIED_TOOLS);
+
+/** Cursor-chat-only (needs Switch/Stay UI). */
+export const CURSOR_ONLY_TOOLS = new Set(["homebase_propose_mode"]);
+
+export const HUMAN_ONLY_CAPABILITIES = [
+  "WireGuard start / stop / restart / install / clients",
+  "Cloudflare Tunnel lifecycle",
+  "Restart homebased",
+  "Password, Share QR, App PIN, sudo vault, Cursor API key",
+  "MCP Server enable / disable, feature toggles, and token mint / revoke",
+  "Activity history audit (Web + MCP)",
+  "Vision Arm / Disarm",
+  "System soft / hard reset",
+] as const;
+
+/** Fine-tunable MCP feature groups (master toggle is separate). */
+export type McpFeatureId =
+  | "projects"
+  | "notifications"
+  | "status"
+  | "homeAccess"
+  | "vision"
+  | "presence";
+
+export type McpFeatures = Record<McpFeatureId, boolean>;
+
+export const MCP_FEATURE_DEFAULTS: McpFeatures = {
+  projects: true,
+  notifications: true,
+  status: true,
+  homeAccess: true,
+  vision: false,
+  presence: true,
+};
+
+export const MCP_FEATURE_META: {
+  id: McpFeatureId;
+  label: string;
+  hint: string;
+  defaultOn: boolean;
+}[] = [
+  {
+    id: "projects",
+    label: "Projects & actions",
+    hint: "List / upsert / delete projects, run actions, stop",
+    defaultOn: true,
+  },
+  {
+    id: "notifications",
+    label: "Notifications",
+    hint: "List inbox + push agent notifications",
+    defaultOn: true,
+  },
+  {
+    id: "status",
+    label: "System status",
+    hint: "Read-only homebased + WireGuard status (no control)",
+    defaultOn: true,
+  },
+  {
+    id: "homeAccess",
+    label: "Home Access",
+    hint: "List / upsert / delete / invoke panel widgets",
+    defaultOn: true,
+  },
+  {
+    id: "vision",
+    label: "Vision desktop",
+    hint: "Screenshot + Armed pointer/keyboard (off by default)",
+    defaultOn: false,
+  },
+  {
+    id: "presence",
+    label: "Desktop presence",
+    hint: "Show AI character on operator desktop + chat with the human",
+    defaultOn: true,
+  },
+];
+
+export const MCP_TOOL_FEATURE: Record<string, McpFeatureId> = {
+  homebase_list_projects: "projects",
+  homebase_list_presets: "projects",
+  homebase_project_status: "projects",
+  homebase_project_upsert: "projects",
+  homebase_project_delete: "projects",
+  homebase_run_action: "projects",
+  homebase_stop_project: "projects",
+  homebase_notifications: "notifications",
+  homebase_notify: "notifications",
+  homebase_system_status: "status",
+  homebase_wireguard_status: "status",
+  homebase_access_list: "homeAccess",
+  homebase_access_upsert: "homeAccess",
+  homebase_access_delete: "homeAccess",
+  homebase_access_invoke: "homeAccess",
+  homebase_vision_status: "vision",
+  homebase_vision_screenshot: "vision",
+  homebase_vision_click: "vision",
+  homebase_vision_type: "vision",
+  homebase_vision_key: "vision",
+  homebase_vision_hotkey: "vision",
+  homebase_presence_status: "presence",
+  homebase_presence_express: "presence",
+  homebase_presence_chat_send: "presence",
+  homebase_presence_chat_read: "presence",
+};
+
+export function normalizeMcpFeatures(
+  raw?: Partial<McpFeatures> | null,
+): McpFeatures {
+  const out = { ...MCP_FEATURE_DEFAULTS };
+  if (!raw || typeof raw !== "object") return out;
+  for (const id of Object.keys(MCP_FEATURE_DEFAULTS) as McpFeatureId[]) {
+    if (typeof raw[id] === "boolean") out[id] = raw[id]!;
+  }
+  return out;
+}
+
+export function filterToolsByMcpFeatures(
+  tools: Record<string, HomebaseToolDef>,
+  features: McpFeatures,
+): Record<string, HomebaseToolDef> {
+  const out: Record<string, HomebaseToolDef> = {};
+  for (const [name, def] of Object.entries(tools)) {
+    const feat = MCP_TOOL_FEATURE[name];
+    if (!feat) continue;
+    if (!features[feat]) continue;
+    out[name] = def;
+  }
+  return out;
+}
+
+function json(data: unknown): string {
+  return JSON.stringify(data, null, 2);
+}
+
+async function visionTool(
+  fn: () => Promise<Record<string, unknown>>,
+): Promise<string> {
+  try {
+    return json(await fn());
+  } catch (e) {
+    return json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+  }
+}
 
 export function wrapPrompt(
   prompt: string,
@@ -75,7 +229,7 @@ export function wrapPrompt(
     `For control-plane ops use homebase_* tools only; code/file work uses normal tools. ` +
     `To redeploy this control plane from Chat, run ./build.sh --deploy in the Home Base ` +
     `repo (it auto-schedules a detached systemd job so restart does not kill the deploy). ` +
-    `Prefer homebase_restart_homebased over a raw systemctl restart. ` +
+    `VPN, auth, vaults, MCP tokens, and homebased restart are Settings-only (human precedence). ` +
     `Home Access panel widgets (buttons/toggles/sliders/gauges) use homebase_access_* tools ` +
     `or edit server/src/home_access.ts / the Home Access UI — leave the framework intact once wired. ` +
     visionBit +
@@ -86,35 +240,19 @@ export function wrapPrompt(
   );
 }
 
-async function visionTool(
-  fn: () => Promise<Record<string, unknown>>,
-): Promise<string> {
-  try {
-    return json(await fn());
-  } catch (e) {
-    return json({ ok: false, error: e instanceof Error ? e.message : String(e) });
-  }
-}
-
-type ToolFn = (args: Record<string, unknown>) => Promise<string> | string;
-
-function json(data: unknown): string {
-  return JSON.stringify(data, null, 2);
-}
-
 export function buildHomebaseTools(
   projectId: string,
   readonly = false,
   ctx: HomebaseToolContext = {},
-): Record<string, { description: string; parameters: Record<string, unknown>; execute: ToolFn }> {
+  surface: HomebaseToolSurface = "cursor",
+): Record<string, HomebaseToolDef> {
   const resolvePid = (args: Record<string, unknown>) =>
     String(args.projectId || args.project_id || "").trim() || projectId;
 
-  const tools: Record<
-    string,
-    { description: string; parameters: Record<string, unknown>; execute: ToolFn }
-  > = {
-    homebase_propose_mode: {
+  const tools: Record<string, HomebaseToolDef> = {};
+
+  if (surface === "cursor") {
+    tools.homebase_propose_mode = {
       description:
         "Ask the user to switch chat mode mid-conversation (agent|ask|plan|debug). " +
         "Shows a Switch/Stay card; waits for their decision. Use when planning vs implementing " +
@@ -140,7 +278,12 @@ export function buildHomebaseTools(
         }
         const current = ctx.getMode?.() || "agent";
         if (current === mode) {
-          return json({ ok: true, mode, unchanged: true, message: `Already in ${mode}` });
+          return json({
+            ok: true,
+            mode,
+            unchanged: true,
+            message: `Already in ${mode}`,
+          });
         }
         const reason = String(args.reason || `Switch to ${mode}?`);
         const decision = await requestApproval({
@@ -179,101 +322,106 @@ export function buildHomebaseTools(
           message: `Switched ${applied.previous} → ${applied.mode}`,
         });
       },
-    },
-    homebase_list_projects: {
-      description: "List Home Base projects with ports and sessions",
-      parameters: { type: "object", properties: {} },
-      execute: async () => {
-        const projects = await Promise.all(
-          [...loadProjects().values()].map(async (p) => ({
-            ...(await projectPublic(p)),
-            active: p.id === projectId,
-          })),
-        );
-        return json({ projects, activeProjectId: projectId });
-      },
-    },
-    homebase_list_presets: {
-      description:
-        "List project presets (templates with ports/actions). Use with homebase_project_upsert.",
-      parameters: { type: "object", properties: {} },
-      execute: async () => json({ presets: listPresets() }),
-    },
-    homebase_project_status: {
-      description: "Status for one project (ports, sessions, recent logs)",
-      parameters: {
-        type: "object",
-        properties: {
-          projectId: { type: "string" },
-          logLines: { type: "number" },
-        },
-      },
-      execute: async (args) => {
-        const pid = resolvePid(args);
-        const p = loadProjects().get(pid);
-        if (!p) return json({ error: "project not found" });
-        return json({
+    };
+  }
+
+  tools.homebase_list_projects = {
+    description: "List Home Base projects with ports and sessions",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const projects = await Promise.all(
+        [...loadProjects().values()].map(async (p) => ({
           ...(await projectPublic(p)),
-          logs: tailLogs(p, Number(args.logLines || 40)),
-        });
+          active: Boolean(projectId) && p.id === projectId,
+        })),
+      );
+      return json({
+        projects,
+        activeProjectId: projectId || null,
+      });
+    },
+  };
+  tools.homebase_list_presets = {
+    description:
+      "List project presets (templates with ports/actions). Use with homebase_project_upsert.",
+    parameters: { type: "object", properties: {} },
+    execute: async () => json({ presets: listPresets() }),
+  };
+  tools.homebase_project_status = {
+    description: "Status for one project (ports, sessions, recent logs)",
+    parameters: {
+      type: "object",
+      properties: {
+        projectId: { type: "string" },
+        logLines: { type: "number" },
       },
     },
-    homebase_notifications: {
-      description: "List recent Home Base notifications",
-      parameters: {
-        type: "object",
-        properties: { limit: { type: "number" } },
-      },
-      execute: async (args) =>
-        json(listNotifications({ limit: Number(args.limit || 20) })),
+    execute: async (args) => {
+      const pid = resolvePid(args);
+      const p = loadProjects().get(pid);
+      if (!p) return json({ error: "project not found" });
+      return json({
+        ...(await projectPublic(p)),
+        logs: tailLogs(p, Number(args.logLines || 40)),
+      });
     },
-    homebase_system_status: {
-      description: "Homebased unit + WireGuard interfaces",
-      parameters: { type: "object", properties: {} },
-      execute: async () => json(systemStatus()),
+  };
+  tools.homebase_notifications = {
+    description: "List recent Home Base notifications",
+    parameters: {
+      type: "object",
+      properties: { limit: { type: "number" } },
     },
-    homebase_wireguard_status: {
-      description:
-        "WireGuard VPN install/setup status, peers, and client list (no private keys)",
-      parameters: { type: "object", properties: {} },
-      execute: async () => json(await wireguardStatus()),
-    },
-    homebase_access_list: {
-      description:
-        "List Home Access panel widgets (button/toggle/slider/gauge) and their hooks",
-      parameters: { type: "object", properties: {} },
-      execute: async () => json({ widgets: listAccessWidgets() }),
-    },
-    homebase_vision_status: {
-      description:
-        "Vision desktop status: X11 display, monitors, whether control is Armed, capture health. Linux only.",
-      parameters: { type: "object", properties: {} },
-      execute: async () => visionTool(() => visionStatus()),
-    },
-    homebase_vision_screenshot: {
-      description:
-        "Capture the Linux desktop (JPEG) via X11. Returns a filesystem path — Read that image " +
-        "before clicking. Works while Vision is disarmed (look-only). Prefer after each GUI action.",
-      parameters: {
-        type: "object",
-        properties: {
-          monitor: {
-            type: "number",
-            description: "0 = all displays / primary region; else monitor index",
-          },
-          maxWidth: { type: "number", description: "Max encode width (default 1280)" },
-          quality: { type: "number", description: "JPEG quality 30–85 (default 62)" },
+    execute: async (args) =>
+      json(listNotifications({ limit: Number(args.limit || 20) })),
+  };
+  tools.homebase_system_status = {
+    description:
+      "Homebased unit + network URLs + WireGuard summary (read-only; no restart/VPN control)",
+    parameters: { type: "object", properties: {} },
+    execute: async () => json(systemStatus()),
+  };
+  tools.homebase_wireguard_status = {
+    description:
+      "WireGuard VPN install/setup status, peers, and client list (no private keys; read-only)",
+    parameters: { type: "object", properties: {} },
+    execute: async () => json(await wireguardStatus()),
+  };
+  tools.homebase_access_list = {
+    description:
+      "List Home Access panel widgets (button/toggle/slider/gauge) and their hooks",
+    parameters: { type: "object", properties: {} },
+    execute: async () => json({ widgets: listAccessWidgets() }),
+  };
+  tools.homebase_vision_status = {
+    description:
+      "Vision desktop status: X11 display, monitors, whether control is Armed, capture health. Linux only.",
+    parameters: { type: "object", properties: {} },
+    execute: async () => visionTool(() => visionStatus()),
+  };
+  tools.homebase_vision_screenshot = {
+    description:
+      "Capture the Linux desktop (JPEG) via X11. Returns a filesystem path — Read that image " +
+      "before clicking. Works while Vision is disarmed (look-only). Prefer after each GUI action.",
+    parameters: {
+      type: "object",
+      properties: {
+        monitor: {
+          type: "number",
+          description: "0 = all displays / primary region; else monitor index",
         },
+        maxWidth: { type: "number", description: "Max encode width (default 1280)" },
+        quality: { type: "number", description: "JPEG quality 30–85 (default 62)" },
       },
-      execute: async (args) =>
-        visionTool(() =>
-          visionScreenshot({
-            monitor: args.monitor != null ? Number(args.monitor) : undefined,
-            maxWidth: args.maxWidth != null ? Number(args.maxWidth) : undefined,
-            quality: args.quality != null ? Number(args.quality) : undefined,
-          }),
-        ),
     },
+    execute: async (args) =>
+      visionTool(() =>
+        visionScreenshot({
+          monitor: args.monitor != null ? Number(args.monitor) : undefined,
+          maxWidth: args.maxWidth != null ? Number(args.maxWidth) : undefined,
+          quality: args.quality != null ? Number(args.quality) : undefined,
+        }),
+      ),
   };
 
   if (!readonly) {
@@ -319,7 +467,6 @@ export function buildHomebaseTools(
         required: ["projectId"],
       },
       execute: async (args) => {
-        // Dynamic import avoids a static cycle (cursor → homebase_tools).
         const { removeRegisteredProject } = await import("./project_remove");
         return json(removeRegisteredProject(String(args.projectId || "")));
       },
@@ -373,31 +520,6 @@ export function buildHomebaseTools(
             category: "agent",
           }),
         ),
-    };
-    tools.homebase_restart_homebased = {
-      description:
-        "Schedule a detached restart of homebased.service (survives self-stop; do not use raw systemctl restart from inside Home Base)",
-      parameters: { type: "object", properties: {} },
-      execute: async () => json(restartHomebased()),
-    };
-    tools.homebase_wireguard_control = {
-      description: "Start, stop, or restart the WireGuard VPN interface",
-      parameters: {
-        type: "object",
-        properties: {
-          action: { type: "string", description: "start | stop | restart" },
-          iface: { type: "string" },
-        },
-        required: ["action"],
-      },
-      execute: async (args) => {
-        const action = String(args.action || "").toLowerCase();
-        const iface = args.iface ? String(args.iface) : undefined;
-        if (action === "start") return json(startWireguard(iface));
-        if (action === "stop") return json(stopWireguard(iface));
-        if (action === "restart") return json(restartWireguardIface(iface));
-        return json({ error: "action must be start, stop, or restart" });
-      },
     };
     tools.homebase_access_upsert = {
       description:
@@ -524,7 +646,170 @@ export function buildHomebaseTools(
     };
   }
 
-  void listSessions;
-  void (null as unknown as Project);
+  if (surface === "mcp") {
+    tools.homebase_presence_status = {
+      description:
+        "Desktop presence for the human at the laptop: who is remoted in (web humans vs MCP AIs), " +
+        "chat transcript, and guidance. The operator sees a native window with your character — " +
+        "you cannot remoted in silently. Use homebase_presence_express to show mood/bubble and " +
+        "homebase_presence_chat_send/_read to talk with the operator.",
+      parameters: { type: "object", properties: {} },
+      execute: async () => {
+        const { presencePublic } = await import("./presence");
+        return json(presencePublic());
+      },
+    };
+    tools.homebase_presence_express = {
+      description:
+        "Update your AI character on the operator's desktop presence window. " +
+        "Call this when you arrive and whenever your state changes so the human can see you. " +
+        "mood: idle|thinking|happy|alert|working|listening. bubble: short speech/status (≤160 chars). " +
+        "name: display name (e.g. Grok). This does not Arm Vision or bypass security.",
+      parameters: {
+        type: "object",
+        properties: {
+          mood: { type: "string" },
+          bubble: { type: "string" },
+          name: { type: "string" },
+          actorId: {
+            type: "string",
+            description: "Stable id for this bot (default mcp-default)",
+          },
+        },
+      },
+      execute: async (args) => {
+        const {
+          upsertPresence,
+          expressPresence,
+          parseMood,
+        } = await import("./presence");
+        const id = String(args.actorId || "mcp-default").slice(0, 64);
+        upsertPresence({
+          id,
+          kind: "ai",
+          name: args.name ? String(args.name) : undefined,
+          label: "MCP AI",
+          announce: true,
+        });
+        const mood = parseMood(args.mood);
+        const actor = expressPresence(id, {
+          mood,
+          bubble: args.bubble != null ? String(args.bubble) : undefined,
+          name: args.name ? String(args.name) : undefined,
+        });
+        return json({ ok: true, actor, guidance: "Keep expressing as you work; poll chat_read for operator replies." });
+      },
+    };
+    tools.homebase_presence_chat_send = {
+      description:
+        "Send a chat message to the operator's desktop presence window (small chat pane). " +
+        "Use for questions, status, or coordination. Operator replies appear via homebase_presence_chat_read.",
+      parameters: {
+        type: "object",
+        properties: {
+          text: { type: "string" },
+          actorId: { type: "string" },
+          name: { type: "string" },
+        },
+        required: ["text"],
+      },
+      execute: async (args) => {
+        const { upsertPresence, pushPresenceChat } = await import("./presence");
+        const id = String(args.actorId || "mcp-default").slice(0, 64);
+        const name = String(args.name || "Grok").slice(0, 48);
+        upsertPresence({ id, kind: "ai", name, label: "MCP AI", announce: false });
+        const msg = pushPresenceChat({
+          from: "ai",
+          text: String(args.text || ""),
+          actorId: id,
+          actorName: name,
+        });
+        return json({ ok: true, message: msg });
+      },
+    };
+    tools.homebase_presence_chat_read = {
+      description:
+        "Read operator (and AI) messages from the desktop presence chat. Pass since (ms epoch) to get only new messages.",
+      parameters: {
+        type: "object",
+        properties: { since: { type: "number" } },
+      },
+      execute: async (args) => {
+        const { listPresenceChat, upsertPresence } = await import("./presence");
+        upsertPresence({
+          id: "mcp-default",
+          kind: "ai",
+          name: "Grok",
+          label: "MCP AI",
+          announce: false,
+        });
+        const since = Number(args.since || 0) || 0;
+        return json({ messages: listPresenceChat(since), now: Date.now() });
+      },
+    };
+  }
+
+  // Defense in depth — never return denied security tools on any AI surface.
+  for (const name of AI_DENIED_TOOL_SET) {
+    delete tools[name];
+  }
+  if (surface === "mcp") {
+    for (const name of CURSOR_ONLY_TOOLS) {
+      delete tools[name];
+    }
+  }
+
   return tools;
+}
+
+export function listHomebaseToolNames(
+  surface: HomebaseToolSurface,
+  readonly = false,
+): string[] {
+  return Object.keys(buildHomebaseTools("", readonly, {}, surface)).sort();
+}
+
+export function mcpToolCatalog(features?: McpFeatures): {
+  allowed: { name: string; description: string; feature: McpFeatureId }[];
+  disabled: { name: string; description: string; feature: McpFeatureId }[];
+  humanOnly: string[];
+  features: McpFeatures;
+  featureMeta: typeof MCP_FEATURE_META;
+} {
+  const feats = normalizeMcpFeatures(features);
+  const all = buildHomebaseTools("", false, {}, "mcp");
+  const allowed: {
+    name: string;
+    description: string;
+    feature: McpFeatureId;
+  }[] = [];
+  const disabled: {
+    name: string;
+    description: string;
+    feature: McpFeatureId;
+  }[] = [];
+  for (const [name, def] of Object.entries(all)) {
+    const feature = MCP_TOOL_FEATURE[name];
+    if (!feature) continue;
+    const row = { name, description: def.description, feature };
+    if (feats[feature]) allowed.push(row);
+    else disabled.push(row);
+  }
+  return {
+    allowed,
+    disabled,
+    humanOnly: [...HUMAN_ONLY_CAPABILITIES],
+    features: feats,
+    featureMeta: MCP_FEATURE_META,
+  };
+}
+
+/** MCP surface tools after feature filtering. */
+export function buildMcpTools(
+  features?: McpFeatures,
+): Record<string, HomebaseToolDef> {
+  return filterToolsByMcpFeatures(
+    buildHomebaseTools("", false, {}, "mcp"),
+    normalizeMcpFeatures(features),
+  );
 }

@@ -34,6 +34,7 @@ import {
 } from './lib/uiPrefs'
 import { writeDockOpen } from './components/ChatPanel'
 import { useVisibleInterval } from './lib/visibility'
+import { logActivity, presenceHeartbeat } from './lib/activity'
 
 const tabFallback = () => (
   <div className="h-full flex items-center justify-center text-mute text-sm">Loading…</div>
@@ -228,7 +229,9 @@ function AuthedApp() {
     setArea(next)
     setWorkMenuOpen(false)
     closeInbox()
-  }, [closeInbox])
+    logActivity('nav', `Area → ${next}`, { area: next })
+    presenceHeartbeat({ area: next, tab })
+  }, [closeInbox, tab])
 
   useEffect(() => {
     if (tab === 'view') setViewVisited(true)
@@ -245,7 +248,15 @@ function AuthedApp() {
   const goTab = useCallback((id: Tab) => {
     writeLastTab(id)
     setTab(id)
-  }, [])
+    logActivity('nav', `Tab → ${id}`, { tab: id, area })
+    presenceHeartbeat({ area, tab: id })
+  }, [area])
+
+  useEffect(() => {
+    presenceHeartbeat({ area, tab })
+    const t = setInterval(() => presenceHeartbeat({ area, tab }), 20_000)
+    return () => clearInterval(t)
+  }, [area, tab])
 
   const onPrimaryNav = useCallback(
     (id: Tab) => {

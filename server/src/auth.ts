@@ -15,6 +15,7 @@ import {
 } from "./config";
 import { logWarn } from "./console_log";
 import { formatGeo, geoCached, warmGeo } from "./geo";
+import { desktopNotify } from "./desktop_notify";
 import { appendDaily } from "./logging";
 import { pushNotification } from "./notifications";
 
@@ -328,26 +329,36 @@ export function recordFailure(
   saveLockout({ failCount, lockedUntil });
   appendDaily("auth_failure", { ip, reason, failCount, lockoutSeconds: delay });
   warmGeo(ip);
+  const geo = formatGeo(geoCached(ip));
   logWarn(`auth failure #${failCount}`, {
     source: "auth",
     fields: {
       ip,
-      geo: formatGeo(geoCached(ip)),
+      geo,
       reason,
       lockoutSeconds: delay || undefined,
     },
   });
-  if (failCount >= FAIL_THRESHOLD) {
-    pushNotification(
-      "Auth lockout",
-      `Failed login from ${ip}. Wait ${delay}s (failure #${failCount}).`,
-      {
-        level: "warn",
-        category: "security",
-        meta: { ip, failCount, delay },
-      },
-    );
-  }
+  const title =
+    failCount >= FAIL_THRESHOLD
+      ? "Auth lockout"
+      : failCount >= 3
+        ? "Repeated bad credentials"
+        : "Bad credentials";
+  const body =
+    failCount >= FAIL_THRESHOLD
+      ? `${reason} from ${ip}${geo ? ` (${geo})` : ""}. Locked ${delay}s (failure #${failCount}).`
+      : `${reason} from ${ip}${geo ? ` (${geo})` : ""}. Failure #${failCount}/${FAIL_THRESHOLD} before lockout.`;
+  pushNotification(title, body, {
+    level: failCount >= FAIL_THRESHOLD ? "error" : "warn",
+    category: "security",
+    meta: { ip, failCount, delay, reason },
+  });
+  desktopNotify(title, body, {
+    urgency: failCount >= FAIL_THRESHOLD ? "critical" : "critical",
+    dedupeKey: `auth-fail:${ip}:${failCount}`,
+    dedupeMs: 3_000,
+  });
   return {
     failCount,
     locked: delay > 0 || lockedUntil > now,

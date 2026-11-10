@@ -13,7 +13,10 @@ Generic control plane: systemd **`homebased`**, binary **`homebase`**. Productio
 - Auth is **password → JWT (24h TTL)**. Password is scrypt-hashed in `.runtime/auth.json` (mode 0600). Only a **localhost-loaded** SPA may set/change the password.
 - Share QR issues a **one-time redeem id** (20s), never the password or a long-lived secret; redeem returns a normal 24h JWT.
 - Never commit `.env`, `config/projects.json`, `.runtime/`, or personal presets under `config/presets/` (only `example.json` is committed).
-- Cursor integration: **local** `cursor-sdk` agents only. Chat agents get Home Base identity context and in-process `homebase_*` custom tools (not a public HTTP MCP).
+- Cursor integration: **local** `cursor-sdk` agents only. Chat agents get Home Base identity context and in-process `homebase_*` custom tools.
+- **Network MCP** (optional, master default ON): Streamable HTTP at `/mcp` for VPN/LAN AI clients. Fine-tunable feature groups (projects / notifications / status / homeAccess / presence default ON; **vision default OFF**). Gated by Settings toggles + revocable MCP Bearer tokens (not session JWTs). MCP tokens are **rejected on `/api`** (Web GUI is humans-only: password + optional PIN). VPN control, auth/vaults, restart, MCP toggles, Vision Arm, activity audit stay **Settings / GUI only**.
+- **Presence window**: when a Web GUI human or MCP AI is remoted in, a seat-user Chromium `--app` window pops up on the physical desktop (characters + chat). Cannot silently remoted in.
+- **Activity history**: `.runtime/activity/*.jsonl` (0600) — Web nav + MCP tools + auth; human Settings only; never MCP-readable.
 - View (remote screen) is JWT-gated like PTY; capture must stop when no subscribers remain (Vision agent hold may keep the worker warm while Armed).
 - Vision desktop control (Linux X11) requires an explicit Arm; never expose pointer/keyboard tools without JWT + Arm.
 - Actions are config-driven (button → script + args). Do not hardcode project names or paths into the server.

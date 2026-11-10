@@ -39,6 +39,10 @@ const KEEP_SOFT = new Set([
   "onboarding.json",
   "legal.json",
   "server_identity.json",
+  "mcp_server.json",
+  "mcp_tokens.json",
+  "presence_ui_token",
+  "activity",
   "logs",
 ]);
 
