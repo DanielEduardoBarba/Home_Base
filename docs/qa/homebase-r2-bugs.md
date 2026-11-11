@@ -2,14 +2,15 @@
 
 Severity: Blocker > Major > Minor > Polish. Screenshots: `docs/qa/screenshots/homebase-r2/`.
 
-| ID | Severity | Summary | Status (retest v1.17.6, 1e3d85f) |
+| ID | Severity | Summary | Status (latest retest) |
 |---|---|---|---|
+<!-- 01–05 verified on v1.17.6 (1e3d85f) -->
 | HB-R2-01 | Minor | Opening an unreadable folder (`/root`) does nothing, with no message | **Fixed-verified** |
 | HB-R2-02 | Polish | The "/ root" shortcut means the filesystem root but reads like the `/root` folder | **Fixed-verified** |
 | HB-R2-03 | Polish | The phone shell key bar has no arrow keys | **Fixed-verified** |
 | HB-R2-04 | Polish | Dashboard has an invisible Tab stop ("pull to refresh") with no focus ring | **Fixed-verified** |
 | HB-R2-05 | Polish | At 360 px the Files subtitle runs off the screen | **Fixed-verified** |
-| HB-R2-06 | Minor | Desktop: can't copy text out of the terminal (suspected — needs a manual check) | Open |
+| HB-R2-06 | Minor | Desktop: can't copy text out of the terminal (suspected — needs a manual check) | **Fixed-verified** on v1.17.7 (1c307eb) — see [homebase-r2-06-retest.md](homebase-r2-06-retest.md) |
 
 ## HB-R2-01 — Unreadable folder fails silently · Minor
 Steps: Work → Files → click "/" in the path bar → click `root`.
