@@ -15,9 +15,33 @@ export function getExpiresAt(): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+const sessionPollers = new Set<() => void>()
+let authLostSent = false
+
+/** Register a timer/poller that must stop on sign-out or any 401. */
+export function registerSessionPoller(stop: () => void): () => void {
+  sessionPollers.add(stop)
+  return () => {
+    sessionPollers.delete(stop)
+    stop()
+  }
+}
+
+export function stopAllSessionPollers(): void {
+  for (const stop of [...sessionPollers]) {
+    try {
+      stop()
+    } catch {
+      /* ignore */
+    }
+  }
+  sessionPollers.clear()
+}
+
 export function setSession(token: string, expiresAt: number): void {
   localStorage.setItem(TOKEN_KEY, token.trim())
   localStorage.setItem(EXP_KEY, String(expiresAt))
+  authLostSent = false
   try {
     sessionStorage.removeItem(REASON_KEY)
   } catch {
@@ -34,7 +58,9 @@ export function clearToken(): void {
 
 /** Clear session and notify the app shell (optional reason for Login copy). */
 export function clearSession(reason?: AuthLostReason): void {
+  const hadSession = Boolean(getToken() || (typeof localStorage !== 'undefined' && localStorage.getItem('homebase_token')))
   clearToken()
+  stopAllSessionPollers()
   if (reason) {
     try {
       sessionStorage.setItem(REASON_KEY, reason)
@@ -42,6 +68,9 @@ export function clearSession(reason?: AuthLostReason): void {
       /* ignore */
     }
   }
+  // Redirect / notify the shell once — repeat 401s must not retrigger login churn.
+  if (!hadSession && authLostSent) return
+  authLostSent = true
   window.dispatchEvent(
     new CustomEvent('hb-auth-lost', { detail: { reason: reason || 'unauthorized' } }),
   )

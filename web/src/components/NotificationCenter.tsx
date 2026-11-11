@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useAccessibleDialog } from '../lib/useAccessibleDialog'
 import { api } from '../lib/api'
 import { useNotify } from '../lib/NotifyContext'
 import type { NotificationItem } from '../lib/types'
@@ -94,6 +95,11 @@ function HistoryDrawer() {
 
   const pages = Math.max(1, Math.ceil(total / PAGE))
   const page = Math.floor(offset / PAGE) + 1
+  const { ref: historyRef, dialogProps: historyProps } = useAccessibleDialog<HTMLElement>({
+    open: historyOpen,
+    onClose: closeHistory,
+    label: 'Alert history',
+  })
 
   return (
     <>
@@ -102,19 +108,21 @@ function HistoryDrawer() {
         data-open={historyOpen}
         onClick={closeHistory}
         aria-hidden={!historyOpen}
+        {...(!historyOpen ? { inert: true } : {})}
       />
       <aside
+        ref={historyRef}
         className="hb-drawer"
         data-open={historyOpen}
-        aria-hidden={!historyOpen}
-        aria-label="Alert history"
+        {...historyProps}
+        {...(historyOpen ? { 'aria-label': 'Alert history' } : {})}
       >
         <div className="hb-drawer-head">
           <div>
             <h2 className="font-semibold text-sm">History</h2>
             <p className="text-[11px] text-mute mt-0.5">Read alerts archive</p>
           </div>
-          <button type="button" className="text-mute text-sm px-2 py-1" onClick={closeHistory}>
+          <button type="button" className="text-mute text-sm px-2 py-1" data-dialog-cancel onClick={closeHistory}>
             Close
           </button>
         </div>
@@ -177,14 +185,11 @@ export function NotificationCenter() {
     unlockAudio,
   } = useNotify()
 
-  useEffect(() => {
-    if (!inboxOpen) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeInbox()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [inboxOpen, closeInbox])
+  const { ref: inboxRef, dialogProps: inboxProps } = useAccessibleDialog<HTMLDivElement>({
+    open: inboxOpen,
+    onClose: closeInbox,
+    label: 'Notifications',
+  })
 
   return (
     <>
@@ -193,14 +198,14 @@ export function NotificationCenter() {
         data-open={inboxOpen}
         onClick={closeInbox}
         aria-hidden={!inboxOpen}
+        {...(!inboxOpen ? { inert: true } : {})}
       />
       <div
+        ref={inboxRef}
         className="hb-inbox-panel"
         data-open={inboxOpen}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Notifications"
-        aria-hidden={!inboxOpen}
+        {...inboxProps}
+        {...(inboxOpen ? { 'aria-label': 'Notifications' } : {})}
       >
         <div className="hb-inbox-head">
           <div className="flex items-center gap-2 min-w-0">
@@ -222,7 +227,7 @@ export function NotificationCenter() {
             >
               History
             </button>
-            <button type="button" className="text-mute text-sm px-2 py-1" onClick={closeInbox}>
+            <button type="button" className="text-mute text-sm px-2 py-1" data-dialog-cancel onClick={closeInbox}>
               Close
             </button>
           </div>

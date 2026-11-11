@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { getToken, registerSessionPoller } from './auth'
 
 /** True when the document is visible (or APIs unavailable). */
 export function pageIsVisible(): boolean {
@@ -17,15 +18,18 @@ export function useVisibleInterval(tick: () => void, ms: number, enabled = true)
   useEffect(() => {
     if (!enabled) return
     const run = () => {
+      if (!getToken()) return
       if (pageIsVisible()) tickRef.current()
     }
     run()
     const t = window.setInterval(run, ms)
+    const unregister = registerSessionPoller(() => window.clearInterval(t))
     const onVis = () => {
       if (pageIsVisible()) tickRef.current()
     }
     document.addEventListener('visibilitychange', onVis)
     return () => {
+      unregister()
       window.clearInterval(t)
       document.removeEventListener('visibilitychange', onVis)
     }

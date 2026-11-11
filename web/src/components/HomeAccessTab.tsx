@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../lib/api'
 import type { AccessHook, AccessHookType, AccessWidget, AccessWidgetKind, Project } from '../lib/types'
 import { ChatPanel, readDockOpen, writeDockOpen } from './ChatPanel'
+import { AccessibleDialog } from './AccessibleDialog'
 
 const KINDS: { id: AccessWidgetKind; label: string }[] = [
   { id: 'button', label: 'Button' },
@@ -484,13 +485,13 @@ export function HomeAccessTab({
       </div>
 
       {editorOpen && (
-        <div className="hb-access-scrim" role="presentation" onClick={() => setEditorOpen(false)}>
-          <div
-            className="hb-access-editor"
-            role="dialog"
-            aria-label="Add control"
-            onClick={(e) => e.stopPropagation()}
-          >
+        <AccessibleDialog
+          open
+          onClose={() => setEditorOpen(false)}
+          label={draft.id ? 'Edit control' : 'Add control'}
+          overlayClassName="hb-access-scrim"
+          panelClassName="hb-access-editor"
+        >
             <h2 className="text-base font-medium mb-2">{draft.id ? 'Edit control' : 'Add control'}</h2>
             <label className="hb-access-field">
               <span>Kind</span>
@@ -685,15 +686,14 @@ export function HomeAccessTab({
               </>
             )}
             <div className="hb-access-editor-actions">
-              <button type="button" className="hb-btn hb-btn-ghost" onClick={() => setEditorOpen(false)}>
+              <button type="button" className="hb-btn hb-btn-ghost" data-dialog-cancel onClick={() => setEditorOpen(false)}>
                 Cancel
               </button>
               <button type="button" className="hb-btn hb-btn-primary" onClick={() => void saveDraft()}>
                 Save
               </button>
             </div>
-          </div>
-        </div>
+        </AccessibleDialog>
       )}
     </div>
   )

@@ -6,6 +6,7 @@ import { useServerIdentity } from '../lib/serverIdentity'
 import { AddProjectWizard, type AddProjectResult } from './AddProjectWizard'
 import { BrandTitle } from './BrandTitle'
 import { HoldButton } from './HoldButton'
+import { useAccessibleDialog } from '../lib/useAccessibleDialog'
 import { IconBtn } from './IconBtn'
 import { ProjectSelect } from './ProjectSelect'
 
@@ -65,6 +66,11 @@ export function AppsTab({
   const [busy, setBusy] = useState('')
   const [msg, setMsg] = useState('')
   const [hotkeysOpen, setHotkeysOpen] = useState(false)
+  const { ref: hotkeysRef, dialogProps: hotkeysProps } = useAccessibleDialog<HTMLDivElement>({
+    open: hotkeysOpen,
+    onClose: () => setHotkeysOpen(false),
+    label: 'App shortcuts',
+  })
   const [addOpen, setAddOpen] = useState(false)
   const { displayName } = useServerIdentity()
   const project = projects.find((p) => p.id === selectedId) || projects[0]
@@ -426,13 +432,13 @@ export function AppsTab({
       {hotkeysOpen && (
         <div
           className="fixed inset-0 z-50 hb-overlay backdrop-blur-sm flex items-end sm:items-center justify-center p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-label="App shortcuts"
+          role="presentation"
           onClick={() => setHotkeysOpen(false)}
         >
           <div
+            ref={hotkeysRef}
             className="hb-surface w-full max-w-sm p-4 space-y-3 shadow-xl max-h-[80vh] overflow-y-auto"
+            {...hotkeysProps}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-2">
@@ -440,6 +446,7 @@ export function AppsTab({
               <button
                 type="button"
                 className="text-mute text-sm px-2 py-1"
+                data-dialog-cancel
                 onClick={() => setHotkeysOpen(false)}
               >
                 Close
