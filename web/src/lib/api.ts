@@ -45,7 +45,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     err.detail = typeof detail === 'object' && detail && 'detail' in detail
       ? (detail as { detail: unknown }).detail
       : detail
-    // Expired / invalid JWT → drop local session so UI can re-login cleanly
+    // Any 401 → drop the local session once and stop pollers (login is shown by the shell).
     if (res.status === 401) {
       const code =
         typeof err.detail === 'object' && err.detail && 'code' in err.detail
@@ -59,8 +59,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         invalid_kind: 'unauthorized',
         share_token: 'unauthorized',
       }
-      const reason = reasons[code]
-      if (reason) clearSession(reason)
+      clearSession(reasons[code] || 'unauthorized')
     }
     // Server-side App PIN gate — tell PinLock to cover the UI
     if (res.status === 423) {

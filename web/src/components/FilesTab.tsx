@@ -18,6 +18,7 @@ import { api } from '../lib/api'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 import type { FsEntry, Project } from '../lib/types'
 import { readWorkPlace, writeWorkPlace } from '../lib/uiPrefs'
+import { AccessibleDialog } from './AccessibleDialog'
 
 function langExt(language: string) {
   switch (language) {
@@ -710,15 +711,20 @@ export function FilesTab({
   )
 
   const confirmDialog = confirm ? (
-    <div className="fixed inset-0 z-40 hb-overlay backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
-      <div className="w-full max-w-sm hb-surface p-4 sm:p-5 space-y-4 hb-enter">
-        <h2 className="font-semibold text-sm">
-          {confirm.type === 'save'
-            ? 'Are you sure?'
-            : confirm.type === 'revert'
-              ? 'Revert changes?'
-              : 'Discard unsaved changes?'}
-        </h2>
+    <AccessibleDialog
+      open
+      onClose={() => setConfirm(null)}
+      confirm
+      focusKey={confirm.type}
+      title={
+        confirm.type === 'save'
+          ? 'Are you sure?'
+          : confirm.type === 'revert'
+            ? 'Revert changes?'
+            : 'Discard unsaved changes?'
+      }
+      panelClassName="w-full max-w-sm hb-surface p-4 sm:p-5 space-y-4 hb-enter"
+    >
         <p className="text-xs text-mute leading-relaxed">
           {confirm.type === 'save'
             ? `This will write your edits to disk${filePath ? `:\n${filePath}` : '.'}`
@@ -730,6 +736,7 @@ export function FilesTab({
           <button
             type="button"
             className="hb-btn hb-btn-ghost text-sm"
+            data-dialog-cancel
             onClick={() => setConfirm(null)}
           >
             Cancel
@@ -762,8 +769,7 @@ export function FilesTab({
             </button>
           )}
         </div>
-      </div>
-    </div>
+    </AccessibleDialog>
   ) : null
 
   const editorPane =

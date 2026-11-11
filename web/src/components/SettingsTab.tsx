@@ -14,6 +14,7 @@ import {
 } from '../lib/theme'
 import { isLocalHostPage } from '../lib/types'
 import { readPinIdleMs, writePinIdleMs } from '../lib/uiPrefs'
+import { AccessibleDialog } from './AccessibleDialog'
 import { HoldButton } from './HoldButton'
 import { SharingTab } from './SharingTab'
 import { refreshServerIdentity, useServerIdentity } from '../lib/serverIdentity'
@@ -550,14 +551,13 @@ export function SettingsTab({
   const modals = (
     <>
       {confirmCache && (
-        <div className="fixed inset-0 z-40 hb-overlay backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
-          <div className="w-full max-w-sm hb-surface p-4 space-y-3">
-            <h2 className="font-semibold text-sm">Clear cache?</h2>
+        <AccessibleDialog open onClose={() => setConfirmCache(false)} confirm title="Clear cache?">
             <p className="text-sm text-mute">Removes local chats and prefs. Login stays.</p>
             <div className="flex gap-2">
               <button
                 type="button"
                 className="hb-btn hb-btn-ghost flex-1 !min-h-10"
+                data-dialog-cancel
                 onClick={() => setConfirmCache(false)}
               >
                 Cancel
@@ -570,16 +570,17 @@ export function SettingsTab({
                 Clear
               </button>
             </div>
-          </div>
-        </div>
+        </AccessibleDialog>
       )}
 
       {softStep > 0 && (
-        <div className="fixed inset-0 z-40 hb-overlay backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
-          <div className="w-full max-w-sm hb-surface p-4 space-y-3">
-            <h2 className="font-semibold text-sm">
-              {softStep === 1 ? 'Reset data?' : 'Are you sure?'}
-            </h2>
+        <AccessibleDialog
+          open
+          onClose={() => setSoftStep(0)}
+          confirm
+          focusKey={softStep}
+          title={softStep === 1 ? 'Reset data?' : 'Are you sure?'}
+        >
             <p className="text-sm text-mute">
               Clears chats, Home Access widgets, and notifications. Keeps password, PIN, Cursor key,
               and remote access.
@@ -588,6 +589,7 @@ export function SettingsTab({
               <button
                 type="button"
                 className="hb-btn hb-btn-ghost flex-1 !min-h-10"
+                data-dialog-cancel
                 onClick={() => setSoftStep(0)}
               >
                 Cancel
@@ -616,16 +618,21 @@ export function SettingsTab({
                 {softStep === 1 ? 'Continue' : 'Reset'}
               </button>
             </div>
-          </div>
-        </div>
+        </AccessibleDialog>
       )}
 
       {hardStep > 0 && (
-        <div className="fixed inset-0 z-40 hb-overlay backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
-          <div className="w-full max-w-sm hb-surface p-4 space-y-3">
-            <h2 className="font-semibold text-sm">
-              {hardStep === 1 ? 'Erase everything?' : 'Are you sure?'}
-            </h2>
+        <AccessibleDialog
+          open
+          onClose={() => {
+            setHardStep(0)
+            setHardTyped('')
+          }}
+          confirm={hardStep !== 1}
+          initialFocus={hardStep === 1 ? 'first' : 'cancel'}
+          focusKey={hardStep}
+          title={hardStep === 1 ? 'Erase everything?' : 'Are you sure?'}
+        >
             <p className="text-sm text-mute">
               Removes password, PIN, keys, projects, chats, and remote access. Localhost only.
             </p>
@@ -636,7 +643,7 @@ export function SettingsTab({
                   className="w-full rounded-[var(--radius-control)] bg-panel-2 border border-line px-3 py-2.5 text-sm font-mono uppercase"
                   value={hardTyped}
                   onChange={(e) => setHardTyped(e.target.value)}
-                  autoFocus
+                  data-dialog-initial
                 />
               </label>
             )}
@@ -644,6 +651,7 @@ export function SettingsTab({
               <button
                 type="button"
                 className="hb-btn hb-btn-ghost flex-1 !min-h-10"
+                data-dialog-cancel
                 onClick={() => {
                   setHardStep(0)
                   setHardTyped('')
@@ -676,18 +684,16 @@ export function SettingsTab({
                 {hardStep === 1 ? 'Continue' : 'Erase'}
               </button>
             </div>
-          </div>
-        </div>
+        </AccessibleDialog>
       )}
 
       {confirmSignOut && (
-        <div className="fixed inset-0 z-40 hb-overlay backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
-          <div className="w-full max-w-sm hb-surface p-4 space-y-3">
-            <h2 className="font-semibold text-sm">Sign out?</h2>
+        <AccessibleDialog open onClose={() => setConfirmSignOut(false)} confirm title="Sign out?">
             <div className="flex gap-2">
               <button
                 type="button"
                 className="hb-btn hb-btn-ghost flex-1 !min-h-10"
+                data-dialog-cancel
                 onClick={() => setConfirmSignOut(false)}
               >
                 Cancel
@@ -700,8 +706,7 @@ export function SettingsTab({
                 Sign out
               </button>
             </div>
-          </div>
-        </div>
+        </AccessibleDialog>
       )}
     </>
   )

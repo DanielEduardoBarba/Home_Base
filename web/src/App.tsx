@@ -12,7 +12,7 @@ import { NotificationCenter } from './components/NotificationCenter'
 import { PullToRefresh } from './components/PullToRefresh'
 import { ToastStack } from './components/ToastStack'
 import { api } from './lib/api'
-import { clearSession, isSessionValid, watchSessionExpiry } from './lib/auth'
+import { clearSession, getToken, isSessionValid, registerSessionPoller, watchSessionExpiry } from './lib/auth'
 import { LEGAL_DOC_VERSION } from './lib/legalDocs'
 import type { PresentRequest } from './lib/chatTypes'
 import { installClientLog } from './lib/clientLog'
@@ -253,9 +253,17 @@ function AuthedApp() {
   }, [area])
 
   useEffect(() => {
+    if (!getToken()) return
     presenceHeartbeat({ area, tab })
-    const t = setInterval(() => presenceHeartbeat({ area, tab }), 20_000)
-    return () => clearInterval(t)
+    const t = setInterval(() => {
+      if (!getToken()) return
+      presenceHeartbeat({ area, tab })
+    }, 20_000)
+    const unregister = registerSessionPoller(() => clearInterval(t))
+    return () => {
+      unregister()
+      clearInterval(t)
+    }
   }, [area, tab])
 
   const onPrimaryNav = useCallback(
@@ -556,8 +564,8 @@ function AuthedApp() {
           <SettingsTab
             onHome={() => goArea('home')}
             onSignedOut={() => {
-              goTab('work')
-              goArea('home')
+              // Session is already cleared; AuthedApp unmounts to Login.
+              // Do not navigate (that would post /api/activity + heartbeat and 401).
             }}
           />
         </main>

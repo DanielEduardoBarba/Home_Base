@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../lib/api'
 import { setPendingCompose } from '../lib/uiPrefs'
+import { useAccessibleDialog } from '../lib/useAccessibleDialog'
 
 export type AddProjectResult = {
   projectId: string
@@ -45,9 +46,14 @@ export function AddProjectWizard({ open, onClose, onAdded }: Props) {
   const [presets, setPresets] = useState<{ id: string; name: string }[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const panelRef = useRef<HTMLDivElement>(null)
   const pathRef = useRef<HTMLInputElement>(null)
   const nameRef = useRef<HTMLInputElement>(null)
+  const { ref: panelRef, dialogProps } = useAccessibleDialog<HTMLDivElement>({
+    open,
+    onClose,
+    labelledBy: 'hb-add-app-title',
+    focusKey: step,
+  })
 
   const selectablePresets = useMemo(
     () => presets.filter((p) => p.id !== 'homebase'),
@@ -70,11 +76,6 @@ export function AddProjectWizard({ open, onClose, onAdded }: Props) {
       .catch(() => setPresets([]))
   }, [open])
 
-  useEffect(() => {
-    if (!open || step !== 0) return
-    const t = window.setTimeout(() => pathRef.current?.focus(), 50)
-    return () => window.clearTimeout(t)
-  }, [open, step])
 
   /** Keep focused fields above the soft keyboard inside the vv panel. */
   useEffect(() => {
@@ -147,21 +148,20 @@ export function AddProjectWizard({ open, onClose, onAdded }: Props) {
   return (
     <div
       className="hb-vv-overlay hb-overlay backdrop-blur-sm"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="hb-add-app-title"
+      role="presentation"
       onClick={onClose}
     >
       <div
         ref={panelRef}
         className="hb-vv-overlay-panel hb-surface p-5 space-y-4 hb-enter shadow-xl"
+        {...dialogProps}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between gap-2">
           <h2 id="hb-add-app-title" className="font-display text-xl font-extrabold tracking-tight">
             Add app
           </h2>
-          <button type="button" className="hb-btn hb-btn-ghost !min-h-9 text-sm" onClick={onClose}>
+          <button type="button" className="hb-btn hb-btn-ghost !min-h-9 text-sm" data-dialog-cancel onClick={onClose}>
             Close
           </button>
         </div>
@@ -187,6 +187,7 @@ export function AddProjectWizard({ open, onClose, onAdded }: Props) {
               <input
                 id="hb-add-path"
                 ref={pathRef}
+                data-dialog-initial
                 className="w-full rounded-[var(--radius-control)] bg-panel-2 border border-line px-3 py-3 text-sm font-mono"
                 placeholder="/home/you/projects/my-app"
                 value={path}
