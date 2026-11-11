@@ -45,3 +45,5 @@ Follow-up: percent-encoded catch-all paths (`%5B%5B...slug%5D%5D`) also missed t
 Follow-up: pre-render known tab paths (`/work/files`, `/view`, `/access`, …) via `generateStaticParams` and snapshot `location.pathname` before Next hydrates, so deep links are not rewritten to last-place `/work/apps`.
 
 Follow-up: Next emits `work/files.html` (no trailing slash). The static server now tries an `.html` suffix and `index.html` before the SPA fallback so `/work/files` hydrates as Files.
+
+Follow-up: when `selectedId` is first set after a `/work/files` deep link (projects loading late), do not replace the landed Files pane with the default Apps work-place.
