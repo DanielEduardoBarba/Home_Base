@@ -2,6 +2,30 @@
 
 Severity: Blocker > Major > Minor > Polish. All repro on desktop 1280x800 and iPhone 14 unless noted.
 
+## Status — retest on v1.17.5 (674da3d), 2026-11-11 ~1:36–1:42 AM America/New_York
+
+| ID | Severity | Status | Evidence |
+|---|---|---|---|
+| HB-R1-01 | Minor | **Fixed-verified** | Focus moves into dialog, aria-modal, Escape closes |
+| HB-R1-02 | Polish | **Fixed-verified** | Escape closes wizard |
+| HB-R1-03 | Minor | **Fixed-verified** | 30 Tabs: no off-screen focus |
+| HB-R1-04 | Polish | **Fixed-verified** | role=dialog, Cancel focused, Escape closes |
+| HB-R1-05 | Polish | **Fixed-verified** | Escape closes Terms |
+| HB-R1-06 | Minor | **Fixed-verified** | 0 calls / 0×401 in 12 s after sign-out |
+| HB-R1-07 | Polish | **Fixed-verified** | Cancel focused |
+| HB-R1-08 | Major | **Fixed-verified** | 0/4 reloads crashed (Files ×3, Shell) on both viewports |
+| HB-R1-09 | Major | **Fixed-verified** | 'Leave without saving?' (Cancel focused), edit kept, beforeunload on reload |
+| HB-R1-10 | Minor | **Fixed-verified** | Filters now Boot/Client/Presence/PTY and match lines |
+| HB-R1-11 | Minor | **Fixed-verified** | 1 'client log ready' line in buffer |
+| HB-R1-12 | Minor | **Fixed-verified** | Double-click Save → 1 POST, 1 control |
+| HB-R1-13 | Minor | **Fixed-verified** | Shows 'Can't reach Home Base' (not legal gate) and recovers |
+| HB-R1-14 | Minor | **Fixed-verified** | /work/files survives reload; Back stays in app; unknown URL → in-app 404 |
+| HB-R1-15 | Polish | **Fixed-verified** | Step 1 shows 'path does not exist', no advance |
+| HB-R1-16 | Minor | **Fixed-verified** | Chat pill no longer over terminal text (terminal now 48×8 on iPhone 14) |
+| HB-R1-17 | Polish | **Fixed-verified** | Crumbs 44 px, Keys/^C/^D ≥32 px, log rows 67 px |
+
+Details: [homebase-r1-retest.md](homebase-r1-retest.md). No new bugs; HB-R1-18 (chunk 431 ChunkLoadError) not reproduced, so not filed.
+
 ## HB-R1-01 — Access "Add control" dialog: no focus move, no Escape, not modal · Minor
 Steps: Home Access → Add control → press Tab / Escape.
 Expected: focus moves into the dialog, Escape closes it, `aria-modal="true"` with focus trapped.
