@@ -371,10 +371,20 @@ function AuthedApp() {
   )
 
   // Each project keeps its own Apps / Shell / Files / Chat pane.
-  // Wait until the URL has been applied so a deep link like /work/files is not
-  // overwritten by a stale work-place default on first mount.
+  // When selectedId is first assigned (projects arriving after a deep link),
+  // persist the landed work item instead of overwriting it with the default pane.
+  const workItemRef = useRef(workItem)
+  workItemRef.current = workItem
+  const lastSelectedRef = useRef('')
   useEffect(() => {
     if (!routesReady || !selectedId) return
+    if (lastSelectedRef.current === selectedId) return
+    const prev = lastSelectedRef.current
+    lastSelectedRef.current = selectedId
+    if (!prev) {
+      writeWorkPlace(selectedId, { item: workItemRef.current })
+      return
+    }
     setWorkItem(readWorkPlace(selectedId).item)
   }, [selectedId, routesReady])
 
