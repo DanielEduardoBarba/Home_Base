@@ -17,6 +17,7 @@ export type SmtpSendOpts = {
   to: string;
   subject: string;
   text: string;
+  html?: string;
   timeoutMs?: number;
 };
 
@@ -165,20 +166,46 @@ export async function smtpSend(opts: SmtpSendOpts): Promise<void> {
     await expect(250, `RCPT TO:<${opts.to}>`);
     await expect(354, "DATA");
     const date = new Date().toUTCString();
-    const body = opts.text.replace(/\r?\n/g, "\r\n");
-    const data = [
+    const text = opts.text.replace(/\r?\n/g, "\r\n");
+    const html = opts.html?.replace(/\r?\n/g, "\r\n");
+    const headers = [
       `From: ${opts.from}`,
       `To: ${opts.to}`,
       `Subject: ${b64Subject(opts.subject)}`,
       `Date: ${date}`,
       `MIME-Version: 1.0`,
-      `Content-Type: text/plain; charset=utf-8`,
-      `Content-Transfer-Encoding: 8bit`,
-      ``,
-      body,
-      `.`,
-    ].join("\r\n");
-    await writeLine(sock, data);
+    ];
+    let payload: string;
+    if (html) {
+      const boundary = `hb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+      payload = [
+        ...headers,
+        `Content-Type: multipart/alternative; boundary="${boundary}"`,
+        ``,
+        `--${boundary}`,
+        `Content-Type: text/plain; charset=utf-8`,
+        `Content-Transfer-Encoding: 8bit`,
+        ``,
+        text,
+        `--${boundary}`,
+        `Content-Type: text/html; charset=utf-8`,
+        `Content-Transfer-Encoding: 8bit`,
+        ``,
+        html,
+        `--${boundary}--`,
+        `.`,
+      ].join("\r\n");
+    } else {
+      payload = [
+        ...headers,
+        `Content-Type: text/plain; charset=utf-8`,
+        `Content-Transfer-Encoding: 8bit`,
+        ``,
+        text,
+        `.`,
+      ].join("\r\n");
+    }
+    await writeLine(sock, payload);
     await expect(250);
     await expect([221, 250], "QUIT").catch(() => undefined);
   } finally {

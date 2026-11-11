@@ -7,7 +7,9 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { RUNTIME_DIR, ensureRuntimeDirs } from "./config";
 import { desktopClose, desktopNotify } from "./desktop_notify";
+import { listHostIpv4Addresses } from "./network";
 import { pushNotification } from "./notifications";
+import { decryptSecret, encryptSecret } from "./secrets_vault";
 import { appendTrace } from "./trace";
 
 const UI_TOKEN_PATH = join(RUNTIME_DIR, "presence_ui_token");
@@ -162,14 +164,26 @@ export function presenceUiToken(): string {
   ensureRuntimeDirs();
   if (existsSync(UI_TOKEN_PATH)) {
     try {
-      const t = readFileSync(UI_TOKEN_PATH, "utf8").trim();
-      if (t.length >= 24) return t;
+      const raw = readFileSync(UI_TOKEN_PATH, "utf8").trim();
+      if (raw.startsWith("{")) {
+        const t = decryptSecret(raw);
+        if (t && t.length >= 24) return t;
+      } else if (raw.length >= 24) {
+        // Migrate legacy plaintext token → encrypted at rest.
+        try {
+          writeFileSync(UI_TOKEN_PATH, encryptSecret(raw), { mode: 0o600 });
+          chmodSync(UI_TOKEN_PATH, 0o600);
+        } catch {
+          /* keep serving legacy */
+        }
+        return raw;
+      }
     } catch {
       /* recreate */
     }
   }
   const t = randomBytes(24).toString("base64url");
-  writeFileSync(UI_TOKEN_PATH, t + "\n", { mode: 0o600 });
+  writeFileSync(UI_TOKEN_PATH, encryptSecret(t), { mode: 0o600 });
   try {
     chmodSync(UI_TOKEN_PATH, 0o600);
   } catch {
@@ -183,27 +197,68 @@ export function verifyPresenceUiToken(token: string | undefined | null): boolean
   return token === presenceUiToken();
 }
 
-/** Loopback / unknown — you on this laptop; never alone opens the Presence window. */
+let hostIpCache: { at: number; ips: Set<string> } | null = null;
+const HOST_IP_CACHE_MS = 15_000;
+
+function seatHostIpSet(): Set<string> {
+  const now = Date.now();
+  if (hostIpCache && now - hostIpCache.at < HOST_IP_CACHE_MS) {
+    return hostIpCache.ips;
+  }
+  const ips = new Set<string>([
+    "127.0.0.1",
+    "::1",
+    "localhost",
+    "::ffff:127.0.0.1",
+  ]);
+  try {
+    for (const ip of listHostIpv4Addresses()) {
+      ips.add(ip.toLowerCase());
+    }
+  } catch {
+    /* ignore */
+  }
+  hostIpCache = { at: now, ips };
+  return ips;
+}
+
+/**
+ * True when the peer is this laptop (loopback OR any address bound on this host).
+ * Opening http://192.168.x.x from the same machine must NOT open Presence.
+ */
 export function isLocalPeerIp(ip: string | undefined | null): boolean {
   if (!ip) return true;
   const s = String(ip).trim().toLowerCase();
-  return (
-    s === "127.0.0.1" ||
-    s === "::1" ||
-    s === "localhost" ||
-    s === "unknown" ||
-    s === "::ffff:127.0.0.1"
-  );
+  if (!s || s === "unknown") return true;
+  if (seatHostIpSet().has(s)) return true;
+  // IPv4-mapped
+  if (s.startsWith("::ffff:") && seatHostIpSet().has(s.slice(7))) return true;
+  return false;
 }
 
-/** VPN / LAN / other remote peer — human or AI. */
+/** VPN / LAN / other remote peer — not an address of this host. */
 export function isRemotePeerIp(ip: string | undefined | null): boolean {
   return !isLocalPeerIp(ip);
 }
 
+/**
+ * Who may open the desktop Presence window.
+ * - Humans: only true remotes (not you on this machine via LAN/VPN self-IP).
+ * - AI: remotes always; missing/unknown peerIp still opens (MCP peer miss)
+ *   unless we somehow recorded a seat-local address.
+ */
+export function actorDrivesPresenceWindow(a: PresenceActor): boolean {
+  const ip = a.peerIp;
+  if (a.kind === "ai") {
+    if (!ip || ip === "unknown") return true;
+    return isRemotePeerIp(ip);
+  }
+  return isRemotePeerIp(ip);
+}
+
 function hasRemoteActors(): boolean {
   for (const a of state.actors.values()) {
-    if (isRemotePeerIp(a.peerIp)) return true;
+    if (actorDrivesPresenceWindow(a)) return true;
   }
   return false;
 }

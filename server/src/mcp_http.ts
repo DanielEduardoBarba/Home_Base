@@ -13,12 +13,13 @@ import { bearerFromHeader, HttpError } from "./auth";
 import { readVersion } from "./config";
 import { clientIp } from "./http";
 import { buildMcpTools } from "./homebase_tools";
+import { mcpRequestContext } from "./mcp_context";
 import {
   mcpServerEnabled,
   mcpServerFeatures,
   verifyMcpBearerToken,
 } from "./mcp_server";
-import { upsertPresence } from "./presence";
+import { isLocalPeerIp, upsertPresence } from "./presence";
 
 function createOpsMcpServer(ctx: {
   actorId: string;
@@ -47,62 +48,71 @@ function createOpsMcpServer(ctx: {
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const name = request.params.name;
-    const def = tools[name];
-    if (!def) {
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({ error: `Unknown tool: ${name}` }),
-          },
-        ],
-      };
-    }
-    try {
-      const args = (request.params.arguments || {}) as Record<string, unknown>;
-      const text = await def.execute(args);
-      try {
-        const { recordActivity } = await import("./activity_audit");
-        const argKeys = Object.keys(args || {}).slice(0, 12);
-        recordActivity({
-          source: "mcp",
-          kind: "tool",
-          summary: `${name}${argKeys.length ? ` (${argKeys.join(", ")})` : ""}`,
-          actor: ctx.actorLabel,
-          peerIp: ctx.peerIp,
-          detail: { tool: name, argKeys, actorId: ctx.actorId },
-        });
-      } catch {
-        /* ignore */
-      }
-      void import("./email_alerts")
-        .then(({ maybeEmailAiAwayAccess }) => {
-          maybeEmailAiAwayAccess({
-            actorLabel: ctx.actorLabel,
-            actorId: ctx.actorId,
-            peerIp: ctx.peerIp,
-            action: `tool ${name}`,
-          });
-        })
-        .catch(() => undefined);
-      return {
-        content: [{ type: "text" as const, text: String(text) }],
-      };
-    } catch (e) {
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({
-              error: e instanceof Error ? e.message : String(e),
-            }),
-          },
-        ],
-      };
-    }
+    return mcpRequestContext.run(
+      {
+        actorId: ctx.actorId,
+        actorLabel: ctx.actorLabel,
+        peerIp: ctx.peerIp,
+      },
+      async () => {
+        const name = request.params.name;
+        const def = tools[name];
+        if (!def) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({ error: `Unknown tool: ${name}` }),
+              },
+            ],
+          };
+        }
+        try {
+          const args = (request.params.arguments || {}) as Record<string, unknown>;
+          const text = await def.execute(args);
+          try {
+            const { recordActivity } = await import("./activity_audit");
+            const argKeys = Object.keys(args || {}).slice(0, 12);
+            recordActivity({
+              source: "mcp",
+              kind: "tool",
+              summary: `${name}${argKeys.length ? ` (${argKeys.join(", ")})` : ""}`,
+              actor: ctx.actorLabel,
+              peerIp: ctx.peerIp,
+              detail: { tool: name, argKeys, actorId: ctx.actorId },
+            });
+          } catch {
+            /* ignore */
+          }
+          void import("./email_alerts")
+            .then(({ maybeEmailAiAwayAccess }) => {
+              maybeEmailAiAwayAccess({
+                actorLabel: ctx.actorLabel,
+                actorId: ctx.actorId,
+                peerIp: ctx.peerIp,
+                action: `tool ${name}`,
+              });
+            })
+            .catch(() => undefined);
+          return {
+            content: [{ type: "text" as const, text: String(text) }],
+          };
+        } catch (e) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: e instanceof Error ? e.message : String(e),
+                }),
+              },
+            ],
+          };
+        }
+      },
+    );
   });
 
   return server;
@@ -121,20 +131,23 @@ export async function handleMcpHttp(c: Context): Promise<Response> {
   let actor: { id: string; label: string };
   try {
     actor = verifyMcpBearerToken(token, ip);
+    const peerIp = ip === "unknown" ? undefined : ip;
+    // Always register AI presence. Seat-local MCP (rare) stays quiet for the window;
+    // unknown/remote opens Presence. Store peerIp even when unknown-ish via label.
     upsertPresence({
       id: `mcp:${actor.id}`,
       kind: "ai",
       name: actor.label || "Grok",
       label: "MCP AI",
-      peerIp: ip === "unknown" ? undefined : ip,
-      announce: true,
+      peerIp: peerIp || "unknown",
+      announce: !isLocalPeerIp(peerIp),
     });
     void import("./email_alerts")
       .then(({ maybeEmailAiAwayAccess }) => {
         maybeEmailAiAwayAccess({
           actorLabel: actor.label || "MCP AI",
           actorId: actor.id,
-          peerIp: ip === "unknown" ? undefined : ip,
+          peerIp,
           action: "MCP session",
         });
       })
@@ -152,10 +165,11 @@ export async function handleMcpHttp(c: Context): Promise<Response> {
     throw e;
   }
 
+  const peerIp = ip === "unknown" ? undefined : ip;
   const server = createOpsMcpServer({
     actorId: actor.id,
     actorLabel: actor.label || "MCP",
-    peerIp: ip === "unknown" ? undefined : ip,
+    peerIp,
   });
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
@@ -163,7 +177,14 @@ export async function handleMcpHttp(c: Context): Promise<Response> {
   });
   await server.connect(transport);
   try {
-    return await transport.handleRequest(c.req.raw);
+    return await mcpRequestContext.run(
+      {
+        actorId: actor.id,
+        actorLabel: actor.label || "MCP",
+        peerIp,
+      },
+      () => transport.handleRequest(c.req.raw),
+    );
   } finally {
     try {
       await transport.close();

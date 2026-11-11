@@ -397,12 +397,10 @@ app.post("/api/login", async (c) => {
       summary: `Web GUI login from ${ip}`,
       peerIp: ip,
     });
-    const local =
-      ip === "127.0.0.1" ||
-      ip === "::1" ||
-      ip === "localhost" ||
-      ip === "unknown";
-    // Localhost human is tracked quietly; Presence window only opens for remotes.
+    const { isLocalPeerIp } = await import("./presence");
+    const local = isLocalPeerIp(ip);
+    // Seat-local human (loopback OR this host's LAN/VPN self-IP) is tracked quietly.
+    // Presence window only opens for true remotes.
     upsertPresence({
       id: `web:${ip}`,
       kind: "human",
@@ -1304,7 +1302,7 @@ app.post("/api/presence/ui/chat", async (c) => {
 
 app.post("/api/presence/heartbeat", async (c) => {
   await requireAuth(c, { allowPinLocked: true });
-  const { upsertPresence } = await import("./presence");
+  const { upsertPresence, isLocalPeerIp } = await import("./presence");
   const ip = clientIp(c);
   const body = z
     .object({
@@ -1313,11 +1311,7 @@ app.post("/api/presence/heartbeat", async (c) => {
       label: z.string().optional(),
     })
     .parse(await readJson(c).catch(() => ({})));
-  const local =
-    ip === "127.0.0.1" ||
-    ip === "::1" ||
-    ip === "localhost" ||
-    ip === "unknown";
+  const local = isLocalPeerIp(ip);
   const areaBit =
     body.area || body.tab
       ? `${body.area || "Home"}${body.tab ? ` · ${body.tab}` : ""}`
@@ -1342,7 +1336,7 @@ app.post("/api/presence/heartbeat", async (c) => {
       : areaBit
         ? `Looking at ${areaBit}`
         : "Using Home Base remotely",
-    // Localhost heartbeat must not spam announce / drive the desktop popup alone.
+    // Seat-local heartbeat must not announce / drive the desktop popup alone.
     announce: !local,
   });
   return c.json({ ok: true, actor });

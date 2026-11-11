@@ -804,20 +804,34 @@ export function buildHomebaseTools(
           parseForm,
           parseColor,
           parseEnergy,
+          isLocalPeerIp,
         } = await import("./presence");
-        const id = String(args.actorId || "mcp-default").slice(0, 64);
+        const {
+          mcpPresenceActorId,
+          mcpPresencePeerIp,
+          getMcpRequestContext,
+        } = await import("./mcp_context");
+        const id = mcpPresenceActorId(
+          args.actorId != null ? String(args.actorId) : undefined,
+        );
+        const peerIp = mcpPresencePeerIp() || "unknown";
         const form = parseForm(args.form);
         const color = parseColor(args.color);
         const energy = parseEnergy(args.energy);
+        const ctx = getMcpRequestContext();
         upsertPresence({
           id,
           kind: "ai",
-          name: args.name ? String(args.name) : undefined,
+          name:
+            args.name != null
+              ? String(args.name)
+              : ctx?.actorLabel || undefined,
           label: "MCP AI",
+          peerIp,
           form,
           color,
           energy,
-          announce: true,
+          announce: !isLocalPeerIp(peerIp),
         });
         const mood = parseMood(args.mood);
         const actor = expressPresence(id, {
@@ -851,9 +865,26 @@ export function buildHomebaseTools(
       },
       execute: async (args) => {
         const { upsertPresence, pushPresenceChat } = await import("./presence");
-        const id = String(args.actorId || "mcp-default").slice(0, 64);
-        const name = String(args.name || "Grok").slice(0, 48);
-        upsertPresence({ id, kind: "ai", name, label: "MCP AI", announce: false });
+        const {
+          mcpPresenceActorId,
+          mcpPresencePeerIp,
+          getMcpRequestContext,
+        } = await import("./mcp_context");
+        const id = mcpPresenceActorId(
+          args.actorId != null ? String(args.actorId) : undefined,
+        );
+        const ctx = getMcpRequestContext();
+        const name = String(
+          args.name || ctx?.actorLabel || "Grok",
+        ).slice(0, 48);
+        upsertPresence({
+          id,
+          kind: "ai",
+          name,
+          label: "MCP AI",
+          peerIp: mcpPresencePeerIp() || "unknown",
+          announce: false,
+        });
         const msg = pushPresenceChat({
           from: "ai",
           text: String(args.text || ""),
@@ -872,11 +903,15 @@ export function buildHomebaseTools(
       },
       execute: async (args) => {
         const { listPresenceChat, upsertPresence } = await import("./presence");
+        const { mcpPresenceActorId, mcpPresencePeerIp, getMcpRequestContext } =
+          await import("./mcp_context");
+        const ctx = getMcpRequestContext();
         upsertPresence({
-          id: "mcp-default",
+          id: mcpPresenceActorId(),
           kind: "ai",
-          name: "Grok",
+          name: ctx?.actorLabel || "Grok",
           label: "MCP AI",
+          peerIp: mcpPresencePeerIp() || "unknown",
           announce: false,
         });
         const since = Number(args.since || 0) || 0;

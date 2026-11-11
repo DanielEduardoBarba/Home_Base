@@ -18,6 +18,7 @@ import { formatGeo, geoCached, warmGeo } from "./geo";
 import { desktopNotify } from "./desktop_notify";
 import { appendDaily } from "./logging";
 import { pushNotification } from "./notifications";
+import { decryptSecret, encryptSecret } from "./secrets_vault";
 
 export const LOCKOUT_SCHEDULE = [10, 30, 60, 180, 300, 600, 1800, 3600, 86400];
 export const FAIL_THRESHOLD = 5;
@@ -70,21 +71,52 @@ function b64d(data: string): Buffer {
   return Buffer.from(data, "base64url");
 }
 
+function persistJwtSecret(secret: Buffer): void {
+  // AES-GCM via secrets vault (0600). Legacy raw bytes are migrated on first read.
+  writeFileSync(
+    JWT_SECRET_PATH,
+    encryptSecret(secret.toString("base64url")),
+    { mode: 0o600 },
+  );
+  chmodPrivate(JWT_SECRET_PATH);
+}
+
 export function jwtSecret(): Uint8Array {
   const env = (process.env.HOMEBASE_JWT_SECRET || "").trim();
   if (env) return new TextEncoder().encode(env);
   ensureRuntimeDirs();
   if (existsSync(JWT_SECRET_PATH)) {
-    const stripped = stripBytes(readFileSync(JWT_SECRET_PATH));
-    if (stripped.length >= 32) return new Uint8Array(stripped);
+    const raw = readFileSync(JWT_SECRET_PATH);
+    const asText = raw.toString("utf8").trim();
+    if (asText.startsWith("{")) {
+      try {
+        const plain = decryptSecret(asText);
+        if (plain) {
+          const buf = Buffer.from(plain, "base64url");
+          if (buf.length >= 32) return new Uint8Array(buf);
+        }
+      } catch {
+        /* fall through to regenerate */
+      }
+    } else {
+      const stripped = stripBytes(raw);
+      if (stripped.length >= 32) {
+        // Migrate legacy plaintext JWT secret → encrypted at rest.
+        try {
+          persistJwtSecret(Buffer.from(stripped));
+        } catch {
+          /* keep serving legacy bytes if vault write fails */
+        }
+        return new Uint8Array(stripped);
+      }
+    }
   }
   let secret = randomBytes(48);
   for (;;) {
     secret = randomBytes(48);
     if (stripBytes(secret).length === secret.length) break;
   }
-  writeFileSync(JWT_SECRET_PATH, secret);
-  chmodPrivate(JWT_SECRET_PATH);
+  persistJwtSecret(secret);
   return new Uint8Array(secret);
 }
 

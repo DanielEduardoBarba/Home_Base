@@ -2,6 +2,7 @@
  * Reachable host IPs for Expo Metro + project API URLs.
  * Prefer native Wi‑Fi/Ethernet LAN (192.168.x) over WireGuard/VPN (10.x on wg*).
  */
+import { networkInterfaces } from "node:os";
 
 const VPN_PREFIXES = ["wg", "tun", "tailscale", "zt", "nebula", "ipsec"];
 const SKIP_IFACE_PREFIXES = ["docker", "br-", "veth", "virbr", "lxc", "cni", "flannel"];
@@ -60,7 +61,7 @@ export function listIpv4Interfaces(): { iface: string; ip: string }[] {
       stdout: "pipe",
       stderr: "pipe",
     });
-    if (proc.exitCode !== 0) return [];
+    if (proc.exitCode !== 0) return listIpv4InterfacesOs();
     const out: { iface: string; ip: string }[] = [];
     for (const line of proc.stdout.toString().split("\n")) {
       const parts = line.trim().split(/\s+/);
@@ -71,10 +72,48 @@ export function listIpv4Interfaces(): { iface: string; ip: string }[] {
       const ip = cidr.split("/", 1)[0]!;
       if (isUsableIpv4(ip)) out.push({ iface, ip });
     }
-    return out;
+    return out.length ? out : listIpv4InterfacesOs();
   } catch {
-    return [];
+    return listIpv4InterfacesOs();
   }
+}
+
+function listIpv4InterfacesOs(): { iface: string; ip: string }[] {
+  const out: { iface: string; ip: string }[] = [];
+  try {
+    const ifaces = networkInterfaces();
+    for (const [iface, addrs] of Object.entries(ifaces)) {
+      if (!addrs || isSkippedIface(iface)) continue;
+      for (const a of addrs) {
+        if (a.family !== "IPv4" && (a.family as unknown) !== 4) continue;
+        if (a.internal) continue;
+        if (isUsableIpv4(a.address)) out.push({ iface, ip: a.address });
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return out;
+}
+
+/** Every IPv4 currently bound on this host (incl. VPN iface like 10.6.0.1). */
+export function listHostIpv4Addresses(): string[] {
+  const set = new Set<string>();
+  for (const a of listIpv4Interfaces()) set.add(a.ip);
+  // Also include loopback-adjacent from os (covers odd dual-stack cases).
+  try {
+    const ifaces = networkInterfaces();
+    for (const addrs of Object.values(ifaces)) {
+      if (!addrs) continue;
+      for (const a of addrs) {
+        if (a.family !== "IPv4" && (a.family as unknown) !== 4) continue;
+        if (a.address) set.add(a.address);
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return [...set];
 }
 
 /** Pure selection used by advertiseHost (and unit tests). */

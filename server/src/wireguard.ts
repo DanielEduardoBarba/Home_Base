@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { HttpError } from "./auth";
 import { RUNTIME_DIR, ensureRuntimeDirs } from "./config";
 import { listIpv4Interfaces, lanHost, vpnHost } from "./network";
+import { decryptSecret, encryptSecret } from "./secrets_vault";
 import { appendTrace } from "./trace";
 
 export const DEFAULT_IFACE = "wg0";
@@ -347,7 +348,18 @@ export function listClientRecords(): WgClientRecord[] {
       const rec = JSON.parse(
         readFileSync(join(clientsDir(), name), "utf8"),
       ) as WgClientRecord;
-      if (rec?.id && rec.publicKey) out.push(rec);
+      if (rec?.id && rec.publicKey) {
+        const opened = openClientPrivateKey(rec.privateKey);
+        out.push({ ...rec, privateKey: opened });
+        // Migrate plaintext private keys on read.
+        if (rec.privateKey && !String(rec.privateKey).trim().startsWith("{") && opened) {
+          try {
+            saveClient({ ...rec, privateKey: opened });
+          } catch {
+            /* ignore */
+          }
+        }
+      }
     } catch {
       /* ignore */
     }
@@ -355,10 +367,36 @@ export function listClientRecords(): WgClientRecord[] {
   return out.sort((a, b) => a.createdAt - b.createdAt);
 }
 
+function sealClientPrivateKey(plain: string): string {
+  const p = String(plain || "");
+  if (!p) return p;
+  if (p.trim().startsWith("{")) return p;
+  try {
+    return encryptSecret(p);
+  } catch {
+    return p;
+  }
+}
+
+function openClientPrivateKey(stored: string): string {
+  const s = String(stored || "");
+  if (!s) return s;
+  if (!s.trim().startsWith("{")) return s;
+  try {
+    return decryptSecret(s) || "";
+  } catch {
+    return "";
+  }
+}
+
 function saveClient(rec: WgClientRecord): void {
   ensureStateDirs();
   const path = join(clientsDir(), `${rec.id}.json`);
-  writeFileSync(path, `${JSON.stringify(rec, null, 2)}\n`, { mode: 0o600 });
+  const sealed: WgClientRecord = {
+    ...rec,
+    privateKey: sealClientPrivateKey(rec.privateKey),
+  };
+  writeFileSync(path, `${JSON.stringify(sealed, null, 2)}\n`, { mode: 0o600 });
   chmodSync(path, 0o600);
 }
 

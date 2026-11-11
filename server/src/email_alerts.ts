@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { FAIL_THRESHOLD } from "./auth";
 import { RUNTIME_DIR, ensureRuntimeDirs } from "./config";
 import { smtpSend } from "./email_smtp";
+import { buildAlertEmail, type EmailPayload } from "./email_template";
 import { formatGeo, geoCached } from "./geo";
 import {
   decryptFromFile,
@@ -248,6 +249,7 @@ async function sendResend(opts: {
   to: string;
   subject: string;
   text: string;
+  html: string;
 }): Promise<void> {
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -260,6 +262,7 @@ async function sendResend(opts: {
       to: [opts.to],
       subject: opts.subject,
       text: opts.text,
+      html: opts.html,
     }),
   });
   if (!res.ok) {
@@ -268,20 +271,24 @@ async function sendResend(opts: {
   }
 }
 
-async function deliver(subject: string, text: string): Promise<{ ok: boolean; error?: string }> {
+async function deliverPayload(
+  payload: EmailPayload,
+): Promise<{ ok: boolean; error?: string }> {
   const cfg = loadConfig();
   const secrets = loadSecrets();
   if (!isReady(cfg, secrets)) {
     return { ok: false, error: "Email alerts not configured or disabled" };
   }
+  const mail = buildAlertEmail(payload);
   try {
     if (cfg.provider === "resend") {
       await sendResend({
         apiKey: secrets.resendApiKey!,
         from: cfg.from || "Home Base <onboarding@resend.dev>",
         to: cfg.to,
-        subject,
-        text,
+        subject: mail.subject,
+        text: mail.text,
+        html: mail.html,
       });
     } else {
       await smtpSend({
@@ -292,11 +299,12 @@ async function deliver(subject: string, text: string): Promise<{ ok: boolean; er
         pass: secrets.smtpPass || "",
         from: cfg.from,
         to: cfg.to,
-        subject,
-        text,
+        subject: mail.subject,
+        text: mail.text,
+        html: mail.html,
       });
     }
-    appendTrace("info", `email alert sent: ${subject.slice(0, 80)}`, "email");
+    appendTrace("info", `email alert sent: ${mail.subject.slice(0, 80)}`, "email");
     return { ok: true };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -307,23 +315,25 @@ async function deliver(subject: string, text: string): Promise<{ ok: boolean; er
 
 export async function sendEmailAlertTest(): Promise<{ ok: boolean; error?: string }> {
   const seat = getSeatAwayStatus({ force: true });
-  return deliver(
-    "Home Base · test alert",
-    [
-      "This is a test from Home Base email alerts.",
-      "",
-      "You will only receive real mail for:",
-      "  • Suspicious activity (repeated failed logins / PIN attempts)",
-      "  • AI access while you are away from this laptop",
-      "",
-      `Seat right now: ${seat.away ? `away (${seat.reason})` : "present"}`,
-      seat.detail ? `Detail: ${seat.detail}` : "",
-      "",
-      "— Home Base",
-    ]
-      .filter(Boolean)
-      .join("\n"),
-  );
+  return deliverPayload({
+    subject: "Home Base · test alert",
+    eyebrow: "Test",
+    title: "Email alerts are working",
+    lead: "This is a dry run from your laptop. Real messages only fire for suspicious auth or AI access while you are away.",
+    tone: "ok",
+    fields: [
+      {
+        label: "Seat",
+        value: seat.away ? `Away · ${seat.reason}` : "Present at this laptop",
+      },
+      ...(seat.detail ? [{ label: "Detail", value: seat.detail }] : []),
+      { label: "Scopes", value: "Suspicious auth · AI while away" },
+    ],
+    tips: [
+      "Keep Email alerts On only with a destination you monitor.",
+      "Revoke MCP tokens in Settings if a test looks unexpected.",
+    ],
+  });
 }
 
 function authDedupeOk(key: string, now: number): boolean {
@@ -361,32 +371,46 @@ export function maybeEmailSuspiciousAuth(opts: {
 
   const geo = formatGeo(geoCached(opts.ip));
   const pin = /pin/i.test(opts.reason);
-  const subject = locked
-    ? "Home Base · auth lockout"
-    : pin
-      ? "Home Base · repeated PIN failures"
-      : "Home Base · repeated login failures";
-
-  const text = [
-    locked
-      ? "Home Base locked out further attempts after repeated failures."
-      : "Home Base saw multiple failed authentication attempts.",
-    "",
-    `Reason: ${opts.reason}`,
-    `Failures: ${opts.failCount} (lockout at ${FAIL_THRESHOLD})`,
-    `IP: ${opts.ip}${geo ? ` (${geo})` : ""}`,
-    locked && opts.retryAfter
-      ? `Lockout remaining: ~${Math.max(1, Math.round(opts.retryAfter))}s`
-      : "",
-    "",
-    "If this was you, you can ignore this. If not, change your password from a localhost browser and revoke MCP tokens in Settings.",
-    "",
-    "— Home Base",
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  void deliver(subject, text);
+  void deliverPayload({
+    subject: locked
+      ? "Home Base · auth lockout"
+      : pin
+        ? "Home Base · repeated PIN failures"
+        : "Home Base · repeated login failures",
+    eyebrow: locked ? "Lockout" : "Suspicious auth",
+    title: locked
+      ? "Authentication lockout engaged"
+      : pin
+        ? "Repeated PIN failures"
+        : "Repeated login failures",
+    lead: locked
+      ? "Home Base paused further attempts after too many failures."
+      : "Someone hit your Home Base login or PIN gate multiple times.",
+    tone: locked ? "danger" : "warn",
+    fields: [
+      { label: "Reason", value: opts.reason },
+      {
+        label: "Failures",
+        value: `${opts.failCount} / lockout at ${FAIL_THRESHOLD}`,
+      },
+      {
+        label: "Source",
+        value: `${opts.ip}${geo ? ` · ${geo}` : ""}`,
+      },
+      ...(locked && opts.retryAfter
+        ? [
+            {
+              label: "Cooldown",
+              value: `~${Math.max(1, Math.round(opts.retryAfter))}s remaining`,
+            },
+          ]
+        : []),
+    ],
+    tips: [
+      "If this was you, wait out the cooldown or unlock from a trusted session.",
+      "If not: change the password on localhost, clear App PIN if needed, revoke MCP tokens.",
+    ],
+  });
 }
 
 function refreshAwayEpisode(seat: SeatAwayStatus): void {
@@ -437,31 +461,32 @@ export function maybeEmailAiAwayAccess(opts: {
 
   const awayWhy =
     seat.reason === "locked"
-      ? "screen locked"
+      ? "Screen locked"
       : seat.reason === "idle"
-        ? `idle ${seat.idleMs != null ? `${Math.round(seat.idleMs / 60_000)}+ min` : "10+ min"}`
-        : "desktop session not available";
+        ? `Idle ${seat.idleMs != null ? `${Math.round(seat.idleMs / 60_000)}+ min` : "10+ min"}`
+        : "Desktop session unavailable";
 
-  const subject = "Home Base · AI active while you are away";
-  const text = [
-    "An AI client used Home Base while this laptop looks unattended.",
-    "",
-    `Actor: ${opts.actorLabel || "MCP AI"}`,
-    opts.actorId ? `Token / id: ${opts.actorId}` : "",
-    opts.peerIp ? `Peer: ${opts.peerIp}` : "",
-    opts.action ? `Activity: ${opts.action}` : "Activity: connected via MCP",
-    `Away because: ${awayWhy}`,
-    seat.detail ? `Seat: ${seat.detail}` : "",
-    "",
-    "Further AI activity in this away period will not send another email.",
-    "You will get another only after you return (unlock / use the computer) and leave again — or after a long cooldown.",
-    "",
-    "Revoke MCP tokens in Settings → MCP Server if this is unexpected.",
-    "",
-    "— Home Base",
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  void deliver(subject, text);
+  void deliverPayload({
+    subject: "Home Base · AI active while you are away",
+    eyebrow: "AI · away",
+    title: "AI used Home Base while you were away",
+    lead: "An MCP client reached your laptop control plane during an unattended seat. One notice per away period — not a stream of tool pings.",
+    tone: "warn",
+    fields: [
+      { label: "Actor", value: opts.actorLabel || "MCP AI" },
+      ...(opts.actorId ? [{ label: "Token id", value: opts.actorId }] : []),
+      ...(opts.peerIp ? [{ label: "Peer", value: opts.peerIp }] : []),
+      {
+        label: "Activity",
+        value: opts.action || "Connected via MCP",
+      },
+      { label: "Away because", value: awayWhy },
+      ...(seat.detail ? [{ label: "Seat", value: seat.detail }] : []),
+    ],
+    tips: [
+      "Further AI activity in this away period will not email again.",
+      "Another notice only after you return (unlock / use the computer) then leave — or after a long cooldown.",
+      "Unexpected? Revoke MCP tokens in Settings → MCP Server.",
+    ],
+  });
 }
