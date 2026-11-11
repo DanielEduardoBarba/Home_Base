@@ -1,6 +1,6 @@
 [package]
 name = "homebase-presence"
-version = "1.14.0"
+version = "1.14.3"
 description = "Home Base remote presence desktop window"
 authors = ["DevCon1 Solutions"]
 edition = "2021"
@@ -16,6 +16,8 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+ureq = { version = "2", default-features = false, features = ["json"] }
+urlencoding = "2"
 
 [profile.release]
 panic = "abort"

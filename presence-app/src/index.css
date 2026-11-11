@@ -2,17 +2,7 @@
 
 @theme {
   --color-hb-bg: #0b1220;
-  --color-hb-panel: #121a2b;
-  --color-hb-panel2: #0e1626;
-  --color-hb-line: #243049;
-  --color-hb-text: #e8eefc;
-  --color-hb-mute: #8b9bb8;
-  --color-hb-sky: #4da3ff;
-  --color-hb-ai: #7c5cff;
-  --color-hb-human: #3db8ff;
-  --color-hb-warn: #f0b429;
-  --color-hb-ok: #3ecf8e;
-  --font-sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-sans: "SF Pro Text", "Segoe UI", system-ui, -apple-system, sans-serif;
 }
 
 html,
@@ -23,14 +13,12 @@ body,
 }
 
 body {
-  background:
-    radial-gradient(110% 70% at 50% -20%, #1c2a48 0%, transparent 55%),
-    radial-gradient(80% 50% at 100% 100%, #1a1030 0%, transparent 45%),
-    var(--color-hb-bg);
+  background: #0b1220;
   font-family: var(--font-sans);
   overflow: hidden;
   user-select: none;
-  color: var(--color-hb-text);
+  color: #fff;
+  -webkit-font-smoothing: antialiased;
 }
 
 button,
@@ -38,12 +26,10 @@ input {
   font: inherit;
 }
 
-/* Allow selecting chat text */
 .chat-selectable {
   user-select: text;
 }
 
-/* Tauri drag region for custom title bar */
 [data-tauri-drag-region] {
   -webkit-app-region: drag;
   app-region: drag;

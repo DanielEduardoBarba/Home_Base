@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ActorStrip, FocusBubble } from "./components/Characters";
+import { FocusLine, PeopleList } from "./components/Characters";
 import { ChatPane } from "./components/ChatPane";
 import { TitleBar } from "./components/TitleBar";
 import {
@@ -44,7 +44,7 @@ export function App() {
           setShowSetup(false);
         }
       } catch {
-        /* browser / vite-only preview */
+        /* vite-only preview */
       } finally {
         if (!cancelled) setBooted(true);
       }
@@ -79,8 +79,8 @@ export function App() {
     }
     if (selectedId && actors.some((a) => a.id === selectedId)) return;
     const alert = actors.find((a) => a.mood === "alert");
-    const ai = actors.find((a) => a.kind === "ai");
-    setSelectedId((alert || ai || actors[0]).id);
+    const human = actors.find((a) => a.kind === "human");
+    setSelectedId((alert || human || actors[0]).id);
   }, [actors, selectedId]);
 
   const selected = useMemo(
@@ -88,21 +88,21 @@ export function App() {
     [actors, selectedId],
   );
 
-  const active = actors.length > 0;
   const humans = actors.filter((a) => a.kind === "human").length;
   const ais = actors.filter((a) => a.kind === "ai").length;
-  const status = error
-    ? "Connection error"
+  const connected = Boolean(cfg.token) && !error;
+  const subtitle = error
+    ? "Can't reach Home Base"
     : !cfg.token
-      ? "Needs connection"
-      : active
-        ? [
-            humans ? `${humans} human${humans === 1 ? "" : "s"}` : null,
-            ais ? `${ais} AI${ais === 1 ? "" : "s"}` : null,
+      ? "Not connected"
+      : actors.length === 0
+        ? "Waiting…"
+        : [
+            humans ? `${humans} ${humans === 1 ? "person" : "people"}` : null,
+            ais ? `${ais} AI` : null,
           ]
             .filter(Boolean)
-            .join(" · ")
-        : "Waiting for remotes";
+            .join(" · ");
 
   function saveSetup() {
     const next = {
@@ -116,64 +116,70 @@ export function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <TitleBar status={status} active={active} count={actors.length} />
-      <main className="flex min-h-0 flex-1 flex-col gap-2.5 p-3">
+      <TitleBar subtitle={subtitle} live={connected && actors.length > 0} />
+      <main className="flex min-h-0 flex-1 flex-col gap-3 p-3">
         {showSetup ? (
-          <section className="space-y-2.5 rounded-2xl border border-hb-line bg-hb-panel p-3.5">
-            <h2 className="text-sm font-semibold text-hb-text">Connect</h2>
-            <p className="text-[11px] leading-relaxed text-hb-mute">
-              Homebased usually injects URL + token when it opens this window.
-              Paste them only if you launched Presence manually.
-            </p>
-            <label className="block text-[11px] text-hb-mute">
+          <section className="space-y-3 rounded-2xl bg-white/[0.04] p-4">
+            <div>
+              <h2 className="text-[14px] font-semibold text-white/95">
+                Connect
+              </h2>
+              <p className="mt-1 text-[12px] leading-relaxed text-white/45">
+                Usually filled in automatically. Only needed if you opened this
+                window yourself.
+              </p>
+            </div>
+            <label className="block text-[11px] text-white/45">
               Home Base URL
               <input
-                className="mt-1 w-full rounded-xl border border-hb-line bg-hb-panel2 px-2.5 py-2 text-xs text-hb-text"
+                className="mt-1 w-full rounded-xl bg-white/[0.06] px-3 py-2.5 text-[13px] text-white outline-none focus:bg-white/[0.09]"
                 value={draftBase}
                 onChange={(e) => setDraftBase(e.target.value)}
                 placeholder="http://127.0.0.1:8080"
               />
             </label>
-            <label className="block text-[11px] text-hb-mute">
-              Presence token
+            <label className="block text-[11px] text-white/45">
+              Token
               <input
-                className="mt-1 w-full rounded-xl border border-hb-line bg-hb-panel2 px-2.5 py-2 font-mono text-xs text-hb-text"
+                className="mt-1 w-full rounded-xl bg-white/[0.06] px-3 py-2.5 font-mono text-[12px] text-white outline-none focus:bg-white/[0.09]"
                 value={draftToken}
                 onChange={(e) => setDraftToken(e.target.value)}
-                placeholder="from .runtime/presence_ui_token"
               />
             </label>
             <button
               type="button"
-              className="w-full rounded-xl bg-hb-sky py-2.5 text-xs font-bold text-[#041018]"
+              className="w-full rounded-xl bg-white py-2.5 text-[13px] font-semibold text-[#0b1220]"
               onClick={saveSetup}
             >
-              Save & connect
+              Connect
             </button>
           </section>
         ) : (
           <>
-            <ActorStrip
+            <PeopleList
               actors={actors}
               selectedId={selectedId}
               onSelect={setSelectedId}
             />
-            <FocusBubble actor={selected} />
-            <ChatPane messages={chat} onSent={() => void tick()} />
-            <div className="flex items-center justify-between gap-2 px-0.5">
+            <FocusLine actor={selected} />
+            <ChatPane
+              messages={chat}
+              onSent={() => void tick()}
+              enabled={connected}
+            />
+            {error ? (
+              <p className="px-1 text-center text-[11px] text-red-300/90">
+                {error}
+              </p>
+            ) : (
               <button
                 type="button"
-                className="text-[10px] text-hb-mute hover:text-hb-sky"
+                className="self-center text-[11px] text-white/30 hover:text-white/55"
                 onClick={() => setShowSetup(true)}
               >
-                Connection
+                Settings
               </button>
-              {error ? (
-                <span className="truncate text-[10px] text-red-400">{error}</span>
-              ) : (
-                <span className="text-[10px] text-hb-mute">Live · 1.5s</span>
-              )}
-            </div>
+            )}
           </>
         )}
       </main>

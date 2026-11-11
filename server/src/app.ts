@@ -391,14 +391,25 @@ app.post("/api/login", async (c) => {
       summary: `Web GUI login from ${ip}`,
       peerIp: ip,
     });
-    upsertPresence({
-      id: `web:${ip}`,
-      kind: "human",
-      name: "Remote user",
-      label: "Web GUI",
-      peerIp: ip === "unknown" ? undefined : ip,
-      announce: true,
-    });
+    {
+      const local =
+        ip === "127.0.0.1" ||
+        ip === "::1" ||
+        ip === "localhost" ||
+        ip === "unknown";
+      upsertPresence({
+        id: `web:${ip}`,
+        kind: "human",
+        name: local ? "You" : "Person",
+        label: local ? "Signed in · this device" : "Signed in · remote",
+        peerIp: ip === "unknown" ? undefined : ip,
+        mood: "listening",
+        bubble: local
+          ? "Using Home Base in the browser"
+          : "Using Home Base remotely",
+        announce: true,
+      });
+    }
     desktopNotify("Web GUI login", `Signed in from ${ip}`, {
       urgency: "critical",
       dedupeKey: `login:${ip}`,
@@ -1243,15 +1254,35 @@ app.post("/api/presence/heartbeat", async (c) => {
       label: z.string().optional(),
     })
     .parse(await readJson(c).catch(() => ({})));
+  const local =
+    ip === "127.0.0.1" ||
+    ip === "::1" ||
+    ip === "localhost" ||
+    ip === "unknown";
+  const areaBit =
+    body.area || body.tab
+      ? `${body.area || "Home"}${body.tab ? ` · ${body.tab}` : ""}`
+      : null;
   const actor = upsertPresence({
     id: `web:${ip}`,
     kind: "human",
-    name: body.label || "Remote user",
-    label:
-      body.area || body.tab
-        ? `Web GUI · ${body.area || ""}${body.tab ? `/${body.tab}` : ""}`
-        : "Web GUI",
+    name: body.label || (local ? "You" : "Person"),
+    label: local
+      ? areaBit
+        ? `This browser · ${areaBit}`
+        : "Signed in · this device"
+      : areaBit
+        ? `Remote · ${areaBit}`
+        : "Signed in · remote",
     peerIp: ip === "unknown" ? undefined : ip,
+    mood: "listening",
+    bubble: local
+      ? areaBit
+        ? `Looking at ${areaBit}`
+        : "Using Home Base in the browser"
+      : areaBit
+        ? `Looking at ${areaBit}`
+        : "Using Home Base remotely",
     announce: true,
   });
   return c.json({ ok: true, actor });

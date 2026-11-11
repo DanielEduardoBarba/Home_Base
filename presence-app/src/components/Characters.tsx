@@ -1,54 +1,57 @@
-import type { PresenceActor, PresenceMood } from "../lib/api";
+import type { PresenceActor } from "../lib/api";
 
-const MOOD_HINT: Record<PresenceMood, string> = {
-  idle: "Idle",
-  thinking: "Thinking",
-  happy: "Happy",
-  alert: "Needs you",
-  working: "Working",
-  listening: "Listening",
-};
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 1).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
 
-function Avatar({ actor, size = 40 }: { actor: PresenceActor; size?: number }) {
-  const isAi = actor.kind === "ai";
-  const ring =
-    actor.mood === "alert"
-      ? "ring-hb-warn"
-      : actor.mood === "thinking" || actor.mood === "working"
-        ? isAi
-          ? "ring-hb-ai"
-          : "ring-hb-human"
-        : "ring-transparent";
+function isLocalIp(ip?: string): boolean {
+  if (!ip) return false;
+  return (
+    ip === "127.0.0.1" ||
+    ip === "::1" ||
+    ip === "localhost" ||
+    ip.startsWith("127.")
+  );
+}
 
+export function humanTitle(actor: PresenceActor): string {
+  if (actor.kind !== "human") return actor.name;
+  if (isLocalIp(actor.peerIp)) return "You";
+  if (/remote/i.test(actor.name) || actor.name === "Remote user") {
+    return actor.peerIp ? `Person · ${actor.peerIp}` : "Person";
+  }
+  return actor.name;
+}
+
+export function humanSubtitle(actor: PresenceActor): string {
+  if (actor.kind !== "human") return actor.label;
+  if (isLocalIp(actor.peerIp)) {
+    return actor.label.replace(/^Web GUI/, "This browser") || "Signed in here";
+  }
+  const where = actor.label || "Web";
+  return actor.peerIp ? `${where}` : where;
+}
+
+function Avatar({ actor }: { actor: PresenceActor }) {
+  const human = actor.kind === "human";
   return (
     <div
-      className={`relative flex items-center justify-center rounded-full ring-2 ${ring}`}
-      style={{ width: size, height: size }}
+      className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[13px] font-semibold ${
+        human
+          ? "bg-[#2a6fdb]/20 text-[#8ec0ff] ring-1 ring-[#2a6fdb]/35"
+          : "bg-[#7c5cff]/18 text-[#cbb8ff] ring-1 ring-[#7c5cff]/35"
+      }`}
       aria-hidden
     >
-      <div
-        className={`flex h-full w-full items-center justify-center rounded-full text-[13px] font-bold ${
-          isAi
-            ? "bg-[#22184a] text-[#cbb8ff]"
-            : "bg-[#12304a] text-[#8ed0ff]"
-        }`}
-      >
-        {(actor.name || "?").trim().slice(0, 1).toUpperCase()}
-      </div>
-      <span
-        className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-hb-panel ${
-          actor.mood === "alert"
-            ? "bg-hb-warn"
-            : actor.mood === "idle"
-              ? "bg-hb-mute"
-              : "bg-hb-ok"
-        }`}
-      />
+      {initials(humanTitle(actor))}
     </div>
   );
 }
 
-export function ActorStrip({
+export function PeopleList({
   actors,
   selectedId,
   onSelect,
@@ -59,78 +62,77 @@ export function ActorStrip({
 }) {
   if (actors.length === 0) {
     return (
-      <div className="rounded-2xl border border-dashed border-hb-line bg-hb-panel/60 px-3 py-6 text-center">
-        <p className="text-xs font-medium text-hb-text">No one remoted in</p>
-        <p className="mt-1 text-[11px] leading-relaxed text-hb-mute">
-          Web GUI sessions and MCP AIs (Grok bots) appear here automatically.
+      <div className="rounded-2xl bg-white/[0.03] px-4 py-8 text-center">
+        <p className="text-[13px] font-medium text-white/85">No one here yet</p>
+        <p className="mt-1 text-[12px] leading-relaxed text-white/40">
+          People who sign in, and AI bots on MCP, show up here.
         </p>
       </div>
     );
   }
 
   return (
-    <div className="flex gap-2 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <ul className="space-y-1.5">
       {actors.map((a) => {
         const selected = a.id === selectedId;
-        const isAi = a.kind === "ai";
+        const human = a.kind === "human";
         return (
-          <button
-            key={a.id}
-            type="button"
-            onClick={() => onSelect(a.id)}
-            className={`flex min-w-[108px] max-w-[140px] flex-1 flex-col items-center gap-1.5 rounded-2xl border px-2.5 py-2.5 text-left transition ${
-              selected
-                ? isAi
-                  ? "border-hb-ai/60 bg-[#1a1433]"
-                  : "border-hb-human/60 bg-[#102033]"
-                : "border-hb-line bg-hb-panel hover:border-hb-line/90 hover:bg-hb-panel2"
-            }`}
-          >
-            <Avatar actor={a} />
-            <span className="w-full truncate text-center text-[11px] font-semibold text-hb-text">
-              {a.name}
-            </span>
-            <span className="w-full truncate text-center text-[10px] text-hb-mute">
-              {isAi ? "AI" : "Human"} · {MOOD_HINT[a.mood] || a.mood}
-            </span>
-          </button>
+          <li key={a.id}>
+            <button
+              type="button"
+              onClick={() => onSelect(a.id)}
+              className={`flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-left transition ${
+                selected ? "bg-white/[0.08]" : "bg-transparent hover:bg-white/[0.04]"
+              }`}
+            >
+              <Avatar actor={a} />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-[13px] font-semibold text-white/95">
+                    {humanTitle(a)}
+                  </span>
+                  <span
+                    className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                      human
+                        ? "bg-[#2a6fdb]/20 text-[#9ec5ff]"
+                        : "bg-[#7c5cff]/20 text-[#cbb8ff]"
+                    }`}
+                  >
+                    {human ? "Human" : "AI"}
+                  </span>
+                </div>
+                <p className="mt-0.5 truncate text-[11px] text-white/40">
+                  {human
+                    ? humanSubtitle(a)
+                    : a.bubble || a.label || "AI"}
+                </p>
+              </div>
+            </button>
+          </li>
         );
       })}
-    </div>
+    </ul>
   );
 }
 
-export function FocusBubble({ actor }: { actor: PresenceActor | null }) {
+export function FocusLine({ actor }: { actor: PresenceActor | null }) {
   if (!actor) return null;
-  const isAi = actor.kind === "ai";
+  if (actor.kind === "human") {
+    return (
+      <p className="px-1 text-[12px] leading-snug text-white/50">
+        {isLocalIp(actor.peerIp)
+          ? "You're signed in to Home Base in a browser."
+          : actor.bubble ||
+            `Someone is using Home Base${actor.peerIp ? ` from ${actor.peerIp}` : ""}.`}
+      </p>
+    );
+  }
+  if (!actor.bubble) return null;
   return (
-    <div
-      className={`rounded-2xl border px-3 py-2.5 ${
-        isAi ? "border-[#3a2f6e]/80 bg-[#16102a]/80" : "border-[#1e4a6e]/80 bg-[#0e1c2c]/80"
-      }`}
-    >
-      <div className="flex items-start gap-2.5">
-        <Avatar actor={actor} size={36} />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-baseline justify-between gap-2">
-            <p className="truncate text-xs font-semibold text-hb-text">{actor.name}</p>
-            <p className="shrink-0 text-[10px] text-hb-mute">
-              {MOOD_HINT[actor.mood] || actor.mood}
-            </p>
-          </div>
-          <p className="mt-1 text-[12px] leading-snug text-hb-text/90">
-            {actor.bubble ||
-              (isAi
-                ? "Waiting for an expression…"
-                : "Viewing Home Base")}
-          </p>
-          {(actor.label || actor.peerIp) && (
-            <p className="mt-1 truncate text-[10px] text-hb-mute">
-              {[actor.label, actor.peerIp].filter(Boolean).join(" · ")}
-            </p>
-          )}
-        </div>
-      </div>
-    </div>
+    <p className="px-1 text-[12px] leading-snug text-white/55">
+      <span className="font-medium text-white/80">{actor.name}</span>
+      {" — "}
+      {actor.bubble}
+    </p>
   );
 }

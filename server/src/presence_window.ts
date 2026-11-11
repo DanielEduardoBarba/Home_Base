@@ -41,7 +41,7 @@ function findPresenceBinary(): string | null {
   const env = (process.env.HOMEBASE_PRESENCE_BIN || "").trim();
   if (env && existsSync(env)) return env;
   const candidates = [
-    join(BUNDLE_ROOT, "presence-app", "src-tauri", "target", "release", "homebase-presence"),
+    // Prefer packaged/dist + system install over possibly stale cargo target.
     join(BUNDLE_ROOT, "dist", "homebase-presence"),
     "/usr/share/homebased/homebase-presence",
     "/usr/local/bin/homebase-presence",
@@ -49,6 +49,7 @@ function findPresenceBinary(): string | null {
       process.env.HOME || "",
       ".local/share/homebase/homebase-presence",
     ),
+    join(BUNDLE_ROOT, "presence-app", "src-tauri", "target", "release", "homebase-presence"),
   ];
   for (const p of candidates) {
     if (p && existsSync(p)) return p;

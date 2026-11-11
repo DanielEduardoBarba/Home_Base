@@ -92,7 +92,7 @@ export const MCP_FEATURE_META: {
   {
     id: "projects",
     label: "Projects & actions",
-    hint: "List / upsert / delete projects, run actions, stop",
+    hint: "List / upsert / delete projects, run actions, stop, Cursor job handoff",
     defaultOn: true,
   },
   {
@@ -135,6 +135,9 @@ export const MCP_TOOL_FEATURE: Record<string, McpFeatureId> = {
   homebase_project_delete: "projects",
   homebase_run_action: "projects",
   homebase_stop_project: "projects",
+  homebase_cursor_job: "projects",
+  homebase_cursor_job_status: "projects",
+  homebase_cursor_job_list: "projects",
   homebase_notifications: "notifications",
   homebase_notify: "notifications",
   homebase_system_status: "status",
@@ -487,6 +490,106 @@ export function buildHomebaseTools(
         if (!p) return json({ error: "project not found" });
         const actionId = String(args.actionId || "");
         return json(await runAction(p, actionId));
+      },
+    };
+    tools.homebase_cursor_job = {
+      description:
+        "Hand off a WHOLE coding job to Cursor on the laptop (saves Grok Bot tokens). " +
+        "One active job per projectId (rejects overlaps so development_grok is not raced). " +
+        "Cursor pulls/pushes development_grok by default; returns ≤10-line summary + commit. " +
+        "Preferred: callbackUrl webhook (one wake) OR waitMs=600000. " +
+        "If polling status, ≥5 minutes apart. Not for Vision.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: {
+            type: "string",
+            description: "Registered Home Base project id (homebase_list_projects)",
+          },
+          prompt: {
+            type: "string",
+            description: "Full job instruction for the Cursor agent on the laptop",
+          },
+          model: { type: "string", description: "Optional Cursor model id" },
+          mode: {
+            type: "string",
+            description: "agent (default) | ask | plan | debug",
+          },
+          cwd: {
+            type: "string",
+            description: "Optional working directory under/equal to the project path",
+          },
+          title: { type: "string", description: "Optional chat title in Home Base" },
+          branch: {
+            type: "string",
+            description: "Git branch to pull/push (default development_grok)",
+          },
+          callbackUrl: {
+            type: "string",
+            description:
+              "Optional http(s) URL — Home Base POSTs JSON when the job finishes (preferred over polling)",
+          },
+          waitMs: {
+            type: "number",
+            description:
+              "0 = return job id immediately (webhook still fires). Prefer 600000 (10m) one-shot wait. Max 45m.",
+          },
+        },
+        required: ["projectId", "prompt"],
+      },
+      execute: async (args) => {
+        try {
+          const { startCursorJob } = await import("./cursor_jobs");
+          const job = await startCursorJob({
+            projectId: resolvePid(args),
+            prompt: String(args.prompt || ""),
+            model: args.model != null ? String(args.model) : undefined,
+            mode: args.mode != null ? String(args.mode) : undefined,
+            cwd: args.cwd != null ? String(args.cwd) : undefined,
+            title: args.title != null ? String(args.title) : undefined,
+            branch: args.branch != null ? String(args.branch) : undefined,
+            callbackUrl:
+              args.callbackUrl != null ? String(args.callbackUrl) : undefined,
+            waitMs: args.waitMs != null ? Number(args.waitMs) : 0,
+            source: "mcp",
+          });
+          return json({ ok: true, job });
+        } catch (e) {
+          return json({
+            ok: false,
+            error: e instanceof Error ? e.message : String(e),
+          });
+        }
+      },
+    };
+    tools.homebase_cursor_job_status = {
+      description:
+        "Check a homebase_cursor_job by id (use sparingly: ≥5 min between polls). " +
+        "Prefer callbackUrl or waitMs=600000 instead. When done: summary (≤10 lines) + commit.",
+      parameters: {
+        type: "object",
+        properties: { jobId: { type: "string" } },
+        required: ["jobId"],
+      },
+      execute: async (args) => {
+        const { getCursorJob } = await import("./cursor_jobs");
+        const job = getCursorJob(String(args.jobId || ""));
+        if (!job) return json({ ok: false, error: "job not found" });
+        return json({ ok: true, job });
+      },
+    };
+    tools.homebase_cursor_job_list = {
+      description: "List recent Cursor handoff jobs (newest first).",
+      parameters: {
+        type: "object",
+        properties: { limit: { type: "number" } },
+      },
+      execute: async (args) => {
+        const { listCursorJobs } = await import("./cursor_jobs");
+        return json({
+          ok: true,
+          jobs: listCursorJobs(args.limit != null ? Number(args.limit) : 20),
+        });
       },
     };
     tools.homebase_stop_project = {

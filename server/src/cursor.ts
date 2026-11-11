@@ -2252,6 +2252,24 @@ export async function handleCursorMessage(
   send(workspacePayload(projectId, ws));
 }
 
+/** Public entry for MCP / automation job handoff (same as internal chat send). */
+export async function startCursorRun(
+  projectId: string,
+  opts: {
+    chatId: string;
+    prompt: string;
+    model: string;
+    mode: string;
+    cwd?: string;
+    images?: ChatImage[];
+    contextPaths?: string[];
+    replaceLastUser?: boolean;
+    queueIfBusy?: boolean;
+  },
+): Promise<void> {
+  return startRun(projectId, opts);
+}
+
 async function startRun(
   projectId: string,
   opts: {

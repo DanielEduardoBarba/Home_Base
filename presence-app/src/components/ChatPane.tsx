@@ -2,23 +2,14 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { PresenceChatMsg } from "../lib/api";
 import { sendOperatorChat } from "../lib/api";
 
-function timeLabel(at: number): string {
-  try {
-    return new Date(at).toLocaleTimeString([], {
-      hour: "numeric",
-      minute: "2-digit",
-    });
-  } catch {
-    return "";
-  }
-}
-
 export function ChatPane({
   messages,
   onSent,
+  enabled,
 }: {
   messages: PresenceChatMsg[];
   onSent: () => void;
+  enabled: boolean;
 }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -32,7 +23,7 @@ export function ChatPane({
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     const t = text.trim();
-    if (!t || busy) return;
+    if (!t || busy || !enabled) return;
     setBusy(true);
     setErr("");
     try {
@@ -47,59 +38,48 @@ export function ChatPane({
   }
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-hb-line bg-hb-panel">
-      <div className="flex items-center justify-between border-b border-hb-line/70 px-3 py-1.5">
-        <p className="text-[11px] font-semibold text-hb-text">Chat</p>
-        <p className="text-[10px] text-hb-mute">You ↔ remoted AIs</p>
-      </div>
-      <div className="chat-selectable flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto px-2.5 py-2">
+    <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl bg-white/[0.03]">
+      <div className="chat-selectable flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-3">
         {messages.length === 0 ? (
-          <div className="m-auto max-w-[240px] px-2 py-4 text-center">
-            <p className="text-[12px] font-medium text-hb-text">Quiet so far</p>
-            <p className="mt-1 text-[11px] leading-relaxed text-hb-mute">
-              Message MCP agents here. They reply with presence chat tools.
+          <div className="m-auto max-w-[220px] py-6 text-center">
+            <p className="text-[13px] font-medium text-white/80">Chat</p>
+            <p className="mt-1 text-[12px] leading-relaxed text-white/40">
+              Message remoted AIs. They answer here.
             </p>
           </div>
         ) : (
           messages.map((m) => (
             <div
               key={m.id}
-              className={`flex flex-col gap-0.5 ${
+              className={`flex ${
                 m.from === "operator"
-                  ? "items-end"
+                  ? "justify-end"
                   : m.from === "ai"
-                    ? "items-start"
-                    : "items-center"
+                    ? "justify-start"
+                    : "justify-center"
               }`}
             >
               <div
-                className={`max-w-[88%] rounded-2xl px-2.5 py-1.5 text-[11px] leading-snug ${
+                className={`max-w-[85%] rounded-2xl px-3 py-2 text-[12px] leading-snug ${
                   m.from === "operator"
-                    ? "rounded-br-md bg-[#1a3355] text-hb-text"
+                    ? "rounded-br-md bg-[#2a6fdb] text-white"
                     : m.from === "ai"
-                      ? "rounded-bl-md bg-[#241a45] text-hb-text"
-                      : "bg-transparent text-hb-mute"
+                      ? "rounded-bl-md bg-white/[0.08] text-white/90"
+                      : "bg-transparent text-white/40"
                 }`}
               >
                 {m.from === "ai" ? (
                   <>
-                    <span className="font-semibold text-hb-ai">
+                    <span className="font-semibold text-[#cbb8ff]">
                       {m.actorName || "AI"}
                     </span>
-                    <span className="text-hb-mute"> · </span>
+                    <span className="text-white/35"> · </span>
                     {m.text}
                   </>
-                ) : m.from === "operator" ? (
-                  m.text
                 ) : (
                   m.text
                 )}
               </div>
-              {m.from !== "system" ? (
-                <span className="px-1 text-[9px] text-hb-mute/80">
-                  {timeLabel(m.at)}
-                </span>
-              ) : null}
             </div>
           ))
         )}
@@ -107,25 +87,25 @@ export function ChatPane({
       </div>
       <form
         onSubmit={onSubmit}
-        className="flex gap-1.5 border-t border-hb-line p-2"
+        className="flex gap-2 border-t border-white/5 px-2.5 py-2.5"
       >
         <input
-          className="min-w-0 flex-1 rounded-xl border border-hb-line bg-hb-panel2 px-3 py-2 text-xs text-hb-text outline-none placeholder:text-hb-mute focus:border-hb-sky"
-          placeholder="Message remoted AIs…"
+          className="min-w-0 flex-1 rounded-xl bg-white/[0.06] px-3 py-2 text-[13px] text-white outline-none placeholder:text-white/30 focus:bg-white/[0.09]"
+          placeholder={enabled ? "Message…" : "Waiting for connection…"}
           value={text}
           maxLength={500}
-          disabled={busy}
+          disabled={busy || !enabled}
           onChange={(e) => setText(e.target.value)}
         />
         <button
           type="submit"
-          disabled={busy || !text.trim()}
-          className="rounded-xl bg-hb-sky px-3.5 text-xs font-bold text-[#041018] disabled:opacity-40"
+          disabled={busy || !text.trim() || !enabled}
+          className="rounded-xl bg-white px-3.5 text-[13px] font-semibold text-[#0b1220] disabled:opacity-30"
         >
           Send
         </button>
       </form>
-      {err ? <p className="px-2 pb-1.5 text-[10px] text-red-400">{err}</p> : null}
+      {err ? <p className="px-3 pb-2 text-[11px] text-red-300">{err}</p> : null}
     </section>
   );
 }

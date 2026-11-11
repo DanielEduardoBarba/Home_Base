@@ -286,8 +286,10 @@ export function McpServerPanel() {
         {showGrok ? (
           <div className="space-y-2">
             <p className="text-xs text-mute leading-relaxed">
-              Connect Grok bots over VPN to this laptop&apos;s MCP. Cursor usage stays on Home Base
-              via your in-app Cursor key — do not put that key in the Grok host.
+              Grok Developer pilot: hand off whole jobs via{" "}
+              <code className="text-text">homebase_cursor_job</code> (waitMs or webhook — no tight
+              polling). Projects + Presence On; Vision + Home Access Off; dedicated token. Brief:{" "}
+              <code className="text-text">docs/GROK_MCP.md</code>.
             </p>
             <pre className="text-[11px] font-mono whitespace-pre-wrap break-words rounded-xl border border-line bg-panel-2/50 px-3 py-2.5 text-text max-h-72 overflow-y-auto">
               {status?.grokGuide || '…'}

@@ -13,15 +13,29 @@ fi
 echo "==> Building Home Base Presence (Tauri)"
 bun run tauri:build
 
-BIN="$APP/src-tauri/target/release/homebase-presence"
-if [[ ! -f "$BIN" ]]; then
-  echo "Error: missing $BIN" >&2
+# Prefer normal cargo target; also accept CARGO_TARGET_DIR (e.g. sandbox caches).
+BIN=""
+for candidate in \
+  "$APP/src-tauri/target/release/homebase-presence" \
+  "${CARGO_TARGET_DIR:-}/release/homebase-presence"; do
+  if [[ -n "$candidate" && -f "$candidate" ]]; then
+    BIN="$candidate"
+    break
+  fi
+done
+if [[ -z "$BIN" ]]; then
+  # Last resort: newest homebase-presence under common target dirs
+  BIN="$(find "$APP/src-tauri/target" "${CARGO_TARGET_DIR:-/tmp}" -type f -name homebase-presence 2>/dev/null | head -n1 || true)"
+fi
+if [[ -z "$BIN" || ! -f "$BIN" ]]; then
+  echo "Error: missing homebase-presence release binary" >&2
   exit 1
 fi
 
-mkdir -p "$ROOT/dist"
+mkdir -p "$ROOT/dist" "$APP/src-tauri/target/release"
 cp -f "$BIN" "$OUT"
-chmod 755 "$OUT"
+cp -f "$BIN" "$APP/src-tauri/target/release/homebase-presence"
+chmod 755 "$OUT" "$APP/src-tauri/target/release/homebase-presence"
 echo "    → $OUT"
 
 if [[ "${1:-}" == "--install" ]]; then
