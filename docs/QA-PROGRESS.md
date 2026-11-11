@@ -60,3 +60,14 @@ Phone terminal 48×8 (was 48×12): left as-is. That is the intended HB-R1-16 tra
 
 Version bump to 1.17.6.
 
+## 2026-11-11 (America/New_York) — HB-R2-06 desktop terminal copy
+
+The cause was real in code, not just a headless quirk: `Terminal.tsx` had no selection or clipboard handling, so Ctrl+C always went to the PTY as SIGINT, and Ctrl+Shift+C / Cmd+C / paste did nothing. Mouse selection itself is xterm's default (no `user-select` or overlay was blocking the surface). `rightClickSelectsWord` and `macOptionClickForcesSelection` were unset; those are now on. The terminal host is marked `data-hb-no-ptr="1"` so pull-to-refresh cannot steal a drag used to select text.
+
+- Drag to select, then **Ctrl+Shift+C** or **Cmd+C** copies.
+- **Ctrl+C** copies when there is a selection, otherwise it sends the interrupt.
+- **Ctrl+Shift+V** and **Cmd+V** paste via `navigator.clipboard` with an `execCommand('copy')` fallback for writes.
+- A **Copy** item is on the term bar (enabled when there is a selection) and in the Keys sheet, with Paste. The phone key bar (arrows, symbols, ^C/^D) is unchanged.
+
+Version bump to 1.17.7.
+

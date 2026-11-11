@@ -4,6 +4,12 @@ import { useEffect, useRef, useState } from 'react'
 import { Terminal as XTerm } from 'xterm'
 import 'xterm/css/xterm.css'
 import { wsUrl } from '../lib/api'
+import {
+  isApplePlatform,
+  readClipboard,
+  termClipboardKeyAction,
+  writeClipboard,
+} from '../lib/termClipboard'
 import { TERM_ARROW_KEYS, TERM_SYMBOL_KEYS } from '../lib/termKeys'
 import {
   connStateLabel,
@@ -37,6 +43,8 @@ export function TerminalView({ path, sessionId, onSession, className }: Props) {
   const fitRef = useRef<FitAddon | null>(null)
   const onSessionRef = useRef(onSession)
   const [connState, setConnState] = useState<WsConnState>('connecting')
+  const [actionsOpen, setActionsOpen] = useState(false)
+  const [hasSelection, setHasSelection] = useState(false)
   const endedRef = useRef(false)
   const announcedRef = useRef(false)
   const reconnectNoteAt = useRef(0)
@@ -49,9 +57,12 @@ export function TerminalView({ path, sessionId, onSession, className }: Props) {
     if (!hostRef.current) return
     endedRef.current = false
     announcedRef.current = false
+    setHasSelection(false)
 
     const term = new XTerm({
       cursorBlink: true,
+      rightClickSelectsWord: true,
+      macOptionClickForcesSelection: true,
       // Fallbacks cover common zsh/OMZ glyphs (➜ etc.) when Plex lacks them.
       fontFamily:
         '"IBM Plex Mono", "DejaVu Sans Mono", "Noto Sans Mono", ui-monospace, monospace',
@@ -160,6 +171,31 @@ export function TerminalView({ path, sessionId, onSession, className }: Props) {
       }
     })
 
+    const apple = isApplePlatform(
+      typeof navigator !== 'undefined' ? navigator.platform : '',
+      typeof navigator !== 'undefined' ? navigator.userAgent : '',
+    )
+    term.attachCustomKeyEventHandler((ev) => {
+      const action = termClipboardKeyAction(ev, term.hasSelection(), apple)
+      if (action === 'copy') {
+        ev.preventDefault()
+        const text = term.getSelection()
+        if (text) void writeClipboard(text)
+        return false
+      }
+      if (action === 'paste') {
+        ev.preventDefault()
+        void readClipboard().then((text) => {
+          if (text) term.paste(text)
+        })
+        return false
+      }
+      return true
+    })
+    const selDisposable = term.onSelectionChange(() => {
+      setHasSelection(term.hasSelection())
+    })
+
     let roTimer: ReturnType<typeof setTimeout> | undefined
     const ro = new ResizeObserver(() => {
       // Debounce — flex layout + xterm can fire dozens of RO events
@@ -179,16 +215,16 @@ export function TerminalView({ path, sessionId, onSession, className }: Props) {
     return () => {
       if (roTimer) clearTimeout(roTimer)
       disposable.dispose()
+      selDisposable.dispose()
       ro.disconnect()
       handle.dispose()
       handleRef.current = null
       term.dispose()
       termRef.current = null
       fitRef.current = null
+      setHasSelection(false)
     }
   }, [path, sessionId])
-
-  const [actionsOpen, setActionsOpen] = useState(false)
 
   function sendCtrl(letter: string) {
     const code = String.fromCharCode(letter.toUpperCase().charCodeAt(0) - 64)
@@ -210,6 +246,20 @@ export function TerminalView({ path, sessionId, onSession, className }: Props) {
   function runAction(fn: () => void) {
     fn()
     setActionsOpen(false)
+  }
+
+  async function copyActiveSelection() {
+    const term = termRef.current
+    const text = term?.getSelection() || ''
+    if (!text) return
+    await writeClipboard(text)
+    term?.focus()
+  }
+
+  async function pasteFromClipboard() {
+    const text = await readClipboard()
+    if (text) termRef.current?.paste(text)
+    termRef.current?.focus()
   }
 
   const live = connState === 'live'
@@ -265,6 +315,15 @@ export function TerminalView({ path, sessionId, onSession, className }: Props) {
             </button>
           ))}
         </div>
+        <button
+          type="button"
+          onClick={() => void copyActiveSelection()}
+          disabled={!hasSelection}
+          className="hb-term-key"
+          title="Copy selection (Ctrl+Shift+C or Cmd+C)"
+        >
+          Copy
+        </button>
         <button
           type="button"
           title={live ? 'Shell socket live' : 'Tap to reconnect'}
@@ -357,12 +416,33 @@ export function TerminalView({ path, sessionId, onSession, className }: Props) {
                   {k.label}
                 </button>
               ))}
+              <button
+                type="button"
+                disabled={!hasSelection}
+                onClick={() => runAction(() => void copyActiveSelection())}
+                className="hb-btn hb-btn-ghost !min-h-11 text-sm"
+              >
+                Copy
+              </button>
+              <button
+                type="button"
+                disabled={!live}
+                onClick={() => runAction(() => void pasteFromClipboard())}
+                className="hb-btn hb-btn-ghost !min-h-11 text-sm"
+              >
+                Paste
+              </button>
             </div>
           </div>
         </div>
       )}
 
-      <div ref={hostRef} className="flex-1 min-h-0 p-2" onClick={() => termRef.current?.focus()} />
+      <div
+        ref={hostRef}
+        className="flex-1 min-h-0 p-2 hb-term-host"
+        data-hb-no-ptr="1"
+        onClick={() => termRef.current?.focus()}
+      />
     </div>
   )
 }
