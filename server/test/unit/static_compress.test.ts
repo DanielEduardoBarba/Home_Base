@@ -85,4 +85,11 @@ describe("static precompress + cache", () => {
       expect(res).toBeNull();
     }
   });
+
+  test("serves pre-rendered /work/files.html for the extensionless URL", () => {
+    const res = tryServeStatic("/work/files", "identity");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(200);
+    expect(res!.headers.get("content-type") || "").toContain("html");
+  });
 });
