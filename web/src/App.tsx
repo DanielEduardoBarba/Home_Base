@@ -209,7 +209,6 @@ function AuthedApp() {
 
   useEffect(() => {
     const pid = readLastProjectId()
-    setSelectedId(pid)
     setHostLabel(location.hostname || 'host')
     const savedTab = migrateLegacyWorkTab(readLastTab('work'), pid)
     if (savedTab !== readLastTab('work')) writeLastTab(savedTab)
@@ -217,6 +216,7 @@ function AuthedApp() {
     const parsed = parseAppPath(window.location.pathname)
     if (parsed.kind === 'notfound') {
       setNotFoundPath(parsed.path)
+      setSelectedId(pid)
       setRoutesReady(true)
       return
     }
@@ -237,6 +237,7 @@ function AuthedApp() {
     writeLastArea(loc.area)
     writeLastTab(loc.tab)
     if (pid) writeWorkPlace(pid, { item: loc.workItem })
+    setSelectedId(pid)
     const canonical = serializeAppPath(loc)
     if (window.location.pathname !== canonical) {
       window.history.replaceState({ hb: true }, '', canonical)
@@ -369,10 +370,12 @@ function AuthedApp() {
   )
 
   // Each project keeps its own Apps / Shell / Files / Chat pane.
+  // Wait until the URL has been applied so a deep link like /work/files is not
+  // overwritten by a stale work-place default on first mount.
   useEffect(() => {
-    if (!selectedId) return
+    if (!routesReady || !selectedId) return
     setWorkItem(readWorkPlace(selectedId).item)
-  }, [selectedId])
+  }, [selectedId, routesReady])
 
   // Close Work submenu on outside tap / Escape
   useEffect(() => {
