@@ -45,6 +45,7 @@ export const viewport: Viewport = {
 
 const themeBoot = `
 try {
+  window.__HB_PATH = location.pathname
   var t = localStorage.getItem('hb-theme')
   if (t !== 'day' && t !== 'night') t = 'night'
   document.documentElement.dataset.theme = t

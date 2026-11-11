@@ -213,14 +213,15 @@ function AuthedApp() {
     const savedTab = migrateLegacyWorkTab(readLastTab('work'), pid)
     if (savedTab !== readLastTab('work')) writeLastTab(savedTab)
     const savedItem = pid ? readWorkPlace(pid).item : 'apps'
-    const parsed = parseAppPath(window.location.pathname)
+    const landed = (window as Window & { __HB_PATH?: string }).__HB_PATH || window.location.pathname
+    const parsed = parseAppPath(landed)
     if (parsed.kind === 'notfound') {
       setNotFoundPath(parsed.path)
       setSelectedId(pid)
       setRoutesReady(true)
       return
     }
-    const path = window.location.pathname.replace(/\/+$/, '') || '/'
+    const path = (landed.replace(/\/+$/, '') || '/')
     let loc = parsed.loc
     if (path === '/') {
       loc = {
