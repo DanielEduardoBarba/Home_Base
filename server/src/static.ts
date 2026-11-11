@@ -43,6 +43,11 @@ export function tryServeStatic(
   const root = distRoot();
   if (!existsSync(root)) return null;
   let rel = pathname === "/" ? "/index.html" : pathname;
+  try {
+    rel = decodeURIComponent(rel);
+  } catch {
+    return null;
+  }
   if (rel.includes("\0")) return null;
   const rootResolved = resolve(root);
   let filePath = resolve(rootResolved, rel.replace(/^\/+/, ""));
