@@ -9,6 +9,16 @@ export type PresenceMood =
   | "working"
   | "listening";
 
+export type PresenceForm =
+  | "pill"
+  | "cloud"
+  | "drop"
+  | "circle"
+  | "hex"
+  | "diamond"
+  | "soft"
+  | "cluster";
+
 export type PresenceActor = {
   id: string;
   kind: "human" | "ai";
@@ -16,6 +26,9 @@ export type PresenceActor = {
   label: string;
   mood: PresenceMood;
   bubble: string;
+  form?: PresenceForm;
+  color?: string;
+  energy?: number;
   peerIp?: string;
   lastSeen: number;
 };

@@ -1,6 +1,6 @@
 [package]
 name = "homebase-presence"
-version = "1.14.3"
+version = "1.16.0"
 description = "Home Base remote presence desktop window"
 authors = ["DevCon1 Solutions"]
 edition = "2021"

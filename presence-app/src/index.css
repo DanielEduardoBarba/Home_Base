@@ -13,7 +13,9 @@ body,
 }
 
 body {
-  background: #0b1220;
+  background:
+    radial-gradient(90% 60% at 50% -10%, #1a2744 0%, transparent 55%),
+    #0b1220;
   font-family: var(--font-sans);
   overflow: hidden;
   user-select: none;
@@ -39,4 +41,66 @@ input {
 [data-tauri-drag-region] a {
   -webkit-app-region: no-drag;
   app-region: no-drag;
+}
+
+@keyframes hb-bob-soft {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+@keyframes hb-bob-happy {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-6px) rotate(-2deg);
+  }
+}
+@keyframes hb-bob-think {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-2px) rotate(3deg);
+  }
+}
+@keyframes hb-bob-alert {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-2px);
+  }
+  75% {
+    transform: translateX(2px);
+  }
+}
+
+.hb-bob-soft {
+  animation: hb-bob-soft 3.2s ease-in-out infinite;
+}
+.hb-bob-happy {
+  animation: hb-bob-happy 1.4s ease-in-out infinite;
+}
+.hb-bob-think {
+  animation: hb-bob-think 2.4s ease-in-out infinite;
+}
+.hb-bob-alert {
+  animation: hb-bob-alert 0.55s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hb-bob-soft,
+  .hb-bob-happy,
+  .hb-bob-think,
+  .hb-bob-alert {
+    animation: none;
+  }
 }

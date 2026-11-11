@@ -354,15 +354,31 @@ export function recordFailure(
     category: "security",
     meta: { ip, failCount, delay, reason },
   });
-  desktopNotify(title, body, {
-    urgency: failCount >= FAIL_THRESHOLD ? "critical" : "critical",
-    dedupeKey: `auth-fail:${ip}:${failCount}`,
-    dedupeMs: 3_000,
-  });
+  // Desktop: only after 3+ failures or lockout — single bubbles that replace + expire.
+  if (failCount >= 3) {
+    desktopNotify(title, body.slice(0, 120), {
+      urgency: failCount >= FAIL_THRESHOLD ? "normal" : "low",
+      replaceKey: `auth-fail:${ip}`,
+      dedupeKey: `auth-fail:${ip}`,
+      dedupeMs: 20_000,
+      expireMs: failCount >= FAIL_THRESHOLD ? 6_000 : 4_000,
+    });
+  }
+  const retryAfter = Math.max(0, Math.floor(lockedUntil - now));
+  void import("./email_alerts")
+    .then(({ maybeEmailSuspiciousAuth }) => {
+      maybeEmailSuspiciousAuth({
+        ip,
+        reason,
+        failCount,
+        retryAfter,
+      });
+    })
+    .catch(() => undefined);
   return {
     failCount,
     locked: delay > 0 || lockedUntil > now,
-    retryAfter: Math.max(0, Math.floor(lockedUntil - now)),
+    retryAfter,
   };
 }
 

@@ -115,7 +115,7 @@ CONNECTION
 
 ON CONNECT
 1. homebase_system_status
-2. homebase_presence_express — name "Developer", mood=listening, bubble="Ready for job handoff"
+2. homebase_presence_express — name "Developer", mood=listening, form=hex|cloud|drop…, color=#hex, energy=0..1, bubble="Ready for job handoff"
 3. homebase_list_projects
 4. Wait for a ticket
 

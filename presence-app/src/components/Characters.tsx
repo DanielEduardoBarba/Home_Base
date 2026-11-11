@@ -1,11 +1,5 @@
 import type { PresenceActor } from "../lib/api";
-
-function initials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 1).toUpperCase();
-  return (parts[0][0] + parts[1][0]).toUpperCase();
-}
+import { GrokBlob } from "./GrokBlob";
 
 function isLocalIp(ip?: string): boolean {
   if (!ip) return false;
@@ -27,30 +21,14 @@ export function humanTitle(actor: PresenceActor): string {
 }
 
 export function humanSubtitle(actor: PresenceActor): string {
-  if (actor.kind !== "human") return actor.label;
+  if (actor.kind !== "human") return actor.bubble || actor.label;
   if (isLocalIp(actor.peerIp)) {
     return actor.label.replace(/^Web GUI/, "This browser") || "Signed in here";
   }
-  const where = actor.label || "Web";
-  return actor.peerIp ? `${where}` : where;
+  return actor.label || "Web";
 }
 
-function Avatar({ actor }: { actor: PresenceActor }) {
-  const human = actor.kind === "human";
-  return (
-    <div
-      className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[13px] font-semibold ${
-        human
-          ? "bg-[#2a6fdb]/20 text-[#8ec0ff] ring-1 ring-[#2a6fdb]/35"
-          : "bg-[#7c5cff]/18 text-[#cbb8ff] ring-1 ring-[#7c5cff]/35"
-      }`}
-      aria-hidden
-    >
-      {initials(humanTitle(actor))}
-    </div>
-  );
-}
-
+/** Detail-side list (back of the applet). */
 export function PeopleList({
   actors,
   selectedId,
@@ -72,7 +50,7 @@ export function PeopleList({
   }
 
   return (
-    <ul className="space-y-1.5">
+    <ul className="space-y-1">
       {actors.map((a) => {
         const selected = a.id === selectedId;
         const human = a.kind === "human";
@@ -81,11 +59,11 @@ export function PeopleList({
             <button
               type="button"
               onClick={() => onSelect(a.id)}
-              className={`flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-left transition ${
-                selected ? "bg-white/[0.08]" : "bg-transparent hover:bg-white/[0.04]"
+              className={`flex w-full items-center gap-3 rounded-2xl px-2.5 py-2 text-left transition ${
+                selected ? "bg-white/[0.08]" : "hover:bg-white/[0.04]"
               }`}
             >
-              <Avatar actor={a} />
+              <GrokBlob actor={a} size={40} selected={selected} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="truncate text-[13px] font-semibold text-white/95">
@@ -102,9 +80,7 @@ export function PeopleList({
                   </span>
                 </div>
                 <p className="mt-0.5 truncate text-[11px] text-white/40">
-                  {human
-                    ? humanSubtitle(a)
-                    : a.bubble || a.label || "AI"}
+                  {human ? humanSubtitle(a) : a.bubble || a.label || "AI"}
                 </p>
               </div>
             </button>
@@ -112,27 +88,5 @@ export function PeopleList({
         );
       })}
     </ul>
-  );
-}
-
-export function FocusLine({ actor }: { actor: PresenceActor | null }) {
-  if (!actor) return null;
-  if (actor.kind === "human") {
-    return (
-      <p className="px-1 text-[12px] leading-snug text-white/50">
-        {isLocalIp(actor.peerIp)
-          ? "You're signed in to Home Base in a browser."
-          : actor.bubble ||
-            `Someone is using Home Base${actor.peerIp ? ` from ${actor.peerIp}` : ""}.`}
-      </p>
-    );
-  }
-  if (!actor.bubble) return null;
-  return (
-    <p className="px-1 text-[12px] leading-snug text-white/55">
-      <span className="font-medium text-white/80">{actor.name}</span>
-      {" — "}
-      {actor.bubble}
-    </p>
   );
 }

@@ -42,6 +42,8 @@ const KEEP_SOFT = new Set([
   "mcp_server.json",
   "mcp_tokens.json",
   "presence_ui_token",
+  "email_alerts.json",
+  "email_alerts.secrets.enc",
   "activity",
   "logs",
 ]);

@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api } from '../lib/api'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 import { HoldButton } from './HoldButton'
@@ -36,6 +36,10 @@ export function ActivityHistoryPanel() {
   }, [day, source])
 
   useSceneRefresh(load)
+
+  useEffect(() => {
+    void load()
+  }, [load])
 
   return (
     <div className="space-y-3">

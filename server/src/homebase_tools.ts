@@ -57,6 +57,7 @@ export const HUMAN_ONLY_CAPABILITIES = [
   "Cloudflare Tunnel lifecycle",
   "Restart homebased",
   "Password, Share QR, App PIN, sudo vault, Cursor API key",
+  "Email alerts (Resend / SMTP) — suspicious auth + AI-away only",
   "MCP Server enable / disable, feature toggles, and token mint / revoke",
   "Activity history audit (Web + MCP)",
   "Vision Arm / Disarm",
@@ -764,16 +765,21 @@ export function buildHomebaseTools(
     };
     tools.homebase_presence_express = {
       description:
-        "Update your AI character on the operator's desktop presence window. " +
-        "Call this when you arrive and whenever your state changes so the human can see you. " +
-        "mood: idle|thinking|happy|alert|working|listening. bubble: short speech/status (≤160 chars). " +
-        "name: display name (e.g. Grok). This does not Arm Vision or bypass security.",
+        "Update your cartoon character on the operator's Presence window (Grok-style blob). " +
+        "Call when you arrive and whenever state changes. " +
+        "mood: idle|thinking|happy|alert|working|listening. " +
+        "form: pill|cloud|drop|circle|hex|diamond|soft|cluster. " +
+        "color: #hex. energy: 0..1 expressiveness. bubble: ≤160 chars. name: display name. " +
+        "Does not Arm Vision or bypass security.",
       parameters: {
         type: "object",
         properties: {
           mood: { type: "string" },
           bubble: { type: "string" },
           name: { type: "string" },
+          form: { type: "string" },
+          color: { type: "string" },
+          energy: { type: "number" },
           actorId: {
             type: "string",
             description: "Stable id for this bot (default mcp-default)",
@@ -785,13 +791,22 @@ export function buildHomebaseTools(
           upsertPresence,
           expressPresence,
           parseMood,
+          parseForm,
+          parseColor,
+          parseEnergy,
         } = await import("./presence");
         const id = String(args.actorId || "mcp-default").slice(0, 64);
+        const form = parseForm(args.form);
+        const color = parseColor(args.color);
+        const energy = parseEnergy(args.energy);
         upsertPresence({
           id,
           kind: "ai",
           name: args.name ? String(args.name) : undefined,
           label: "MCP AI",
+          form,
+          color,
+          energy,
           announce: true,
         });
         const mood = parseMood(args.mood);
@@ -799,8 +814,16 @@ export function buildHomebaseTools(
           mood,
           bubble: args.bubble != null ? String(args.bubble) : undefined,
           name: args.name ? String(args.name) : undefined,
+          form,
+          color,
+          energy,
         });
-        return json({ ok: true, actor, guidance: "Keep expressing as you work; poll chat_read for operator replies." });
+        return json({
+          ok: true,
+          actor,
+          guidance:
+            "Keep expressing (mood/form/color/energy/bubble) as you work; use chat tools sparingly.",
+        });
       },
     };
     tools.homebase_presence_chat_send = {

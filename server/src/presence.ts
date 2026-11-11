@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { RUNTIME_DIR, ensureRuntimeDirs } from "./config";
-import { desktopNotify } from "./desktop_notify";
+import { desktopClose, desktopNotify } from "./desktop_notify";
 import { pushNotification } from "./notifications";
 import { appendTrace } from "./trace";
 
@@ -24,6 +24,17 @@ export type PresenceMood =
   | "working"
   | "listening";
 
+/** Grok-style blob silhouette the desktop Presence window renders. */
+export type PresenceForm =
+  | "pill"
+  | "cloud"
+  | "drop"
+  | "circle"
+  | "hex"
+  | "diamond"
+  | "soft"
+  | "cluster";
+
 export type PresenceActor = {
   id: string;
   kind: PresenceKind;
@@ -31,9 +42,75 @@ export type PresenceActor = {
   label: string;
   mood: PresenceMood;
   bubble: string;
+  /** Cartoon form (AI-controllable). */
+  form: PresenceForm;
+  /** CSS/hex color for the blob. */
+  color: string;
+  /** 0..1 animation intensity / expressiveness. */
+  energy: number;
   peerIp?: string;
   lastSeen: number;
 };
+
+const FORMS: PresenceForm[] = [
+  "pill",
+  "cloud",
+  "drop",
+  "circle",
+  "hex",
+  "diamond",
+  "soft",
+  "cluster",
+];
+
+const AI_PALETTE = [
+  "#ff4d8d",
+  "#7c5cff",
+  "#3ecf8e",
+  "#ff8a3d",
+  "#4da3ff",
+  "#f0b429",
+  "#2dd4bf",
+  "#f472b6",
+  "#a78bfa",
+  "#ffffff",
+];
+
+export function parseForm(raw: unknown): PresenceForm | undefined {
+  const s = String(raw || "").toLowerCase().trim();
+  return FORMS.includes(s as PresenceForm) ? (s as PresenceForm) : undefined;
+}
+
+export function parseEnergy(raw: unknown): number | undefined {
+  if (raw == null || raw === "") return undefined;
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(n)) return undefined;
+  return Math.max(0, Math.min(1, n));
+}
+
+export function parseColor(raw: unknown): string | undefined {
+  const s = String(raw || "").trim();
+  if (!s) return undefined;
+  if (/^#[0-9a-fA-F]{3,8}$/.test(s)) return s;
+  if (/^[a-zA-Z]{3,20}$/.test(s)) return s;
+  return undefined;
+}
+
+function hashHue(id: string): number {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return h;
+}
+
+export function defaultFormFor(id: string, kind: PresenceKind): PresenceForm {
+  if (kind === "human") return "circle";
+  return FORMS[hashHue(id) % FORMS.length]!;
+}
+
+export function defaultColorFor(id: string, kind: PresenceKind): string {
+  if (kind === "human") return "#4da3ff";
+  return AI_PALETTE[hashHue(id) % AI_PALETTE.length]!;
+}
 
 export type PresenceChatMsg = {
   id: string;
@@ -113,6 +190,7 @@ function pruneExpired(): void {
     const ttl = a.kind === "human" ? HUMAN_TTL_MS : AI_TTL_MS;
     if (now - a.lastSeen > ttl) {
       state.actors.delete(id);
+      desktopClose(`presence:${id}`);
       changed = true;
       appendTrace("info", `presence expired ${a.kind}:${a.name}`, "presence");
     }
@@ -142,6 +220,9 @@ export function upsertPresence(opts: {
   peerIp?: string;
   mood?: PresenceMood;
   bubble?: string;
+  form?: PresenceForm;
+  color?: string;
+  energy?: number;
   announce?: boolean;
 }): PresenceActor {
   const now = Date.now();
@@ -161,39 +242,69 @@ export function upsertPresence(opts: {
     ),
     mood: opts.mood || prev?.mood || "idle",
     bubble: opts.bubble != null ? String(opts.bubble).slice(0, 160) : prev?.bubble || "",
+    form: opts.form || prev?.form || defaultFormFor(opts.id, opts.kind),
+    color: opts.color || prev?.color || defaultColorFor(opts.id, opts.kind),
+    energy:
+      opts.energy != null
+        ? opts.energy
+        : prev?.energy != null
+          ? prev.energy
+          : opts.kind === "ai"
+            ? 0.45
+            : 0.2,
     peerIp: opts.peerIp || prev?.peerIp,
     lastSeen: now,
   };
   state.actors.set(opts.id, actor);
   touchWindow();
   if (isNew && opts.announce !== false) {
+    const localIp =
+      !actor.peerIp ||
+      actor.peerIp === "127.0.0.1" ||
+      actor.peerIp === "::1" ||
+      actor.peerIp === "localhost";
     const title =
-      opts.kind === "ai" ? "AI remoted in (MCP)" : "Someone remoted in (Web)";
-    const body = `${actor.name} · ${actor.label}${actor.peerIp ? ` · ${actor.peerIp}` : ""}`;
+      opts.kind === "ai" ? "AI connected" : "Someone signed in";
+    const body = `${actor.name}${actor.peerIp && !localIp ? ` · ${actor.peerIp}` : ""}`;
+    // Inbox history still records joins; desktop tray stays quiet for local browser.
     pushNotification(title, body, {
-      level: "warn",
+      level: opts.kind === "ai" ? "info" : "warn",
       category: "security",
       meta: { kind: opts.kind, id: opts.id, peerIp: actor.peerIp },
     });
-    desktopNotify(title, body, {
-      urgency: "critical",
-      dedupeKey: `presence-in:${opts.id}`,
-      dedupeMs: 20_000,
-    });
-    appendTrace("warn", `presence join ${opts.kind}:${actor.name}`, "presence");
+    if (!(opts.kind === "human" && localIp)) {
+      desktopNotify(title, body, {
+        urgency: "low",
+        replaceKey: `presence:${opts.id}`,
+        dedupeKey: `presence-in:${opts.id}`,
+        dedupeMs: 120_000,
+        expireMs: 4_000,
+      });
+    }
+    appendTrace("info", `presence join ${opts.kind}:${actor.name}`, "presence");
   }
   return actor;
 }
 
 export function expressPresence(
   id: string,
-  patch: { mood?: PresenceMood; bubble?: string; name?: string },
+  patch: {
+    mood?: PresenceMood;
+    bubble?: string;
+    name?: string;
+    form?: PresenceForm;
+    color?: string;
+    energy?: number;
+  },
 ): PresenceActor | null {
   const a = state.actors.get(id);
   if (!a) return null;
   if (patch.mood) a.mood = patch.mood;
   if (patch.bubble != null) a.bubble = String(patch.bubble).slice(0, 160);
   if (patch.name) a.name = String(patch.name).slice(0, 48);
+  if (patch.form) a.form = patch.form;
+  if (patch.color) a.color = patch.color;
+  if (patch.energy != null) a.energy = patch.energy;
   a.lastSeen = Date.now();
   state.actors.set(id, a);
   emitChange();
@@ -204,6 +315,7 @@ export function dropPresence(id: string): boolean {
   const a = state.actors.get(id);
   if (!a) return false;
   state.actors.delete(id);
+  desktopClose(`presence:${id}`);
   touchWindow();
   appendTrace("info", `presence leave ${a.kind}:${a.name}`, "presence");
   return true;
@@ -237,13 +349,7 @@ export function pushPresenceChat(msg: {
   state.chat.push(row);
   while (state.chat.length > CHAT_CAP) state.chat.shift();
   emitChange();
-  if (msg.from === "ai") {
-    desktopNotify(
-      msg.actorName || "AI",
-      row.text.slice(0, 120),
-      { urgency: "normal", dedupeKey: `chat:${row.id}`, dedupeMs: 0 },
-    );
-  }
+  // Chat lives in the Presence window — no desktop toast per message.
   return row;
 }
 

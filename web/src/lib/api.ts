@@ -211,6 +211,50 @@ export const api = {
       method: 'DELETE',
       body: JSON.stringify({ day }),
     }),
+  emailAlerts: () =>
+    request<{
+      enabled: boolean
+      provider: 'resend' | 'smtp'
+      to: string
+      from: string
+      smtpHost: string
+      smtpPort: number
+      smtpUser: string
+      smtpSecure: boolean
+      resendConfigured: boolean
+      resendHint: string | null
+      smtpPassConfigured: boolean
+      ready: boolean
+      updatedAt?: number
+      scopes: { suspiciousAuth: true; aiAwayAccess: true }
+      seat: {
+        away: boolean
+        reason: string
+        idleMs: number | null
+        locked: boolean
+        detail?: string
+      }
+    }>('/api/email-alerts'),
+  saveEmailAlerts: (body: {
+    enabled?: boolean
+    provider?: 'resend' | 'smtp'
+    to?: string
+    from?: string
+    smtpHost?: string
+    smtpPort?: number
+    smtpUser?: string
+    smtpSecure?: boolean
+    resendApiKey?: string
+    smtpPass?: string
+  }) =>
+    request<{ ok: boolean; ready: boolean; enabled: boolean }>('/api/email-alerts', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  testEmailAlerts: () =>
+    request<{ ok: boolean }>('/api/email-alerts/test', { method: 'POST', body: '{}' }),
+  clearEmailAlertSecrets: () =>
+    request<{ ok: boolean }>('/api/email-alerts/secrets', { method: 'DELETE' }),
   mcpServerStatus: () =>
     request<{
       enabled: boolean

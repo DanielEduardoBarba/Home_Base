@@ -184,7 +184,13 @@ app.use("/api/*", async (c, next) => {
     desktopNotify(
       "MCP blocked from Web GUI",
       `Token used on ${c.req.path} from ${ip}`,
-      { urgency: "critical", dedupeKey: `mcp-web:${ip}`, dedupeMs: 10_000 },
+      {
+        urgency: "normal",
+        replaceKey: `mcp-web:${ip}`,
+        dedupeKey: `mcp-web:${ip}`,
+        dedupeMs: 60_000,
+        expireMs: 5_000,
+      },
     );
     throw new HttpError(403, {
       code: "mcp_not_for_web",
@@ -410,11 +416,17 @@ app.post("/api/login", async (c) => {
         announce: true,
       });
     }
-    desktopNotify("Web GUI login", `Signed in from ${ip}`, {
-      urgency: "critical",
-      dedupeKey: `login:${ip}`,
-      dedupeMs: 15_000,
-    });
+    // Localhost login is expected (you at the laptop) — Presence window is enough.
+    // Remote login: one quiet toast (presence join may also fire; long dedupe collapses it).
+    if (!local) {
+      desktopNotify("Remote sign-in", ip, {
+        urgency: "low",
+        replaceKey: `login:${ip}`,
+        dedupeKey: `login:${ip}`,
+        dedupeMs: 180_000,
+        expireMs: 4_000,
+      });
+    }
   } catch {
     /* ignore */
   }
@@ -1201,6 +1213,55 @@ app.post("/api/mcp-server/tokens/revoke-all", async (c) => {
   const { revokeAllMcpTokens, mcpServerPublic } = await import("./mcp_server");
   const revoked = revokeAllMcpTokens();
   return c.json({ ok: true, revoked, ...mcpServerPublic() });
+});
+
+/** Human Settings only — never exposed as MCP tools. */
+app.get("/api/email-alerts", async (c) => {
+  await requireAuth(c);
+  const { emailAlertsPublic } = await import("./email_alerts");
+  const { getSeatAwayStatus } = await import("./seat_away");
+  return c.json({
+    ...emailAlertsPublic(),
+    seat: getSeatAwayStatus({ force: true }),
+  });
+});
+
+app.post("/api/email-alerts", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({
+      enabled: z.boolean().optional(),
+      provider: z.enum(["resend", "smtp"]).optional(),
+      to: z.string().optional(),
+      from: z.string().optional(),
+      smtpHost: z.string().optional(),
+      smtpPort: z.number().optional(),
+      smtpUser: z.string().optional(),
+      smtpSecure: z.boolean().optional(),
+      resendApiKey: z.string().optional(),
+      smtpPass: z.string().optional(),
+    })
+    .parse(await readJson(c));
+  const { saveEmailAlerts } = await import("./email_alerts");
+  try {
+    return c.json({ ok: true, ...saveEmailAlerts(body) });
+  } catch (e) {
+    throw new HttpError(400, e instanceof Error ? e.message : String(e));
+  }
+});
+
+app.post("/api/email-alerts/test", async (c) => {
+  await requireAuth(c);
+  const { sendEmailAlertTest } = await import("./email_alerts");
+  const result = await sendEmailAlertTest();
+  if (!result.ok) throw new HttpError(400, result.error || "send failed");
+  return c.json({ ok: true });
+});
+
+app.delete("/api/email-alerts/secrets", async (c) => {
+  await requireAuth(c);
+  const { clearEmailAlertSecrets } = await import("./email_alerts");
+  return c.json({ ok: true, ...clearEmailAlertSecrets() });
 });
 
 app.all("/mcp", async (c) => {

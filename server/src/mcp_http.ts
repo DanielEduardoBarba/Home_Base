@@ -77,6 +77,16 @@ function createOpsMcpServer(ctx: {
       } catch {
         /* ignore */
       }
+      void import("./email_alerts")
+        .then(({ maybeEmailAiAwayAccess }) => {
+          maybeEmailAiAwayAccess({
+            actorLabel: ctx.actorLabel,
+            actorId: ctx.actorId,
+            peerIp: ctx.peerIp,
+            action: `tool ${name}`,
+          });
+        })
+        .catch(() => undefined);
       return {
         content: [{ type: "text" as const, text: String(text) }],
       };
@@ -119,6 +129,16 @@ export async function handleMcpHttp(c: Context): Promise<Response> {
       peerIp: ip === "unknown" ? undefined : ip,
       announce: true,
     });
+    void import("./email_alerts")
+      .then(({ maybeEmailAiAwayAccess }) => {
+        maybeEmailAiAwayAccess({
+          actorLabel: actor.label || "MCP AI",
+          actorId: actor.id,
+          peerIp: ip === "unknown" ? undefined : ip,
+          action: "MCP session",
+        });
+      })
+      .catch(() => undefined);
   } catch (e) {
     if (e instanceof HttpError) {
       return new Response(JSON.stringify({ detail: e.detail }), {

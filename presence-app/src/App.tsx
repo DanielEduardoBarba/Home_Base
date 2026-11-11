@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { FocusLine, PeopleList } from "./components/Characters";
+import { CharacterStage } from "./components/CharacterStage";
+import { PeopleList } from "./components/Characters";
 import { ChatPane } from "./components/ChatPane";
 import { TitleBar } from "./components/TitleBar";
 import {
@@ -9,6 +10,8 @@ import {
   type PresenceChatMsg,
 } from "./lib/api";
 import { loadConfig, saveConfig, type PresenceConfig } from "./lib/config";
+
+type Face = "stage" | "details";
 
 export function App() {
   const [actors, setActors] = useState<PresenceActor[]>([]);
@@ -20,6 +23,7 @@ export function App() {
   const [draftToken, setDraftToken] = useState(cfg.token);
   const [booted, setBooted] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [face, setFace] = useState<Face>("stage");
 
   useEffect(() => {
     let cancelled = false;
@@ -79,14 +83,15 @@ export function App() {
     }
     if (selectedId && actors.some((a) => a.id === selectedId)) return;
     const alert = actors.find((a) => a.mood === "alert");
-    const human = actors.find((a) => a.kind === "human");
-    setSelectedId((alert || human || actors[0]).id);
+    const ai = actors.find((a) => a.kind === "ai");
+    setSelectedId((alert || ai || actors[0]).id);
   }, [actors, selectedId]);
 
-  const selected = useMemo(
-    () => actors.find((a) => a.id === selectedId) || null,
-    [actors, selectedId],
-  );
+  // Prefer showing an alerting AI on the stage front.
+  useEffect(() => {
+    const alert = actors.find((a) => a.mood === "alert" && a.kind === "ai");
+    if (alert && face === "stage") setSelectedId(alert.id);
+  }, [actors, face]);
 
   const humans = actors.filter((a) => a.kind === "human").length;
   const ais = actors.filter((a) => a.kind === "ai").length;
@@ -117,16 +122,15 @@ export function App() {
   return (
     <div className="flex h-full flex-col">
       <TitleBar subtitle={subtitle} live={connected && actors.length > 0} />
-      <main className="flex min-h-0 flex-1 flex-col gap-3 p-3">
+      <main className="flex min-h-0 flex-1 flex-col">
         {showSetup ? (
-          <section className="space-y-3 rounded-2xl bg-white/[0.04] p-4">
+          <section className="m-3 space-y-3 rounded-2xl bg-white/[0.04] p-4">
             <div>
               <h2 className="text-[14px] font-semibold text-white/95">
                 Connect
               </h2>
               <p className="mt-1 text-[12px] leading-relaxed text-white/45">
-                Usually filled in automatically. Only needed if you opened this
-                window yourself.
+                Usually filled in automatically.
               </p>
             </div>
             <label className="block text-[11px] text-white/45">
@@ -154,33 +158,60 @@ export function App() {
               Connect
             </button>
           </section>
-        ) : (
+        ) : face === "stage" ? (
           <>
-            <PeopleList
+            <CharacterStage
               actors={actors}
               selectedId={selectedId}
               onSelect={setSelectedId}
             />
-            <FocusLine actor={selected} />
+            <div className="flex items-center justify-center gap-4 px-3 pb-3 pt-1">
+              <button
+                type="button"
+                className="rounded-full bg-white/[0.08] px-4 py-2 text-[12px] font-semibold text-white/85 transition hover:bg-white/[0.12]"
+                onClick={() => setFace("details")}
+              >
+                Details
+              </button>
+              {error ? (
+                <span className="text-[11px] text-red-300/90">{error}</span>
+              ) : null}
+            </div>
+          </>
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col gap-2.5 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                className="rounded-full px-2.5 py-1.5 text-[12px] font-semibold text-white/70 hover:bg-white/[0.06] hover:text-white"
+                onClick={() => setFace("stage")}
+              >
+                ← Characters
+              </button>
+              <button
+                type="button"
+                className="text-[11px] text-white/30 hover:text-white/55"
+                onClick={() => setShowSetup(true)}
+              >
+                Settings
+              </button>
+            </div>
+            <div className="max-h-[38%] min-h-[100px] overflow-y-auto">
+              <PeopleList
+                actors={actors}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+              />
+            </div>
             <ChatPane
               messages={chat}
               onSent={() => void tick()}
               enabled={connected}
             />
             {error ? (
-              <p className="px-1 text-center text-[11px] text-red-300/90">
-                {error}
-              </p>
-            ) : (
-              <button
-                type="button"
-                className="self-center text-[11px] text-white/30 hover:text-white/55"
-                onClick={() => setShowSetup(true)}
-              >
-                Settings
-              </button>
-            )}
-          </>
+              <p className="text-center text-[11px] text-red-300/90">{error}</p>
+            ) : null}
+          </div>
         )}
       </main>
     </div>

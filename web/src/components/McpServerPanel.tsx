@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api } from '../lib/api'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 import { HoldButton } from './HoldButton'
@@ -73,6 +73,10 @@ export function McpServerPanel() {
 
   useSceneRefresh(load)
 
+  useEffect(() => {
+    void load()
+  }, [load])
+
   const run = async (key: string, fn: () => Promise<void>) => {
     setBusy(key)
     setMsg('')
@@ -93,6 +97,9 @@ export function McpServerPanel() {
 
   return (
     <div className="space-y-3">
+      {!status && !error ? (
+        <p className="text-xs text-mute px-0.5">Loading MCP server…</p>
+      ) : null}
       <section className="hb-surface p-3.5 space-y-2.5">
         <FeatureSwitch
           label="MCP Server"
@@ -182,7 +189,7 @@ export function McpServerPanel() {
           <button
             type="button"
             className="hb-btn text-sm shrink-0"
-            disabled={Boolean(busy) || !enabled}
+            disabled={Boolean(busy) || !status || !enabled}
             onClick={() =>
               void run('mint', async () => {
                 const r = await api.mintMcpToken(label.trim() || undefined)
