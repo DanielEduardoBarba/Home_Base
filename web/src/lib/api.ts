@@ -727,13 +727,72 @@ export const api = {
             cacheReadTokens: number
             cacheWriteTokens: number
             byModel: { model: string; count: number; chargedCents: number }[]
+            tokenBasedCount?: number
+            requestBasedCount?: number
+            byKind?: { kind: string; count: number }[]
           }
           range?: { startMs: number; endMs: number }
+          subscriptionCycleStartMs?: number
+          totalMembers?: number
         } | null
         dashboardUrl: string
         note: string
       }
+      ai: {
+        plan: {
+          family: 'x_subscription' | 'legacy_cursor' | 'request_based' | 'unknown'
+          familyLabel: string
+          tier: string | null
+          tierLabel: string | null
+          source: 'auto' | 'manual'
+          confidence: 'high' | 'medium' | 'low'
+          billingModel: 'usage_based' | 'request_based' | 'mixed' | 'unknown'
+          cycleStartMs?: number
+          dashboardUrl: string
+          manageUrl: string
+          note: string
+          signals: string[]
+        }
+        pools: {
+          cursorModels: Array<{
+            id: string
+            pool: string
+            chats: number
+            events: number
+            chargedCents: number
+          }>
+          otherModels: Array<{
+            id: string
+            pool: string
+            chats: number
+            events: number
+            chargedCents: number
+          }>
+          unknown: Array<{
+            id: string
+            pool: string
+            chats: number
+            events: number
+            chargedCents: number
+          }>
+        }
+        sources: {
+          homebaseChat: { chats: number; models: number; tokensCaptured: number }
+          mcp: {
+            tokenCount: number
+            tokens: Array<{ id: string; label: string; prefix: string; createdAt: number }>
+            toolCalls7d: number
+            actors7d: Array<{ label: string; calls: number }>
+          }
+        }
+        availableTiers: Array<{ family: string; tier: string; label: string }>
+      }
     }>(`/api/usage${opts?.refresh ? '?refresh=1' : ''}`),
+  setUsagePlan: (body: { family: string; tier?: string | null }) =>
+    request<Record<string, unknown>>('/api/usage/plan', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
   onboarding: () =>
     request<{
       complete: boolean

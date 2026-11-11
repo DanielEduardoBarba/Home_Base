@@ -15,6 +15,8 @@ import {
   cursorApiKeyConfigured,
   loadCursorApiKey,
 } from "./secrets_vault";
+import { listActivity } from "./activity_audit";
+import { listMcpTokens } from "./mcp_server";
 
 const USAGE_DIR = () => join(RUNTIME_DIR, "usage");
 const LEDGER_PATH = () => join(USAGE_DIR(), "ledger.jsonl");
@@ -105,12 +107,201 @@ export type CursorAccount = {
       cacheReadTokens: number;
       cacheWriteTokens: number;
       byModel: { model: string; count: number; chargedCents: number }[];
+      tokenBasedCount?: number;
+      requestBasedCount?: number;
+      byKind?: { kind: string; count: number }[];
     };
     range?: { startMs: number; endMs: number };
+    subscriptionCycleStartMs?: number;
+    totalMembers?: number;
   } | null;
   dashboardUrl: string;
   note: string;
 };
+
+/** Plan family: The X Subscription (new) vs legacy Cursor vs oldest request-based. */
+export type PlanFamily =
+  | "x_subscription"
+  | "legacy_cursor"
+  | "request_based"
+  | "unknown";
+
+export type PlanTier =
+  | "free"
+  | "plus"
+  | "premium"
+  | "super"
+  | "ultra"
+  | "hobby"
+  | "start"
+  | "pro"
+  | "pro_plus"
+  | "teams"
+  | "teams_standard"
+  | "teams_premium"
+  | "enterprise"
+  | "unknown";
+
+export type PlanInfo = {
+  family: PlanFamily;
+  familyLabel: string;
+  tier: PlanTier | null;
+  tierLabel: string | null;
+  /** How we know: auto = inferred; manual = user set in Settings. */
+  source: "auto" | "manual";
+  confidence: "high" | "medium" | "low";
+  billingModel: "usage_based" | "request_based" | "mixed" | "unknown";
+  cycleStartMs?: number;
+  dashboardUrl: string;
+  manageUrl: string;
+  note: string;
+  signals: string[];
+};
+
+export type ModelPoolId = "cursor_models" | "other_models" | "unknown";
+
+export type ModelPoolRow = {
+  id: string;
+  pool: ModelPoolId;
+  chats: number;
+  events: number;
+  chargedCents: number;
+};
+
+export type AiSources = {
+  homebaseChat: {
+    chats: number;
+    models: number;
+    tokensCaptured: number;
+  };
+  mcp: {
+    tokenCount: number;
+    tokens: Array<{ id: string; label: string; prefix: string; createdAt: number }>;
+    toolCalls7d: number;
+    actors7d: { label: string; calls: number }[];
+  };
+};
+
+export type AiUsageBundle = {
+  plan: PlanInfo;
+  pools: {
+    cursorModels: ModelPoolRow[];
+    otherModels: ModelPoolRow[];
+    unknown: ModelPoolRow[];
+  };
+  sources: AiSources;
+  availableTiers: Array<{ family: PlanFamily; tier: PlanTier; label: string }>;
+};
+
+const PLAN_OVERRIDE_PATH = () => join(USAGE_DIR(), "plan_override.json");
+
+export type PlanOverride = {
+  family: PlanFamily | "auto";
+  tier: PlanTier | null;
+  updatedAt: number;
+};
+
+const FAMILY_LABELS: Record<PlanFamily, string> = {
+  x_subscription: "The X Subscription",
+  legacy_cursor: "Legacy Cursor plan",
+  request_based: "Request-based (oldest legacy)",
+  unknown: "Unknown plan",
+};
+
+const TIER_LABELS: Record<PlanTier, string> = {
+  free: "Free",
+  plus: "Plus",
+  premium: "Premium",
+  super: "Super",
+  ultra: "Ultra",
+  hobby: "Hobby",
+  start: "Start",
+  pro: "Pro",
+  pro_plus: "Pro+",
+  teams: "Teams",
+  teams_standard: "Teams Standard",
+  teams_premium: "Teams Premium",
+  enterprise: "Enterprise",
+  unknown: "Unknown",
+};
+
+export const AVAILABLE_PLAN_TIERS: AiUsageBundle["availableTiers"] = [
+  { family: "x_subscription", tier: "free", label: "X · Free" },
+  { family: "x_subscription", tier: "plus", label: "X · Plus" },
+  { family: "x_subscription", tier: "premium", label: "X · Premium" },
+  { family: "x_subscription", tier: "super", label: "X · Super" },
+  { family: "x_subscription", tier: "ultra", label: "X · Ultra" },
+  { family: "x_subscription", tier: "teams", label: "X · Teams" },
+  { family: "legacy_cursor", tier: "hobby", label: "Legacy · Hobby" },
+  { family: "legacy_cursor", tier: "start", label: "Legacy · Start" },
+  { family: "legacy_cursor", tier: "pro", label: "Legacy · Pro" },
+  { family: "legacy_cursor", tier: "pro_plus", label: "Legacy · Pro+" },
+  { family: "legacy_cursor", tier: "ultra", label: "Legacy · Ultra" },
+  { family: "legacy_cursor", tier: "teams_standard", label: "Legacy · Teams Standard" },
+  { family: "legacy_cursor", tier: "teams_premium", label: "Legacy · Teams Premium" },
+  { family: "request_based", tier: "pro", label: "Request-based · Pro-era" },
+  { family: "request_based", tier: "unknown", label: "Request-based · Unknown tier" },
+];
+
+export function readPlanOverride(): PlanOverride | null {
+  try {
+    if (!existsSync(PLAN_OVERRIDE_PATH())) return null;
+    const raw = JSON.parse(readFileSync(PLAN_OVERRIDE_PATH(), "utf8")) as PlanOverride;
+    if (!raw || typeof raw !== "object") return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+export function writePlanOverride(input: {
+  family: PlanFamily | "auto";
+  tier?: PlanTier | null;
+}): PlanOverride {
+  ensureUsageDir();
+  const next: PlanOverride = {
+    family: input.family,
+    tier: input.family === "auto" ? null : input.tier ?? null,
+    updatedAt: Date.now(),
+  };
+  writeFileSync(PLAN_OVERRIDE_PATH(), `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  return next;
+}
+
+/** Classify model id into Cursor Models pool vs Other Models (third-party). */
+export function classifyModelPool(modelId: string): ModelPoolId {
+  const m = String(modelId || "").trim().toLowerCase();
+  if (!m || m === "unknown" || m === "auto") return "unknown";
+  if (
+    m.includes("grok") ||
+    m.includes("composer") ||
+    m.startsWith("cursor") ||
+    m.includes("cheetah")
+  ) {
+    return "cursor_models";
+  }
+  if (
+    m.includes("claude") ||
+    m.includes("sonnet") ||
+    m.includes("opus") ||
+    m.includes("haiku") ||
+    m.includes("gpt") ||
+    m.includes("o1") ||
+    m.includes("o3") ||
+    m.includes("o4") ||
+    m.includes("gemini") ||
+    m.includes("flash") ||
+    m.includes("deepseek") ||
+    m.includes("mistral") ||
+    m.includes("llama") ||
+    m.includes("qwen") ||
+    m.includes("anthropic") ||
+    m.includes("openai")
+  ) {
+    return "other_models";
+  }
+  return "unknown";
+}
 
 function ensureUsageDir(): void {
   ensureRuntimeDirs();
@@ -524,6 +715,7 @@ export async function fetchCursorAccount(opts?: {
       teamMemberSpend?: Array<Record<string, unknown>>;
       totalSpendCents?: number;
       totalMembers?: number;
+      subscriptionCycleStart?: number;
     };
     const members = (data.teamMemberSpend || []).map((m) => ({
       email: m.email ? String(m.email) : undefined,
@@ -542,6 +734,8 @@ export async function fetchCursorAccount(opts?: {
       overallSpendCents: overallSpendCents || spendCents,
       members: members.slice(0, 25),
       range: { startMs, endMs },
+      subscriptionCycleStartMs: num(data.subscriptionCycleStart) || undefined,
+      totalMembers: num(data.totalMembers) || members.length || undefined,
     };
 
     const eventsRes = await cursorFetch(apiKey, "/teams/filtered-usage-events", {
@@ -564,7 +758,10 @@ export async function fetchCursorAccount(opts?: {
       let outputTokens = 0;
       let cacheReadTokens = 0;
       let cacheWriteTokens = 0;
+      let tokenBasedCount = 0;
+      let requestBasedCount = 0;
       const byModel = new Map<string, { count: number; chargedCents: number }>();
+      const byKind = new Map<string, number>();
       for (const e of usageEvents) {
         const cents = num(e.chargedCents);
         chargedCents += cents;
@@ -578,6 +775,10 @@ export async function fetchCursorAccount(opts?: {
         cur.count += 1;
         cur.chargedCents += cents;
         byModel.set(model, cur);
+        if (e.isTokenBasedCall === true) tokenBasedCount += 1;
+        else if (e.isTokenBasedCall === false) requestBasedCount += 1;
+        const kind = String(e.kind || "").trim() || "unknown";
+        byKind.set(kind, (byKind.get(kind) || 0) + 1);
       }
       billing.events = {
         count: num(ev.totalUsageEventsCount) || usageEvents.length,
@@ -586,6 +787,12 @@ export async function fetchCursorAccount(opts?: {
         outputTokens,
         cacheReadTokens,
         cacheWriteTokens,
+        tokenBasedCount,
+        requestBasedCount,
+        byKind: [...byKind.entries()]
+          .map(([kind, count]) => ({ kind, count }))
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 8),
         byModel: [...byModel.entries()]
           .map(([model, v]) => ({ model, ...v }))
           .sort((a, b) => b.chargedCents - a.chargedCents)
@@ -616,9 +823,235 @@ export async function fetchCursorAccount(opts?: {
   return account;
 }
 
+function collectMcpSources(): AiSources["mcp"] {
+  let tokens: AiSources["mcp"]["tokens"] = [];
+  try {
+    tokens = listMcpTokens().map((t) => ({
+      id: t.id,
+      label: t.label,
+      prefix: t.prefix,
+      createdAt: t.createdAt,
+    }));
+  } catch {
+    tokens = [];
+  }
+
+  let toolCalls7d = 0;
+  const actorMap = new Map<string, number>();
+  const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  try {
+    for (let i = 0; i < 8; i++) {
+      const day = new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10);
+      const page = listActivity({ day, source: "mcp", limit: 5000 });
+      for (const ev of page.events) {
+        if (ev.at < since) continue;
+        if (ev.kind !== "tool") continue;
+        toolCalls7d += 1;
+        const label = String(ev.actor || "MCP").trim() || "MCP";
+        actorMap.set(label, (actorMap.get(label) || 0) + 1);
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+
+  return {
+    tokenCount: tokens.length,
+    tokens,
+    toolCalls7d,
+    actors7d: [...actorMap.entries()]
+      .map(([label, calls]) => ({ label, calls }))
+      .sort((a, b) => b.calls - a.calls)
+      .slice(0, 12),
+  };
+}
+
+function buildModelPools(
+  homebase: HomebaseUsage,
+  cursor: CursorAccount,
+): AiUsageBundle["pools"] {
+  const map = new Map<string, ModelPoolRow>();
+  const bump = (
+    id: string,
+    patch: { chats?: number; events?: number; chargedCents?: number },
+  ) => {
+    const key = String(id || "unknown").trim() || "unknown";
+    const cur = map.get(key) || {
+      id: key,
+      pool: classifyModelPool(key),
+      chats: 0,
+      events: 0,
+      chargedCents: 0,
+    };
+    cur.chats += patch.chats || 0;
+    cur.events += patch.events || 0;
+    cur.chargedCents += patch.chargedCents || 0;
+    cur.pool = classifyModelPool(key);
+    map.set(key, cur);
+  };
+  for (const m of homebase.models) bump(m.id, { chats: m.chats });
+  for (const m of cursor.billing?.events?.byModel || []) {
+    bump(m.model, { events: m.count, chargedCents: m.chargedCents });
+  }
+  const rows = [...map.values()].sort(
+    (a, b) => b.chats + b.events - (a.chats + a.events),
+  );
+  return {
+    cursorModels: rows.filter((r) => r.pool === "cursor_models"),
+    otherModels: rows.filter((r) => r.pool === "other_models"),
+    unknown: rows.filter((r) => r.pool === "unknown"),
+  };
+}
+
+function inferPlan(homebase: HomebaseUsage, cursor: CursorAccount): PlanInfo {
+  const override = readPlanOverride();
+  const signals: string[] = [];
+  const tokenBased = cursor.billing?.events?.tokenBasedCount || 0;
+  const requestBased = cursor.billing?.events?.requestBasedCount || 0;
+  const totalSignal = tokenBased + requestBased;
+
+  let billingModel: PlanInfo["billingModel"] = "unknown";
+  if (totalSignal > 0) {
+    if (tokenBased > 0 && requestBased > 0 && Math.min(tokenBased, requestBased) / totalSignal > 0.15) {
+      billingModel = "mixed";
+      signals.push(`Events mix token (${tokenBased}) + request (${requestBased}) billing`);
+    } else if (tokenBased >= requestBased) {
+      billingModel = "usage_based";
+      signals.push(`Admin usage events look usage-based (${tokenBased}/${totalSignal})`);
+    } else {
+      billingModel = "request_based";
+      signals.push(`Admin usage events look request-based (${requestBased}/${totalSignal})`);
+    }
+  } else if (cursor.billing?.available) {
+    signals.push("Team Admin API reachable, but no recent usage events to classify billing");
+  } else if (cursor.configured) {
+    signals.push("Personal API key — plan tier is not exposed; set it below or open the dashboard");
+  } else {
+    signals.push("No Cursor API key — local Home Base + MCP activity only");
+  }
+
+  const pools = buildModelPools(homebase, cursor);
+  if (pools.cursorModels.length) {
+    signals.push(
+      `Cursor Models seen: ${pools.cursorModels
+        .slice(0, 3)
+        .map((m) => m.id)
+        .join(", ")}`,
+    );
+  }
+  if (pools.otherModels.length) {
+    signals.push(
+      `Other Models seen: ${pools.otherModels
+        .slice(0, 3)
+        .map((m) => m.id)
+        .join(", ")}`,
+    );
+  }
+
+  let family: PlanFamily = "unknown";
+  let confidence: PlanInfo["confidence"] = "low";
+  let tier: PlanTier | null = null;
+
+  if (billingModel === "request_based") {
+    family = "request_based";
+    confidence = totalSignal >= 5 ? "high" : "medium";
+  } else if (billingModel === "usage_based" || billingModel === "mixed") {
+    // Usage-based spans both The X Subscription and newer legacy Pro/Pro+/Ultra.
+    // Prefer Other Models pool activity as a soft legacy signal (X does not include that pool).
+    if (pools.otherModels.some((m) => m.events > 0 || m.chats > 0) && pools.cursorModels.length) {
+      family = "legacy_cursor";
+      confidence = "medium";
+      signals.push("Both Cursor + Other model pools in use → likely legacy Cursor plan");
+    } else if (pools.cursorModels.length && !pools.otherModels.length) {
+      family = "x_subscription";
+      confidence = "low";
+      signals.push("Mostly Cursor Models → could be The X Subscription (confirm in Settings)");
+    } else {
+      family = "legacy_cursor";
+      confidence = "low";
+      signals.push("Usage-based billing detected; family ambiguous without dashboard");
+    }
+  }
+
+  if (cursor.billing?.totalMembers && cursor.billing.totalMembers > 1) {
+    tier = family === "x_subscription" ? "teams" : "teams_standard";
+    signals.push(`Team has ${cursor.billing.totalMembers} members`);
+    if (confidence === "low") confidence = "medium";
+  }
+
+  if (override && override.family !== "auto") {
+    family = override.family;
+    tier = override.tier;
+    confidence = "high";
+    signals.unshift("Plan set manually in Home Base Settings");
+  } else if (override?.tier) {
+    tier = override.tier;
+    signals.unshift("Tier set manually in Home Base Settings");
+    confidence = confidence === "low" ? "medium" : confidence;
+  }
+
+  const dashboardUrl =
+    family === "x_subscription"
+      ? "https://grok.com/dashboard"
+      : "https://cursor.com/dashboard";
+  const manageUrl =
+    family === "x_subscription"
+      ? "https://grok.com/dashboard/billing"
+      : family === "legacy_cursor"
+        ? "https://cursor.com/dashboard/spending"
+        : "https://cursor.com/dashboard/billing";
+
+  let note =
+    "Cursor does not expose personal plan tier on the Chat API key. We infer billing family from Admin usage events when available; set your plan below for an exact badge.";
+  if (override && override.family !== "auto") {
+    note = "Showing the plan you set in Home Base. Clear to auto-detect again.";
+  } else if (family === "x_subscription") {
+    note =
+      "The X Subscription uses one weekly Cursor-models pool (shared with Grok). Manage billing on grok.com.";
+  } else if (family === "legacy_cursor") {
+    note =
+      "Legacy Cursor plans use monthly Cursor Models + Other Models pools. Spending lives on cursor.com/dashboard.";
+  } else if (family === "request_based") {
+    note =
+      "Oldest request-based pricing. Migrates to usage-based at renewal — see Cursor docs.";
+  }
+
+  return {
+    family,
+    familyLabel: FAMILY_LABELS[family],
+    tier,
+    tierLabel: tier ? TIER_LABELS[tier] : null,
+    source: override && override.family !== "auto" ? "manual" : "auto",
+    confidence,
+    billingModel,
+    cycleStartMs: cursor.billing?.subscriptionCycleStartMs,
+    dashboardUrl,
+    manageUrl,
+    note,
+    signals: signals.slice(0, 8),
+  };
+}
+
+function buildAiBundle(homebase: HomebaseUsage, cursor: CursorAccount): AiUsageBundle {
+  return {
+    plan: inferPlan(homebase, cursor),
+    pools: buildModelPools(homebase, cursor),
+    sources: {
+      homebaseChat: {
+        chats: homebase.chats,
+        models: homebase.models.length,
+        tokensCaptured: homebase.tokens.total,
+      },
+      mcp: collectMcpSources(),
+    },
+    availableTiers: AVAILABLE_PLAN_TIERS,
+  };
+}
+
 export async function usageOverview(opts?: { force?: boolean }): Promise<{
   homebase: HomebaseUsage;
   cursor: CursorAccount;
+  ai: AiUsageBundle;
   projects: number;
   generatedAt: number;
 }> {
@@ -629,6 +1062,7 @@ export async function usageOverview(opts?: { force?: boolean }): Promise<{
   return {
     homebase,
     cursor,
+    ai: buildAiBundle(homebase, cursor),
     projects: loadProjects().size,
     generatedAt: Date.now(),
   };

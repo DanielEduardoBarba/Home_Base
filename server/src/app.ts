@@ -98,7 +98,7 @@ import { clientIp, jsonError, readJson, requireAuth } from "./http";
 import { readDailyLogs } from "./logging";
 import { clearRead, listNotifications, markRead } from "./notifications";
 import { projectPublic, runAction, stopProject, tailLogs } from "./process";
-import { usageOverview } from "./usage_stats";
+import { usageOverview, writePlanOverride } from "./usage_stats";
 import {
   interruptSession,
   killSession,
@@ -614,6 +614,47 @@ app.get("/api/usage", async (c) => {
   await requireAuth(c);
   const force = c.req.query("refresh") === "1";
   return c.json(await usageOverview({ force }));
+});
+
+app.put("/api/usage/plan", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({
+      family: z
+        .enum([
+          "auto",
+          "x_subscription",
+          "legacy_cursor",
+          "request_based",
+          "unknown",
+        ])
+        .default("auto"),
+      tier: z
+        .enum([
+          "free",
+          "plus",
+          "premium",
+          "super",
+          "ultra",
+          "hobby",
+          "start",
+          "pro",
+          "pro_plus",
+          "teams",
+          "teams_standard",
+          "teams_premium",
+          "enterprise",
+          "unknown",
+        ])
+        .nullable()
+        .optional(),
+    })
+    .parse(await c.req.json());
+  writePlanOverride({
+    family: body.family,
+    tier: body.family === "auto" ? null : body.tier ?? null,
+  });
+  return c.json(await usageOverview({ force: true }));
 });
 
 app.get("/api/onboarding", async (c) => {

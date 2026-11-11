@@ -168,14 +168,17 @@ Home Base · build.sh
 USAGE
   ./build.sh --onboarding         Recommended: setup + seed Home Base project + deploy (Linux)
                                   On Mac: setup + seed, then use --run
-  ./build.sh --setup              Install Bun server + web (Next) deps, JWT secret, seed project
+  ./build.sh --setup              Install Bun server + web (Next) + presence-app deps,
+                                  JWT secret, seed project; build Tauri presence binary when possible
   ./build.sh --clean              Remove Python/Nuitka leftovers, .runtime, build + setup caches
   ./build.sh --run                Dev: Bun API + Next (hotkeys r/a/w/q/h)
   ./build.sh --add-project --preset NAME --path /abs/or/rel/path
   ./build.sh --add-project --path /abs/or/rel/path [--id ID] [--name NAME]
-  ./build.sh --bin                Bun compile → dist/homebase
+  ./build.sh --bin                Bun compile → dist/homebase (+ presence binary when possible)
+  ./scripts/build-presence.sh [--install]
+                                  Tauri presence mini-app → dist/homebase-presence (also run from --setup/--bin/--deploy)
   ./build.sh --service            Install homebased.service (Linux only)
-  ./build.sh --deploy             --bin → install + systemd (Linux only)
+  ./build.sh --deploy             --bin (incl. presence) → install + systemd (Linux only)
   ./build.sh --deploy --from-detached
                                   Internal: already scheduled outside homebased cgroup
   ./build.sh -h|--help
@@ -193,10 +196,12 @@ Projects live in config/projects.json (gitignored). Presets are templates
 Deployed layout:
   /usr/share/homebased/homebase       active binary (root:root 755)
   /usr/share/homebased/homebase.bak   last known-good
+  /usr/share/homebased/homebase-presence  optional Tauri presence window
   /usr/bin/homebase                   wrapper (self-test → exec, else backup)
   homebased.service                   systemd unit → /usr/bin/homebase
   HOMEBASE_HOME=/var/lib/homebased    .env / config / runtime (root:root)
   dist/homebase                       always reclaimed to the workspace user
+  dist/homebase-presence              Tauri presence (when Rust/webkit deps available)
 Safe as you (sudo) or root — ownership is normalized each deploy.
 Production binds HOMEBASE_PORT from .env (default ${DEFAULT_PROD_PORT}).
 EOF
@@ -658,6 +663,55 @@ cmd_clean() {
   fi
 }
 
+# Presence mini-app (Tauri): JS deps always; native binary when toolchain allows.
+presence_linux_deps_ok() {
+  command -v pkg-config >/dev/null 2>&1 || return 1
+  pkg-config --exists dbus-1 2>/dev/null || return 1
+  pkg-config --exists webkit2gtk-4.1 2>/dev/null \
+    || pkg-config --exists webkit2gtk-4.0 2>/dev/null \
+    || return 1
+  return 0
+}
+
+setup_presence_app() {
+  hb_step "Presence mini-app (Tauri)"
+  if [[ ! -d "$ROOT/presence-app" ]]; then
+    hb_warn "presence-app/ missing — skipped"
+    return 0
+  fi
+  if ! ensure_bun_on_path; then
+    hb_warn "bun missing — cannot install presence-app deps"
+    return 0
+  fi
+  echo "    bun install (presence-app)"
+  (cd "$ROOT/presence-app" && bun install) || {
+    hb_warn "presence-app bun install failed — Chromium fallback still works"
+    return 0
+  }
+  hb_ok "presence-app JS deps ready"
+
+  if [[ "$IS_LINUX" != true ]]; then
+    hb_dim "Tauri binary build is Linux-focused — use Chromium fallback or build later"
+    return 0
+  fi
+  if ! command -v cargo >/dev/null 2>&1 || ! command -v rustc >/dev/null 2>&1; then
+    hb_dim "rustc/cargo not found — skip Tauri build (./scripts/build-presence.sh later)"
+    return 0
+  fi
+  if ! presence_linux_deps_ok; then
+    hb_dim "Tauri system libs missing — install then re-run setup:"
+    hb_dim "  sudo apt install -y libdbus-1-dev pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf"
+    return 0
+  fi
+
+  echo "    building homebase-presence (Tauri)"
+  if bash "$ROOT/scripts/build-presence.sh"; then
+    hb_ok "presence binary → dist/homebase-presence"
+  else
+    hb_warn "Tauri build failed — Chromium --app fallback remains available"
+  fi
+}
+
 cmd_setup() {
   local quiet_banner="${1:-}"
   [[ "$quiet_banner" != "nobanner" ]] && hb_banner "Setup"
@@ -678,6 +732,8 @@ cmd_setup() {
     fi
   fi
   hb_ok "web ready"
+
+  setup_presence_app
 
   mkdir -p config .runtime/logs dist
   if [[ ! -f config/projects.json ]]; then
@@ -1234,6 +1290,8 @@ cmd_bin_bun() {
 
 cmd_bin() {
   cmd_bin_bun
+  # Best-effort: same presence build as --setup so --deploy ships the window binary.
+  setup_presence_app || true
 }
 
 # Ensure HOMEBASE_PORT exists in prod .env without overwriting a user's value.
@@ -1561,6 +1619,20 @@ install_binary() {
     run_priv mkdir -p "$INSTALL_SHARE/config"
     run_priv rm -rf "$INSTALL_SHARE/config/presets"
     run_priv cp -a "$ROOT/config/presets" "$INSTALL_SHARE/config/presets"
+  fi
+
+  # Tauri presence window (built in cmd_bin / --setup when Rust + webkit deps exist)
+  if [[ -f "$BIN_OUT_DIR/homebase-presence" ]]; then
+    echo "    installing presence → $INSTALL_SHARE/homebase-presence"
+    run_priv cp -f "$BIN_OUT_DIR/homebase-presence" "$INSTALL_SHARE/homebase-presence"
+    run_priv chmod 755 "$INSTALL_SHARE/homebase-presence"
+  elif [[ -f "$ROOT/presence-app/src-tauri/target/release/homebase-presence" ]]; then
+    echo "    installing presence from cargo target → $INSTALL_SHARE/homebase-presence"
+    run_priv cp -f "$ROOT/presence-app/src-tauri/target/release/homebase-presence" \
+      "$INSTALL_SHARE/homebase-presence"
+    run_priv chmod 755 "$INSTALL_SHARE/homebase-presence"
+  else
+    echo "    presence binary skipped (no dist/homebase-presence — Chromium fallback)"
   fi
 
   # Install / refresh wrapper at /usr/bin/homebase; drop old /usr/bin/homebased name

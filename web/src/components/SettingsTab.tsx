@@ -408,10 +408,10 @@ export function SettingsTab({
           },
           {
             id: 'usage',
-            title: 'Usage & billing',
+            title: 'AI usage',
             hint: cursorConfigured
-              ? 'Account · messages · tokens · thinking'
-              : 'Local activity · add key for account',
+              ? 'Plan · Cursor/Other models · MCP / Grok'
+              : 'Local + MCP · add key for Cursor plan',
           },
           { id: 'setup', title: 'Setup', hint: 'Replay first-run wizard' },
         ],
@@ -1112,7 +1112,7 @@ export function SettingsTab({
               className="hb-btn hb-btn-ghost w-full !min-h-10 text-sm"
               onClick={() => setScene('usage')}
             >
-              Usage &amp; billing →
+              AI usage →
             </button>
           </section>
         </SceneShell>
@@ -1125,8 +1125,8 @@ export function SettingsTab({
     return (
       <>
         <SceneShell
-          title="Usage & billing"
-          hint="Cursor account when the API key allows it, plus Home Base chat activity on this server."
+          title="AI usage"
+          hint="Plan (legacy vs The X Subscription), Cursor / Other models, MCP Grok bots, and local Chat activity."
           onBack={goHub}
         >
           <UsageBillingPanel />

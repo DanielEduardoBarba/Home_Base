@@ -52,7 +52,7 @@ function Stat({
   )
 }
 
-function BarRow({ label, value, max }: { label: string; value: number; max: number }) {
+function BarRow({ label, value, max, right }: { label: string; value: number; max: number; right?: string }) {
   const pct = max > 0 ? Math.min(100, Math.round((value / max) * 100)) : 0
   return (
     <div className="space-y-1">
@@ -60,7 +60,9 @@ function BarRow({ label, value, max }: { label: string; value: number; max: numb
         <span className="truncate text-mute font-mono" title={label}>
           {label}
         </span>
-        <span className="tabular-nums shrink-0">{fmtInt(value)}</span>
+        <span className="tabular-nums shrink-0 text-mute">
+          {right || fmtInt(value)}
+        </span>
       </div>
       <div className="h-1.5 rounded-full bg-line overflow-hidden">
         <div className="h-full rounded-full bg-accent" style={{ width: `${pct}%` }} />
@@ -69,16 +71,64 @@ function BarRow({ label, value, max }: { label: string; value: number; max: numb
   )
 }
 
+function ModelPoolList({
+  title,
+  hint,
+  rows,
+}: {
+  title: string
+  hint: string
+  rows: UsagePayload['ai']['pools']['cursorModels']
+}) {
+  const max = Math.max(1, ...rows.map((r) => r.chats + r.events))
+  return (
+    <div className="space-y-2">
+      <div>
+        <p className="hb-label mb-0">{title}</p>
+        <p className="text-[11px] text-mute leading-snug">{hint}</p>
+      </div>
+      {rows.length === 0 ? (
+        <p className="text-xs text-mute">None seen yet.</p>
+      ) : (
+        rows.slice(0, 8).map((m) => (
+          <BarRow
+            key={m.id}
+            label={m.id}
+            value={m.chats + m.events}
+            max={max}
+            right={
+              m.chargedCents
+                ? `${fmtInt(m.chats + m.events)} · ${fmtCents(m.chargedCents)}`
+                : fmtInt(m.chats + m.events)
+            }
+          />
+        ))
+      )}
+    </div>
+  )
+}
+
 export function UsageBillingPanel() {
   const [data, setData] = useState<UsagePayload | null>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [planBusy, setPlanBusy] = useState(false)
+  const [planPick, setPlanPick] = useState('auto')
 
   const load = useCallback(async (refresh = false) => {
     setBusy(true)
     setError('')
     try {
-      setData(await api.usage({ refresh }))
+      const next = await api.usage({ refresh })
+      setData(next)
+      if (next.ai?.plan?.source === 'manual' && next.ai.plan.family !== 'unknown') {
+        const match = next.ai.availableTiers.find(
+          (t) => t.family === next.ai.plan.family && t.tier === next.ai.plan.tier,
+        )
+        setPlanPick(match ? `${match.family}:${match.tier}` : 'auto')
+      } else {
+        setPlanPick('auto')
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -92,12 +142,42 @@ export function UsageBillingPanel() {
 
   useSceneRefresh(() => void load(false))
 
+  async function savePlan(value: string) {
+    setPlanPick(value)
+    setPlanBusy(true)
+    setError('')
+    try {
+      if (value === 'auto') {
+        await api.setUsagePlan({ family: 'auto', tier: null })
+      } else {
+        const [family, tier] = value.split(':')
+        await api.setUsagePlan({ family, tier: tier || null })
+      }
+      await load(true)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setPlanBusy(false)
+    }
+  }
+
   const hb = data?.homebase
   const cur = data?.cursor
+  const ai = data?.ai
+  const plan = ai?.plan
   const dayMax = Math.max(
     1,
     ...(hb?.byDay || []).map((d) => d.userMessages + d.assistantMessages),
   )
+
+  const billingLabel =
+    plan?.billingModel === 'usage_based'
+      ? 'Usage-based'
+      : plan?.billingModel === 'request_based'
+        ? 'Request-based'
+        : plan?.billingModel === 'mixed'
+          ? 'Mixed billing'
+          : 'Billing unknown'
 
   return (
     <div className="space-y-4">
@@ -112,7 +192,7 @@ export function UsageBillingPanel() {
         <button
           type="button"
           className="hb-btn hb-btn-ghost !min-h-9 !px-3 text-xs"
-          disabled={busy}
+          disabled={busy || planBusy}
           onClick={() => void load(true)}
         >
           {busy ? '…' : 'Refresh'}
@@ -120,6 +200,151 @@ export function UsageBillingPanel() {
       </div>
 
       {error ? <p className="text-sm text-danger">{error}</p> : null}
+
+      <section className="hb-surface p-3.5 space-y-3">
+        <div>
+          <h2 className="text-sm font-semibold">Your plan</h2>
+          <p className="text-xs text-mute mt-0.5 leading-relaxed">
+            Legacy Cursor (Pro / Pro+ / Ultra) vs The X Subscription (Plus / Premium / Super /
+            Ultra). Cursor keys rarely expose tier — confirm it here.
+          </p>
+        </div>
+
+        {plan ? (
+          <>
+            <div className="rounded-[var(--radius-control)] border border-line bg-panel-2 p-3 space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-md border border-line bg-panel px-2 py-1 text-xs font-semibold">
+                  {plan.familyLabel}
+                </span>
+                <span className="rounded-md border border-accent/30 bg-accent/10 px-2 py-1 text-xs font-semibold text-accent">
+                  {plan.tierLabel || 'Tier unset'}
+                </span>
+                <span className="text-[11px] text-mute">
+                  {billingLabel}
+                  {' · '}
+                  {plan.source === 'manual' ? 'manual' : `auto · ${plan.confidence}`}
+                </span>
+              </div>
+              <p className="text-xs text-mute leading-relaxed">{plan.note}</p>
+              {!!plan.signals?.length && (
+                <ul className="space-y-1 text-[11px] text-mute">
+                  {plan.signals.slice(0, 4).map((s) => (
+                    <li key={s}>· {s}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <label className="block text-xs text-mute">
+              Set plan (optional)
+              <select
+                className="mt-1 w-full rounded-[var(--radius-control)] border border-line bg-panel-2 px-3 py-2 text-sm text-inherit"
+                value={planPick}
+                disabled={planBusy}
+                onChange={(e) => void savePlan(e.target.value)}
+              >
+                <option value="auto">Auto-detect</option>
+                {(ai?.availableTiers || []).map((t) => (
+                  <option key={`${t.family}:${t.tier}`} value={`${t.family}:${t.tier}`}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <a
+                href={plan.dashboardUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="hb-btn hb-btn-ghost w-full !min-h-10 text-sm no-underline text-center"
+              >
+                Open usage dashboard
+              </a>
+              <a
+                href={plan.manageUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="hb-btn hb-btn-ghost w-full !min-h-10 text-sm no-underline text-center"
+              >
+                Manage billing
+              </a>
+            </div>
+          </>
+        ) : (
+          <p className="text-sm text-mute">{busy ? 'Loading…' : 'No plan data yet.'}</p>
+        )}
+      </section>
+
+      <section className="hb-surface p-3.5 space-y-3">
+        <div>
+          <h2 className="text-sm font-semibold">AI sources</h2>
+          <p className="text-xs text-mute mt-0.5 leading-relaxed">
+            Cursor Chat on this server, plus MCP clients (Grok bots and others) over VPN.
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <Stat
+            label="Home Base chats"
+            value={fmtInt(ai?.sources.homebaseChat.chats || 0)}
+            hint={`${fmtInt(ai?.sources.homebaseChat.models || 0)} models · ${fmtTokens(ai?.sources.homebaseChat.tokensCaptured || 0)} tok`}
+          />
+          <Stat
+            label="MCP tool calls (7d)"
+            value={fmtInt(ai?.sources.mcp.toolCalls7d || 0)}
+            hint={`${fmtInt(ai?.sources.mcp.tokenCount || 0)} tokens minted`}
+          />
+        </div>
+        {!!ai?.sources.mcp.actors7d?.length && (
+          <div className="space-y-2">
+            <p className="hb-label mb-0">MCP / Grok bots (7d)</p>
+            {ai.sources.mcp.actors7d.map((a) => (
+              <div key={a.label} className="flex items-center justify-between gap-2 text-xs">
+                <span className="truncate">{a.label}</span>
+                <span className="tabular-nums text-mute shrink-0">{fmtInt(a.calls)} calls</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {!!ai?.sources.mcp.tokens?.length && (
+          <div className="space-y-1.5">
+            <p className="hb-label mb-0">Minted MCP tokens</p>
+            {ai.sources.mcp.tokens.map((t) => (
+              <div key={t.id} className="flex items-center justify-between gap-2 text-xs">
+                <span className="truncate">{t.label}</span>
+                <span className="font-mono text-mute shrink-0">{t.prefix}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="hb-surface p-3.5 space-y-4">
+        <div>
+          <h2 className="text-sm font-semibold">Models</h2>
+          <p className="text-xs text-mute mt-0.5 leading-relaxed">
+            Split into Cursor Models (Grok / Composer) and Other Models (Claude, GPT, Gemini…).
+          </p>
+        </div>
+        <ModelPoolList
+          title="Cursor Models"
+          hint="Included pool on legacy plans; weekly shared pool on The X Subscription."
+          rows={ai?.pools.cursorModels || []}
+        />
+        <ModelPoolList
+          title="Other Models"
+          hint="Third-party. Included on legacy Pro+; prepaid credit on X Premium+."
+          rows={ai?.pools.otherModels || []}
+        />
+        {!!ai?.pools.unknown?.length && (
+          <ModelPoolList
+            title="Unclassified"
+            hint="Auto / unknown ids from Chat history."
+            rows={ai.pools.unknown}
+          />
+        )}
+      </section>
 
       <section className="hb-surface p-3.5 space-y-3">
         <div>
@@ -153,12 +378,6 @@ export function UsageBillingPanel() {
                   <span className="font-mono text-xs text-mute"> · {cur.keyHint}</span>
                 ) : null}
               </p>
-              {cur.me?.createdAt ? (
-                <p>
-                  <span className="text-mute">Key created</span> ·{' '}
-                  {new Date(cur.me.createdAt).toLocaleDateString()}
-                </p>
-              ) : null}
               {cur.meError ? (
                 <p className="text-amber text-xs">Could not load identity: {cur.meError}</p>
               ) : null}
@@ -190,40 +409,13 @@ export function UsageBillingPanel() {
                     />
                   </div>
                 ) : null}
-                {!!cur.billing.events?.byModel?.length && (
-                  <div className="space-y-2 pt-1">
-                    <p className="hb-label mb-0">Models (sample)</p>
-                    {cur.billing.events.byModel.slice(0, 6).map((m) => (
-                      <div
-                        key={m.model}
-                        className="flex items-center justify-between gap-2 text-xs"
-                      >
-                        <span className="font-mono truncate">{m.model}</span>
-                        <span className="text-mute shrink-0 tabular-nums">
-                          {fmtInt(m.count)} · {fmtCents(m.chargedCents)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
               </div>
             ) : (
               <p className="text-xs text-mute leading-relaxed">
-                {cur.billing?.error
-                  ? `Billing API: ${cur.billing.error}. `
-                  : ''}
+                {cur.billing?.error ? `Billing API: ${cur.billing.error}. ` : ''}
                 {cur.note}
               </p>
             )}
-
-            <a
-              href={cur.dashboardUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="hb-btn hb-btn-ghost w-full !min-h-10 text-sm no-underline text-center"
-            >
-              Open Cursor dashboard
-            </a>
           </div>
         )}
       </section>
@@ -253,12 +445,6 @@ export function UsageBillingPanel() {
                 value={fmtInt(hb.toolCalls)}
                 hint={hb.toolErrors ? `${fmtInt(hb.toolErrors)} errors` : 'ok'}
               />
-              <Stat label="Chats" value={fmtInt(hb.chats)} hint={`${fmtInt(hb.projectsWithChats)} apps`} />
-              <Stat
-                label="File edits"
-                value={fmtInt(hb.fileEdits)}
-                hint={hb.imagesAttached ? `${fmtInt(hb.imagesAttached)} images` : undefined}
-              />
             </div>
 
             <div className="grid grid-cols-2 gap-2">
@@ -277,26 +463,6 @@ export function UsageBillingPanel() {
                 }
               />
             </div>
-            {hb.tokens.ledgerOnly && hb.tokens.events === 0 ? (
-              <p className="text-[11px] text-mute leading-relaxed">
-                Token totals fill in as Chat runs complete (SDK usage events). Older history still
-                counts messages and thinking time.
-              </p>
-            ) : null}
-
-            {!!hb.models.length && (
-              <div className="space-y-2">
-                <p className="hb-label mb-0">Models used</p>
-                {hb.models.slice(0, 8).map((m) => (
-                  <BarRow
-                    key={m.id}
-                    label={m.id}
-                    value={m.chats}
-                    max={hb.models[0]?.chats || 1}
-                  />
-                ))}
-              </div>
-            )}
 
             {!!hb.byDay.length && (
               <div className="space-y-2">

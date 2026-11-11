@@ -108,7 +108,7 @@ export function HomeDashboard({
           >
             <span className="hb-home-card-label">Settings</span>
             <span className="hb-home-card-desc">
-              Theme, PIN, sudo vault, Cursor key, VPN, tunnel, storage, and legal — focused scenes.
+              Theme, PIN, Cursor key, AI usage (plan + models + MCP), VPN, tunnel, storage, legal.
             </span>
             <span className="hb-home-card-go">Open →</span>
           </button>

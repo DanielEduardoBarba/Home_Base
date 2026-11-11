@@ -38,7 +38,7 @@ Apps · **Work** · Chat · Shell · Files · **View** · Logs. **Settings** is 
 - **Chat** — full-page agent; same engine as the Work dock; can jump into Work to show Apps/Shell/Files.
 - **Shell** — standalone PTY + session attach. Under systemd root, Shell/Run/Expo PTYs `setpriv` to the seat user and load that user’s login+interactive env (nvm/pnpm/cargo) so they match a native laptop terminal.
 - **View** — JWT-gated live laptop screen (`/ws/view`) with pointer/keyboard; Bun seat-user `--view-worker` (libX11 `XGetImage` + XTest via `bun:ffi`). Root systemd uses setpriv/runuser to the seat owner (cannot open the user display as root). Explicit Connect/Disconnect; maximize mode; adaptive JPEG. Capture runs only while connected.
-- Alerts bell in the thin top status bar opens a top→bottom near-full inbox; History is a right drawer. Chat supports English speech→text; Cursor done pings toast/sound and optional browser notifications. Home → **Settings** is a hub of grouped rows that drill into focused sub-scenes (Appearance, PIN, Sudo vault, Cursor key, WireGuard / Cloudflare / MCP Server, Storage, About/legal, etc.).
+- Alerts bell in the thin top status bar opens a top→bottom near-full inbox; History is a right drawer. Chat supports English speech→text; Cursor done pings toast/sound and optional browser notifications. Home → **Settings** is a hub of grouped rows that drill into focused sub-scenes (Appearance, PIN, Sudo vault, Cursor key, **AI usage** — plan family/tier, Cursor vs Other models, MCP/Grok bots — WireGuard / Cloudflare / MCP Server, Storage, About/legal, etc.).
 
 ### Home Agent
 

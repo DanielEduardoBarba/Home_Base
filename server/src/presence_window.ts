@@ -1,9 +1,11 @@
 /**
- * Seat-user Chromium/Chrome/Brave --app window for remote presence.
- * Shows when humans/AIs are remoted in; closes when the registry is empty.
+ * Seat-user native presence window (Tauri mini-app).
+ * Falls back to Chromium --app if the Tauri binary is not installed yet.
  */
+import { existsSync } from "node:fs";
 import { spawn, type Subprocess } from "node:child_process";
-import { bindHost, bindPort } from "./config";
+import { join } from "node:path";
+import { BUNDLE_ROOT, bindHost, bindPort } from "./config";
 import { detectSeatUser } from "./shell_env";
 import { appendTrace } from "./trace";
 import { discoverX11Env } from "./view";
@@ -17,22 +19,7 @@ let proc: Subprocess | null = null;
 let starting = false;
 let syncTimer: ReturnType<typeof setTimeout> | null = null;
 
-function findBrowser(): string | null {
-  for (const name of [
-    "google-chrome-stable",
-    "google-chrome",
-    "chromium-browser",
-    "chromium",
-    "brave-browser",
-    "microsoft-edge",
-  ]) {
-    const p = Bun.which(name);
-    if (p) return p;
-  }
-  return null;
-}
-
-function presenceUrl(): string {
+function presenceBaseUrl(): string {
   const port = bindPort();
   const host = bindHost();
   const loop =
@@ -41,8 +28,87 @@ function presenceUrl(): string {
       : host === "::1"
         ? "[::1]"
         : host;
+  return `http://${loop}:${port}`;
+}
+
+function presenceUrl(): string {
   const k = encodeURIComponent(presenceUiToken());
-  return `http://${loop}:${port}/presence?k=${k}`;
+  return `${presenceBaseUrl()}/presence?k=${k}`;
+}
+
+/** Prefer built Tauri binary locations. */
+function findPresenceBinary(): string | null {
+  const env = (process.env.HOMEBASE_PRESENCE_BIN || "").trim();
+  if (env && existsSync(env)) return env;
+  const candidates = [
+    join(BUNDLE_ROOT, "presence-app", "src-tauri", "target", "release", "homebase-presence"),
+    join(BUNDLE_ROOT, "dist", "homebase-presence"),
+    "/usr/share/homebased/homebase-presence",
+    "/usr/local/bin/homebase-presence",
+    join(
+      process.env.HOME || "",
+      ".local/share/homebase/homebase-presence",
+    ),
+  ];
+  for (const p of candidates) {
+    if (p && existsSync(p)) return p;
+  }
+  const which = Bun.which("homebase-presence");
+  return which || null;
+}
+
+function findBrowser(): string | null {
+  for (const name of [
+    "google-chrome-stable",
+    "google-chrome",
+    "chromium-browser",
+    "chromium",
+    "brave-browser",
+  ]) {
+    const p = Bun.which(name);
+    if (p) return p;
+  }
+  return null;
+}
+
+function wrapSeat(cmd: string[]): { cmd: string[]; env: Record<string, string> } {
+  const { display, xauthority } = discoverX11Env();
+  const seat = detectSeatUser();
+  const uid = seat.uid;
+  const gid = seat.gid;
+  let out = cmd;
+  if (typeof process.getuid === "function" && process.getuid() === 0 && uid !== 0) {
+    const setpriv = Bun.which("setpriv");
+    if (setpriv) {
+      out = [
+        setpriv,
+        `--reuid=${uid}`,
+        `--regid=${gid}`,
+        "--init-groups",
+        "--",
+        ...cmd,
+      ];
+    } else {
+      const runuser = Bun.which("runuser");
+      if (!runuser) throw new Error("setpriv/runuser required for presence as root");
+      out = [runuser, "-u", seat.name, "--", ...cmd];
+    }
+  }
+  const env: Record<string, string> = {
+    ...(process.env as Record<string, string>),
+    DISPLAY: display,
+    XAUTHORITY: xauthority,
+    HOME: seat.home,
+    USER: seat.name,
+    LOGNAME: seat.name,
+    DBUS_SESSION_BUS_ADDRESS:
+      process.env.DBUS_SESSION_BUS_ADDRESS ||
+      `unix:path=/run/user/${uid}/bus`,
+    HOMEBASE_PRESENCE_BASE: presenceBaseUrl(),
+    HOMEBASE_PRESENCE_TOKEN: presenceUiToken(),
+    HOMEBASE_URL: presenceBaseUrl(),
+  };
+  return { cmd: out, env };
 }
 
 function stopWindow(reason: string): void {
@@ -58,80 +124,53 @@ function stopWindow(reason: string): void {
 
 function startWindow(): void {
   if (proc || starting) return;
-  const browser = findBrowser();
-  if (!browser) {
-    appendTrace(
-      "warn",
-      "presence window: no Chromium/Chrome/Brave found — install chromium for desktop presence UI",
-      "presence",
-    );
-    return;
-  }
   starting = true;
   try {
-    const { display, xauthority } = discoverX11Env();
     const seat = detectSeatUser();
-    const uid = seat.uid;
-    const gid = seat.gid;
-    const url = presenceUrl();
-    let cmd: string[] = [
-      browser,
-      `--app=${url}`,
-      "--new-window",
-      "--window-size=380,560",
-      "--class=HomeBasePresence",
-      "--name=Home Base Presence",
-      "--disable-extensions",
-      "--no-first-run",
-    ];
-    if (typeof process.getuid === "function" && process.getuid() === 0 && uid !== 0) {
-      const setpriv = Bun.which("setpriv");
-      if (setpriv) {
-        cmd = [
-          setpriv,
-          `--reuid=${uid}`,
-          `--regid=${gid}`,
-          "--init-groups",
-          "--",
-          ...cmd,
-        ];
-      } else {
-        const runuser = Bun.which("runuser");
-        if (!runuser) {
-          appendTrace("warn", "presence window: setpriv/runuser missing", "presence");
-          starting = false;
-          return;
-        }
-        cmd = [runuser, "-u", seat.name, "--", ...cmd];
+    const binary = findPresenceBinary();
+    let cmd: string[];
+    let mode: "tauri" | "chromium";
+    if (binary) {
+      mode = "tauri";
+      cmd = [binary];
+    } else {
+      const browser = findBrowser();
+      if (!browser) {
+        appendTrace(
+          "warn",
+          "presence window: build presence-app (Tauri) or install Chromium",
+          "presence",
+        );
+        starting = false;
+        return;
       }
+      mode = "chromium";
+      cmd = [
+        browser,
+        `--app=${presenceUrl()}`,
+        "--new-window",
+        "--window-size=400,620",
+        "--class=HomeBasePresence",
+        "--name=Home Base Presence",
+        "--disable-extensions",
+        "--no-first-run",
+      ];
     }
 
-    const env: Record<string, string> = {
-      ...(process.env as Record<string, string>),
-      DISPLAY: display,
-      XAUTHORITY: xauthority,
-      HOME: seat.home,
-      USER: seat.name,
-      LOGNAME: seat.name,
-      DBUS_SESSION_BUS_ADDRESS:
-        process.env.DBUS_SESSION_BUS_ADDRESS ||
-        `unix:path=/run/user/${uid}/bus`,
-    };
-
-    const child = spawn(cmd[0]!, cmd.slice(1), {
-      env,
+    const wrapped = wrapSeat(cmd);
+    const child = spawn(wrapped.cmd[0]!, wrapped.cmd.slice(1), {
+      env: wrapped.env,
       stdio: "ignore",
       detached: false,
     });
     proc = child;
     child.on("exit", () => {
       if (proc === child) proc = null;
-      // Operator closed the window — reopen if remotes still active.
       scheduleSync(800);
     });
     appendTrace(
       "info",
-      `presence window started uid=${uid} display=${display}`,
+      `presence window started mode=${mode} uid=${seat.uid}`,
       "presence",
     );
   } catch (e) {
