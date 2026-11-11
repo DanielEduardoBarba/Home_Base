@@ -35,3 +35,5 @@ Version bump to 1.17.4.
 - HB-R1-17: Files path crumbs, Shell Keys / ^C / ^D, and Logs "Copy line" are at least 44px on small or coarse-pointer screens.
 
 Version bump to 1.17.5.
+
+Follow-up: the Next static export only pre-rendered `/`, so the App Router was sending deep links like `/work/files` back to `/` (then last-place `/work/apps`). Added an optional catch-all `app/[[...slug]]` page so client-side deep links stay on the SPA.
