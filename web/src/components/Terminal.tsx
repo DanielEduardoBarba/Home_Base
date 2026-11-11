@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Terminal as XTerm } from 'xterm'
 import 'xterm/css/xterm.css'
 import { wsUrl } from '../lib/api'
+import { TERM_ARROW_KEYS, TERM_SYMBOL_KEYS } from '../lib/termKeys'
 import {
   connStateLabel,
   connectWithReconnect,
@@ -237,6 +238,32 @@ export function TerminalView({ path, sessionId, onSession, className }: Props) {
               ^{k}
             </button>
           ))}
+          {TERM_ARROW_KEYS.map((k) => (
+            <button
+              key={k.label}
+              type="button"
+              onClick={() => sendRaw(k.seq)}
+              disabled={!live}
+              className="hb-term-key"
+              title={k.title}
+              aria-label={k.title}
+            >
+              {k.label}
+            </button>
+          ))}
+          {TERM_SYMBOL_KEYS.map((k) => (
+            <button
+              key={k.label}
+              type="button"
+              onClick={() => sendRaw(k.seq)}
+              disabled={!live}
+              className="hb-term-key"
+              title={k.title}
+              aria-label={k.title}
+            >
+              {k.label}
+            </button>
+          ))}
         </div>
         <button
           type="button"
@@ -306,6 +333,30 @@ export function TerminalView({ path, sessionId, onSession, className }: Props) {
               >
                 Tab
               </button>
+              {TERM_ARROW_KEYS.map((k) => (
+                <button
+                  key={k.label}
+                  type="button"
+                  disabled={!live}
+                  onClick={() => runAction(() => sendRaw(k.seq))}
+                  className="hb-btn hb-btn-ghost !min-h-11 text-sm font-mono"
+                  aria-label={k.title}
+                >
+                  {k.label}
+                </button>
+              ))}
+              {TERM_SYMBOL_KEYS.map((k) => (
+                <button
+                  key={k.label}
+                  type="button"
+                  disabled={!live}
+                  onClick={() => runAction(() => sendRaw(k.seq))}
+                  className="hb-btn hb-btn-ghost !min-h-11 text-sm font-mono"
+                  aria-label={k.title}
+                >
+                  {k.label}
+                </button>
+              ))}
             </div>
           </div>
         </div>

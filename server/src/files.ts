@@ -28,6 +28,17 @@ const SKIP_DIRS = new Set([
 const MAX_READ_BYTES = 1_500_000;
 const MAX_WRITE_BYTES = 1_500_000;
 
+export function isPermissionError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code
+  if (code === 'EACCES' || code === 'EPERM') return true
+  const msg = err instanceof Error ? err.message : String(err)
+  return /eacces|eperm|permission denied/i.test(msg)
+}
+
+export function permissionDeniedMessage(path: string): string {
+  return `Permission denied — Home Base can't read ${path}`
+}
+
 function isAbsoluteApiPath(path: string): boolean {
   return (path || "").startsWith("/");
 }
@@ -63,10 +74,23 @@ export function listDir(
 ): { path: string; entries: unknown[]; includeIgnored: boolean } {
   const target = resolvePath(project, rel);
   if (!existsSync(target)) throw new Error("not_found");
-  const st = statSync(target);
-  if (!st.isDirectory()) throw new Error("not_dir");
+  try {
+    const st = statSync(target);
+    if (!st.isDirectory()) throw new Error("not_dir");
+  } catch (e) {
+    if (e instanceof Error && e.message === "not_dir") throw e;
+    if (isPermissionError(e)) throw new Error(permissionDeniedMessage(target));
+    throw e;
+  }
   const absMode = isAbsoluteApiPath(rel);
-  const children = readdirSync(target)
+  let names: string[];
+  try {
+    names = readdirSync(target);
+  } catch (e) {
+    if (isPermissionError(e)) throw new Error(permissionDeniedMessage(target));
+    throw e;
+  }
+  const children = names
     .map((name) => join(target, name))
     .sort((a, b) => {
       const ad = statSync(a).isDirectory() ? 0 : 1;

@@ -47,3 +47,16 @@ Follow-up: pre-render known tab paths (`/work/files`, `/view`, `/access`, …) v
 Follow-up: Next emits `work/files.html` (no trailing slash). The static server now tries an `.html` suffix and `index.html` before the SPA fallback so `/work/files` hydrates as Files.
 
 Follow-up: when `selectedId` is first set after a `/work/files` deep link (projects loading late), do not replace the landed Files pane with the default Apps work-place.
+
+## 2026-11-11 (America/New_York) — HB-R2-01..05 Files errors, shell keys, pull-to-refresh, 360px subtitle
+
+- HB-R2-01: Listing an unreadable folder (for example `/root`) now keeps a visible `role=alert` banner: "Permission denied — Home Base can't read /root". `listDir` maps EACCES/EPERM to that message and the API returns 403. `loadDir` no longer clears the error at the start of a request, so a later refresh of the current folder cannot wipe the failed-open message. Client `request()` uses the API `detail` string as-is (no extra JSON quotes).
+- HB-R2-02: The Files shortcut that opens `/` is labeled **Filesystem root (/)** so it is not mistaken for the `/root` folder.
+- HB-R2-03: The phone Shell key bar (and the Keys sheet) include arrow keys (↑ ↓ ← →, ANSI CSI) for history/cursor, plus `| ~ / -`.
+- HB-R2-04: The pull-to-refresh cue is `aria-hidden`, `inert`, and `tabIndex={-1}` so the invisible idle label is not in the tab order.
+- HB-R2-05: The Files subtitle wraps at 360px (`min-w-0`, `break-words`) and the error sits on its own line instead of overflowing to the right.
+
+Phone terminal 48×8 (was 48×12): left as-is. That is the intended HB-R1-16 tradeoff — `.hb-work-main` gets `padding-bottom: 4.25rem` on small screens so the Chat FAB does not cover the prompt. Restoring 12 rows would put the last lines under the pill again. QA already recorded this as an observation, not a bug, in the R1 retest.
+
+Version bump to 1.17.6.
+

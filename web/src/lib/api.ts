@@ -36,11 +36,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       /* ignore */
     }
-    const err = new Error(
+    const payload =
       typeof detail === 'object' && detail && 'detail' in detail
-        ? JSON.stringify((detail as { detail: unknown }).detail)
-        : String(detail),
-    ) as Error & { status?: number; detail?: unknown }
+        ? (detail as { detail: unknown }).detail
+        : detail
+    const message =
+      typeof payload === 'string' ? payload : payload != null ? JSON.stringify(payload) : String(detail)
+    const err = new Error(message) as Error & { status?: number; detail?: unknown }
     err.status = res.status
     err.detail = typeof detail === 'object' && detail && 'detail' in detail
       ? (detail as { detail: unknown }).detail
