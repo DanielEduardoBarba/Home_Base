@@ -20,3 +20,18 @@ Applied to Home Access Add control (HB-R1-01), Add app wizard (HB-R1-02), Notifi
 HB-R1-06: `clearSession` stops all registered session pollers and notifies the shell once. Any API 401 clears the session. `logActivity` / `presenceHeartbeat` no-op without a token. Sign-out no longer navigates (which was posting `/api/activity` and `/api/presence/heartbeat` after the JWT was gone).
 
 Version bump to 1.17.4.
+
+## 2026-11-11 (America/New_York) — HB-R1-08..17 work place, dirty files, routing
+
+- HB-R1-08: Files tab `useCallback` ran after an early `if (!project)` return, so a reload (projects empty, then loaded) changed the hook count (React error #310). The hook now always runs. `readWorkPlace` schema-validates persisted `hb-work-place:*` state and falls back to the default pane. The error boundary offers **Reset workspace view** (clears work-place keys) in addition to Reload / Reset UI prefs.
+- HB-R1-09: Unsaved file edits set a navigation guard. In-app tab/area/project changes open `AccessibleDialog` titled "Leave without saving?" with Cancel focused. A `beforeunload` warning covers reload/close.
+- HB-R1-10: Logs filters are derived from real ring sources (`client`, `pty`, `presence`, `boot`, plus any others present) instead of Server/Web/Cursor.
+- HB-R1-11: "client log ready" is recorded once (session + server-ring dedupe); consecutive identical client lines are dropped.
+- HB-R1-12: Home Access Save is disabled while submitting. The server returns an existing widget when a create with the same label, kind, and hook arrives within 8 seconds.
+- HB-R1-13: A failed legal-status fetch shows a connection error with Try again (and auto-retry), not the Terms gate. After the API recovers, an already-accepted install continues in.
+- HB-R1-14: Main areas and Work tabs use `pushState`/`popstate` (`/`, `/work/files`, `/view`, `/logs`, `/access`, `/agent`, `/vision`, `/settings`). Unknown paths render an in-app 404 ("This page isn't in Home Base"); SPA fallback may still be HTTP 200. Unknown `/api/*` (any method) returns JSON 404.
+- HB-R1-15: Add-app wizard checks that the folder exists and is a directory on Continue (folder step), via `GET /api/fs/host-stat`.
+- HB-R1-16: On small screens the Work scene gets bottom padding so the Chat button does not cover the terminal prompt or editor.
+- HB-R1-17: Files path crumbs, Shell Keys / ^C / ^D, and Logs "Copy line" are at least 44px on small or coarse-pointer screens.
+
+Version bump to 1.17.5.

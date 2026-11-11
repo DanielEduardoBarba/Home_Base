@@ -178,6 +178,7 @@ export function HomeAccessTab({
   const [busyId, setBusyId] = useState('')
   const [editorOpen, setEditorOpen] = useState(false)
   const [draft, setDraft] = useState<Draft>(() => emptyDraft())
+  const [saving, setSaving] = useState(false)
   const [dockOpen, setDockOpenState] = useState(false)
 
   useEffect(() => {
@@ -270,6 +271,7 @@ export function HomeAccessTab({
   }
 
   async function saveDraft() {
+    if (saving) return
     const label = draft.label.trim()
     if (!label) {
       setError('Label required')
@@ -287,6 +289,7 @@ export function HomeAccessTab({
       unit: draft.unit.trim() || undefined,
       hook: hookFromDraft(draft),
     }
+    setSaving(true)
     try {
       const { widget } = draft.id
         ? await api.homeAccessUpdate(draft.id, payload)
@@ -300,6 +303,8 @@ export function HomeAccessTab({
       setError('')
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -689,8 +694,14 @@ export function HomeAccessTab({
               <button type="button" className="hb-btn hb-btn-ghost" data-dialog-cancel onClick={() => setEditorOpen(false)}>
                 Cancel
               </button>
-              <button type="button" className="hb-btn hb-btn-primary" onClick={() => void saveDraft()}>
-                Save
+              <button
+                type="button"
+                className="hb-btn hb-btn-primary"
+                disabled={saving}
+                aria-busy={saving}
+                onClick={() => void saveDraft()}
+              >
+                {saving ? 'Saving…' : 'Save'}
               </button>
             </div>
         </AccessibleDialog>

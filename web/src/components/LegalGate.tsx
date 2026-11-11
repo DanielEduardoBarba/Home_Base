@@ -144,3 +144,41 @@ export function LegalGate({ onAccepted }: { onAccepted: () => void }) {
     </div>
   )
 }
+
+/** Shown when legal status cannot be loaded (API down). Auto-retry from the parent. */
+export function LegalConnectionError({
+  onRetry,
+  busy = false,
+}: {
+  onRetry: () => void
+  busy?: boolean
+}) {
+  return (
+    <div className="fixed inset-0 z-[70] bg-bg flex flex-col">
+      <div className="flex-1 overflow-y-auto">
+        <div className="hb-page !max-w-lg py-10 space-y-6">
+          <div className="space-y-2 hb-enter">
+            <div className="hb-brand-rule" />
+            <p className="hb-label">Connection</p>
+            <h1 className="font-display text-3xl font-extrabold tracking-tight leading-tight">
+              Can&apos;t reach Home Base right now
+            </h1>
+            <p className="text-mute text-sm leading-relaxed">
+              The legal status check failed, so we can&apos;t tell whether Terms have already been
+              accepted. Retry when the API is back — you will not be asked to agree again if you
+              already have.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="hb-btn hb-btn-primary w-full !min-h-11"
+            disabled={busy}
+            onClick={onRetry}
+          >
+            {busy ? 'Trying…' : 'Try again'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}

@@ -4250,3 +4250,33 @@ html.hb-view-max .hb-status-bar {
   opacity: 0.7;
 }
 
+
+
+/* phone chat fab clearance and 44px touch targets (HB-R1-16, HB-R1-17) */
+@media (max-width: 767px) {
+  .hb-work-body:not(:has(.hb-chat-dock[data-open='1'])):has(.hb-chat-fab) .hb-work-main {
+    padding-bottom: 4.25rem;
+  }
+}
+
+@media (max-width: 767px), (pointer: coarse) {
+  .hb-term-key,
+  .hb-term-actions-btn,
+  .hb-touch-44 {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  .hb-files-path-nav button,
+  .hb-files-path-nav [class*='rounded-md'] {
+    min-height: 44px;
+    min-width: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .hb-log-copy-line {
+    min-height: 44px;
+    align-items: center;
+  }
+}

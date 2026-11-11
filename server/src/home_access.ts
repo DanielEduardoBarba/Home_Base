@@ -192,15 +192,34 @@ export function getAccessWidget(id: string): AccessWidget | null {
   return readStore().widgets.find((w) => w.id === id) || null;
 }
 
+const DUP_WINDOW_MS = 8_000;
+
+export function hookFingerprint(hook: AccessHook): string {
+  return JSON.stringify(hook);
+}
+
 export function upsertAccessWidget(
   input: Partial<AccessWidget> & { kind?: string; label?: string },
 ): AccessWidget {
   const store = readStore();
-  const id = String(input.id || randomBytes(8).toString("hex"));
-  const existing = store.widgets.find((w) => w.id === id);
+  let id = String(input.id || "");
+  let existing = id ? store.widgets.find((w) => w.id === id) : undefined;
   const kind = normalizeKind(input.kind || existing?.kind || "button");
   const label = String(input.label ?? existing?.label ?? "Control").trim() || "Control";
   const hook = normalizeHook(input.hook ?? existing?.hook ?? { type: "static" });
+  if (!id) {
+    const now = Date.now();
+    const dup = store.widgets.find(
+      (w) =>
+        w.label === label &&
+        w.kind === kind &&
+        hookFingerprint(w.hook) === hookFingerprint(hook) &&
+        now - w.updatedAt < DUP_WINDOW_MS,
+    );
+    if (dup) return dup;
+    id = randomBytes(8).toString("hex");
+  }
+  existing = store.widgets.find((w) => w.id === id);
   const widget: AccessWidget = {
     id,
     kind,

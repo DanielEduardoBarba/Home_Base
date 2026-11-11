@@ -6,7 +6,7 @@ import { AppsTab } from './components/AppsTab'
 import { HomeAccessTab } from './components/HomeAccessTab'
 import { HomeDashboard } from './components/HomeDashboard'
 import { HomeVisionTab } from './components/HomeVisionTab'
-import { LegalGate } from './components/LegalGate'
+import { LegalConnectionError, LegalGate } from './components/LegalGate'
 import { Login } from './components/Login'
 import { NotificationCenter } from './components/NotificationCenter'
 import { PullToRefresh } from './components/PullToRefresh'
@@ -16,6 +16,8 @@ import { clearSession, getToken, isSessionValid, registerSessionPoller, watchSes
 import { LEGAL_DOC_VERSION } from './lib/legalDocs'
 import type { PresentRequest } from './lib/chatTypes'
 import { installClientLog } from './lib/clientLog'
+import { confirmNavigation } from './lib/navGuard'
+import { parseAppPath, serializeAppPath } from './lib/appRoutes'
 import { NotifyProvider, useNotify } from './lib/NotifyContext'
 import { runSceneRefresh } from './lib/sceneRefresh'
 import { applyMobileSafeTop } from './lib/theme'
@@ -161,9 +163,26 @@ function TabIcon({ id }: { id: Tab }) {
 
 type HostLink = 'live' | 'reconnecting' | 'unreachable'
 
+function NotFoundView({ path, onHome }: { path: string; onHome: () => void }) {
+  return (
+    <div className="hb-page min-h-[100dvh] flex flex-col items-center justify-center gap-4 text-center px-6">
+      <p className="hb-label">404</p>
+      <h1 className="text-xl font-semibold text-ink">This page isn&apos;t in Home Base</h1>
+      <p className="text-sm text-mute max-w-md font-mono break-all">{path}</p>
+      <button type="button" className="hb-btn hb-btn-primary" onClick={onHome}>
+        Back to Home
+      </button>
+    </div>
+  )
+}
+
 function AuthedApp() {
+
   const [area, setArea] = useState<AppArea>('home')
   const [tab, setTab] = useState<Tab>('work')
+  const [notFoundPath, setNotFoundPath] = useState<string | null>(null)
+  const [routesReady, setRoutesReady] = useState(false)
+  const applyingHistory = useRef(false)
   const [projects, setProjects] = useState<Project[]>([])
   const [selectedId, setSelectedId] = useState('')
   const [workItem, setWorkItem] = useState<WorkItem>('apps')
@@ -189,15 +208,40 @@ function AuthedApp() {
   const [onboardingReady, setOnboardingReady] = useState(false)
 
   useEffect(() => {
-    setArea(readLastArea('home'))
     const pid = readLastProjectId()
-    const savedTab = readLastTab('work')
-    const nextTab = migrateLegacyWorkTab(savedTab, pid)
-    if (nextTab !== savedTab) writeLastTab(nextTab)
-    setTab(nextTab)
     setSelectedId(pid)
-    if (pid) setWorkItem(readWorkPlace(pid).item)
     setHostLabel(location.hostname || 'host')
+    const savedTab = migrateLegacyWorkTab(readLastTab('work'), pid)
+    if (savedTab !== readLastTab('work')) writeLastTab(savedTab)
+    const savedItem = pid ? readWorkPlace(pid).item : 'apps'
+    const parsed = parseAppPath(window.location.pathname)
+    if (parsed.kind === 'notfound') {
+      setNotFoundPath(parsed.path)
+      setRoutesReady(true)
+      return
+    }
+    const path = window.location.pathname.replace(/\/+$/, '') || '/'
+    let loc = parsed.loc
+    if (path === '/') {
+      loc = {
+        area: readLastArea('home'),
+        tab: savedTab,
+        workItem: savedItem,
+      }
+    } else if (path === '/work' || path === '/homework') {
+      loc = { ...parsed.loc, workItem: savedItem }
+    }
+    setArea(loc.area)
+    setTab(loc.tab)
+    setWorkItem(loc.workItem)
+    writeLastArea(loc.area)
+    writeLastTab(loc.tab)
+    if (pid) writeWorkPlace(pid, { item: loc.workItem })
+    const canonical = serializeAppPath(loc)
+    if (window.location.pathname !== canonical) {
+      window.history.replaceState({ hb: true }, '', canonical)
+    }
+    setRoutesReady(true)
   }, [])
 
   useEffect(() => {
@@ -224,14 +268,17 @@ function AuthedApp() {
     }
   }, [])
 
-  const goArea = useCallback((next: AppArea) => {
+  const goArea = useCallback(async (next: AppArea) => {
+    if (next === area && !notFoundPath) return
+    if (!(await confirmNavigation())) return
+    setNotFoundPath(null)
     writeLastArea(next)
     setArea(next)
     setWorkMenuOpen(false)
     closeInbox()
     logActivity('nav', `Area → ${next}`, { area: next })
     presenceHeartbeat({ area: next, tab })
-  }, [closeInbox, tab])
+  }, [area, closeInbox, notFoundPath, tab])
 
   useEffect(() => {
     if (tab === 'view') setViewVisited(true)
@@ -245,12 +292,15 @@ function AuthedApp() {
   const workSubtabs = useMemo(() => WORK_SUBTABS, [])
   const activeProject = projects.find((p) => p.id === selectedId) || projects[0]
 
-  const goTab = useCallback((id: Tab) => {
+  const goTab = useCallback(async (id: Tab) => {
+    if (id === tab && !notFoundPath) return
+    if (!(await confirmNavigation())) return
+    setNotFoundPath(null)
     writeLastTab(id)
     setTab(id)
     logActivity('nav', `Tab → ${id}`, { tab: id, area })
     presenceHeartbeat({ area, tab: id })
-  }, [area])
+  }, [area, notFoundPath, tab])
 
   useEffect(() => {
     if (!getToken()) return
@@ -271,9 +321,9 @@ function AuthedApp() {
       unlockAudio()
       closeInbox()
       if (id === 'work') {
-        if (tab !== 'work') {
+        if (tab !== 'work' || notFoundPath) {
           setWorkMenuOpen(false)
-          goTab('work')
+          void goTab('work')
           return
         }
         // Already in Work — tray switches Apps / Chat / Shell / Files
@@ -282,20 +332,28 @@ function AuthedApp() {
       }
       setWorkMenuOpen(false)
       setWorkPresent(null)
-      goTab(id)
+      void goTab(id)
     },
-    [closeInbox, goTab, tab, unlockAudio],
+    [closeInbox, goTab, notFoundPath, tab, unlockAudio],
   )
 
   const chooseWorkItem = useCallback(
-    (item: WorkItem) => {
+    async (item: WorkItem) => {
+      if (item === workItem && tab === 'work' && area === 'homework' && !notFoundPath) return
+      if (!(await confirmNavigation())) return
+      setNotFoundPath(null)
       setWorkItem(item)
       if (selectedId) writeWorkPlace(selectedId, { item })
       setWorkPresent(null)
       setWorkMenuOpen(false)
-      goTab('work')
+      writeLastTab('work')
+      setTab('work')
+      writeLastArea('homework')
+      setArea('homework')
+      logActivity('nav', `Tab → work`, { tab: 'work', area: 'homework' })
+      presenceHeartbeat({ area: 'homework', tab: 'work' })
     },
-    [goTab, selectedId],
+    [area, notFoundPath, selectedId, tab, workItem],
   )
 
   const onWorkSubNav = useCallback(
@@ -336,20 +394,64 @@ function AuthedApp() {
     }
   }, [workMenuOpen])
 
-  const selectProject = useCallback((id: string) => {
+  useEffect(() => {
+    if (!routesReady || notFoundPath) return
+    if (applyingHistory.current) {
+      applyingHistory.current = false
+      return
+    }
+    const path = serializeAppPath({ area, tab, workItem })
+    if (window.location.pathname === path) return
+    window.history.pushState({ hb: true }, '', path)
+  }, [area, tab, workItem, routesReady, notFoundPath])
+
+  useEffect(() => {
+    const onPop = () => {
+      void (async () => {
+        if (!(await confirmNavigation())) {
+          const path = notFoundPath || serializeAppPath({ area, tab, workItem })
+          window.history.pushState({ hb: true }, '', path)
+          return
+        }
+        const parsed = parseAppPath(window.location.pathname)
+        applyingHistory.current = true
+        if (parsed.kind === 'notfound') {
+          setNotFoundPath(parsed.path)
+          return
+        }
+        setNotFoundPath(null)
+        setArea(parsed.loc.area)
+        setTab(parsed.loc.tab)
+        setWorkItem(parsed.loc.workItem)
+        writeLastArea(parsed.loc.area)
+        writeLastTab(parsed.loc.tab)
+      })()
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [area, tab, workItem, notFoundPath])
+
+  const selectProject = useCallback(async (id: string) => {
+    if (id === selectedId) return
+    if (!(await confirmNavigation())) return
     writeLastProjectId(id)
     setSelectedId(id)
-  }, [])
+  }, [selectedId])
 
   /** Chat → Work: show Apps / Shell / Files (and optionally a shell or file). */
-  const presentInWork = useCallback((req: PresentRequest) => {
+  const presentInWork = useCallback(async (req: PresentRequest) => {
+    if (!(await confirmNavigation())) return
+    setNotFoundPath(null)
     workPresentSeq.current += 1
     setWorkPresent(req)
     setWorkPresentKey(workPresentSeq.current)
     setWorkItem(req.scene)
     if (selectedId) writeWorkPlace(selectedId, { item: req.scene })
-    goTab('work')
-  }, [goTab, selectedId])
+    writeLastTab('work')
+    setTab('work')
+    writeLastArea('homework')
+    setArea('homework')
+  }, [selectedId])
 
   const refreshProjects = useCallback(async () => {
     try {
@@ -507,6 +609,16 @@ function AuthedApp() {
     hostLink === 'live' ? 'Live' : hostLink === 'reconnecting' ? 'Reconnecting' : 'Unreachable'
   const cursorHint = activeProject?.cursor
   const cursorRunning = !!(cursorHint?.running || cursorHint?.active)
+
+  if (notFoundPath) {
+    return (
+      <div className="hb-app-shell h-full flex flex-col">
+        <main className="flex-1 min-h-0 overflow-hidden">
+          <NotFoundView path={notFoundPath} onHome={() => void goArea('home')} />
+        </main>
+      </div>
+    )
+  }
 
   if (area === 'home') {
     return (
@@ -836,6 +948,8 @@ export default function App() {
   const [authed, setAuthed] = useState(false)
   const [authReady, setAuthReady] = useState(false)
   const [legalOk, setLegalOk] = useState<boolean | null>(null)
+  const [legalError, setLegalError] = useState(false)
+  const [legalRetrying, setLegalRetrying] = useState(false)
 
   useEffect(() => {
     installClientLog()
@@ -853,19 +967,33 @@ export default function App() {
   useEffect(() => {
     if (!authed) {
       setLegalOk(null)
+      setLegalError(false)
       return
     }
     let cancelled = false
-    void api
-      .legalStatus()
-      .then((l) => {
-        if (!cancelled) setLegalOk(!!l.accepted && l.version === LEGAL_DOC_VERSION)
-      })
-      .catch(() => {
-        if (!cancelled) setLegalOk(false)
-      })
+    let timer = 0
+    const load = (fromRetry = false) => {
+      if (fromRetry) setLegalRetrying(true)
+      void api
+        .legalStatus()
+        .then((l) => {
+          if (cancelled) return
+          setLegalError(false)
+          setLegalRetrying(false)
+          setLegalOk(!!l.accepted && l.version === LEGAL_DOC_VERSION)
+        })
+        .catch(() => {
+          if (cancelled) return
+          setLegalRetrying(false)
+          setLegalError(true)
+          setLegalOk(null)
+          timer = window.setTimeout(() => load(), 4000)
+        })
+    }
+    load()
     return () => {
       cancelled = true
+      if (timer) window.clearTimeout(timer)
     }
   }, [authed])
 
@@ -880,6 +1008,25 @@ export default function App() {
 
   if (!authed) {
     return <Login onAuthed={() => setAuthed(true)} />
+  }
+
+  if (legalError) {
+    return (
+      <LegalConnectionError
+        busy={legalRetrying}
+        onRetry={() => {
+          setLegalRetrying(true)
+          void api
+            .legalStatus()
+            .then((l) => {
+              setLegalError(false)
+              setLegalOk(!!l.accepted && l.version === LEGAL_DOC_VERSION)
+            })
+            .catch(() => setLegalRetrying(false))
+            .finally(() => setLegalRetrying(false))
+        }}
+      />
+    )
   }
 
   if (legalOk === null) {

@@ -36,6 +36,7 @@ import {
   loadProjects,
   readVersion,
   upsertProjectFromInput,
+  statHostPath,
 } from "./config";
 import { removeRegisteredProject } from "./project_remove";
 import {
@@ -547,6 +548,12 @@ app.get("/api/projects", async (c) => {
 app.get("/api/presets", async (c) => {
   await requireAuth(c);
   return c.json({ presets: listPresets() });
+});
+
+app.get("/api/fs/host-stat", async (c) => {
+  await requireAuth(c);
+  const path = String(c.req.query("path") || "");
+  return c.json(statHostPath(path));
 });
 
 app.post("/api/projects", async (c) => {
@@ -1419,6 +1426,21 @@ app.post("/api/home-access/widgets/:id/invoke", async (c) => {
 });
 
 app.get("*", async (c) => {
+  const path = new URL(c.req.url).pathname;
+  if (
+    path.startsWith("/api/") ||
+    path.startsWith("/ws/") ||
+    path === "/mcp" ||
+    path === "/presence"
+  ) {
+    return c.json({ detail: "Not found" }, 404);
+  }
+  const res = tryServeStatic(path, c.req.header("accept-encoding") || "");
+  if (res) return res;
+  return c.text("Home Base Bun backend — build web/dist for SPA", 200);
+});
+
+app.notFound((c) => {
   const path = new URL(c.req.url).pathname;
   if (
     path.startsWith("/api/") ||

@@ -150,31 +150,67 @@ export type WorkPlace = {
 }
 
 const WORK_ITEMS: WorkItem[] = ['apps', 'shell', 'files', 'chat']
-const WORK_PLACE_PREFIX = 'hb-work-place:'
+export const WORK_PLACE_PREFIX = 'hb-work-place:'
+const MAX_PLACE_PATH = 4096
+export const DEFAULT_WORK_PLACE: WorkPlace = { item: 'apps' }
+
+function isAbsPlacePath(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.startsWith('/') &&
+    value.length <= MAX_PLACE_PATH &&
+    !value.includes('\0') &&
+    !value.includes('\n') &&
+    !value.includes('\r')
+  )
+}
+
+/** Schema-validate persisted Work pane state. Invalid values fall back to defaults. */
+export function parseWorkPlace(raw: unknown): WorkPlace {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ...DEFAULT_WORK_PLACE }
+  const p = raw as Record<string, unknown>
+  const item = WORK_ITEMS.includes(p.item as WorkItem) ? (p.item as WorkItem) : 'apps'
+  return {
+    item,
+    dir: isAbsPlacePath(p.dir) ? p.dir : undefined,
+    file: isAbsPlacePath(p.file) ? p.file : undefined,
+  }
+}
 
 export function readWorkPlace(projectId: string): WorkPlace {
-  if (!projectId) return { item: 'apps' }
+  if (!projectId) return { ...DEFAULT_WORK_PLACE }
   try {
     const raw = localStorage.getItem(`${WORK_PLACE_PREFIX}${projectId}`)
-    if (!raw) return { item: 'apps' }
-    const p = JSON.parse(raw) as WorkPlace
-    const item = WORK_ITEMS.includes(p?.item) ? p.item : 'apps'
-    return {
-      item,
-      dir: typeof p.dir === 'string' && p.dir.startsWith('/') ? p.dir : undefined,
-      file: typeof p.file === 'string' && p.file.startsWith('/') ? p.file : undefined,
+    if (!raw) return { ...DEFAULT_WORK_PLACE }
+    return parseWorkPlace(JSON.parse(raw))
+  } catch {
+    return { ...DEFAULT_WORK_PLACE }
+  }
+}
+
+export function clearWorkPlaces(): number {
+  let removed = 0
+  try {
+    const keys: string[] = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      if (k && k.startsWith(WORK_PLACE_PREFIX)) keys.push(k)
+    }
+    for (const k of keys) {
+      localStorage.removeItem(k)
+      removed++
     }
   } catch {
-    return { item: 'apps' }
+    /* ignore */
   }
+  return removed
 }
 
 export function writeWorkPlace(projectId: string, patch: Partial<WorkPlace>): void {
   if (!projectId) return
   try {
     const prev = readWorkPlace(projectId)
-    const next: WorkPlace = { ...prev, ...patch }
-    if (!WORK_ITEMS.includes(next.item)) next.item = 'apps'
+    const next = parseWorkPlace({ ...prev, ...patch })
     if (!next.dir) delete next.dir
     if (!next.file) delete next.file
     localStorage.setItem(`${WORK_PLACE_PREFIX}${projectId}`, JSON.stringify(next))
