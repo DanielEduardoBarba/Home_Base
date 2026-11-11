@@ -24,6 +24,7 @@ import { UsageBillingPanel } from './UsageBillingPanel'
 import { WireGuardPanel } from './WireGuardPanel'
 import { McpServerPanel } from './McpServerPanel'
 import { ActivityHistoryPanel } from './ActivityHistoryPanel'
+import { EmailAlertsPanel } from './EmailAlertsPanel'
 
 type SettingsScene =
   | 'hub'
@@ -34,6 +35,7 @@ type SettingsScene =
   | 'cursor'
   | 'usage'
   | 'notifications'
+  | 'email'
   | 'setup'
   | 'wireguard'
   | 'cloudflare'
@@ -166,6 +168,8 @@ export function SettingsTab({
   const [nameBusy, setNameBusy] = useState(false)
   const [mcpEnabled, setMcpEnabled] = useState(true)
   const [mcpTokenCount, setMcpTokenCount] = useState(0)
+  const [emailReady, setEmailReady] = useState(false)
+  const [emailOn, setEmailOn] = useState(false)
 
   const refreshSudo = useCallback(() => {
     void api
@@ -201,6 +205,13 @@ export function SettingsTab({
       .then((s) => {
         setMcpEnabled(s.enabled !== false)
         setMcpTokenCount(s.tokenCount || s.tokens?.length || 0)
+      })
+      .catch(() => undefined)
+    void api
+      .emailAlerts()
+      .then((s) => {
+        setEmailReady(!!s.ready)
+        setEmailOn(!!s.enabled)
       })
       .catch(() => undefined)
   }, [refreshSudo])
@@ -478,6 +489,17 @@ export function SettingsTab({
               .filter(Boolean)
               .join(' · '),
           },
+          {
+            id: 'email',
+            title: 'Email alerts',
+            hint: emailOn
+              ? emailReady
+                ? 'On · auth + AI-away'
+                : 'On · needs provider setup'
+              : emailReady
+                ? 'Configured · off'
+                : 'Resend or SMTP · humans only',
+          },
         ],
       },
       {
@@ -509,6 +531,8 @@ export function SettingsTab({
     cursorHint,
     mcpEnabled,
     mcpTokenCount,
+    emailReady,
+    emailOn,
     pinEnabled,
     pinIdleMin,
     sudoPersistent,
@@ -1130,6 +1154,30 @@ export function SettingsTab({
           onBack={goHub}
         >
           <UsageBillingPanel />
+        </SceneShell>
+        {modals}
+      </>
+    )
+  }
+
+  if (scene === 'email') {
+    return (
+      <>
+        <SceneShell
+          title="Email alerts"
+          hint="Suspicious auth + AI while you are away. Not for every ping."
+          onBack={() => {
+            void api
+              .emailAlerts()
+              .then((s) => {
+                setEmailReady(!!s.ready)
+                setEmailOn(!!s.enabled)
+              })
+              .catch(() => undefined)
+            goHub()
+          }}
+        >
+          <EmailAlertsPanel />
         </SceneShell>
         {modals}
       </>

@@ -14,7 +14,7 @@ Home Base is self-hosted. The person or organization that installs and runs an i
 
 ## 2. Data stored on the host
 
-Depending on features you enable, the host may store: password hash and auth metadata; JWT signing material; optional App PIN hash; encrypted secrets (e.g. Cursor API key, Cloudflare tunnel token, sudo session vault) using AES-256-GCM under a local vault key; chat transcripts; daily logs; Home Access widget config; Vision/desktop capture artifacts; WireGuard/Cloudflare state; project registry; notifications; and onboarding/legal acceptance records. Sensitive files are typically written with restrictive permissions (e.g. mode 0600) under the runtime directory.
+Depending on features you enable, the host may store: password hash and auth metadata; JWT signing material; optional App PIN hash; encrypted secrets (e.g. Cursor API key, Cloudflare tunnel token, sudo session vault, email alert API keys / SMTP passwords) using AES-256-GCM under a local vault key; chat transcripts; daily logs; Home Access widget config; Vision/desktop capture artifacts; WireGuard/Cloudflare state; project registry; notifications; email alert preferences; and onboarding/legal acceptance records. Sensitive files are typically written with restrictive permissions (e.g. mode 0600) under the runtime directory.
 
 Browser storage on your clients may hold a session JWT (typically ~24h), UI preferences, and theme settings.
 
@@ -29,6 +29,7 @@ Passwords are hashed (scrypt) at rest — not stored in plaintext. Sessions use 
 - **WireGuard** (if enabled) exchanges traffic with peers you configure; private keys stay on devices you control.
 - For some **public client IPs**, the Software may query a public geo-IP service (e.g. ip-api.com) to label login/security notifications. Private/VPN/loopback addresses are classified locally without that lookup.
 - **Home Access hooks** you configure (HTTP, WebSocket, scripts) may send data to destinations you choose.
+- **Email alerts** (optional, Settings only): if you enable Resend or SMTP, short security notices (repeated failed logins/PIN attempts, or AI Home Base use while the laptop seat looks away) are sent to the address you configure via that provider.
 
 ## 5. What DevCon1 Solutions does not do by default
 
