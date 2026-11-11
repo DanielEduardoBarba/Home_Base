@@ -50,3 +50,24 @@ describe("static precompress + cache", () => {
     expect(res!.headers.get("cache-control")).toContain("immutable");
   });
 });
+
+  test("serves Next catch-all chunk whose path contains .. as a substring", () => {
+    const root = distRoot();
+    const dir = join(root, "_next/static/chunks/app/[[...slug]]");
+    if (!existsSync(dir)) return;
+    const name = readdirSync(dir).find((n) => n.endsWith(".js") && !n.endsWith(".map"));
+    expect(name).toBeTruthy();
+    const rel = `/_next/static/chunks/app/[[...slug]]/${name}`;
+    const res = tryServeStatic(rel, "identity");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(200);
+    expect(res!.headers.get("content-type") || "").toContain("javascript");
+  });
+
+  test("rejects path traversal outside dist", () => {
+    const res = tryServeStatic("/_next/static/../../../etc/passwd", "identity");
+    // Either null or the SPA index fallback — never a file outside dist.
+    if (res) {
+      expect(res.headers.get("content-type") || "").toContain("html");
+    }
+  });

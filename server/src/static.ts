@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { join, extname } from "node:path";
+import { join, extname, resolve } from "node:path";
 import { bundleRoot } from "./config";
 
 const MIME: Record<string, string> = {
@@ -43,8 +43,11 @@ export function tryServeStatic(
   const root = distRoot();
   if (!existsSync(root)) return null;
   let rel = pathname === "/" ? "/index.html" : pathname;
-  if (rel.includes("..")) return null;
-  let filePath = join(root, rel);
+  if (rel.includes("\0")) return null;
+  const rootResolved = resolve(root);
+  let filePath = resolve(rootResolved, rel.replace(/^\/+/, ""));
+  const rootPrefix = rootResolved.endsWith("/") ? rootResolved : `${rootResolved}/`;
+  if (filePath !== rootResolved && !filePath.startsWith(rootPrefix)) return null;
   if (!existsSync(filePath) || statSync(filePath).isDirectory()) {
     // SPA fallback
     filePath = join(root, "index.html");
