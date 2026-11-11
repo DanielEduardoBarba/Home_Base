@@ -37,3 +37,46 @@ Screen: `desktop-s-after-signout.png`
 Steps: Files → open a file in the scratch folder → edit → Save.
 Expected: safe default (Cancel) focused for an overwrite. Actual: the confirm button is focused, so Enter overwrites.
 Screen: `desktop-f-files-saved.png`
+
+---
+# Part 2 — deeper runtime pass (2026-11-11, ~12:45–1:20 AM America/New_York, served v1.17.4)
+
+## HB-R1-08 — Reload on Work → Files crashes the whole UI, and the crash is sticky · Major
+Steps: sign in → Work → Files → press browser reload.
+Expected: Files view restored. Actual: "Something went wrong — Minified React error #310" (hooks order). Opening the URL again crashes again (last place is saved in `localStorage` `hb-work-place:*`). On desktop the in-page Reload button recovered once; on iPhone 14 it did not. Only clearing that storage key recovers. Seen once on Work → Shell too.
+Screen: `desktop-p2-crash-reload-files.png`
+
+## HB-R1-09 — Unsaved file edits are silently thrown away · Major
+Steps: Files → open a file → type (title shows "•") → click the Apps tab (or Home), or reload.
+Expected: "Discard unsaved changes?" prompt / `beforeunload`. Actual: no prompt, view switches, edit is gone (not saved, not kept when you come back). Reload also shows no warning.
+Screens: `desktop-p2-f-dirty.png`, `desktop-p2-f-dirty-apps.png`
+
+## HB-R1-10 — Logs filters Server / Web / Cursor always show "No log lines yet" · Minor
+Steps: Logs → pick Server, Web or Cursor. Actual: empty while All has ~220 lines. `/api/trace` sources are `client`, `pty`, `presence`, `boot`, so none match the filter values (`server`/`web`/`cursor`). Expected: filters match real sources.
+Screen: `desktop-p2-logs.png`
+
+## HB-R1-11 — Logs flooded with "client log ready" · Minor
+211 of 224 lines in the 300-line ring are `CLIENT INFO client log ready`, logged about every 13 s per open tab, so real lines quickly drop out of the buffer.
+Screen: `desktop-p2-files-save-fail.png` (shows the Logs view)
+
+## HB-R1-12 — Home Access Save double-click creates duplicate controls · Minor
+Steps: Access → Add control → fill Label → double-click Save. Actual: 2× `POST /api/home-access/widgets` → two identical controls. Expected: button disabled while saving (Files Save and Add app already do this — 1 request).
+Screen: `desktop-p2-access-added.png`
+
+## HB-R1-13 — API hiccup at load shows the Legal gate again and it sticks · Minor
+Steps: block `/api/legal` + `/api/auth/status` (Playwright abort) → reload → unblock. Actual: "Before you continue, you must agree…" (as if never accepted); still shown 8 s after the API is back; only a manual reload fixes it. Expected: a connection error with retry, not a re-acceptance prompt.
+Screen: `desktop-p2-api-down.png`
+
+## HB-R1-14 — Back/forward and URLs don't follow the app · Minor
+In-app navigation adds no history entries, so the browser/phone Back button leaves Home Base (to the previous site or a blank page). Every path (`/settings`, `/files`, `/does-not-exist`, `#/settings`, `?tab=logs`) returns 200 and shows the last-used screen, so there are no deep links and no 404.
+
+## HB-R1-15 — Add-app wizard accepts a missing folder until the last step · Polish
+Steps: Apps → Add app → path `…/does-not-exist` → Continue (enabled) → Own project → Add app. Actual: only then a 400 "does not exist or is not a directory". Expected: check the path on step 1.
+Screen: `desktop-p2-w-badpath.png`
+
+## HB-R1-16 — Phone: floating Chat button covers terminal and editor content · Minor
+iPhone 14: the "Chat" pill sits on top of the terminal's last lines/prompt and the editor text; the terminal is only 48×12.
+Screens: `phone-p2-L-shell.png`, `phone-p2-L-files-editor.png`
+
+## HB-R1-17 — Phone: small tap targets · Polish
+Below 32 px on iPhone 14: breadcrumb crumbs (Files), Keys / ^C / ^D (Shell), "Copy line" (Logs).
