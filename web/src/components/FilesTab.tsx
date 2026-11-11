@@ -19,6 +19,7 @@ import { useSceneRefresh } from '../lib/sceneRefresh'
 import type { FsEntry, Project } from '../lib/types'
 import { readWorkPlace, writeWorkPlace } from '../lib/uiPrefs'
 import { registerLeaveBlocker } from '../lib/navGuard'
+import { formatFsAccessError } from '../lib/fsAccessError'
 import { AccessibleDialog } from './AccessibleDialog'
 
 function langExt(language: string) {
@@ -310,9 +311,9 @@ export function FilesTab({
     async (path: string, opts?: { keepFile?: boolean }) => {
       if (!project) return
       const abs = toAbs(path)
-      setError('')
       try {
         const data = await api.fsList(project.id, abs, { all: showAll })
+        setError('')
         setDir(abs)
         setEntries(data.entries)
         setFilter('')
@@ -323,7 +324,7 @@ export function FilesTab({
         }
         setNavOpen(true)
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e))
+        setError(formatFsAccessError(e, abs))
       }
     },
     [project?.id, showAll],
@@ -474,7 +475,7 @@ export function FilesTab({
       }
       if (window.innerWidth < 768) setNavOpen(false)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(formatFsAccessError(e))
     }
   }
 
@@ -488,7 +489,7 @@ export function FilesTab({
       setStatus(`saved ${filePath}`)
       setConfirm(null)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(formatFsAccessError(e))
       setStatus('save failed')
     } finally {
       setBusy(false)
@@ -572,9 +573,9 @@ export function FilesTab({
               ? 'bg-sky/15 text-sky'
               : 'text-mute hover:text-text hover:bg-panel-2'
           }`}
-          title="Linux root /"
+          title="Filesystem root (/)"
         >
-          / <span className="font-mono font-normal opacity-70">root</span>
+          Filesystem root (/)
         </button>
         {projects.map((p) => {
           const active = p.id === project.id
@@ -924,7 +925,11 @@ export function FilesTab({
               </button>
             </div>
           )}
-          {error && <p className="text-danger text-[10px] shrink-0">{error}</p>}
+          {error && (
+            <p className="text-danger text-[11px] leading-relaxed break-words min-w-0 basis-full" role="alert">
+              {error}
+            </p>
+          )}
         </div>
         {editorPane}
         {confirmDialog}
@@ -962,14 +967,18 @@ export function FilesTab({
 
           {explorerBar}
 
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-[11px] font-mono text-mute truncate min-w-0">
+          <div className="min-w-0 w-full space-y-1">
+            <p className="text-[11px] font-mono text-mute min-w-0 max-w-full break-words [overflow-wrap:anywhere]">
               <span className="text-sky/90">Home Base files</span>
               <span className="opacity-50"> · </span>
               {status || project.name}
               <span className="opacity-40"> — not Cursor’s open editor</span>
             </p>
-            {error && <p className="text-danger text-xs shrink-0">{error}</p>}
+            {error && (
+              <p className="text-danger text-sm leading-relaxed break-words" role="alert">
+                {error}
+              </p>
+            )}
           </div>
         </div>
       </div>

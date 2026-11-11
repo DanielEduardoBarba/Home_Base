@@ -231,9 +231,13 @@ export function PullToRefresh({ onRefresh }: { onRefresh: () => void | Promise<v
         transform: `translateY(${Math.max(offset * 0.3, 0)}px)`,
         transition: show ? 'none' : 'opacity 160ms ease',
       }}
-      aria-hidden
+      aria-hidden="true"
+      tabIndex={-1}
+      inert
     >
       <span
+        tabIndex={-1}
+        aria-hidden="true"
         className={`rounded-full border px-3 py-1.5 text-[11px] font-mono shadow-lg ${
           hard
             ? 'border-warn/50 bg-ink/95 text-warn'
@@ -242,7 +246,7 @@ export function PullToRefresh({ onRefresh }: { onRefresh: () => void | Promise<v
               : 'border-line bg-ink/90 text-mute'
         }`}
       >
-        {busy ? 'refreshing…' : cueLabel(offset)}
+        {show || busy ? (busy ? 'refreshing…' : cueLabel(offset)) : ''}
       </span>
     </div>
   )

@@ -810,7 +810,7 @@ app.get("/api/projects/:projectId/fs", async (c) => {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (msg === "not_found") throw new HttpError(404, "Not found");
-    if (msg.includes("escapes")) throw new HttpError(403, msg);
+    if (msg.includes("escapes") || msg.startsWith("Permission denied")) throw new HttpError(403, msg);
     throw new HttpError(400, msg);
   }
 });
