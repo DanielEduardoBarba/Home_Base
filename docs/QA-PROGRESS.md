@@ -41,3 +41,5 @@ Follow-up: the Next static export only pre-rendered `/`, so the App Router was s
 Follow-up: `tryServeStatic` treated any `..` substring as traversal, so it refused the Next catch-all chunk `app/[[...slug]]/*.js`. The guard now checks that the resolved path stays under `web/dist`.
 
 Follow-up: percent-encoded catch-all paths (`%5B%5B...slug%5D%5D`) also missed the file and fell back to `index.html`. Decode the pathname before the lookup.
+
+Follow-up: pre-render known tab paths (`/work/files`, `/view`, `/access`, …) via `generateStaticParams` and snapshot `location.pathname` before Next hydrates, so deep links are not rewritten to last-place `/work/apps`.
