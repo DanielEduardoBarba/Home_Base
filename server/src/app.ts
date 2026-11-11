@@ -397,26 +397,24 @@ app.post("/api/login", async (c) => {
       summary: `Web GUI login from ${ip}`,
       peerIp: ip,
     });
-    {
-      const local =
-        ip === "127.0.0.1" ||
-        ip === "::1" ||
-        ip === "localhost" ||
-        ip === "unknown";
-      upsertPresence({
-        id: `web:${ip}`,
-        kind: "human",
-        name: local ? "You" : "Person",
-        label: local ? "Signed in · this device" : "Signed in · remote",
-        peerIp: ip === "unknown" ? undefined : ip,
-        mood: "listening",
-        bubble: local
-          ? "Using Home Base in the browser"
-          : "Using Home Base remotely",
-        announce: true,
-      });
-    }
-    // Localhost login is expected (you at the laptop) — Presence window is enough.
+    const local =
+      ip === "127.0.0.1" ||
+      ip === "::1" ||
+      ip === "localhost" ||
+      ip === "unknown";
+    // Localhost human is tracked quietly; Presence window only opens for remotes.
+    upsertPresence({
+      id: `web:${ip}`,
+      kind: "human",
+      name: local ? "You" : "Person",
+      label: local ? "Signed in · this device" : "Signed in · remote",
+      peerIp: ip === "unknown" ? undefined : ip,
+      mood: "listening",
+      bubble: local
+        ? "Using Home Base in the browser"
+        : "Using Home Base remotely",
+      announce: !local,
+    });
     // Remote login: one quiet toast (presence join may also fire; long dedupe collapses it).
     if (!local) {
       desktopNotify("Remote sign-in", ip, {
@@ -1344,7 +1342,8 @@ app.post("/api/presence/heartbeat", async (c) => {
       : areaBit
         ? `Looking at ${areaBit}`
         : "Using Home Base remotely",
-    announce: true,
+    // Localhost heartbeat must not spam announce / drive the desktop popup alone.
+    announce: !local,
   });
   return c.json({ ok: true, actor });
 });

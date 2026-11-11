@@ -183,6 +183,31 @@ export function verifyPresenceUiToken(token: string | undefined | null): boolean
   return token === presenceUiToken();
 }
 
+/** Loopback / unknown — you on this laptop; never alone opens the Presence window. */
+export function isLocalPeerIp(ip: string | undefined | null): boolean {
+  if (!ip) return true;
+  const s = String(ip).trim().toLowerCase();
+  return (
+    s === "127.0.0.1" ||
+    s === "::1" ||
+    s === "localhost" ||
+    s === "unknown" ||
+    s === "::ffff:127.0.0.1"
+  );
+}
+
+/** VPN / LAN / other remote peer — human or AI. */
+export function isRemotePeerIp(ip: string | undefined | null): boolean {
+  return !isLocalPeerIp(ip);
+}
+
+function hasRemoteActors(): boolean {
+  for (const a of state.actors.values()) {
+    if (isRemotePeerIp(a.peerIp)) return true;
+  }
+  return false;
+}
+
 function pruneExpired(): void {
   const now = Date.now();
   let changed = false;
@@ -195,7 +220,7 @@ function pruneExpired(): void {
       appendTrace("info", `presence expired ${a.kind}:${a.name}`, "presence");
     }
   }
-  const wanted = state.actors.size > 0;
+  const wanted = hasRemoteActors();
   if (wanted !== state.windowWanted) {
     state.windowWanted = wanted;
     changed = true;
@@ -205,7 +230,7 @@ function pruneExpired(): void {
 
 function touchWindow(): void {
   ensurePrune();
-  const wanted = state.actors.size > 0;
+  const wanted = hasRemoteActors();
   if (wanted !== state.windowWanted) {
     state.windowWanted = wanted;
   }
@@ -258,21 +283,18 @@ export function upsertPresence(opts: {
   state.actors.set(opts.id, actor);
   touchWindow();
   if (isNew && opts.announce !== false) {
-    const localIp =
-      !actor.peerIp ||
-      actor.peerIp === "127.0.0.1" ||
-      actor.peerIp === "::1" ||
-      actor.peerIp === "localhost";
+    const localIp = isLocalPeerIp(actor.peerIp);
     const title =
       opts.kind === "ai" ? "AI connected" : "Someone signed in";
     const body = `${actor.name}${actor.peerIp && !localIp ? ` · ${actor.peerIp}` : ""}`;
-    // Inbox history still records joins; desktop tray stays quiet for local browser.
+    // Inbox history still records joins; desktop tray stays quiet for local-you.
     pushNotification(title, body, {
       level: opts.kind === "ai" ? "info" : "warn",
       category: "security",
       meta: { kind: opts.kind, id: opts.id, peerIp: actor.peerIp },
     });
-    if (!(opts.kind === "human" && localIp)) {
+    // No desktop toast for localhost (you on this machine) — human or AI.
+    if (!localIp) {
       desktopNotify(title, body, {
         urgency: "low",
         replaceKey: `presence:${opts.id}`,
@@ -328,7 +350,9 @@ export function listPresence(): PresenceActor[] {
 
 export function presenceWindowWanted(): boolean {
   pruneExpired();
-  return state.actors.size > 0;
+  // Only VPN/LAN remotes (human or AI) — never popup just because you opened
+  // the Web GUI on this laptop.
+  return hasRemoteActors();
 }
 
 export function pushPresenceChat(msg: {
@@ -368,9 +392,9 @@ export function presencePublic(): {
     chat: listPresenceChat(),
     windowWanted: presenceWindowWanted(),
     guidance:
-      "When remoted in via MCP, call homebase_presence_express to show mood/bubble on the operator desktop, " +
+      "When remoted in via MCP from VPN/LAN (not localhost), call homebase_presence_express to show mood/bubble on the operator desktop, " +
       "and homebase_presence_chat_send / _read to talk with the human at the laptop. " +
-      "The presence window appears automatically — you cannot hide it. Vision Arm stays human-only.",
+      "The presence window appears only for remote peers — you cannot hide it. Vision Arm stays human-only.",
   };
 }
 
