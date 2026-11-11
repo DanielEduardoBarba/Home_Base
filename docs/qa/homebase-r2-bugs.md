@@ -1,0 +1,35 @@
+# Home Base — Round 2 bugs (v1.17.5, 2026-11-11 America/New_York)
+
+Severity: Blocker > Major > Minor > Polish. Screenshots: `docs/qa/screenshots/homebase-r2/`.
+
+| ID | Severity | Summary | Status |
+|---|---|---|---|
+| HB-R2-01 | Minor | Opening an unreadable folder (`/root`) does nothing, with no message | Open |
+| HB-R2-02 | Polish | The "/ root" shortcut means the filesystem root but reads like the `/root` folder | Open |
+| HB-R2-03 | Polish | The phone shell key bar has no arrow keys | Open |
+| HB-R2-04 | Polish | Dashboard has an invisible Tab stop ("pull to refresh") with no focus ring | Open |
+| HB-R2-05 | Polish | At 360 px the Files subtitle runs off the screen | Open |
+
+## HB-R2-01 — Unreadable folder fails silently · Minor
+Steps: Work → Files → click "/" in the path bar → click `root`.
+Expected: a message such as "Permission denied — Home Base can't read /root".
+Actual: nothing happens. The list stays on "/", and the only sign is `400 GET /api/projects/homebase/fs` in the console. A user can't tell whether the click registered. Desktop and phone.
+Screen: `desktop-files-root-denied.png`
+
+## HB-R2-02 — "/ root" shortcut label is ambiguous · Polish
+Files → SHORTCUTS shows "/ root". It opens `/` (the filesystem root), while a real `/root` folder sits in the same list and can't be opened (HB-R2-01).
+Expected: a label like "Filesystem /" or "Computer".
+Screen: `desktop-files-root-denied.png`
+
+## HB-R2-03 — Phone shell keys: no arrows · Polish
+iPhone 14 → Shell → New shell → Keys. The bar offers Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+L, Esc and Tab.
+Expected: ↑ ↓ ← → for command history and cursor movement; iOS keyboards have none. Common shell symbols (`|`, `~`, `/`, `-`) would also help.
+Screen: `phone-shell-keys.png`
+
+## HB-R2-04 — Invisible focus stop on the dashboard · Polish
+Steps: Dashboard → press Tab. Agent → Work → Access → Vision → Settings, then focus lands on a "pull to refresh" element with no visible ring and no action.
+Expected: the pull-to-refresh wrapper is not focusable (or is skipped).
+
+## HB-R2-05 — 360 px: Files subtitle overflows · Polish
+At 360×740 the line "Home Base files · /home/box/… — not Cursor's open editor" is wider than the screen; its text span ends past the right edge.
+Screen: `narrow-L-files.png`
