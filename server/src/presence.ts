@@ -392,9 +392,11 @@ export function presencePublic(): {
     chat: listPresenceChat(),
     windowWanted: presenceWindowWanted(),
     guidance:
-      "When remoted in via MCP from VPN/LAN (not localhost), call homebase_presence_express to show mood/bubble on the operator desktop, " +
-      "and homebase_presence_chat_send / _read to talk with the human at the laptop. " +
-      "The presence window appears only for remote peers — you cannot hide it. Vision Arm stays human-only.",
+      "When remoted in via MCP from VPN/LAN (not localhost), call homebase_presence_express so the operator " +
+      "desktop Presence card shows your Grok-style blob: mood, form (pill|cloud|drop|circle|hex|diamond|soft|cluster), " +
+      "color (#hex), energy (0..1), bubble, name. Front = character; back = details+chat. " +
+      "Use homebase_presence_chat_send / _read sparingly. Window appears only for remote peers — you cannot hide it. " +
+      "Vision Arm stays human-only.",
   };
 }
 

@@ -108,7 +108,7 @@ Writable state: `/var/lib/homebased` (`HOMEBASE_HOME`). Unit **homebased** runs 
 
 ## Capabilities vs non-goals
 
-- **Supports:** local Cursor agents (Home Base context + `homebase_*` in-process tools), optional network **MCP** at `/mcp` (master ON; feature groups incl. presence ON / vision OFF; MCP tokens blocked from Web `/api`; desktop presence window + presence chat tools; human-only activity audit), project actions/PTY, Files, View, Vision (Armed), WireGuard/Cloudflare, Home Access, durable chats under `.runtime/chats/`. Grok bot paste guide: `docs/GROK_MCP.md`.
+- **Supports:** local Cursor agents (Home Base context + `homebase_*` in-process tools), optional network **MCP** at `/mcp` (master ON; feature groups incl. presence ON / vision OFF; MCP tokens blocked from Web `/api`; desktop Presence window for VPN/LAN remotes only — Grok-style blob via `homebase_presence_express` mood/form/color/energy/bubble + presence chat; human-only activity audit), project actions/PTY, Files, View, Vision (Armed), WireGuard/Cloudflare, Home Access, optional email alerts (suspicious auth + AI-away), durable chats under `.runtime/chats/`. Grok bot paste guide: `docs/GROK_MCP.md`.
 - **Self-deploy / restart:** `./build.sh --deploy` from a Chat/Shell PTY under homebased schedules a detached systemd oneshot (not killed by `KillMode=control-group`). API `POST /api/system/restart/homebased` and tool `homebase_restart_homebased` use `systemd-run --on-active=1s` the same way.
 - **Does not:** Cursor IDE buffer sync, cloud agents, public internet exposure, Wayland capture (X11 / XWayland only)
 

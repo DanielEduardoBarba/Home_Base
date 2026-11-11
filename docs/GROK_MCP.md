@@ -18,6 +18,28 @@ Grok Bot tokens are burned when you read files, edit, run tests, and retry **ste
 
 ---
 
+## Presence (expressive desktop character)
+
+When you connect over **VPN/LAN** (not localhost), Home Base pops a small **Presence** window on the operator’s laptop:
+
+- **Front:** your **Grok-style blob** — silhouette (`form`), `color`, `mood` face, `energy` (0..1 motion), and a short `bubble`.
+- **Back:** details list + chat (operator can flip the card).
+
+Call **`homebase_presence_express`** when you arrive and whenever state changes (listening → working → happy/alert). Prefer **mood + form + color + energy + bubble** over dumping status into presence chat. Chat is for questions only; job results go to the Development Team room.
+
+The window does **not** open for the human using Home Base in a browser on the laptop itself — only remote humans/AIs.
+
+| Field | Values |
+|---|---|
+| `mood` | `idle` · `thinking` · `happy` · `alert` · `working` · `listening` |
+| `form` | `pill` · `cloud` · `drop` · `circle` · `hex` · `diamond` · `soft` · `cluster` |
+| `color` | `#hex` (e.g. `#7c5cff`) |
+| `energy` | `0`..`1` (calm → expressive) |
+| `bubble` | ≤160 chars |
+| `name` | display name (e.g. `Developer`) |
+
+---
+
 ## Human setup (Developer pilot)
 
 One-week pilot for a single **Developer** bot. Start with **one small ticket** to verify billing before a full week.
@@ -113,9 +135,14 @@ CONNECTION
 - Job-done webhook (optional): __JOB_DONE_WEBHOOK__
   (Create a Developer routine with a webhook trigger; paste that HTTPS URL here.)
 
+PRESENCE (VPN/LAN only — desktop blob on the laptop)
+- Front of the Presence card = your cartoon blob (form/color/mood/energy/bubble). Flip/back = details + chat.
+- Express with homebase_presence_express; keep chat short. Do not paste job summaries into presence chat.
+- Window does not pop for the human on localhost — only remote MCP/Web peers.
+
 ON CONNECT
 1. homebase_system_status
-2. homebase_presence_express — name "Developer", mood=listening, form=hex|cloud|drop…, color=#hex, energy=0..1, bubble="Ready for job handoff"
+2. homebase_presence_express — name "Developer", mood=listening, form=hex (or cloud/drop/…), color=#7c5cff, energy=0.5, bubble="Ready for job handoff"
 3. homebase_list_projects
 4. Wait for a ticket
 
@@ -125,7 +152,7 @@ ONE JOB AT A TIME
 - Home Base will reject overlapping jobs for the same project.
 
 JOB HANDOFF
-1. presence_express mood=working, bubble="Cursor: <ticket>"
+1. presence_express mood=working, form=hex, energy=0.8, bubble="Cursor: <ticket>"
 2. homebase_cursor_job:
    - projectId + full prompt
    - branch: development_grok (default)
@@ -135,7 +162,7 @@ JOB HANDOFF
 3. Read summary (≤10 lines) + commit.short
 4. Post ONCE to Development Team room
 5. git pull origin development_grok on ~/APP_PROJECTS
-6. presence_express mood=happy|alert — short bubble only
+6. presence_express mood=happy|alert, energy=0.4, bubble short only (e.g. "done · <short hash>")
 
 SUMMARY CONTRACT
 - ≤10 lines: what changed; tests pass/fail; commit short + branch; blocker or "none"
@@ -202,6 +229,9 @@ Placeholders:
 | `homebase_cursor_job` | One job per project at a time; `callbackUrl` or `waitMs: 600000` |
 | `homebase_cursor_job_status` | Rare (≥5 min) |
 | `homebase_cursor_job_list` | See active/recent |
+| `homebase_presence_express` | Blob on laptop: `mood` / `form` / `color` / `energy` / `bubble` / `name` |
+| `homebase_presence_status` | Who is remoted in + guidance |
+| `homebase_presence_chat_send` / `_read` | Short questions only (not job reports) |
 
 ---
 

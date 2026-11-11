@@ -754,9 +754,10 @@ export function buildHomebaseTools(
     tools.homebase_presence_status = {
       description:
         "Desktop presence for the human at the laptop: who is remoted in (web humans vs MCP AIs), " +
-        "chat transcript, and guidance. The operator sees a native window with your character — " +
-        "you cannot remoted in silently. Use homebase_presence_express to show mood/bubble and " +
-        "homebase_presence_chat_send/_read to talk with the operator.",
+        "chat transcript, and guidance. Over VPN/LAN the operator sees a native Presence window — " +
+        "front is your Grok-style blob (form/color/mood/energy/bubble); back is details+chat. " +
+        "Localhost Web GUI on the laptop does not open the window. " +
+        "Use homebase_presence_express to update your character; chat tools sparingly.",
       parameters: { type: "object", properties: {} },
       execute: async () => {
         const { presencePublic } = await import("./presence");
@@ -765,21 +766,30 @@ export function buildHomebaseTools(
     };
     tools.homebase_presence_express = {
       description:
-        "Update your cartoon character on the operator's Presence window (Grok-style blob). " +
-        "Call when you arrive and whenever state changes. " +
+        "Update your cartoon on the operator Presence window (Grok-style blob on the front of the card). " +
+        "Call when you arrive over VPN/LAN and whenever state changes. " +
         "mood: idle|thinking|happy|alert|working|listening. " +
         "form: pill|cloud|drop|circle|hex|diamond|soft|cluster. " +
         "color: #hex. energy: 0..1 expressiveness. bubble: ≤160 chars. name: display name. " +
-        "Does not Arm Vision or bypass security.",
+        "Prefer this over presence chat for status. Does not Arm Vision or bypass security.",
       parameters: {
         type: "object",
         properties: {
-          mood: { type: "string" },
-          bubble: { type: "string" },
-          name: { type: "string" },
-          form: { type: "string" },
-          color: { type: "string" },
-          energy: { type: "number" },
+          mood: {
+            type: "string",
+            description: "idle|thinking|happy|alert|working|listening",
+          },
+          bubble: { type: "string", description: "Short caption ≤160 chars" },
+          name: { type: "string", description: "Display name on the blob" },
+          form: {
+            type: "string",
+            description: "pill|cloud|drop|circle|hex|diamond|soft|cluster",
+          },
+          color: { type: "string", description: "#hex blob color" },
+          energy: {
+            type: "number",
+            description: "0..1 animation / expressiveness",
+          },
           actorId: {
             type: "string",
             description: "Stable id for this bot (default mcp-default)",
