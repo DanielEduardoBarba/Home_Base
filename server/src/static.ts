@@ -54,10 +54,18 @@ export function tryServeStatic(
   const rootPrefix = rootResolved.endsWith("/") ? rootResolved : `${rootResolved}/`;
   if (filePath !== rootResolved && !filePath.startsWith(rootPrefix)) return null;
   if (!existsSync(filePath) || statSync(filePath).isDirectory()) {
-    // SPA fallback
-    filePath = join(root, "index.html");
-    if (!existsSync(filePath)) return null;
-    rel = "/index.html";
+    const htmlPath = existsSync(filePath) && statSync(filePath).isDirectory()
+      ? join(filePath, "index.html")
+      : `${filePath}.html`;
+    if (htmlPath.startsWith(rootPrefix) && existsSync(htmlPath) && statSync(htmlPath).isFile()) {
+      filePath = htmlPath;
+      rel = htmlPath.slice(rootResolved.length);
+    } else {
+      // SPA fallback
+      filePath = join(root, "index.html");
+      if (!existsSync(filePath)) return null;
+      rel = "/index.html";
+    }
   }
 
   const enc = acceptEncoding.toLowerCase();
