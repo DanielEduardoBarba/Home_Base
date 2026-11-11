@@ -49,12 +49,11 @@ describe("static precompress + cache", () => {
     expect(res!.headers.get("vary")).toBe("Accept-Encoding");
     expect(res!.headers.get("cache-control")).toContain("immutable");
   });
-});
 
   test("serves Next catch-all chunk whose path contains .. as a substring", () => {
     const root = distRoot();
     const dir = join(root, "_next/static/chunks/app/[[...slug]]");
-    if (!existsSync(dir)) return;
+    expect(existsSync(dir)).toBe(true);
     const name = readdirSync(dir).find((n) => n.endsWith(".js") && !n.endsWith(".map"));
     expect(name).toBeTruthy();
     const rel = `/_next/static/chunks/app/[[...slug]]/${name}`;
@@ -64,10 +63,26 @@ describe("static precompress + cache", () => {
     expect(res!.headers.get("content-type") || "").toContain("javascript");
   });
 
+  test("serves the catch-all chunk when the path is percent-encoded", async () => {
+    const root = distRoot();
+    const dir = join(root, "_next/static/chunks/app/[[...slug]]");
+    const name = readdirSync(dir).find((n) => n.endsWith(".js") && !n.endsWith(".map"));
+    expect(name).toBeTruthy();
+    const encoded = `/_next/static/chunks/app/${encodeURIComponent("[[...slug]]")}/${name}`;
+    const res = tryServeStatic(encoded, "identity");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(200);
+    expect(res!.headers.get("content-type") || "").toContain("javascript");
+    const buf = Buffer.from(await res!.arrayBuffer());
+    expect(buf.byteLength).toBeGreaterThan(10_000);
+  });
+
   test("rejects path traversal outside dist", () => {
     const res = tryServeStatic("/_next/static/../../../etc/passwd", "identity");
-    // Either null or the SPA index fallback — never a file outside dist.
     if (res) {
       expect(res.headers.get("content-type") || "").toContain("html");
+    } else {
+      expect(res).toBeNull();
     }
   });
+});
