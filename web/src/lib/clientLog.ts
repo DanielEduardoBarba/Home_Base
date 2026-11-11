@@ -11,6 +11,20 @@ let installed = false
 const pendingPush: ClientLogLine[] = []
 let flushTimer: ReturnType<typeof setTimeout> | null = null
 const MAX_PENDING = 50
+const READY_FLAG = 'hb-client-log-ready'
+const READY_MESSAGE = 'client log ready'
+
+/** Drop consecutive duplicates; also drop a repeated "client log ready". */
+export function shouldRecordClientLog(
+  pending: ClientLogLine[],
+  line: ClientLogLine,
+  alreadyReady: boolean,
+): boolean {
+  if (line.message === READY_MESSAGE && alreadyReady) return false
+  const last = pending[pending.length - 1]
+  if (last && last.level === line.level && last.message === line.message) return false
+  return true
+}
 
 function push(level: string, args: unknown[]) {
   const message = args
@@ -24,6 +38,21 @@ function push(level: string, args: unknown[]) {
     })
     .join(' ')
     .slice(0, 2000)
+
+  let alreadyReady = false
+  try {
+    alreadyReady = sessionStorage.getItem(READY_FLAG) === '1'
+  } catch {
+    /* ignore */
+  }
+  if (!shouldRecordClientLog(pendingPush, { level, message }, alreadyReady)) return
+  if (message === READY_MESSAGE) {
+    try {
+      sessionStorage.setItem(READY_FLAG, '1')
+    } catch {
+      /* ignore */
+    }
+  }
 
   pendingPush.push({ level, message })
   if (pendingPush.length > MAX_PENDING) pendingPush.splice(0, pendingPush.length - MAX_PENDING)
@@ -74,5 +103,5 @@ export function installClientLog() {
       orig(...args)
     }
   }
-  push('info', ['client log ready'])
+  push('info', [READY_MESSAGE])
 }

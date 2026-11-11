@@ -5,7 +5,7 @@ import { LEGAL_DOC_VERSION } from '../lib/legalDocs'
 import { isLocalHostPage } from '../lib/types'
 import { BrandTitle } from './BrandTitle'
 import { LegalAbout } from './LegalAbout'
-import { LegalGate } from './LegalGate'
+import { LegalConnectionError, LegalGate } from './LegalGate'
 import { useServerIdentity } from '../lib/serverIdentity'
 
 const AUTH_REASON_COPY: Record<string, string> = {
@@ -64,6 +64,8 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
   const [autoStatus, setAutoStatus] = useState('')
   const [canBootstrap, setCanBootstrap] = useState<boolean | null>(null)
   const [legalOk, setLegalOk] = useState<boolean | null>(null)
+  const [legalError, setLegalError] = useState(false)
+  const [legalRetrying, setLegalRetrying] = useState(false)
   const local = isLocalHostPage()
   const { displayName } = useServerIdentity()
 
@@ -79,28 +81,50 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
   }, [retryAfter])
 
   useEffect(() => {
+    let cancelled = false
+    let timer = 0
+
+    const applyLegal = (legal: { accepted?: boolean; version?: string }) => {
+      setLegalError(false)
+      setLegalOk(!!legal.accepted && legal.version === LEGAL_DOC_VERSION)
+    }
+
+    const loadLegal = () =>
+      api
+        .legalStatus()
+        .then((l) => {
+          if (!cancelled) applyLegal(l)
+        })
+        .catch(() => {
+          if (cancelled) return
+          setLegalError(true)
+          setLegalOk(null)
+          setLegalRetrying(false)
+          timer = window.setTimeout(() => {
+            setLegalRetrying(true)
+            void loadLegal()
+          }, 4000)
+        })
+
     api
       .authStatus()
       .then((s) => {
+        if (cancelled) return
         setCanBootstrap(!!s.canBootstrap)
         if (s.lockout?.locked) setRetryAfter(s.lockout.retryAfter)
         const legal = s.legal
-        if (legal) {
-          setLegalOk(!!legal.accepted && legal.version === LEGAL_DOC_VERSION)
-        } else {
-          void api
-            .legalStatus()
-            .then((l) => setLegalOk(!!l.accepted && l.version === LEGAL_DOC_VERSION))
-            .catch(() => setLegalOk(false))
-        }
+        if (legal) applyLegal(legal)
+        else void loadLegal()
       })
       .catch(() => {
+        if (cancelled) return
         setCanBootstrap(false)
-        void api
-          .legalStatus()
-          .then((l) => setLegalOk(!!l.accepted && l.version === LEGAL_DOC_VERSION))
-          .catch(() => setLegalOk(false))
+        void loadLegal()
       })
+    return () => {
+      cancelled = true
+      if (timer) window.clearTimeout(timer)
+    }
   }, [])
 
   useEffect(() => {
@@ -190,6 +214,25 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
       setError(message)
       if (wait > 0) setRetryAfter(wait)
     }
+  }
+
+  if (legalError) {
+    return (
+      <LegalConnectionError
+        busy={legalRetrying}
+        onRetry={() => {
+          setLegalRetrying(true)
+          void api
+            .legalStatus()
+            .then((l) => {
+              setLegalError(false)
+              setLegalOk(!!l.accepted && l.version === LEGAL_DOC_VERSION)
+            })
+            .catch(() => setLegalRetrying(false))
+            .finally(() => setLegalRetrying(false))
+        }}
+      />
+    )
   }
 
   if (legalOk === null) {

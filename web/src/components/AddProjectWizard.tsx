@@ -99,6 +99,25 @@ export function AddProjectWizard({ open, onClose, onAdded }: Props) {
 
   const pathOk = path.trim().startsWith('/')
   const nameOk = Boolean(name.trim())
+
+  async function goNextFromFolder() {
+    if (!pathOk || !nameOk || busy) return
+    setBusy(true)
+    setError('')
+    try {
+      const stat = await api.hostStat(path.trim())
+      if (!stat.exists || !stat.isDirectory) {
+        setError(stat.error || 'Folder not found — pick an existing directory.')
+        return
+      }
+      setPath(stat.path || path.trim())
+      setStep(1)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
   const modeLabel = preset
     ? selectablePresets.find((p) => p.id === preset)?.name || preset
     : 'Own project (blank)'
@@ -225,18 +244,19 @@ export function AddProjectWizard({ open, onClose, onAdded }: Props) {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && pathOk && nameOk) {
                     e.preventDefault()
-                    setStep(1)
+                    void goNextFromFolder()
                   }
                 }}
               />
             </div>
+            {error && <p className="text-danger text-sm">{error}</p>}
             <button
               type="button"
               className="hb-btn hb-btn-primary w-full !min-h-11"
-              disabled={!pathOk || !nameOk}
-              onClick={() => setStep(1)}
+              disabled={!pathOk || !nameOk || busy}
+              onClick={() => void goNextFromFolder()}
             >
-              Continue
+              {busy ? 'Checking folder…' : 'Continue'}
             </button>
           </div>
         )}

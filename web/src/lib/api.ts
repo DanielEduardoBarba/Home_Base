@@ -667,7 +667,11 @@ export const api = {
   projects: () => request<{ projects: Project[] }>('/api/projects'),
   presets: () =>
     request<{ presets: { id: string; name: string }[] }>('/api/presets'),
-  upsertProject: (body: {
+  hostStat: (path: string) =>
+    request<{ path: string; exists: boolean; isDirectory?: boolean; error?: string }>(
+      `/api/fs/host-stat?path=${encodeURIComponent(path)}`,
+    ),
+    upsertProject: (body: {
     path: string
     preset?: string
     id?: string

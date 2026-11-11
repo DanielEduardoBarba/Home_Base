@@ -203,6 +203,38 @@ function slugId(s: string): string {
   );
 }
 
+/** Check an absolute host path before adding a project (wizard folder step). */
+export function statHostPath(input: string): {
+  path: string;
+  exists: boolean;
+  isDirectory?: boolean;
+  error?: string;
+} {
+  const trimmed = String(input || "").trim();
+  if (!trimmed || !trimmed.startsWith("/")) {
+    return { path: trimmed, exists: false, error: "path must be an absolute directory" };
+  }
+  if (trimmed.includes("\0")) {
+    return { path: trimmed, exists: false, error: "invalid path" };
+  }
+  const abs = resolve(trimmed);
+  try {
+    if (!existsSync(abs)) {
+      return { path: abs, exists: false, error: `path does not exist: ${abs}` };
+    }
+    if (!statSync(abs).isDirectory()) {
+      return { path: abs, exists: true, isDirectory: false, error: `path is not a directory: ${abs}` };
+    }
+    return { path: abs, exists: true, isDirectory: true };
+  } catch (e) {
+    return {
+      path: abs,
+      exists: false,
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
 /** Upsert from preset name and/or raw fields (used by REST + Chat tools). */
 export function upsertProjectFromInput(input: {
   path: string;

@@ -19,11 +19,17 @@ export function setTraceMirrorConsole(enabled: boolean): void {
   mirrorConsole = enabled;
 }
 
+const DEDUPE_ONCE = new Set(["client log ready"]);
+
 export function appendTrace(
   level: string,
   message: string,
   source = "server",
 ): TraceLine {
+  if (DEDUPE_ONCE.has(message)) {
+    const existing = ring.find((l) => l.source === source && l.message === message);
+    if (existing) return existing;
+  }
   const line: TraceLine = {
     id: nextId++,
     ts: Date.now() / 1000,

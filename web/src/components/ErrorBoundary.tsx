@@ -1,8 +1,18 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { clearAppCache } from '../lib/theme'
+import { clearWorkPlaces } from '../lib/uiPrefs'
 
 type Props = { children: ReactNode }
 type State = { error: Error | null }
+
+function resetWorkPlaceAndReload() {
+  try {
+    clearWorkPlaces()
+  } catch {
+    /* ignore */
+  }
+  window.location.reload()
+}
 
 /**
  * Prevents a render crash from leaving only the themed body background
@@ -39,9 +49,17 @@ export class ErrorBoundary extends Component<Props, State> {
           </button>
           <button
             type="button"
+            className="hb-btn hb-btn-primary"
+            onClick={resetWorkPlaceAndReload}
+          >
+            Reset workspace view
+          </button>
+          <button
+            type="button"
             className="hb-btn hb-btn-ghost"
             onClick={() => {
               try {
+                clearWorkPlaces()
                 clearAppCache()
                 localStorage.removeItem('hb-ui-tab')
                 localStorage.removeItem('hb-chat-dock-open')

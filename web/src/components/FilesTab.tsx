@@ -18,6 +18,7 @@ import { api } from '../lib/api'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 import type { FsEntry, Project } from '../lib/types'
 import { readWorkPlace, writeWorkPlace } from '../lib/uiPrefs'
+import { registerLeaveBlocker } from '../lib/navGuard'
 import { AccessibleDialog } from './AccessibleDialog'
 
 function langExt(language: string) {
@@ -133,6 +134,7 @@ type ConfirmKind =
   | { type: 'save' }
   | { type: 'revert' }
   | { type: 'navigate'; path: string }
+  | { type: 'leave' }
   | null
 
 export function FilesTab({
@@ -173,6 +175,10 @@ export function FilesTab({
   const baselineRef = useRef('')
   const [language, setLanguage] = useState('plaintext')
   const [dirty, setDirty] = useState(false)
+  const dirtyRef = useRef(false)
+  dirtyRef.current = dirty
+  const leaveResolvers = useRef<Array<(ok: boolean) => void>>([])
+
   /** True only after the user edits the editor (not when AI diffs are presented). */
   const [userEdited, setUserEdited] = useState(false)
   const [status, setStatus] = useState('')
@@ -514,6 +520,42 @@ export function FilesTab({
   const editing = !!filePath && !navOpen
   const hereLabel = leafName(dir)
 
+  const onEditorChange = useCallback(
+    (v: string) => {
+      setContent(v)
+      setDirty(v !== savedContent)
+      setUserEdited(v !== baselineRef.current)
+    },
+    [savedContent],
+  )
+
+  const settleLeave = (ok: boolean) => {
+    const resolvers = leaveResolvers.current
+    leaveResolvers.current = []
+    for (const resolve of resolvers) resolve(ok)
+  }
+
+  useEffect(() => {
+    const unregister = registerLeaveBlocker(() => {
+      if (!dirtyRef.current) return true
+      return new Promise<boolean>((resolve) => {
+        leaveResolvers.current.push(resolve)
+        setConfirm({ type: 'leave' })
+      })
+    })
+    return unregister
+  }, [])
+
+  useEffect(() => {
+    if (!dirty) return
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [dirty])
+
   if (!project) {
     return <p className="hb-page text-mute text-sm">Add a workspace to browse files.</p>
   }
@@ -569,7 +611,7 @@ export function FilesTab({
       )}
 
       <nav
-        className="flex-1 min-w-0 flex items-center gap-0.5 overflow-x-auto rounded-[var(--radius-control)] border border-line bg-panel-2/90 px-1.5 py-1 font-mono text-[12px]"
+        className="hb-files-path-nav flex-1 min-w-0 flex items-center gap-0.5 overflow-x-auto rounded-[var(--radius-control)] border border-line bg-panel-2/90 px-1.5 py-1 font-mono text-[12px]"
         aria-label="Path"
       >
         <span
@@ -701,19 +743,13 @@ export function FilesTab({
     </ul>
   )
 
-  const onEditorChange = useCallback(
-    (v: string) => {
-      setContent(v)
-      setDirty(v !== savedContent)
-      setUserEdited(v !== baselineRef.current)
-    },
-    [savedContent],
-  )
-
   const confirmDialog = confirm ? (
     <AccessibleDialog
       open
-      onClose={() => setConfirm(null)}
+      onClose={() => {
+        if (confirm.type === 'leave') settleLeave(false)
+        setConfirm(null)
+      }}
       confirm
       focusKey={confirm.type}
       title={
@@ -721,7 +757,9 @@ export function FilesTab({
           ? 'Are you sure?'
           : confirm.type === 'revert'
             ? 'Revert changes?'
-            : 'Discard unsaved changes?'
+            : confirm.type === 'leave'
+              ? 'Leave without saving?'
+              : 'Discard unsaved changes?'
       }
       panelClassName="w-full max-w-sm hb-surface p-4 sm:p-5 space-y-4 hb-enter"
     >
@@ -730,14 +768,19 @@ export function FilesTab({
             ? `This will write your edits to disk${filePath ? `:\n${filePath}` : '.'}`
             : confirm.type === 'revert'
               ? 'Unsaved edits will be lost.'
-              : 'You have unsaved edits. Continue without saving?'}
+              : confirm.type === 'leave'
+                ? 'You have unsaved edits. Leave without saving?'
+                : 'You have unsaved edits. Continue without saving?'}
         </p>
         <div className="flex gap-2 justify-end">
           <button
             type="button"
             className="hb-btn hb-btn-ghost text-sm"
             data-dialog-cancel
-            onClick={() => setConfirm(null)}
+            onClick={() => {
+              if (confirm.type === 'leave') settleLeave(false)
+              setConfirm(null)
+            }}
           >
             Cancel
           </button>
@@ -759,6 +802,12 @@ export function FilesTab({
               type="button"
               className="hb-btn hb-btn-danger text-sm"
               onClick={() => {
+                if (confirm.type === 'leave') {
+                  setConfirm(null)
+                  setDirty(false)
+                  settleLeave(true)
+                  return
+                }
                 const path = confirm.path
                 setConfirm(null)
                 setDirty(false)
