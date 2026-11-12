@@ -93,7 +93,7 @@ export const MCP_FEATURE_META: {
   {
     id: "projects",
     label: "Projects & actions",
-    hint: "List / upsert / delete projects, run actions, stop, Cursor job handoff",
+    hint: "List / upsert / delete projects, run actions, stop, Cursor job handoff, safe git",
     defaultOn: true,
   },
   {
@@ -140,6 +140,17 @@ export const MCP_TOOL_FEATURE: Record<string, McpFeatureId> = {
   homebase_cursor_job: "projects",
   homebase_cursor_job_status: "projects",
   homebase_cursor_job_list: "projects",
+  homebase_git_status: "projects",
+  homebase_git_branches: "projects",
+  homebase_git_log: "projects",
+  homebase_git_fetch: "projects",
+  homebase_git_pull: "projects",
+  homebase_git_checkout: "projects",
+  homebase_git_create_branch: "projects",
+  homebase_git_merge: "projects",
+  homebase_git_commit: "projects",
+  homebase_git_push: "projects",
+  homebase_git_stash: "projects",
   homebase_notifications: "notifications",
   homebase_notify: "notifications",
   homebase_system_status: "status",
@@ -429,6 +440,60 @@ export function buildHomebaseTools(
       ),
   };
 
+  const runProjectGit = async (
+    args: Record<string, unknown>,
+    action: import("./git").GitAction,
+  ) => {
+    const { runGitAction } = await import("./git");
+    const { mcpGitWriteAllowed } = await import("./mcp_server");
+    const pid = resolvePid(args);
+    const p = loadProjects().get(pid);
+    if (!p) return json({ ok: false, error: "project not found" });
+    const result = runGitAction(p, action, {
+      surface: surface === "mcp" ? "mcp" : "gui",
+      mcpWriteAllowed: surface === "mcp" ? mcpGitWriteAllowed() : true,
+    });
+    return json(result);
+  };
+
+  tools.homebase_git_status = {
+    description:
+      "Git status for a registered project: branch, ahead/behind, changed files, recent commits. Read-only.",
+    parameters: {
+      type: "object",
+      properties: { projectId: { type: "string" } },
+      required: ["projectId"],
+    },
+    execute: async (args) => runProjectGit(args, { action: "status" }),
+  };
+  tools.homebase_git_branches = {
+    description:
+      "List local and remote branches for a registered project. Read-only.",
+    parameters: {
+      type: "object",
+      properties: { projectId: { type: "string" } },
+      required: ["projectId"],
+    },
+    execute: async (args) => runProjectGit(args, { action: "branches" }),
+  };
+  tools.homebase_git_log = {
+    description:
+      "Recent commits for a registered project (limited). Read-only.",
+    parameters: {
+      type: "object",
+      properties: {
+        projectId: { type: "string" },
+        limit: { type: "number", description: "Max commits (default 15, max 50)" },
+      },
+      required: ["projectId"],
+    },
+    execute: async (args) =>
+      runProjectGit(args, {
+        action: "log",
+        limit: args.limit != null ? Number(args.limit) : 15,
+      }),
+  };
+
   if (!readonly) {
     tools.homebase_project_upsert = {
       description:
@@ -628,6 +693,150 @@ export function buildHomebaseTools(
         const p = loadProjects().get(pid);
         if (!p) return json({ error: "project not found" });
         return json({ killedSessions: stopProject(p) });
+      },
+    };
+    tools.homebase_git_fetch = {
+      description:
+        "git fetch --all for a project. Write action — MCP requires Settings → Allow MCP git write actions.",
+      parameters: {
+        type: "object",
+        properties: { projectId: { type: "string" } },
+        required: ["projectId"],
+      },
+      execute: async (args) => runProjectGit(args, { action: "fetch" }),
+    };
+    tools.homebase_git_pull = {
+      description:
+        "git pull --no-rebase --ff (refuses dirty tree). MCP write toggle required.",
+      parameters: {
+        type: "object",
+        properties: { projectId: { type: "string" } },
+        required: ["projectId"],
+      },
+      execute: async (args) => runProjectGit(args, { action: "pull" }),
+    };
+    tools.homebase_git_checkout = {
+      description:
+        "Switch to an existing local/remote branch (refuses dirty tree). MCP write toggle required.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string" },
+          branch: { type: "string" },
+        },
+        required: ["projectId", "branch"],
+      },
+      execute: async (args) =>
+        runProjectGit(args, {
+          action: "checkout",
+          branch: String(args.branch || ""),
+        }),
+    };
+    tools.homebase_git_create_branch = {
+      description:
+        "Create a new branch from current HEAD or a named base, then switch to it. MCP write toggle required.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string" },
+          name: { type: "string" },
+          base: { type: "string", description: "Optional base branch/commit" },
+          checkout: {
+            type: "boolean",
+            description: "Switch to the new branch (default true)",
+          },
+        },
+        required: ["projectId", "name"],
+      },
+      execute: async (args) =>
+        runProjectGit(args, {
+          action: "create_branch",
+          name: String(args.name || ""),
+          base: args.base != null ? String(args.base) : undefined,
+          checkout: args.checkout !== false,
+        }),
+    };
+    tools.homebase_git_merge = {
+      description:
+        "Merge a branch into the current branch (optional --no-ff). Aborts on conflict by default. MCP write toggle required.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string" },
+          branch: { type: "string", description: "Source branch to merge in" },
+          noFf: { type: "boolean" },
+          abortOnConflict: {
+            type: "boolean",
+            description: "Default true — git merge --abort on conflicts",
+          },
+        },
+        required: ["projectId", "branch"],
+      },
+      execute: async (args) =>
+        runProjectGit(args, {
+          action: "merge",
+          branch: String(args.branch || ""),
+          noFf: args.noFf === true,
+          abortOnConflict: args.abortOnConflict !== false,
+        }),
+    };
+    tools.homebase_git_commit = {
+      description:
+        "Stage all (default) and commit with a message. MCP write toggle required. Never force.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string" },
+          message: { type: "string" },
+          stageAll: {
+            type: "boolean",
+            description: "Stage all changes before commit (default true)",
+          },
+        },
+        required: ["projectId", "message"],
+      },
+      execute: async (args) =>
+        runProjectGit(args, {
+          action: "commit",
+          message: String(args.message || ""),
+          stageAll: args.stageAll !== false,
+        }),
+    };
+    tools.homebase_git_push = {
+      description:
+        "Push current branch to origin (never --force). MCP write toggle required.",
+      parameters: {
+        type: "object",
+        properties: { projectId: { type: "string" } },
+        required: ["projectId"],
+      },
+      execute: async (args) => runProjectGit(args, { action: "push" }),
+    };
+    tools.homebase_git_stash = {
+      description:
+        "Stash push / list / pop (no drop/clear). push and pop need MCP write toggle; list is read-only but still here.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string" },
+          mode: {
+            type: "string",
+            description: "push | list | pop",
+          },
+          message: { type: "string", description: "Optional stash message for push" },
+        },
+        required: ["projectId", "mode"],
+      },
+      execute: async (args) => {
+        const mode = String(args.mode || "").toLowerCase();
+        if (mode !== "push" && mode !== "list" && mode !== "pop") {
+          return json({ ok: false, error: "mode must be push|list|pop" });
+        }
+        return runProjectGit(args, {
+          action: "stash",
+          mode: mode as "push" | "list" | "pop",
+          message: args.message != null ? String(args.message) : undefined,
+        });
       },
     };
     tools.homebase_notify = {

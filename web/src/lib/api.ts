@@ -260,6 +260,7 @@ export const api = {
     request<{
       enabled: boolean
       allowMcpWorkspaceCreate: boolean
+      allowMcpGitWrite: boolean
       features: {
         projects: boolean
         notifications: boolean
@@ -306,6 +307,7 @@ export const api = {
   setMcpServer: (body: {
     enabled?: boolean
     allowMcpWorkspaceCreate?: boolean
+    allowMcpGitWrite?: boolean
     features?: Partial<{
       projects: boolean
       notifications: boolean
@@ -1034,6 +1036,56 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ path, content }),
     }),
+  gitStatus: (id: string) =>
+    request<{
+      ok: boolean
+      branch: string
+      ahead: number
+      behind: number
+      dirty: boolean
+      files: { path: string; index: string; worktree: string; status: string }[]
+      commits: {
+        hash: string
+        short: string
+        subject: string
+        author: string
+        date: string
+      }[]
+      remotes: string[]
+    }>(`/api/projects/${encodeURIComponent(id)}/git`),
+  gitBranches: (id: string) =>
+    request<{
+      ok: boolean
+      local: string[]
+      remote: string[]
+      current: string
+    }>(`/api/projects/${encodeURIComponent(id)}/git/branches`),
+  gitAction: (
+    id: string,
+    body: {
+      action: string
+      branch?: string
+      name?: string
+      base?: string
+      checkout?: boolean
+      noFf?: boolean
+      abortOnConflict?: boolean
+      message?: string
+      stageAll?: boolean
+      paths?: string[]
+      mode?: 'push' | 'list' | 'pop'
+      limit?: number
+      staged?: boolean
+      path?: string
+    },
+  ) =>
+    request<Record<string, unknown>>(
+      `/api/projects/${encodeURIComponent(id)}/git`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+    ),
   appPinStatus: () =>
     request<{ enabled: boolean; locked: boolean; idleMs: number }>('/api/app-pin/status'),
   appPinLock: () => request<{ ok: boolean; locked: boolean }>('/api/app-pin/lock', { method: 'POST' }),

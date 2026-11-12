@@ -139,7 +139,7 @@ export function writeLastProjectId(id: string): void {
 }
 
 /** Work workspace pane. Chat is the full chat view inside Work. */
-export type WorkItem = 'apps' | 'shell' | 'files' | 'chat'
+export type WorkItem = 'apps' | 'shell' | 'files' | 'git' | 'chat'
 
 export type WorkPlace = {
   item: WorkItem
@@ -149,7 +149,7 @@ export type WorkPlace = {
   file?: string
 }
 
-const WORK_ITEMS: WorkItem[] = ['apps', 'shell', 'files', 'chat']
+const WORK_ITEMS: WorkItem[] = ['apps', 'shell', 'files', 'git', 'chat']
 export const WORK_PLACE_PREFIX = 'hb-work-place:'
 const MAX_PLACE_PATH = 4096
 export const DEFAULT_WORK_PLACE: WorkPlace = { item: 'apps' }

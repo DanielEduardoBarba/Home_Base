@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { ActionDef, Project } from "./config";
+import { RUNTIME_DIR, type ActionDef, type Project } from "./config";
 import { projectLanEnv } from "./network";
 import { homebaseListenPort, killPortListeners, isPortListening } from "./ports";
 import {
@@ -78,16 +78,21 @@ export async function projectPublic(
 }
 
 export function tailLogs(project: Project, lines = 80): string[] {
-  const logPath = project.stateDir
+  const stackPath = project.stateDir
     ? join(project.path, project.stateDir, "stack.log")
     : join(project.path, "stack.log");
-  if (!existsSync(logPath)) return [];
-  try {
-    const text = readFileSync(logPath, "utf8");
-    return text.trimEnd().split("\n").slice(-lines);
-  } catch {
-    return [];
+  const activityPath = join(RUNTIME_DIR, "project-logs", `${project.id}.log`);
+  const chunks: string[] = [];
+  for (const logPath of [stackPath, activityPath]) {
+    if (!existsSync(logPath)) continue;
+    try {
+      const text = readFileSync(logPath, "utf8");
+      chunks.push(...text.trimEnd().split("\n").filter(Boolean));
+    } catch {
+      /* ignore */
+    }
   }
+  return chunks.slice(-lines);
 }
 
 function advertiseEnv(project: Project): Record<string, string> {

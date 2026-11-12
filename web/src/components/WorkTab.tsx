@@ -6,6 +6,7 @@ import { AppsTab } from './AppsTab'
 import { ChatPanel, readDockOpen, writeDockOpen } from './ChatPanel'
 import { CursorTab } from './CursorTab'
 import { FilesTab } from './FilesTab'
+import { GitTab } from './GitTab'
 import { AddProjectWizard, type AddProjectResult } from './AddProjectWizard'
 import { IconBtn } from './IconBtn'
 import { ProjectSelect } from './ProjectSelect'
@@ -15,6 +16,7 @@ const ITEMS: { id: WorkItem; label: string }[] = [
   { id: 'apps', label: 'Apps' },
   { id: 'shell', label: 'Shell' },
   { id: 'files', label: 'Files' },
+  { id: 'git', label: 'Git' },
   { id: 'chat', label: 'Chat' },
 ]
 
@@ -208,6 +210,14 @@ export function WorkTab({
               diffAfter={diffAfter}
               diffAction={diffAction}
               onFocusPathConsumed={() => setFocusPath(null)}
+            />
+          )}
+          {item === 'git' && (
+            <GitTab
+              projects={projects}
+              selectedId={selectedId}
+              onSelect={onSelect}
+              embedded
             />
           )}
           {item === 'chat' && (

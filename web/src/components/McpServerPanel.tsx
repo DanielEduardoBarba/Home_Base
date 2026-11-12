@@ -93,6 +93,7 @@ export function McpServerPanel() {
 
   const enabled = status?.enabled !== false
   const mcpWorkspaceCreate = status?.allowMcpWorkspaceCreate === true
+  const mcpGitWrite = status?.allowMcpGitWrite === true
   const features = status?.features
   const featureMeta = status?.featureMeta || []
 
@@ -159,6 +160,22 @@ export function McpServerPanel() {
                 mcpWorkspaceCreate
                   ? 'MCP workspace creation disabled'
                   : 'MCP workspace creation enabled',
+              )
+            })
+          }
+        />
+        <FeatureSwitch
+          label="Allow MCP git write actions"
+          hint="Bots may fetch/pull/commit/push/stash via homebase_git_* (reads always on with Projects). Off by default."
+          on={mcpGitWrite}
+          disabled={Boolean(busy) || !status || !enabled}
+          onToggle={() =>
+            void run('mcp-git', async () => {
+              await api.setMcpServer({ allowMcpGitWrite: !mcpGitWrite })
+              setMsg(
+                mcpGitWrite
+                  ? 'MCP git writes disabled'
+                  : 'MCP git writes enabled',
               )
             })
           }

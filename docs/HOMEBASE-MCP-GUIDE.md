@@ -237,6 +237,8 @@ Placeholders:
 | Tool | Use |
 |---|---|
 | `homebase_create_mcp_workspace` | Create bot folder under `~/MCP_WORKSPACES` + register project (**Settings toggle, default Off**) |
+| `homebase_git_status` / `_branches` / `_log` | Read-only git (when **Projects** feature is on) |
+| `homebase_git_fetch` / `_pull` / `_checkout` / `_create_branch` / `_merge` / `_commit` / `_push` / `_stash` | Non-destructive git writes (**Allow MCP git write actions**, default Off) |
 | `homebase_cursor_job` | One job per project at a time; `callbackUrl` or `waitMs: 600000` |
 | `homebase_cursor_job_status` | Rare (≥5 min) |
 | `homebase_cursor_job_list` | See active/recent |
@@ -266,7 +268,23 @@ Placeholders:
 - **Settings → MCP Server → Allow MCP workspace creation** (default **Off**). When Off, the tool returns `MCP workspace creation is disabled in Settings`.
 - Humans use **Work → New workspace** (create folder + register) — not gated by this toggle.
 
-After pulling `development_grok`, restart Home Base (`homebased`) so the running service loads the new tool and API.
+## Safe git (bots + Work → Git)
+
+Allow-listed, non-destructive only (no force-push, reset --hard, clean, rebase, branch delete). Runs `git` with an argv array inside the project path.
+
+**Reads** (Projects feature on): `homebase_git_status`, `homebase_git_branches`, `homebase_git_log`.
+
+**Writes** need **Settings → MCP Server → Allow MCP git write actions** (default **Off**):
+
+```json
+{ "projectId": "homebase", "message": "fix: clarify pull copy" }
+```
+
+Example: `homebase_git_commit` with the body above (stages all by default). `homebase_git_pull` / `_checkout` / `_merge` refuse a dirty tree (commit or stash first). Writes also refuse while a `homebase_cursor_job` is queued/running for that project.
+
+Humans use **Work → Git** (not gated by the MCP write toggle).
+
+**Note:** This change was committed on `development_grok` but **Home Base was not restarted** in that handoff — restart `homebased` (or redeploy) before MCP/GUI pick up the new tools.
 
 ## Related
 

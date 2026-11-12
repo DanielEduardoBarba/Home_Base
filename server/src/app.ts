@@ -819,6 +819,137 @@ app.get("/api/projects/:projectId/logs", async (c) => {
   return c.json({ lines: tailLogs(p, Number(c.req.query("limit") || 80)) });
 });
 
+app.get("/api/projects/:projectId/git", async (c) => {
+  await requireAuth(c);
+  const p = loadProjects().get(c.req.param("projectId"));
+  if (!p) throw new HttpError(404, "Project not found");
+  const { runGitAction } = await import("./git");
+  const result = runGitAction(p, { action: "status" }, { surface: "gui" });
+  if (!result.ok) throw new HttpError(400, result.error || "git status failed");
+  return c.json({ ok: true, ...result.data });
+});
+
+app.get("/api/projects/:projectId/git/branches", async (c) => {
+  await requireAuth(c);
+  const p = loadProjects().get(c.req.param("projectId"));
+  if (!p) throw new HttpError(404, "Project not found");
+  const { runGitAction } = await import("./git");
+  const result = runGitAction(p, { action: "branches" }, { surface: "gui" });
+  if (!result.ok) throw new HttpError(400, result.error || "git branches failed");
+  return c.json({ ok: true, ...result.data });
+});
+
+app.post("/api/projects/:projectId/git", async (c) => {
+  await requireAuth(c);
+  const p = loadProjects().get(c.req.param("projectId"));
+  if (!p) throw new HttpError(404, "Project not found");
+  const body = z
+    .object({
+      action: z.enum([
+        "fetch",
+        "pull",
+        "checkout",
+        "create_branch",
+        "merge",
+        "stage",
+        "commit",
+        "push",
+        "stash",
+        "log",
+        "diff",
+        "remotes",
+        "status",
+      ]),
+      branch: z.string().optional(),
+      name: z.string().optional(),
+      base: z.string().optional(),
+      checkout: z.boolean().optional(),
+      noFf: z.boolean().optional(),
+      abortOnConflict: z.boolean().optional(),
+      message: z.string().optional(),
+      stageAll: z.boolean().optional(),
+      paths: z.array(z.string()).optional(),
+      mode: z.enum(["push", "list", "pop"]).optional(),
+      limit: z.number().optional(),
+      staged: z.boolean().optional(),
+      path: z.string().optional(),
+    })
+    .parse(await readJson(c));
+  const { runGitAction } = await import("./git");
+  let action:
+    | import("./git").GitAction
+    | null = null;
+  switch (body.action) {
+    case "status":
+      action = { action: "status" };
+      break;
+    case "log":
+      action = { action: "log", limit: body.limit };
+      break;
+    case "diff":
+      action = { action: "diff", staged: body.staged, path: body.path };
+      break;
+    case "remotes":
+      action = { action: "remotes" };
+      break;
+    case "fetch":
+      action = { action: "fetch" };
+      break;
+    case "pull":
+      action = { action: "pull" };
+      break;
+    case "checkout":
+      action = { action: "checkout", branch: String(body.branch || "") };
+      break;
+    case "create_branch":
+      action = {
+        action: "create_branch",
+        name: String(body.name || ""),
+        base: body.base,
+        checkout: body.checkout,
+      };
+      break;
+    case "merge":
+      action = {
+        action: "merge",
+        branch: String(body.branch || ""),
+        noFf: body.noFf,
+        abortOnConflict: body.abortOnConflict,
+      };
+      break;
+    case "stage":
+      action = { action: "stage", paths: body.paths };
+      break;
+    case "commit":
+      action = {
+        action: "commit",
+        message: String(body.message || ""),
+        stageAll: body.stageAll,
+      };
+      break;
+    case "push":
+      action = { action: "push" };
+      break;
+    case "stash":
+      action = {
+        action: "stash",
+        mode: body.mode || "list",
+        message: body.message,
+      };
+      break;
+    default:
+      throw new HttpError(400, "Unknown git action");
+  }
+  const result = runGitAction(p, action, { surface: "gui" });
+  if (!result.ok) throw new HttpError(400, result.error || "git action failed");
+  return c.json({
+    ok: true,
+    ...result.data,
+    stdout: result.stdout,
+    stderr: result.stderr,
+  });
+});
+
 app.get("/api/projects/:projectId/fs", async (c) => {
   await requireAuth(c);
   const p = loadProjects().get(c.req.param("projectId"));
@@ -1189,6 +1320,7 @@ app.post("/api/mcp-server", async (c) => {
     .object({
       enabled: z.boolean().optional(),
       allowMcpWorkspaceCreate: z.boolean().optional(),
+      allowMcpGitWrite: z.boolean().optional(),
       features: z
         .object({
           projects: featureBool,
@@ -1204,9 +1336,13 @@ app.post("/api/mcp-server", async (c) => {
   if (
     body.enabled === undefined &&
     !body.features &&
-    body.allowMcpWorkspaceCreate === undefined
+    body.allowMcpWorkspaceCreate === undefined &&
+    body.allowMcpGitWrite === undefined
   ) {
-    throw new HttpError(400, "enabled, features, or allowMcpWorkspaceCreate required");
+    throw new HttpError(
+      400,
+      "enabled, features, allowMcpWorkspaceCreate, or allowMcpGitWrite required",
+    );
   }
   const { saveMcpServer, mcpServerPublic } = await import("./mcp_server");
   saveMcpServer({
@@ -1214,6 +1350,9 @@ app.post("/api/mcp-server", async (c) => {
     ...(body.features ? { features: body.features } : {}),
     ...(body.allowMcpWorkspaceCreate !== undefined
       ? { allowMcpWorkspaceCreate: body.allowMcpWorkspaceCreate }
+      : {}),
+    ...(body.allowMcpGitWrite !== undefined
+      ? { allowMcpGitWrite: body.allowMcpGitWrite }
       : {}),
   });
   return c.json({ ok: true, ...mcpServerPublic() });

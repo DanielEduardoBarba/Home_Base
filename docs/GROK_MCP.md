@@ -236,12 +236,24 @@ Placeholders:
 
 | Tool | Use |
 |---|---|
+| `homebase_git_status` / `_branches` / `_log` | Read-only git (Projects feature on) |
+| `homebase_git_fetch` / `_pull` / `_checkout` / `_create_branch` / `_merge` / `_commit` / `_push` / `_stash` | Writes need **Allow MCP git write actions** (default Off) |
 | `homebase_cursor_job` | One job per project at a time; `callbackUrl` or `waitMs: 600000` |
 | `homebase_cursor_job_status` | Rare (≥5 min) |
 | `homebase_cursor_job_list` | See active/recent |
 | `homebase_presence_express` | Blob on laptop: `mood` / `form` / `color` / `energy` / `bubble` / `name` |
 | `homebase_presence_status` | Who is remoted in + guidance |
 | `homebase_presence_chat_send` / `_read` | Short questions only (not job reports) |
+
+### Safe git example
+
+```json
+{ "projectId": "homebase" }
+```
+
+Call `homebase_git_status` with that body. For writes, the operator must enable **Settings → MCP Server → Allow MCP git write actions**. Dirty tree → commit/stash before pull/checkout/merge. Active `homebase_cursor_job` on the same project → writes refused. No force-push / reset --hard / rebase.
+
+**Note:** Home Base was **not** restarted when these tools landed — operator must restart/redeploy for MCP to list them.
 
 ---
 

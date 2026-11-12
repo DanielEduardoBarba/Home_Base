@@ -34,6 +34,8 @@ export type McpServerState = {
   features: McpFeatures;
   /** MCP bots may call homebase_create_mcp_workspace (default off). */
   allowMcpWorkspaceCreate?: boolean;
+  /** MCP bots may run git write actions (fetch/pull/commit/push/…) (default off). */
+  allowMcpGitWrite?: boolean;
   updatedAt?: number;
 };
 
@@ -81,6 +83,7 @@ export function loadMcpServer(): McpServerState {
       enabled: raw.enabled !== false,
       features: normalizeMcpFeatures(raw.features),
       allowMcpWorkspaceCreate: raw.allowMcpWorkspaceCreate === true,
+      allowMcpGitWrite: raw.allowMcpGitWrite === true,
       updatedAt: Number(raw.updatedAt) || undefined,
     };
   } catch {
@@ -93,6 +96,7 @@ export function saveMcpServer(
     enabled: boolean;
     features: Partial<McpFeatures>;
     allowMcpWorkspaceCreate: boolean;
+    allowMcpGitWrite: boolean;
   }>,
 ): McpServerState {
   const cur = loadMcpServer();
@@ -106,6 +110,10 @@ export function saveMcpServer(
       typeof patch.allowMcpWorkspaceCreate === "boolean"
         ? patch.allowMcpWorkspaceCreate
         : cur.allowMcpWorkspaceCreate === true,
+    allowMcpGitWrite:
+      typeof patch.allowMcpGitWrite === "boolean"
+        ? patch.allowMcpGitWrite
+        : cur.allowMcpGitWrite === true,
     updatedAt: Date.now(),
   };
   writeJsonAtomic(STATE_PATH, next);
@@ -115,6 +123,11 @@ export function saveMcpServer(
 /** Default off when unset (existing and new installs). */
 export function mcpWorkspaceCreateAllowed(): boolean {
   return loadMcpServer().allowMcpWorkspaceCreate === true;
+}
+
+/** Default off when unset (existing and new installs). */
+export function mcpGitWriteAllowed(): boolean {
+  return loadMcpServer().allowMcpGitWrite === true;
 }
 
 export function mcpServerEnabled(): boolean {
@@ -306,6 +319,7 @@ export function mcpServerPublic(): {
   enabled: boolean;
   features: McpFeatures;
   allowMcpWorkspaceCreate: boolean;
+  allowMcpGitWrite: boolean;
   featureMeta: typeof MCP_FEATURE_META;
   updatedAt?: number;
   endpointPath: string;
@@ -343,6 +357,7 @@ export function mcpServerPublic(): {
     enabled: state.enabled !== false,
     features: state.features,
     allowMcpWorkspaceCreate: state.allowMcpWorkspaceCreate === true,
+    allowMcpGitWrite: state.allowMcpGitWrite === true,
     featureMeta: MCP_FEATURE_META,
     updatedAt: state.updatedAt,
     endpointPath,
