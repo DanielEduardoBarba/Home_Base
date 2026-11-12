@@ -594,6 +594,84 @@ app.post("/api/workspaces/create", async (c) => {
   }
 });
 
+app.get("/api/github/status", async (c) => {
+  await requireAuth(c);
+  const { githubAuthStatus } = await import("./github");
+  return c.json(githubAuthStatus());
+});
+
+app.get("/api/github/repos", async (c) => {
+  await requireAuth(c);
+  const { listGithubRepos } = await import("./github");
+  const search = c.req.query("search") || undefined;
+  const limit = Number(c.req.query("limit") || 30);
+  const result = listGithubRepos({ search, limit, surface: "gui" });
+  if (!result.ok) throw new HttpError(400, result.error || "list repos failed");
+  return c.json({ ok: true, ...result.data });
+});
+
+app.post("/api/workspaces/clone-github", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({
+      repo: z.string().min(1),
+      workspaceName: z.string().optional(),
+      branch: z.string().optional(),
+    })
+    .parse(await readJson(c));
+  const { cloneGithubWorkspace } = await import("./github");
+  const result = cloneGithubWorkspace({ ...body, surface: "gui" });
+  if (!result.ok) throw new HttpError(400, result.error || "clone failed");
+  const project = result.data?.project as import("./config").Project | undefined;
+  return c.json({
+    ok: true,
+    ...result.data,
+    project: project ? await projectPublic(project) : undefined,
+  });
+});
+
+app.post("/api/projects/:projectId/github/connect", async (c) => {
+  await requireAuth(c);
+  const projectId = c.req.param("projectId");
+  const body = z
+    .object({
+      repo: z.string().min(1),
+      setUpstream: z.boolean().optional(),
+    })
+    .parse(await readJson(c));
+  const { connectWorkspaceToGithub } = await import("./github");
+  const result = connectWorkspaceToGithub({
+    projectId,
+    repo: body.repo,
+    setUpstream: body.setUpstream === true,
+    surface: "gui",
+  });
+  if (!result.ok) throw new HttpError(400, result.error || "connect failed");
+  return c.json({ ok: true, ...result.data });
+});
+
+app.post("/api/projects/:projectId/github/create-repo", async (c) => {
+  await requireAuth(c);
+  const projectId = c.req.param("projectId");
+  const body = z
+    .object({
+      name: z.string().optional(),
+      visibility: z.enum(["private", "public"]).optional(),
+      confirm: z.boolean(),
+    })
+    .parse(await readJson(c));
+  const { createGithubRepoFromWorkspace } = await import("./github");
+  const result = createGithubRepoFromWorkspace({
+    projectId,
+    name: body.name,
+    visibility: body.visibility || "private",
+    confirm: body.confirm === true,
+    surface: "gui",
+  });
+  if (!result.ok) throw new HttpError(400, result.error || "create repo failed");
+  return c.json({ ok: true, ...result.data });
+});
+
 app.patch("/api/projects/:projectId", async (c) => {
   await requireAuth(c);
   const id = c.req.param("projectId");
@@ -1321,6 +1399,7 @@ app.post("/api/mcp-server", async (c) => {
       enabled: z.boolean().optional(),
       allowMcpWorkspaceCreate: z.boolean().optional(),
       allowMcpGitWrite: z.boolean().optional(),
+      allowMcpGithubRepos: z.boolean().optional(),
       features: z
         .object({
           projects: featureBool,
@@ -1337,11 +1416,12 @@ app.post("/api/mcp-server", async (c) => {
     body.enabled === undefined &&
     !body.features &&
     body.allowMcpWorkspaceCreate === undefined &&
-    body.allowMcpGitWrite === undefined
+    body.allowMcpGitWrite === undefined &&
+    body.allowMcpGithubRepos === undefined
   ) {
     throw new HttpError(
       400,
-      "enabled, features, allowMcpWorkspaceCreate, or allowMcpGitWrite required",
+      "enabled, features, allowMcpWorkspaceCreate, allowMcpGitWrite, or allowMcpGithubRepos required",
     );
   }
   const { saveMcpServer, mcpServerPublic } = await import("./mcp_server");
@@ -1353,6 +1433,9 @@ app.post("/api/mcp-server", async (c) => {
       : {}),
     ...(body.allowMcpGitWrite !== undefined
       ? { allowMcpGitWrite: body.allowMcpGitWrite }
+      : {}),
+    ...(body.allowMcpGithubRepos !== undefined
+      ? { allowMcpGithubRepos: body.allowMcpGithubRepos }
       : {}),
   });
   return c.json({ ok: true, ...mcpServerPublic() });

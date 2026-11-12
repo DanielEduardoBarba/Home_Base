@@ -377,6 +377,8 @@ export type GitStatusSnapshot = {
   files: ReturnType<typeof parseStatusFiles>;
   commits: ReturnType<typeof recentLog>;
   remotes: string[];
+  /** Origin fetch URL when configured (never includes credentials we strip). */
+  originUrl: string | null;
 };
 
 export function gitStatusSnapshot(project: Project): GitResult {
@@ -385,6 +387,22 @@ export function gitStatusSnapshot(project: Project): GitResult {
   if (!isGitRepo(cwd)) return plainError("Not a git repository");
   const ab = parseAheadBehind(cwd);
   const remotesR = runGitRaw(cwd, ["remote"]);
+  const originR = spawnSync("git", ["remote", "get-url", "origin"], {
+    cwd,
+    encoding: "utf8",
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+  });
+  let originUrl: string | null = null;
+  if (originR.status === 0) {
+    originUrl = (originR.stdout || "").toString().trim() || null;
+    // Strip embedded credentials if any (never display tokens).
+    if (originUrl) {
+      originUrl = originUrl.replace(
+        /^(https?:\/\/)[^/@]+@/i,
+        "$1",
+      );
+    }
+  }
   const data: GitStatusSnapshot = {
     branch: currentBranchName(cwd),
     ahead: ab.ahead,
@@ -396,6 +414,7 @@ export function gitStatusSnapshot(project: Project): GitResult {
       .split("\n")
       .map((s) => s.trim())
       .filter(Boolean),
+    originUrl,
   };
   appendProjectLog(project, `git status (branch ${data.branch})`);
   return { ok: true, data: data as unknown as Record<string, unknown> };

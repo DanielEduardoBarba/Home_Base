@@ -51,6 +51,7 @@ export function AppsTab({
   onRefresh,
   onOpenShell,
   onAskAiWire,
+  onOpenGit,
   embedded = false,
 }: {
   projects: Project[]
@@ -60,6 +61,8 @@ export function AppsTab({
   onOpenShell: (sessionIds?: string | string[]) => void
   /** After Add app with Chat wiring — open Work dock / Cursor. */
   onAskAiWire?: (projectId: string) => void
+  /** After From GitHub clone — open Work → Git. */
+  onOpenGit?: (projectId: string) => void
   /** When true (Work tab), skip brand header — Work chrome owns project. */
   embedded?: boolean
 }) {
@@ -165,7 +168,8 @@ export function AppsTab({
   async function handleAdded(result: AddProjectResult) {
     onSelect(result.projectId)
     await onRefresh()
-    if (result.askAi) onAskAiWire?.(result.projectId)
+    if (result.openGit) onOpenGit?.(result.projectId)
+    else if (result.askAi) onAskAiWire?.(result.projectId)
   }
 
   async function doRun(action: ActionDef) {

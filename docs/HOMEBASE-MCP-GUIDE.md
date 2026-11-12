@@ -151,7 +151,7 @@ PRESENCE (VPN/LAN only — desktop blob on the laptop)
 - Window does not pop for the human on localhost — only remote MCP/Web peers.
 
 ON CONNECT
-1. homebase_system_status
+1. homebase_ping — liveness only (version/uptime/Cursor probe/active jobs). Never open a test chat.
 2. homebase_presence_express — name "Developer", mood=listening, form=hex (or cloud/drop/…), color=#7c5cff, energy=0.5, bubble="Ready for job handoff"
 3. homebase_list_projects
 4. Wait for a ticket
@@ -236,7 +236,10 @@ Placeholders:
 
 | Tool | Use |
 |---|---|
+| `homebase_ping` | Liveness: up/version/uptime/Cursor probe/active jobs — **never** opens a chat or starts a job |
 | `homebase_create_mcp_workspace` | Create bot folder under `~/MCP_WORKSPACES` + register project (**Settings toggle, default Off**) |
+| `homebase_github_status` | Laptop `gh auth status` (user or sign-in hint). No tokens |
+| `homebase_github_list_repos` / `_clone_workspace` / `_connect_workspace` / `_create_repo` | **Allow MCP GitHub repo access**; clone also needs workspace-create; create/push needs git-write |
 | `homebase_git_status` / `_branches` / `_log` | Read-only git (when **Projects** feature is on) |
 | `homebase_git_fetch` / `_pull` / `_checkout` / `_create_branch` / `_merge` / `_commit` / `_push` / `_stash` | Non-destructive git writes (**Allow MCP git write actions**, default Off) |
 | `homebase_cursor_job` | One job per project at a time; `callbackUrl` or `waitMs: 600000` |
@@ -283,6 +286,24 @@ Allow-listed, non-destructive only (no force-push, reset --hard, clean, rebase, 
 Example: `homebase_git_commit` with the body above (stages all by default). `homebase_git_pull` / `_checkout` / `_merge` refuse a dirty tree (commit or stash first). Writes also refuse while a `homebase_cursor_job` is queued/running for that project.
 
 Humans use **Work → Git** (not gated by the MCP write toggle).
+
+## homebase_ping
+
+Use **`homebase_ping`** instead of opening a test chat. Returns Home Base up, version, uptime, Cursor API-key + agent/CLI probe (reports a clear error — never a false “alive”), and any queued/running `homebase_cursor_job` per project. Does not create chats or start jobs.
+
+## GitHub repo hookup
+
+Flow for humans or MCP bots: GitHub → clone/connect → Home Base workspace → develop → push.
+
+| Tool | Notes |
+|---|---|
+| `homebase_github_status` | Read-only `gh auth status`; sign-in hint `gh auth login -h github.com` |
+| `homebase_github_list_repos` | Search/filter; private flag; default branch |
+| `homebase_github_clone_workspace` | Clone into `~/MCP_WORKSPACES/<name>`; ensure `development_grok`; needs GitHub + workspace-create toggles |
+| `homebase_github_connect_workspace` | Init+origin if needed; **refuses** a different existing origin (no remote removal) |
+| `homebase_github_create_repo` | `confirm: true`; private by default; `git push -u` never force; needs GitHub + git-write toggles |
+
+GUI: **New workspace → From GitHub**; each project’s **Git** panel has **Connect to GitHub**. Settings → **Allow MCP GitHub repo access** (default Off). Uses the laptop’s existing `gh`/`git` login — never stores tokens in the repo or settings.
 
 **Note:** This change was committed on `development_grok` but **Home Base was not restarted** in that handoff — restart `homebased` (or redeploy) before MCP/GUI pick up the new tools.
 

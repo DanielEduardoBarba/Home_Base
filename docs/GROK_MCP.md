@@ -151,7 +151,7 @@ PRESENCE (VPN/LAN only — desktop blob on the laptop)
 - Window does not pop for the human on localhost — only remote MCP/Web peers.
 
 ON CONNECT
-1. homebase_system_status
+1. homebase_ping — liveness only (version/uptime/Cursor probe/active jobs). Never open a test chat.
 2. homebase_presence_express — name "Developer", mood=listening, form=hex (or cloud/drop/…), color=#7c5cff, energy=0.5, bubble="Ready for job handoff"
 3. homebase_list_projects
 4. Wait for a ticket
@@ -236,6 +236,9 @@ Placeholders:
 
 | Tool | Use |
 |---|---|
+| `homebase_ping` | Liveness: up/version/uptime/Cursor probe/active jobs — **never** opens a chat or starts a job |
+| `homebase_github_status` | Laptop `gh auth status` (user or sign-in hint). No tokens. Always allowed with Projects |
+| `homebase_github_list_repos` / `_clone_workspace` / `_connect_workspace` / `_create_repo` | Need **Allow MCP GitHub repo access**; clone also needs workspace-create; create/push needs git-write |
 | `homebase_git_status` / `_branches` / `_log` | Read-only git (Projects feature on) |
 | `homebase_git_fetch` / `_pull` / `_checkout` / `_create_branch` / `_merge` / `_commit` / `_push` / `_stash` | Writes need **Allow MCP git write actions** (default Off) |
 | `homebase_cursor_job` | One job per project at a time; `callbackUrl` or `waitMs: 600000` |
@@ -244,6 +247,14 @@ Placeholders:
 | `homebase_presence_express` | Blob on laptop: `mood` / `form` / `color` / `energy` / `bubble` / `name` |
 | `homebase_presence_status` | Who is remoted in + guidance |
 | `homebase_presence_chat_send` / `_read` | Short questions only (not job reports) |
+
+### homebase_ping
+
+Prefer `homebase_ping` over opening a test chat or starting a job. Returns Home Base up, `version`, `uptimeSec`, Cursor API-key + agent/CLI probe (clear error if not alive — never a false “alive”), and queued/running `homebase_cursor_job` entries.
+
+### GitHub → workspace → push
+
+End-to-end: `homebase_github_status` → `homebase_github_list_repos` → `homebase_github_clone_workspace` (lands under `~/MCP_WORKSPACES`, ensures `development_grok`) → develop → `homebase_git_push`. Or connect an existing project with `homebase_github_connect_workspace` (refuses a different origin; never removes remotes). Create+push a new repo with `homebase_github_create_repo` (`confirm: true`, private by default, never force-push). Uses the laptop’s `gh` login only — Home Base never stores GitHub tokens.
 
 ### Safe git example
 

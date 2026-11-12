@@ -94,6 +94,7 @@ export function McpServerPanel() {
   const enabled = status?.enabled !== false
   const mcpWorkspaceCreate = status?.allowMcpWorkspaceCreate === true
   const mcpGitWrite = status?.allowMcpGitWrite === true
+  const mcpGithubRepos = status?.allowMcpGithubRepos === true
   const features = status?.features
   const featureMeta = status?.featureMeta || []
 
@@ -176,6 +177,22 @@ export function McpServerPanel() {
                 mcpGitWrite
                   ? 'MCP git writes disabled'
                   : 'MCP git writes enabled',
+              )
+            })
+          }
+        />
+        <FeatureSwitch
+          label="Allow MCP GitHub repo access"
+          hint="Bots may list/clone/connect/create GitHub repos via homebase_github_* (uses laptop gh login; never stores tokens). Status is always allowed. Off by default."
+          on={mcpGithubRepos}
+          disabled={Boolean(busy) || !status || !enabled}
+          onToggle={() =>
+            void run('mcp-gh', async () => {
+              await api.setMcpServer({ allowMcpGithubRepos: !mcpGithubRepos })
+              setMsg(
+                mcpGithubRepos
+                  ? 'MCP GitHub repo access disabled'
+                  : 'MCP GitHub repo access enabled',
               )
             })
           }

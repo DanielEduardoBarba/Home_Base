@@ -151,9 +151,15 @@ export const MCP_TOOL_FEATURE: Record<string, McpFeatureId> = {
   homebase_git_commit: "projects",
   homebase_git_push: "projects",
   homebase_git_stash: "projects",
+  homebase_github_status: "projects",
+  homebase_github_list_repos: "projects",
+  homebase_github_clone_workspace: "projects",
+  homebase_github_connect_workspace: "projects",
+  homebase_github_create_repo: "projects",
   homebase_notifications: "notifications",
   homebase_notify: "notifications",
   homebase_system_status: "status",
+  homebase_ping: "status",
   homebase_wireguard_status: "status",
   homebase_access_list: "homeAccess",
   homebase_access_upsert: "homeAccess",
@@ -397,6 +403,17 @@ export function buildHomebaseTools(
     parameters: { type: "object", properties: {} },
     execute: async () => json(systemStatus()),
   };
+  tools.homebase_ping = {
+    description:
+      "Lightweight liveness check: Home Base up, version, uptime, Cursor API key + agent/CLI probe, " +
+      "and queued/running homebase_cursor_job per project. Never opens a chat or starts a job — " +
+      "prefer this over opening a test chat.",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { homebasePing } = await import("./ping");
+      return json(homebasePing());
+    },
+  };
   tools.homebase_wireguard_status = {
     description:
       "WireGuard VPN install/setup status, peers, and client list (no private keys; read-only)",
@@ -454,6 +471,39 @@ export function buildHomebaseTools(
       mcpWriteAllowed: surface === "mcp" ? mcpGitWriteAllowed() : true,
     });
     return json(result);
+  };
+
+  tools.homebase_github_status = {
+    description:
+      "Read-only check of the laptop's GitHub CLI login (gh auth status). " +
+      "Returns signed-in user or a Sign in to GitHub hint with the exact command. Never returns tokens.",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { githubAuthStatus } = await import("./github");
+      return json(githubAuthStatus());
+    },
+  };
+  tools.homebase_github_list_repos = {
+    description:
+      "List the signed-in user's GitHub repos (name, private flag, default branch, URL). " +
+      "Requires Settings → Allow MCP GitHub repo access (default Off).",
+    parameters: {
+      type: "object",
+      properties: {
+        search: { type: "string", description: "Optional name/description filter" },
+        limit: { type: "number", description: "Max repos (default 30, max 100)" },
+      },
+    },
+    execute: async (args) => {
+      const { listGithubRepos } = await import("./github");
+      return json(
+        listGithubRepos({
+          search: args.search != null ? String(args.search) : undefined,
+          limit: args.limit != null ? Number(args.limit) : 30,
+          surface: "mcp",
+        }),
+      );
+    },
   };
 
   tools.homebase_git_status = {
@@ -549,6 +599,124 @@ export function buildHomebaseTools(
         const result = createMcpWorkspace(String(args.name || ""));
         if (!result.ok) return json({ ok: false, error: result.error });
         return json({ ok: true, project: await pub(result.project) });
+      },
+    };
+    tools.homebase_github_clone_workspace = {
+      description:
+        "Clone a GitHub repo into ~/MCP_WORKSPACES/<name>, register it as a project, " +
+        "and ensure a development_grok branch. Requires Allow MCP GitHub repo access + " +
+        "Allow MCP workspace creation. Never force-pushes; refuses non-empty existing folders.",
+      parameters: {
+        type: "object",
+        properties: {
+          repo: {
+            type: "string",
+            description: "owner/repo or https://github.com/owner/repo URL",
+          },
+          workspaceName: {
+            type: "string",
+            description: "Folder name under ~/MCP_WORKSPACES (defaults to repo name)",
+          },
+          branch: {
+            type: "string",
+            description: "Optional branch to clone",
+          },
+        },
+        required: ["repo"],
+      },
+      execute: async (args) => {
+        const { cloneGithubWorkspace } = await import("./github");
+        const { projectPublic: pub } = await import("./process");
+        const result = cloneGithubWorkspace({
+          repo: String(args.repo || ""),
+          workspaceName: args.workspaceName
+            ? String(args.workspaceName)
+            : undefined,
+          branch: args.branch ? String(args.branch) : undefined,
+          surface: "mcp",
+        });
+        if (!result.ok) return json(result);
+        const project = result.data?.project as
+          | import("./config").Project
+          | undefined;
+        return json({
+          ...result,
+          data: {
+            ...result.data,
+            project: project ? await pub(project) : undefined,
+          },
+        });
+      },
+    };
+    tools.homebase_github_connect_workspace = {
+      description:
+        "Connect an existing Home Base workspace to a GitHub repo remote. " +
+        "If the folder has no git: init + add origin + fetch. If origin differs: refuse (no remote removal). " +
+        "Requires Allow MCP GitHub repo access.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string" },
+          repo: {
+            type: "string",
+            description: "owner/repo or github.com URL",
+          },
+          setUpstream: {
+            type: "boolean",
+            description: "Optionally set upstream for the current branch",
+          },
+        },
+        required: ["projectId", "repo"],
+      },
+      execute: async (args) => {
+        const { connectWorkspaceToGithub } = await import("./github");
+        return json(
+          connectWorkspaceToGithub({
+            projectId: resolvePid(args),
+            repo: String(args.repo || ""),
+            setUpstream: args.setUpstream === true,
+            surface: "mcp",
+          }),
+        );
+      },
+    };
+    tools.homebase_github_create_repo = {
+      description:
+        "Create a new GitHub repo from a workspace (private by default), add origin, " +
+        "and push the current branch with -u (never force). Requires confirm:true, " +
+        "Allow MCP GitHub repo access, and Allow MCP git write actions. " +
+        "Does not delete/archive repos, change visibility, or remove remotes.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string" },
+          name: { type: "string", description: "GitHub repo name (optional)" },
+          visibility: {
+            type: "string",
+            description: "private (default) or public",
+          },
+          confirm: {
+            type: "boolean",
+            description: "Must be true — mirrors the GUI confirm dialog",
+          },
+        },
+        required: ["projectId", "confirm"],
+      },
+      execute: async (args) => {
+        const { createGithubRepoFromWorkspace } = await import("./github");
+        const vis =
+          String(args.visibility || "private").toLowerCase() === "public"
+            ? "public"
+            : "private";
+        return json(
+          createGithubRepoFromWorkspace({
+            projectId: resolvePid(args),
+            name: args.name ? String(args.name) : undefined,
+            visibility: vis,
+            confirm: args.confirm === true,
+            surface: "mcp",
+          }),
+        );
       },
     };
     tools.homebase_project_delete = {

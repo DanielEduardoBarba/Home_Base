@@ -22,6 +22,7 @@ type GitStatus = {
   files: GitFile[]
   commits: GitCommit[]
   remotes: string[]
+  originUrl: string | null
 }
 
 export function GitTab({
@@ -50,6 +51,12 @@ export function GitTab({
   const [mergeFrom, setMergeFrom] = useState('')
   const [commitMsg, setCommitMsg] = useState('')
   const [mergeOpen, setMergeOpen] = useState(false)
+  const [connectRepo, setConnectRepo] = useState('')
+  const [setUpstream, setSetUpstream] = useState(true)
+  const [createName, setCreateName] = useState('')
+  const [createPublic, setCreatePublic] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [ghHint, setGhHint] = useState('')
 
   const load = useCallback(async () => {
     if (!project) return
@@ -74,6 +81,23 @@ export function GitTab({
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    if (!project) return
+    setConnectRepo('')
+    setCreateName(project.name || project.id)
+    void api
+      .githubStatus()
+      .then((st) => {
+        setGhHint(
+          st.data?.loggedIn
+            ? ''
+            : st.data?.hint ||
+                'Sign in to GitHub on this laptop: gh auth login -h github.com',
+        )
+      })
+      .catch(() => setGhHint(''))
+  }, [project?.id])
 
   const run = async (key: string, fn: () => Promise<void>) => {
     setBusy(key)
@@ -132,6 +156,13 @@ export function GitTab({
                   }`
                 : 'Loading…'}
             </p>
+            {status?.originUrl ? (
+              <p className="text-xs text-mute font-mono truncate mt-0.5" title={status.originUrl}>
+                origin · {status.originUrl}
+              </p>
+            ) : status ? (
+              <p className="text-xs text-mute mt-0.5">No origin remote connected</p>
+            ) : null}
           </div>
           <button
             type="button"
@@ -214,6 +245,68 @@ export function GitTab({
             Pop
           </button>
         </div>
+      </section>
+
+      <section className="hb-surface p-3.5 space-y-2.5">
+        <h2 className="text-sm font-semibold text-text">Connect to GitHub</h2>
+        {ghHint ? (
+          <p className="text-xs text-danger leading-snug">{ghHint}</p>
+        ) : null}
+        {status?.originUrl ? (
+          <p className="text-xs text-mute leading-snug">
+            Already connected. Home Base will not remove or replace an existing
+            origin.
+          </p>
+        ) : (
+          <>
+            <p className="text-xs text-mute leading-snug">
+              Link this workspace to an existing GitHub repo (init + origin if
+              needed), or create a new private repo and push.
+            </p>
+            <input
+              className="w-full rounded-[var(--radius-control)] bg-panel-2 border border-line px-3 py-2 text-sm font-mono"
+              placeholder="owner/repo or github.com URL"
+              value={connectRepo}
+              onChange={(e) => setConnectRepo(e.target.value)}
+            />
+            <label className="flex items-center gap-2 text-xs text-mute">
+              <input
+                type="checkbox"
+                className="accent-[var(--hb-accent)]"
+                checked={setUpstream}
+                onChange={(e) => setSetUpstream(e.target.checked)}
+              />
+              Set upstream for current branch after fetch
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="hb-btn text-xs !min-h-9"
+                disabled={Boolean(busy) || !connectRepo.trim()}
+                onClick={() =>
+                  void run('gh-connect', async () => {
+                    await api.githubConnect(project.id, {
+                      repo: connectRepo.trim(),
+                      setUpstream,
+                    })
+                    setMsg('Connected to GitHub remote')
+                    setConnectRepo('')
+                  })
+                }
+              >
+                Connect existing repo
+              </button>
+              <button
+                type="button"
+                className="hb-btn hb-btn-ghost text-xs !min-h-9"
+                disabled={Boolean(busy)}
+                onClick={() => setCreateOpen(true)}
+              >
+                Create new GitHub repo…
+              </button>
+            </div>
+          </>
+        )}
       </section>
 
       <section className="hb-surface p-3.5 space-y-2.5">
@@ -393,6 +486,63 @@ export function GitTab({
           </ul>
         )}
       </section>
+
+      <AccessibleDialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        title="Create GitHub repository"
+        confirm
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-text leading-relaxed">
+            Create a new GitHub repo from this workspace, add origin, and push
+            the current branch (never force). Private by default.
+          </p>
+          <input
+            className="w-full rounded-[var(--radius-control)] bg-panel-2 border border-line px-3 py-2 text-sm font-mono"
+            placeholder="Repository name"
+            value={createName}
+            onChange={(e) => setCreateName(e.target.value)}
+          />
+          <label className="flex items-center gap-2 text-xs text-mute">
+            <input
+              type="checkbox"
+              className="accent-[var(--hb-accent)]"
+              checked={createPublic}
+              onChange={(e) => setCreatePublic(e.target.checked)}
+            />
+            Public repository
+          </label>
+          <div className="flex gap-2 justify-end">
+            <button
+              type="button"
+              className="hb-btn hb-btn-ghost text-xs !min-h-9"
+              data-dialog-cancel
+              onClick={() => setCreateOpen(false)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="hb-btn text-xs !min-h-9"
+              data-dialog-confirm
+              onClick={() => {
+                setCreateOpen(false)
+                void run('gh-create', async () => {
+                  await api.githubCreateRepo(project.id, {
+                    name: createName.trim() || undefined,
+                    visibility: createPublic ? 'public' : 'private',
+                    confirm: true,
+                  })
+                  setMsg('GitHub repo created and pushed')
+                })
+              }}
+            >
+              Create &amp; push
+            </button>
+          </div>
+        </div>
+      </AccessibleDialog>
 
       <AccessibleDialog
         open={mergeOpen}

@@ -36,6 +36,8 @@ export type McpServerState = {
   allowMcpWorkspaceCreate?: boolean;
   /** MCP bots may run git write actions (fetch/pull/commit/push/…) (default off). */
   allowMcpGitWrite?: boolean;
+  /** MCP bots may list/clone/connect/create GitHub repos via gh (default off). */
+  allowMcpGithubRepos?: boolean;
   updatedAt?: number;
 };
 
@@ -84,6 +86,7 @@ export function loadMcpServer(): McpServerState {
       features: normalizeMcpFeatures(raw.features),
       allowMcpWorkspaceCreate: raw.allowMcpWorkspaceCreate === true,
       allowMcpGitWrite: raw.allowMcpGitWrite === true,
+      allowMcpGithubRepos: raw.allowMcpGithubRepos === true,
       updatedAt: Number(raw.updatedAt) || undefined,
     };
   } catch {
@@ -97,6 +100,7 @@ export function saveMcpServer(
     features: Partial<McpFeatures>;
     allowMcpWorkspaceCreate: boolean;
     allowMcpGitWrite: boolean;
+    allowMcpGithubRepos: boolean;
   }>,
 ): McpServerState {
   const cur = loadMcpServer();
@@ -114,6 +118,10 @@ export function saveMcpServer(
       typeof patch.allowMcpGitWrite === "boolean"
         ? patch.allowMcpGitWrite
         : cur.allowMcpGitWrite === true,
+    allowMcpGithubRepos:
+      typeof patch.allowMcpGithubRepos === "boolean"
+        ? patch.allowMcpGithubRepos
+        : cur.allowMcpGithubRepos === true,
     updatedAt: Date.now(),
   };
   writeJsonAtomic(STATE_PATH, next);
@@ -128,6 +136,11 @@ export function mcpWorkspaceCreateAllowed(): boolean {
 /** Default off when unset (existing and new installs). */
 export function mcpGitWriteAllowed(): boolean {
   return loadMcpServer().allowMcpGitWrite === true;
+}
+
+/** Default off when unset (existing and new installs). */
+export function mcpGithubReposAllowed(): boolean {
+  return loadMcpServer().allowMcpGithubRepos === true;
 }
 
 export function mcpServerEnabled(): boolean {
@@ -300,6 +313,7 @@ function grokHookupGuide(url: string | null): string {
     "## 5. Operating rules for bots",
     "- Paste docs/GROK_MCP.md Bot brief; fill URL/token.",
     "- Prefer homebase_cursor_job handoff: whole job → Cursor on laptop → short summary + git tip (saves Grok tokens).",
+    "- Use homebase_ping for liveness (never open a test chat). GitHub hookup: homebase_github_* (Settings toggles).",
     "- Use homebase_* tools for control-plane work; do not ask for VPN/auth/restart — those stay human-only in Settings.",
     "- Presence (VPN/LAN only): call homebase_presence_express on arrive + state changes.",
     "  Desktop shows a Grok-style blob — set mood, form (pill|cloud|drop|circle|hex|diamond|soft|cluster),",
@@ -320,6 +334,7 @@ export function mcpServerPublic(): {
   features: McpFeatures;
   allowMcpWorkspaceCreate: boolean;
   allowMcpGitWrite: boolean;
+  allowMcpGithubRepos: boolean;
   featureMeta: typeof MCP_FEATURE_META;
   updatedAt?: number;
   endpointPath: string;
@@ -358,6 +373,7 @@ export function mcpServerPublic(): {
     features: state.features,
     allowMcpWorkspaceCreate: state.allowMcpWorkspaceCreate === true,
     allowMcpGitWrite: state.allowMcpGitWrite === true,
+    allowMcpGithubRepos: state.allowMcpGithubRepos === true,
     featureMeta: MCP_FEATURE_META,
     updatedAt: state.updatedAt,
     endpointPath,

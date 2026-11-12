@@ -177,6 +177,7 @@ export function WorkTab({
                   onItemChange('apps')
                   setDockOpen(true)
                 }}
+                onOpenGit={() => onItemChange('git')}
                 onOpenShell={(ids) => {
                   const list = Array.isArray(ids) ? ids : ids ? [ids] : []
                   applyPresent({
@@ -248,7 +249,8 @@ export function WorkTab({
         onAdded={(result: AddProjectResult) => {
           onSelect(result.projectId)
           void onRefresh()
-          if (result.askAi) onItemChange('apps')
+          if (result.openGit) onItemChange('git')
+          else if (result.askAi) onItemChange('apps')
           setAddOpen(false)
         }}
       />

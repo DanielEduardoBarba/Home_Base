@@ -261,6 +261,7 @@ export const api = {
       enabled: boolean
       allowMcpWorkspaceCreate: boolean
       allowMcpGitWrite: boolean
+      allowMcpGithubRepos: boolean
       features: {
         projects: boolean
         notifications: boolean
@@ -308,6 +309,7 @@ export const api = {
     enabled?: boolean
     allowMcpWorkspaceCreate?: boolean
     allowMcpGitWrite?: boolean
+    allowMcpGithubRepos?: boolean
     features?: Partial<{
       projects: boolean
       notifications: boolean
@@ -698,6 +700,82 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  githubStatus: () =>
+    request<{
+      ok: boolean
+      data?: {
+        loggedIn: boolean
+        user: string | null
+        host: string
+        hint: string | null
+        detail?: string
+      }
+      error?: string
+    }>('/api/github/status'),
+  githubRepos: (opts: { search?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams()
+    if (opts.search) q.set('search', opts.search)
+    if (opts.limit != null) q.set('limit', String(opts.limit))
+    const qs = q.toString()
+    return request<{
+      ok: boolean
+      repos: {
+        name: string
+        nameWithOwner: string
+        url: string
+        isPrivate: boolean
+        defaultBranch: string
+        description: string
+      }[]
+      user?: string
+      count?: number
+    }>(`/api/github/repos${qs ? `?${qs}` : ''}`)
+  },
+  cloneGithubWorkspace: (body: {
+    repo: string
+    workspaceName?: string
+    branch?: string
+  }) =>
+    request<{
+      ok: boolean
+      project: Project
+      path?: string
+      origin?: string | null
+      branch?: string
+      openGitPanel?: boolean
+    }>('/api/workspaces/clone-github', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  githubConnect: (
+    id: string,
+    body: { repo: string; setUpstream?: boolean },
+  ) =>
+    request<{ ok: boolean; origin?: string | null; repo?: string }>(
+      `/api/projects/${encodeURIComponent(id)}/github/connect`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+    ),
+  githubCreateRepo: (
+    id: string,
+    body: {
+      name?: string
+      visibility?: 'private' | 'public'
+      confirm: boolean
+    },
+  ) =>
+    request<{
+      ok: boolean
+      origin?: string | null
+      name?: string
+      visibility?: string
+      pushed?: boolean
+    }>(`/api/projects/${encodeURIComponent(id)}/github/create-repo`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   deleteProject: (id: string) =>
     request<{
       ok: boolean
@@ -1052,6 +1130,7 @@ export const api = {
         date: string
       }[]
       remotes: string[]
+      originUrl: string | null
     }>(`/api/projects/${encodeURIComponent(id)}/git`),
   gitBranches: (id: string) =>
     request<{
