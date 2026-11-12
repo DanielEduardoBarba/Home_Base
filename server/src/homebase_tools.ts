@@ -133,6 +133,7 @@ export const MCP_TOOL_FEATURE: Record<string, McpFeatureId> = {
   homebase_list_presets: "projects",
   homebase_project_status: "projects",
   homebase_project_upsert: "projects",
+  homebase_create_mcp_workspace: "projects",
   homebase_project_delete: "projects",
   homebase_run_action: "projects",
   homebase_stop_project: "projects",
@@ -460,6 +461,29 @@ export function buildHomebaseTools(
             error: e instanceof Error ? e.message : String(e),
           });
         }
+      },
+    };
+    tools.homebase_create_mcp_workspace = {
+      description:
+        "Create a new bot workspace folder under ~/MCP_WORKSPACES and register it as a project. " +
+        "Requires Settings → MCP → Allow MCP workspace creation (off by default). Name only — no paths.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description:
+              "Folder name [A-Za-z0-9._-], max 64 chars, no leading dot",
+          },
+        },
+        required: ["name"],
+      },
+      execute: async (args) => {
+        const { createMcpWorkspace } = await import("./workspace");
+        const { projectPublic: pub } = await import("./process");
+        const result = createMcpWorkspace(String(args.name || ""));
+        if (!result.ok) return json({ ok: false, error: result.error });
+        return json({ ok: true, project: await pub(result.project) });
       },
     };
     tools.homebase_project_delete = {

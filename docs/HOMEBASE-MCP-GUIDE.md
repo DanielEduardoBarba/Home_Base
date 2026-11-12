@@ -236,6 +236,7 @@ Placeholders:
 
 | Tool | Use |
 |---|---|
+| `homebase_create_mcp_workspace` | Create bot folder under `~/MCP_WORKSPACES` + register project (**Settings toggle, default Off**) |
 | `homebase_cursor_job` | One job per project at a time; `callbackUrl` or `waitMs: 600000` |
 | `homebase_cursor_job_status` | Rare (≥5 min) |
 | `homebase_cursor_job_list` | See active/recent |
@@ -257,6 +258,15 @@ Placeholders:
 | Job accepted but the Home Base chat never replies | Fixed in Nov 2026: kickoff is awaited and detached from `/mcp`. Pull `development_grok` and redeploy Home Base. |
 
 ---
+
+## MCP workspace creation (bots)
+
+- Tool: `homebase_create_mcp_workspace` with `{ "name": "my-bot-app" }` only (no paths).
+- Folders land under the operator’s `~/MCP_WORKSPACES` (mode `700`).
+- **Settings → MCP Server → Allow MCP workspace creation** (default **Off**). When Off, the tool returns `MCP workspace creation is disabled in Settings`.
+- Humans use **Work → New workspace** (create folder + register) — not gated by this toggle.
+
+After pulling `development_grok`, restart Home Base (`homebased`) so the running service loads the new tool and API.
 
 ## Related
 

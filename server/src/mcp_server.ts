@@ -32,6 +32,8 @@ const TOKEN_PREFIX = "hb_mcp_";
 export type McpServerState = {
   enabled: boolean;
   features: McpFeatures;
+  /** MCP bots may call homebase_create_mcp_workspace (default off). */
+  allowMcpWorkspaceCreate?: boolean;
   updatedAt?: number;
 };
 
@@ -78,6 +80,7 @@ export function loadMcpServer(): McpServerState {
     return {
       enabled: raw.enabled !== false,
       features: normalizeMcpFeatures(raw.features),
+      allowMcpWorkspaceCreate: raw.allowMcpWorkspaceCreate === true,
       updatedAt: Number(raw.updatedAt) || undefined,
     };
   } catch {
@@ -86,7 +89,11 @@ export function loadMcpServer(): McpServerState {
 }
 
 export function saveMcpServer(
-  patch: Partial<{ enabled: boolean; features: Partial<McpFeatures> }>,
+  patch: Partial<{
+    enabled: boolean;
+    features: Partial<McpFeatures>;
+    allowMcpWorkspaceCreate: boolean;
+  }>,
 ): McpServerState {
   const cur = loadMcpServer();
   const next: McpServerState = {
@@ -95,10 +102,19 @@ export function saveMcpServer(
     features: patch.features
       ? normalizeMcpFeatures({ ...cur.features, ...patch.features })
       : cur.features,
+    allowMcpWorkspaceCreate:
+      typeof patch.allowMcpWorkspaceCreate === "boolean"
+        ? patch.allowMcpWorkspaceCreate
+        : cur.allowMcpWorkspaceCreate === true,
     updatedAt: Date.now(),
   };
   writeJsonAtomic(STATE_PATH, next);
   return next;
+}
+
+/** Default off when unset (existing and new installs). */
+export function mcpWorkspaceCreateAllowed(): boolean {
+  return loadMcpServer().allowMcpWorkspaceCreate === true;
 }
 
 export function mcpServerEnabled(): boolean {
@@ -289,6 +305,7 @@ function grokHookupGuide(url: string | null): string {
 export function mcpServerPublic(): {
   enabled: boolean;
   features: McpFeatures;
+  allowMcpWorkspaceCreate: boolean;
   featureMeta: typeof MCP_FEATURE_META;
   updatedAt?: number;
   endpointPath: string;
@@ -325,6 +342,7 @@ export function mcpServerPublic(): {
   return {
     enabled: state.enabled !== false,
     features: state.features,
+    allowMcpWorkspaceCreate: state.allowMcpWorkspaceCreate === true,
     featureMeta: MCP_FEATURE_META,
     updatedAt: state.updatedAt,
     endpointPath,

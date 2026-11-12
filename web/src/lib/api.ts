@@ -259,6 +259,7 @@ export const api = {
   mcpServerStatus: () =>
     request<{
       enabled: boolean
+      allowMcpWorkspaceCreate: boolean
       features: {
         projects: boolean
         notifications: boolean
@@ -304,6 +305,7 @@ export const api = {
     }>('/api/mcp-server'),
   setMcpServer: (body: {
     enabled?: boolean
+    allowMcpWorkspaceCreate?: boolean
     features?: Partial<{
       projects: boolean
       notifications: boolean
@@ -682,6 +684,15 @@ export const api = {
     actions?: unknown[]
   }) =>
     request<{ ok: boolean; project: Project }>('/api/projects', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  createWorkspace: (body: {
+    parentPath: string
+    folderName: string
+    displayName?: string
+  }) =>
+    request<{ ok: boolean; project: Project }>('/api/workspaces/create', {
       method: 'POST',
       body: JSON.stringify(body),
     }),

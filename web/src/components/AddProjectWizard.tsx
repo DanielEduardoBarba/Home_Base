@@ -36,11 +36,15 @@ function wirePrompt(name: string, path: string): string {
   ].join('\n')
 }
 
+type FolderMode = 'create' | 'existing'
+
 export function AddProjectWizard({ open, onClose, onAdded }: Props) {
   const [step, setStep] = useState(0)
+  const [folderMode, setFolderMode] = useState<FolderMode>('create')
   const [name, setName] = useState('')
   const [nameTouched, setNameTouched] = useState(false)
   const [path, setPath] = useState('')
+  const [folderName, setFolderName] = useState('')
   const [preset, setPreset] = useState('')
   const [askAi, setAskAi] = useState(true)
   const [presets, setPresets] = useState<{ id: string; name: string }[]>([])
@@ -63,9 +67,11 @@ export function AddProjectWizard({ open, onClose, onAdded }: Props) {
   useEffect(() => {
     if (!open) return
     setStep(0)
+    setFolderMode('create')
     setName('')
     setNameTouched(false)
     setPath('')
+    setFolderName('')
     setPreset('')
     setAskAi(true)
     setError('')
@@ -98,19 +104,27 @@ export function AddProjectWizard({ open, onClose, onAdded }: Props) {
   if (!open) return null
 
   const pathOk = path.trim().startsWith('/')
+  const folderNameOk = /^[A-Za-z0-9._-]+$/.test(folderName.trim()) && !folderName.trim().startsWith('.')
   const nameOk = Boolean(name.trim())
+  const step0Ok =
+    folderMode === 'existing'
+      ? pathOk && nameOk
+      : pathOk && folderNameOk && nameOk
 
   async function goNextFromFolder() {
-    if (!pathOk || !nameOk || busy) return
+    if (!step0Ok || busy) return
     setBusy(true)
     setError('')
     try {
       const stat = await api.hostStat(path.trim())
       if (!stat.exists || !stat.isDirectory) {
-        setError(stat.error || 'Folder not found — pick an existing directory.')
+        setError(stat.error || 'Parent folder not found — use an existing directory.')
         return
       }
       setPath(stat.path || path.trim())
+      if (folderMode === 'create' && !nameTouched) {
+        setName(folderName.trim())
+      }
       setStep(1)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -134,13 +148,23 @@ export function AddProjectWizard({ open, onClose, onAdded }: Props) {
     setBusy(true)
     setError('')
     try {
-      const abs = path.trim()
-      const label = name.trim() || basenamePath(abs)
-      const r = await api.upsertProject({
-        path: abs,
-        name: label,
-        preset: preset || undefined,
-      })
+      const label = name.trim() || (folderMode === 'create' ? folderName.trim() : basenamePath(path.trim()))
+      const r =
+        folderMode === 'create'
+          ? await api.createWorkspace({
+              parentPath: path.trim(),
+              folderName: folderName.trim(),
+              displayName: label,
+            })
+          : await api.upsertProject({
+              path: path.trim(),
+              name: label,
+              preset: preset || undefined,
+            })
+      const abs =
+        folderMode === 'create'
+          ? r.project.path
+          : path.trim()
       const wantAi = askAi && !preset
       if (wantAi) {
         setPendingCompose({
@@ -178,7 +202,7 @@ export function AddProjectWizard({ open, onClose, onAdded }: Props) {
       >
         <div className="flex items-center justify-between gap-2">
           <h2 id="hb-add-app-title" className="font-display text-xl font-extrabold tracking-tight">
-            Add app
+            New workspace
           </h2>
           <button type="button" className="hb-btn hb-btn-ghost !min-h-9 text-sm" data-dialog-cancel onClick={onClose}>
             Close
@@ -196,19 +220,45 @@ export function AddProjectWizard({ open, onClose, onAdded }: Props) {
 
         {step === 0 && (
           <div className="space-y-3">
+            <div className="flex gap-1.5 p-1 rounded-[var(--radius-control)] bg-panel-2 border border-line">
+              <button
+                type="button"
+                className={`flex-1 rounded-md px-2 py-2 text-sm font-medium ${
+                  folderMode === 'create' ? 'bg-accent text-white' : 'text-mute'
+                }`}
+                onClick={() => setFolderMode('create')}
+              >
+                Create folder
+              </button>
+              <button
+                type="button"
+                className={`flex-1 rounded-md px-2 py-2 text-sm font-medium ${
+                  folderMode === 'existing' ? 'bg-accent text-white' : 'text-mute'
+                }`}
+                onClick={() => setFolderMode('existing')}
+              >
+                Existing folder
+              </button>
+            </div>
             <div className="space-y-1.5">
               <label htmlFor="hb-add-path" className="hb-label">
-                Project folder
+                {folderMode === 'create' ? 'Parent folder' : 'Project folder'}
               </label>
               <p className="text-sm text-mute">
-                Absolute path on this computer — your own repo, not a copy.
+                {folderMode === 'create'
+                  ? 'Absolute path where the new workspace folder will be created.'
+                  : 'Absolute path on this computer — your own repo, not a copy.'}
               </p>
               <input
                 id="hb-add-path"
                 ref={pathRef}
                 data-dialog-initial
                 className="w-full rounded-[var(--radius-control)] bg-panel-2 border border-line px-3 py-3 text-sm font-mono"
-                placeholder="/home/you/projects/my-app"
+                placeholder={
+                  folderMode === 'create'
+                    ? '/home/you/APP_PROJECTS/GENERAL'
+                    : '/home/you/projects/my-app'
+                }
                 value={path}
                 onChange={(e) => onPathChange(e.target.value)}
                 autoCapitalize="off"
@@ -225,6 +275,26 @@ export function AddProjectWizard({ open, onClose, onAdded }: Props) {
                 }}
               />
             </div>
+            {folderMode === 'create' ? (
+              <div className="space-y-1.5">
+                <label htmlFor="hb-add-folder-name" className="hb-label">
+                  Folder name
+                </label>
+                <input
+                  id="hb-add-folder-name"
+                  className="w-full rounded-[var(--radius-control)] bg-panel-2 border border-line px-3 py-3 text-sm font-mono"
+                  placeholder="my-app"
+                  value={folderName}
+                  onChange={(e) => {
+                    setFolderName(e.target.value)
+                    if (!nameTouched) setName(e.target.value)
+                  }}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                />
+              </div>
+            ) : null}
             <div className="space-y-1.5">
               <label htmlFor="hb-add-name" className="hb-label">
                 Display name
@@ -242,7 +312,7 @@ export function AddProjectWizard({ open, onClose, onAdded }: Props) {
                 enterKeyHint="done"
                 autoComplete="off"
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && pathOk && nameOk) {
+                  if (e.key === 'Enter' && step0Ok) {
                     e.preventDefault()
                     void goNextFromFolder()
                   }
@@ -253,7 +323,7 @@ export function AddProjectWizard({ open, onClose, onAdded }: Props) {
             <button
               type="button"
               className="hb-btn hb-btn-primary w-full !min-h-11"
-              disabled={!pathOk || !nameOk || busy}
+              disabled={!step0Ok || busy}
               onClick={() => void goNextFromFolder()}
             >
               {busy ? 'Checking folder…' : 'Continue'}
@@ -357,7 +427,15 @@ export function AddProjectWizard({ open, onClose, onAdded }: Props) {
                 disabled={busy || !pathOk || !nameOk}
                 onClick={() => void submit()}
               >
-                {busy ? '…' : askAi && !preset ? 'Add & open Chat' : 'Add app'}
+                {busy
+                  ? '…'
+                  : folderMode === 'create'
+                    ? askAi && !preset
+                      ? 'Create & open Chat'
+                      : 'Create workspace'
+                    : askAi && !preset
+                      ? 'Add & open Chat'
+                      : 'Add app'}
               </button>
             </div>
           </div>

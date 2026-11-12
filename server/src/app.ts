@@ -576,6 +576,24 @@ app.post("/api/projects", async (c) => {
   }
 });
 
+app.post("/api/workspaces/create", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({
+      parentPath: z.string().min(1),
+      folderName: z.string().min(1),
+      displayName: z.string().optional(),
+    })
+    .parse(await readJson(c));
+  const { createHumanWorkspace } = await import("./workspace");
+  try {
+    const project = createHumanWorkspace(body);
+    return c.json({ ok: true, project: await projectPublic(project) });
+  } catch (e) {
+    throw new HttpError(400, e instanceof Error ? e.message : String(e));
+  }
+});
+
 app.patch("/api/projects/:projectId", async (c) => {
   await requireAuth(c);
   const id = c.req.param("projectId");
@@ -1170,6 +1188,7 @@ app.post("/api/mcp-server", async (c) => {
   const body = z
     .object({
       enabled: z.boolean().optional(),
+      allowMcpWorkspaceCreate: z.boolean().optional(),
       features: z
         .object({
           projects: featureBool,
@@ -1182,13 +1201,20 @@ app.post("/api/mcp-server", async (c) => {
         .optional(),
     })
     .parse(await readJson(c));
-  if (body.enabled === undefined && !body.features) {
-    throw new HttpError(400, "enabled or features required");
+  if (
+    body.enabled === undefined &&
+    !body.features &&
+    body.allowMcpWorkspaceCreate === undefined
+  ) {
+    throw new HttpError(400, "enabled, features, or allowMcpWorkspaceCreate required");
   }
   const { saveMcpServer, mcpServerPublic } = await import("./mcp_server");
   saveMcpServer({
     ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
     ...(body.features ? { features: body.features } : {}),
+    ...(body.allowMcpWorkspaceCreate !== undefined
+      ? { allowMcpWorkspaceCreate: body.allowMcpWorkspaceCreate }
+      : {}),
   });
   return c.json({ ok: true, ...mcpServerPublic() });
 });

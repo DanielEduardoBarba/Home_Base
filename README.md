@@ -21,7 +21,7 @@ Control your laptop from your phone — run apps, shell, files, and chat with lo
 4. Open the URL it prints (`http://localhost:8080/` by default on Linux, or follow the Mac tip for `--run`).
 5. Create a password → finish the short in-app setup (PIN, Cursor key, phone access).
 6. Open **Homework → Chat** — the **Home Base** project is already there. Start building.
-7. Add more apps with **+** in Homework → Apps (or ask Chat).
+7. Add more apps with **New workspace** in Work (create a folder or register an existing repo).
 
 That’s it.
 
@@ -75,7 +75,7 @@ Safe to run again. It won’t wipe other projects.
 ## Projects
 
 - First install registers **this repo** as project `homebase`.
-- Add more with **+** in Apps, Chat tools (`homebase_project_upsert`), or:
+- Add more with **New workspace** in Work, Chat tools (`homebase_project_upsert`), or:
 
 ```bash
 ./build.sh --add-project --preset example --path /path/to/your-repo

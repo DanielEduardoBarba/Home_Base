@@ -219,7 +219,7 @@ export function AppsTab({
             className="hb-btn hb-btn-primary w-full !min-h-11"
             onClick={() => setAddOpen(true)}
           >
-            Add app
+            New workspace
           </button>
         </section>
         <AddProjectWizard
@@ -266,7 +266,7 @@ export function AppsTab({
                     onConfirm={() => void doRemove()}
                   />
                 )}
-                <IconBtn label="Add app" onClick={() => setAddOpen(true)} className="!w-9 !h-9" />
+                <IconBtn label="New workspace" onClick={() => setAddOpen(true)} className="!w-9 !h-9" />
               </div>
             </div>
             <ProjectSelect

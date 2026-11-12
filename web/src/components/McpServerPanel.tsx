@@ -92,6 +92,7 @@ export function McpServerPanel() {
   }
 
   const enabled = status?.enabled !== false
+  const mcpWorkspaceCreate = status?.allowMcpWorkspaceCreate === true
   const features = status?.features
   const featureMeta = status?.featureMeta || []
 
@@ -143,6 +144,25 @@ export function McpServerPanel() {
           Prefer WireGuard. Do not public-port-forward. Master Off → /mcp 404. Password change
           revokes all MCP tokens.
         </p>
+      </section>
+
+      <section className="hb-surface p-3.5 space-y-2.5">
+        <FeatureSwitch
+          label="Allow MCP workspace creation"
+          hint="Bots may call homebase_create_mcp_workspace (folders only under ~/MCP_WORKSPACES). Off by default."
+          on={mcpWorkspaceCreate}
+          disabled={Boolean(busy) || !status || !enabled}
+          onToggle={() =>
+            void run('mcp-ws', async () => {
+              await api.setMcpServer({ allowMcpWorkspaceCreate: !mcpWorkspaceCreate })
+              setMsg(
+                mcpWorkspaceCreate
+                  ? 'MCP workspace creation disabled'
+                  : 'MCP workspace creation enabled',
+              )
+            })
+          }
+        />
       </section>
 
       <section className="hb-surface p-3.5 space-y-2.5">

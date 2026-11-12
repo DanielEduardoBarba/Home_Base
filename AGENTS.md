@@ -16,7 +16,7 @@ Generic control plane. **Production** port from `HOMEBASE_PORT` in `.env` (defau
 
 `--onboarding` / `--setup` auto-register this checkout as the **Home Base** project so Chat works immediately. Prefer `./build.sh --onboarding` for new installs (Linux deploys; Mac falls back to setup + `--run`).
 
-Presets never embed a default filesystem path — always pass `--path` when adding other apps. UI: Homework → Apps **+**. Agents: `homebase_list_presets` / `homebase_project_upsert` / `homebase_project_delete`.
+Presets never embed a default filesystem path — always pass `--path` when adding other apps. UI: Work **New workspace** (create folder or register existing). Agents: `homebase_list_presets` / `homebase_project_upsert` / `homebase_project_delete`; bots may use `homebase_create_mcp_workspace` when Settings → MCP **Allow MCP workspace creation** is On (default Off; folders only under `~/MCP_WORKSPACES`).
 
 Open the UI at the URL printed by onboarding (`:8080` prod by default, or `:3081` in dev). Cursor API key is set in-app (encrypted at rest); `.env` is created on setup when missing.
 

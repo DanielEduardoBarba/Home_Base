@@ -194,7 +194,7 @@ export function listPresets(): { id: string; name: string }[] {
   return out;
 }
 
-function slugId(s: string): string {
+export function slugId(s: string): string {
   return (
     s
       .toLowerCase()

@@ -6,6 +6,8 @@ import { AppsTab } from './AppsTab'
 import { ChatPanel, readDockOpen, writeDockOpen } from './ChatPanel'
 import { CursorTab } from './CursorTab'
 import { FilesTab } from './FilesTab'
+import { AddProjectWizard, type AddProjectResult } from './AddProjectWizard'
+import { IconBtn } from './IconBtn'
 import { ProjectSelect } from './ProjectSelect'
 import { ShellTab } from './ShellTab'
 
@@ -60,6 +62,7 @@ export function WorkTab({
     present?.scene === 'files' ? present.action || null : null,
   )
   // Incoming present from Chat → start with dock minimized so the scene is visible
+  const [addOpen, setAddOpen] = useState(false)
   const [dockOpen, setDockOpenState] = useState(false)
   // 0 so the first presentKey from Chat→Work is treated as a change
   const [lastPresentKey, setLastPresentKey] = useState(0)
@@ -130,6 +133,11 @@ export function WorkTab({
               selectedId={selectedId}
               onSelect={onSelect}
               className="hb-work-project-select"
+            />
+            <IconBtn
+              label="New workspace"
+              onClick={() => setAddOpen(true)}
+              className="!w-9 !h-9 shrink-0"
             />
             <div className="hb-work-scenes" role="tablist" aria-label="Workspace">
               {ITEMS.map((s) => (
@@ -224,6 +232,16 @@ export function WorkTab({
           />
         )}
       </div>
+      <AddProjectWizard
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        onAdded={(result: AddProjectResult) => {
+          onSelect(result.projectId)
+          void onRefresh()
+          if (result.askAi) onItemChange('apps')
+          setAddOpen(false)
+        }}
+      />
     </div>
   )
 }
