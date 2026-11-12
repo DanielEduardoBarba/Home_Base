@@ -2265,6 +2265,8 @@ export async function startCursorRun(
     contextPaths?: string[];
     replaceLastUser?: boolean;
     queueIfBusy?: boolean;
+    /** Fired once the user message is posted and the chat is marked running. */
+    onStarted?: () => void;
   },
 ): Promise<void> {
   return startRun(projectId, opts);
@@ -2282,6 +2284,7 @@ async function startRun(
     contextPaths?: string[];
     replaceLastUser?: boolean;
     queueIfBusy?: boolean;
+    onStarted?: () => void;
   },
 ): Promise<void> {
   const images = opts.images || [];
@@ -2342,6 +2345,11 @@ async function startRun(
         position: q.length,
         prompt: prompt.slice(0, 120),
       });
+      try {
+        opts.onStarted?.();
+      } catch {
+        /* kickoff waiters must not break the queue */
+      }
       return;
     }
     broadcast(projectId, {
@@ -2389,6 +2397,11 @@ async function startRun(
 
   const ac = new AbortController();
   running.set(key, ac);
+  try {
+    opts.onStarted?.();
+  } catch {
+    /* kickoff waiters must not break the run */
+  }
 
   const project = loadProjects().get(projectId);
   const cwd = tab.cwd || project?.path || process.cwd();
