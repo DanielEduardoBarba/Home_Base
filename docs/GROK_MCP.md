@@ -76,6 +76,16 @@ After success: Developer **pulls** on `~/APP_PROJECTS` before QA continues.
 
 ---
 
+---
+
+## MCP job kickoff (Nov 2026 fix)
+
+`homebase_cursor_job` waits until the Home Base chat run has **actually started** (the prompt is posted on the chat tab and the tab is marked running) before it returns `status: "running"`. The Cursor agent run is **detached** from the `/mcp` HTTP request, so the tool returning — or the client disconnecting — cannot cancel the chat.
+
+Status and overlap checks no longer treat “chat not running yet” as “job done”. A job that never starts a chat run fails with a clear error instead of finishing silently. A second job on the same `projectId` is still **refused** with a clear error until the first job settles (`done` / `error` / `timeout`).
+
+This lives in the repo until Home Base is pulled and deployed. The running service will not pick the fix up until Dan restarts `homebased` (do not restart it from a bot). After that, hand off jobs as usual.
+
 ## Waiting for jobs (no tight polling)
 
 | Preference | How |
@@ -244,6 +254,7 @@ Placeholders:
 | Webhook missing / `webhookError` | URL not reachable from laptop; use waitMs |
 | MCP wait dies early | Client timeout &lt; 10m — use webhook or 5-min polls |
 | Token leaked in chat | Revoke in Settings → Mint a new one → secret card only |
+| Job accepted but the Home Base chat never replies | Fixed in Nov 2026: kickoff is awaited and detached from `/mcp`. Pull `development_grok` and redeploy Home Base. |
 
 ---
 

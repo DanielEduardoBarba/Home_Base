@@ -2,6 +2,12 @@
  * MCP job handoff: Grok bots enqueue whole coding jobs; Cursor on the laptop
  * does the long work (operator Cursor usage pool). Prefer waitMs or webhook —
  * avoid tight status polling (each poll is a paid Grok turn).
+ *
+ * Kickoff contract: an MCP-submitted job must actually start the Home Base
+ * chat run (user prompt posted, tab marked running) before the tool returns
+ * "running". The run itself is detached from the /mcp HTTP request so closing
+ * the transport cannot cancel it. Status helpers must not treat "chat not
+ * running yet" as "job done".
  */
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -52,11 +58,53 @@ export type CursorJob = {
   webhookError?: string;
 };
 
+export type CursorJobRunOpts = {
+  chatId: string;
+  prompt: string;
+  model: string;
+  mode: string;
+  cwd?: string;
+  queueIfBusy?: boolean;
+  onStarted?: () => void;
+};
+
+type JobDeps = {
+  runner: (projectId: string, opts: CursorJobRunOpts) => Promise<void>;
+  configured: () => boolean;
+  getProject: (id: string) => { path: string } | undefined;
+  createChat: typeof createChat;
+  workspace: typeof getWorkspace;
+};
+
+function defaultDeps(): JobDeps {
+  return {
+    runner: startCursorRun,
+    configured: cursorConfigured,
+    getProject: (id) => loadProjects().get(id),
+    createChat,
+    workspace: getWorkspace,
+  };
+}
+
+let deps: JobDeps = defaultDeps();
+
+/** Test-only: stub the Cursor run / project lookup. Pass null to restore. */
+export function _setCursorJobDepsForTests(partial: Partial<JobDeps> | null): void {
+  deps = partial ? { ...defaultDeps(), ...partial } : defaultDeps();
+}
+
+/** Test-only: drop in-memory jobs between cases. */
+export function _resetCursorJobsForTests(): void {
+  jobs.clear();
+}
+
 const jobs = new Map<string, CursorJob>();
 const MAX_JOBS = 40;
 const DEFAULT_BRANCH = "development_grok";
 const MAX_SUMMARY_LINES = 10;
 const MAX_SUMMARY_CHARS = 1200;
+const KICKOFF_WAIT_MS = 15_000;
+const IDLE_POLL_MS = 200;
 
 function trimJobs(): void {
   if (jobs.size <= MAX_JOBS) return;
@@ -125,7 +173,7 @@ export function capSummary(raw: string): string {
 }
 
 function lastAssistantSummary(projectId: string, chatId: string): string {
-  const ws = getWorkspace(projectId);
+  const ws = deps.workspace(projectId);
   const tab = ws.tabs.find((t) => t.id === chatId);
   if (!tab) return "";
   for (let i = (tab.messages || []).length - 1; i >= 0; i--) {
@@ -144,9 +192,14 @@ function lastAssistantSummary(projectId: string, chatId: string): string {
 }
 
 function chatRunning(projectId: string, chatId: string): boolean {
-  const ws = getWorkspace(projectId);
+  const ws = deps.workspace(projectId);
   const tab = ws.tabs.find((t) => t.id === chatId);
   return Boolean(tab?.running);
+}
+
+/** Schedule work off the current MCP/HTTP request (and its abort signal). */
+function detach(work: () => void): void {
+  setImmediate(work);
 }
 
 function handoffPrompt(userPrompt: string, branch: string): string {
@@ -230,15 +283,26 @@ async function deliverWebhook(job: CursorJob): Promise<void> {
 }
 
 async function awaitChatIdle(
-  projectId: string,
-  chatId: string,
+  job: CursorJob,
   waitMs: number,
-): Promise<"done" | "timeout"> {
+): Promise<"done" | "timeout" | "error"> {
+  const projectId = job.projectId;
+  const chatId = job.chatId;
+  // Kickoff already succeeded and the chat is idle: the run finished
+  // (possibly in the same tick). That is "done", not a missed start.
+  if (job.status === "running" && !chatRunning(projectId, chatId)) {
+    return "done";
+  }
+  const startDeadline = Date.now() + KICKOFF_WAIT_MS;
+  while (!chatRunning(projectId, chatId) && Date.now() < startDeadline) {
+    await Bun.sleep(50);
+  }
+  if (!chatRunning(projectId, chatId)) return "error";
+
   const deadline = Date.now() + Math.max(5_000, waitMs);
-  await Bun.sleep(400);
   while (Date.now() < deadline) {
     if (!chatRunning(projectId, chatId)) return "done";
-    await Bun.sleep(1500);
+    await Bun.sleep(IDLE_POLL_MS);
   }
   return chatRunning(projectId, chatId) ? "timeout" : "done";
 }
@@ -265,7 +329,7 @@ async function finishJob(
 }
 
 async function watchUntilSettled(job: CursorJob, maxMs: number): Promise<CursorJob> {
-  const outcome = await awaitChatIdle(job.projectId, job.chatId, maxMs);
+  const outcome = await awaitChatIdle(job, maxMs);
   if (outcome === "timeout") {
     return finishJob(
       job,
@@ -273,7 +337,24 @@ async function watchUntilSettled(job: CursorJob, maxMs: number): Promise<CursorJ
       `Still running after ${Math.round(maxMs / 1000)}s — use callbackUrl or poll status sparingly (≥5 min)`,
     );
   }
+  if (outcome === "error") {
+    return finishJob(
+      job,
+      "error",
+      "MCP job did not start a Cursor chat run — the prompt never triggered a reply",
+    );
+  }
   return finishJob(job, "done");
+}
+
+/**
+ * Mark a running job done only after kickoff succeeded and the chat has
+ * since gone idle. Never treat "not running yet" (still queued) as finished.
+ */
+function maybeFinishIfIdle(job: CursorJob): void {
+  if (job.status !== "running") return;
+  if (chatRunning(job.projectId, job.chatId)) return;
+  void finishJob(job, "done");
 }
 
 /** True if a handoff job is still queued/running for this project. */
@@ -282,15 +363,45 @@ export function projectHasActiveCursorJob(projectId: string): CursorJob | null {
   for (const j of jobs.values()) {
     if (j.projectId !== pid) continue;
     if (j.status === "queued" || j.status === "running") {
-      // Heal stale flags if the chat already finished.
-      if (!chatRunning(j.projectId, j.chatId) && j.status === "running") {
-        void finishJob(j, "done");
-        continue;
+      maybeFinishIfIdle(j);
+      if (j.status === "queued" || j.status === "running") {
+        return { ...j };
       }
-      return { ...j };
     }
   }
   return null;
+}
+
+async function waitForKickoff(
+  job: CursorJob,
+  start: { started: boolean; error: unknown; settled: boolean },
+): Promise<CursorJob | null> {
+  const deadline = Date.now() + KICKOFF_WAIT_MS;
+  while (Date.now() < deadline) {
+    if (chatRunning(job.projectId, job.chatId) || start.started) {
+      return null;
+    }
+    if (start.error) {
+      return finishJob(
+        job,
+        "error",
+        start.error instanceof Error ? start.error.message : String(start.error),
+      );
+    }
+    if (start.settled) {
+      return finishJob(
+        job,
+        "error",
+        "MCP job did not start a Cursor chat run — the prompt never triggered a reply",
+      );
+    }
+    await Bun.sleep(20);
+  }
+  return finishJob(
+    job,
+    "error",
+    "Timed out waiting for the Cursor chat run to start",
+  );
 }
 
 /** Start a Cursor agent job for a registered project. Optionally wait / webhook. */
@@ -310,12 +421,12 @@ export async function startCursorJob(opts: {
   const prompt = String(opts.prompt || "").trim();
   if (!projectId) throw new Error("projectId required");
   if (!prompt) throw new Error("prompt required");
-  if (!cursorConfigured()) {
+  if (!deps.configured()) {
     throw new Error(
       "Cursor API key not set on Home Base — human must add it in Settings",
     );
   }
-  const project = loadProjects().get(projectId);
+  const project = deps.getProject(projectId);
   if (!project) throw new Error(`project not found: ${projectId}`);
 
   const active = projectHasActiveCursorJob(projectId);
@@ -337,7 +448,7 @@ export async function startCursorJob(opts: {
     String(opts.title || "").trim() ||
     `MCP · ${prompt.slice(0, 28)}${prompt.length > 28 ? "…" : ""}`;
 
-  const tab = createChat(projectId, { title, cwd });
+  const tab = deps.createChat(projectId, { title, cwd });
   const job: CursorJob = {
     id: randomBytes(6).toString("hex"),
     projectId,
@@ -361,16 +472,36 @@ export async function startCursorJob(opts: {
     "cursor-job",
   );
 
-  void startCursorRun(projectId, {
-    chatId: tab.id,
-    prompt: handoffPrompt(prompt, branch),
-    model,
-    mode,
-    cwd,
-    queueIfBusy: true,
-  }).catch((e) => {
-    void finishJob(job, "error", e instanceof Error ? e.message : String(e));
+  const start = { started: false, error: null as unknown, settled: false };
+  detach(() => {
+    void deps
+      .runner(projectId, {
+        chatId: tab.id,
+        prompt: handoffPrompt(prompt, branch),
+        model,
+        mode,
+        cwd,
+        queueIfBusy: true,
+        onStarted: () => {
+          start.started = true;
+        },
+      })
+      .then(
+        () => {
+          start.settled = true;
+        },
+        (e) => {
+          start.error = e;
+          start.settled = true;
+          if (job.status === "queued" || job.status === "running") {
+            void finishJob(job, "error", e instanceof Error ? e.message : String(e));
+          }
+        },
+      );
   });
+
+  const failed = await waitForKickoff(job, start);
+  if (failed) return failed;
 
   job.status = "running";
   jobs.set(job.id, job);
@@ -382,8 +513,10 @@ export async function startCursorJob(opts: {
   const watchCap = waitMs > 0 ? waitMs : 45 * 60_000;
 
   if (waitMs <= 0) {
-    // Fire-and-forget: still watch so webhook can wake the bot once.
-    void watchUntilSettled(job, watchCap);
+    // Fire-and-forget watch: also detached so /mcp close cannot cancel it.
+    detach(() => {
+      void watchUntilSettled(job, watchCap);
+    });
     return { ...job };
   }
 
@@ -393,11 +526,7 @@ export async function startCursorJob(opts: {
 export function getCursorJob(id: string): CursorJob | null {
   const job = jobs.get(String(id || "").trim());
   if (!job) return null;
-  if (job.status === "running" || job.status === "queued") {
-    if (!chatRunning(job.projectId, job.chatId)) {
-      void finishJob(job, "done");
-    }
-  }
+  maybeFinishIfIdle(job);
   return { ...job };
 }
 
@@ -406,12 +535,7 @@ export function listCursorJobs(limit = 20): CursorJob[] {
     .sort((a, b) => b.startedAt - a.startedAt)
     .slice(0, Math.min(50, Math.max(1, limit)))
     .map((j) => {
-      if (
-        (j.status === "running" || j.status === "queued") &&
-        !chatRunning(j.projectId, j.chatId)
-      ) {
-        void finishJob(j, "done");
-      }
+      maybeFinishIfIdle(j);
       return { ...j };
     });
 }
