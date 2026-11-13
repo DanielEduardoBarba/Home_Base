@@ -106,15 +106,60 @@ export function _setCursorJobDepsForTests(partial: Partial<JobDeps> | null): voi
 /** Test-only: drop in-memory jobs between cases. */
 export function _resetCursorJobsForTests(): void {
   jobs.clear();
+  callbackAuthByJobId.clear();
 }
 
 const jobs = new Map<string, CursorJob>();
+/** Webhook Authorization header values — memory only; never on CursorJob / disk. */
+const callbackAuthByJobId = new Map<string, string>();
 const MAX_JOBS = 40;
 const DEFAULT_BRANCH = "development_grok";
 const MAX_SUMMARY_LINES = 10;
 const MAX_SUMMARY_CHARS = 1200;
 const KICKOFF_WAIT_MS = 15_000;
 const IDLE_POLL_MS = 200;
+
+/**
+ * Resolve webhook Authorization header value.
+ * Per-job `callbackAuth` wins; else `HOMEBASE_CALLBACK_AUTH` env default.
+ * Value is sent exactly (e.g. "Bearer abc") — do not add a Bearer prefix here.
+ */
+export function resolveCallbackAuth(param?: string | null): string | undefined {
+  const fromParam = String(param ?? "").trim();
+  if (fromParam) return fromParam;
+  const fromEnv = String(process.env.HOMEBASE_CALLBACK_AUTH || "").trim();
+  return fromEnv || undefined;
+}
+
+/** Strip known callback auth material from error/log strings. */
+export function redactCallbackSecrets(
+  raw: unknown,
+  ...secrets: Array<string | undefined | null>
+): string {
+  let s = String(raw ?? "");
+  if (!s) return s;
+  for (const secret of secrets) {
+    const v = String(secret || "").trim();
+    if (v.length < 4) continue;
+    if (s.includes(v)) s = s.split(v).join("[redacted]");
+  }
+  // Generic Authorization / Bearer shapes (trimAgentError-compatible).
+  s = s.replace(
+    /(authorization)\s*[=:]\s*\S+/gi,
+    "$1=***",
+  );
+  s = s.replace(/\bBearer\s+[A-Za-z0-9._\-+/=]{8,}/gi, "Bearer ***");
+  return s;
+}
+
+function publicJob(job: CursorJob): CursorJob {
+  // callbackAuth lives only in callbackAuthByJobId — never copy it onto the job.
+  return { ...job };
+}
+
+function forgetCallbackAuth(jobId: string): void {
+  callbackAuthByJobId.delete(jobId);
+}
 
 function trimJobs(): void {
   if (jobs.size <= MAX_JOBS) return;
@@ -127,6 +172,7 @@ function trimJobs(): void {
         old.status === "error" ||
         old.status === "timeout")
     ) {
+      forgetCallbackAuth(old.id);
       jobs.delete(old.id);
     } else {
       break;
@@ -248,14 +294,19 @@ function normalizeCallbackUrl(raw: unknown): string | undefined {
 async function deliverWebhook(job: CursorJob): Promise<void> {
   const url = job.callbackUrl;
   if (!url) return;
+  const auth = callbackAuthByJobId.get(job.id);
   try {
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      "user-agent": "homebase-cursor-job/1",
+      "x-homebase-job-id": job.id,
+    };
+    if (auth) {
+      headers.authorization = auth;
+    }
     const res = await fetch(url, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "user-agent": "homebase-cursor-job/1",
-        "x-homebase-job-id": job.id,
-      },
+      headers,
       body: JSON.stringify({
         type: "homebase.cursor_job",
         job: {
@@ -275,21 +326,28 @@ async function deliverWebhook(job: CursorJob): Promise<void> {
     });
     if (!res.ok) {
       job.webhookDelivered = false;
-      job.webhookError = `HTTP ${res.status}`;
+      job.webhookError = redactCallbackSecrets(`HTTP ${res.status}`, auth);
     } else {
       job.webhookDelivered = true;
       job.webhookError = undefined;
     }
   } catch (e) {
     job.webhookDelivered = false;
-    job.webhookError = e instanceof Error ? e.message : String(e);
+    const raw = e instanceof Error ? e.message : String(e);
+    job.webhookError = redactCallbackSecrets(raw, auth);
   }
   jobs.set(job.id, job);
+  const logMsg = redactCallbackSecrets(
+    `cursor job ${job.id} webhook ${job.webhookDelivered ? "ok" : job.webhookError}`,
+    auth,
+  );
   appendTrace(
     job.webhookDelivered ? "info" : "warn",
-    `cursor job ${job.id} webhook ${job.webhookDelivered ? "ok" : job.webhookError}`,
+    logMsg,
     "cursor-job",
   );
+  // Auth is only needed for delivery; drop after attempt so status/list stay clean.
+  forgetCallbackAuth(job.id);
 }
 
 async function awaitChatIdle(
@@ -330,12 +388,19 @@ async function finishJob(
   }
   job.status = status;
   job.finishedAt = Date.now();
-  if (error) job.error = trimAgentError(error) || error;
+  if (error) {
+    const trimmed = trimAgentError(error) || error;
+    job.error = redactCallbackSecrets(
+      trimmed,
+      callbackAuthByJobId.get(job.id),
+      process.env.HOMEBASE_CALLBACK_AUTH,
+    );
+  }
   job.summary = lastAssistantSummary(job.projectId, job.chatId) || job.summary;
   job.commit = gitTip(job.cwd);
   jobs.set(job.id, job);
   await deliverWebhook(job);
-  return { ...job };
+  return publicJob(job);
 }
 
 /** After the chat goes idle: fail on run error or empty assistant output. */
@@ -403,7 +468,7 @@ export function projectHasActiveCursorJob(projectId: string): CursorJob | null {
     if (j.status === "queued" || j.status === "running") {
       maybeFinishIfIdle(j);
       if (j.status === "queued" || j.status === "running") {
-        return { ...j };
+        return publicJob(j);
       }
     }
   }
@@ -453,6 +518,11 @@ export async function startCursorJob(opts: {
   waitMs?: number;
   branch?: string;
   callbackUrl?: string;
+  /**
+   * Exact Authorization header value for the job webhook (e.g. "Bearer abc").
+   * Overrides HOMEBASE_CALLBACK_AUTH. Kept only in memory — never on job JSON.
+   */
+  callbackAuth?: string;
   source?: string;
   /** MCP token label / bot name for chat bubble meta. */
   sourceLabel?: string;
@@ -484,6 +554,7 @@ export async function startCursorJob(opts: {
   const branch =
     String(opts.branch || DEFAULT_BRANCH).trim() || DEFAULT_BRANCH;
   const callbackUrl = normalizeCallbackUrl(opts.callbackUrl);
+  const callbackAuth = resolveCallbackAuth(opts.callbackAuth);
   const title =
     String(opts.title || "").trim() ||
     `MCP · ${prompt.slice(0, 28)}${prompt.length > 28 ? "…" : ""}`;
@@ -506,6 +577,9 @@ export async function startCursorJob(opts: {
     callbackUrl,
   };
   jobs.set(job.id, job);
+  if (callbackAuth && callbackUrl) {
+    callbackAuthByJobId.set(job.id, callbackAuth);
+  }
   trimJobs();
 
   appendTrace(
@@ -568,7 +642,7 @@ export async function startCursorJob(opts: {
     detach(() => {
       void watchUntilSettled(job, watchCap);
     });
-    return { ...job };
+    return publicJob(job);
   }
 
   return watchUntilSettled(job, waitMs);
@@ -578,7 +652,7 @@ export function getCursorJob(id: string): CursorJob | null {
   const job = jobs.get(String(id || "").trim());
   if (!job) return null;
   maybeFinishIfIdle(job);
-  return { ...job };
+  return publicJob(job);
 }
 
 export function listCursorJobs(limit = 20): CursorJob[] {
@@ -587,6 +661,6 @@ export function listCursorJobs(limit = 20): CursorJob[] {
     .slice(0, Math.min(50, Math.max(1, limit)))
     .map((j) => {
       maybeFinishIfIdle(j);
-      return { ...j };
+      return publicJob(j);
     });
 }

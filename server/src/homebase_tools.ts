@@ -768,6 +768,8 @@ export function buildHomebaseTools(
         "One active job per projectId (rejects overlaps so development_grok is not raced). " +
         "Cursor pulls/pushes development_grok by default; returns ≤10-line summary + commit. " +
         "Preferred: callbackUrl webhook (one wake) OR waitMs=600000. " +
+        "Optional callbackAuth = exact Authorization header value (e.g. \"Bearer abc\"); " +
+        "else server env HOMEBASE_CALLBACK_AUTH. Auth is never returned in job status/list. " +
         "If polling status, ≥5 minutes apart. Not for Vision.",
       parameters: {
         type: "object",
@@ -799,6 +801,12 @@ export function buildHomebaseTools(
             description:
               "Optional http(s) URL — Home Base POSTs JSON when the job finishes (preferred over polling)",
           },
+          callbackAuth: {
+            type: "string",
+            description:
+              'Optional Authorization header value sent exactly on the webhook (e.g. "Bearer abc"). ' +
+              "Overrides HOMEBASE_CALLBACK_AUTH. Secret — never echoed in status/list/logs.",
+          },
           waitMs: {
             type: "number",
             description:
@@ -822,6 +830,8 @@ export function buildHomebaseTools(
             branch: args.branch != null ? String(args.branch) : undefined,
             callbackUrl:
               args.callbackUrl != null ? String(args.callbackUrl) : undefined,
+            callbackAuth:
+              args.callbackAuth != null ? String(args.callbackAuth) : undefined,
             waitMs: args.waitMs != null ? Number(args.waitMs) : 0,
             source: "mcp",
             sourceLabel: mcpCtx?.actorLabel || undefined,

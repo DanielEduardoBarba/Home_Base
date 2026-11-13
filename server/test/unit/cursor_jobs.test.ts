@@ -11,9 +11,14 @@ import {
   getCursorJob,
   listCursorJobs,
   projectHasActiveCursorJob,
+  redactCallbackSecrets,
+  resolveCallbackAuth,
   startCursorJob,
   type CursorJobRunOpts,
 } from "../../src/cursor_jobs";
+import { listTrace, setTraceMirrorConsole } from "../../src/trace";
+
+setTraceMirrorConsole(false);
 
 type Tab = {
   id: string;
@@ -391,5 +396,128 @@ describe("cursor job model / error helpers", () => {
     });
     expect(evaluateIdleJobOutcome({ summary: "" }).status).toBe("error");
     expect(evaluateIdleJobOutcome({ summary: "ok" })).toEqual({ status: "done" });
+  });
+
+  test("resolveCallbackAuth: param wins over env; empty falls through", () => {
+    const prev = process.env.HOMEBASE_CALLBACK_AUTH;
+    try {
+      process.env.HOMEBASE_CALLBACK_AUTH = "Bearer from-env";
+      expect(resolveCallbackAuth(undefined)).toBe("Bearer from-env");
+      expect(resolveCallbackAuth("")).toBe("Bearer from-env");
+      expect(resolveCallbackAuth("Bearer from-param")).toBe("Bearer from-param");
+      delete process.env.HOMEBASE_CALLBACK_AUTH;
+      expect(resolveCallbackAuth(undefined)).toBeUndefined();
+    } finally {
+      if (prev !== undefined) process.env.HOMEBASE_CALLBACK_AUTH = prev;
+      else delete process.env.HOMEBASE_CALLBACK_AUTH;
+    }
+  });
+
+  test("redactCallbackSecrets strips exact auth values", () => {
+    const secret = "Bearer super-secret-callback-key";
+    const out = redactCallbackSecrets(
+      `webhook failed Authorization: ${secret}`,
+      secret,
+    );
+    expect(out).not.toContain("super-secret-callback-key");
+    expect(out).not.toContain(secret);
+    expect(out).toMatch(/\[redacted\]|Authorization=\*\*\*|Bearer \*\*\*/i);
+  });
+});
+
+describe("homebase_cursor_job webhook auth", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    delete process.env.HOMEBASE_CALLBACK_AUTH;
+  });
+
+  function mockFetchCapture() {
+    const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      const headers: Record<string, string> = {};
+      const raw = init?.headers;
+      if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+        for (const [k, v] of Object.entries(raw as Record<string, string>)) {
+          headers[k.toLowerCase()] = String(v);
+        }
+      }
+      calls.push({ url, headers });
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+    return calls;
+  }
+
+  test("sends Authorization header when callbackAuth is set", async () => {
+    const h = makeHarness();
+    const calls = mockFetchCapture();
+    const secret = "Bearer param-secret-xyz";
+    const job = await startCursorJob({
+      projectId: "demo",
+      prompt: "webhook with param auth",
+      waitMs: 0,
+      callbackUrl: "http://127.0.0.1:9/webhook-param",
+      callbackAuth: secret,
+    });
+    expect(JSON.stringify(job)).not.toContain("param-secret-xyz");
+    expect((job as { callbackAuth?: string }).callbackAuth).toBeUndefined();
+
+    h.release(job.chatId);
+    await waitUntil(() => getCursorJob(job.id)?.status === "done", 4_000, "param auth done");
+    await waitUntil(() => calls.length >= 1, 4_000, "webhook fetch");
+
+    expect(calls[0]?.headers.authorization).toBe(secret);
+    const status = getCursorJob(job.id);
+    const listed = listCursorJobs(10);
+    const blob = JSON.stringify({ status, listed });
+    expect(blob).not.toContain("param-secret-xyz");
+    expect(blob).not.toMatch(/callbackAuth/i);
+    const traces = listTrace(300).items.map((t) => t.message).join("\n");
+    expect(traces).not.toContain("param-secret-xyz");
+  });
+
+  test("uses HOMEBASE_CALLBACK_AUTH env default when param omitted", async () => {
+    const h = makeHarness();
+    const calls = mockFetchCapture();
+    process.env.HOMEBASE_CALLBACK_AUTH = "Bearer env-secret-abc";
+    const job = await startCursorJob({
+      projectId: "demo",
+      prompt: "webhook with env auth",
+      waitMs: 0,
+      callbackUrl: "http://127.0.0.1:9/webhook-env",
+    });
+    h.release(job.chatId);
+    await waitUntil(() => getCursorJob(job.id)?.status === "done", 4_000, "env auth done");
+    await waitUntil(() => calls.length >= 1, 4_000, "webhook fetch");
+    expect(calls[0]?.headers.authorization).toBe("Bearer env-secret-abc");
+    expect(JSON.stringify(getCursorJob(job.id))).not.toContain("env-secret-abc");
+    expect(JSON.stringify(listCursorJobs(5))).not.toContain("env-secret-abc");
+  });
+
+  test("callbackAuth param overrides HOMEBASE_CALLBACK_AUTH", async () => {
+    const h = makeHarness();
+    const calls = mockFetchCapture();
+    process.env.HOMEBASE_CALLBACK_AUTH = "Bearer env-should-not-win";
+    const job = await startCursorJob({
+      projectId: "demo",
+      prompt: "webhook param overrides env",
+      waitMs: 0,
+      callbackUrl: "http://127.0.0.1:9/webhook-override",
+      callbackAuth: "Bearer param-wins-999",
+    });
+    h.release(job.chatId);
+    await waitUntil(() => getCursorJob(job.id)?.status === "done", 4_000, "override done");
+    await waitUntil(() => calls.length >= 1, 4_000, "webhook fetch");
+    expect(calls[0]?.headers.authorization).toBe("Bearer param-wins-999");
+    expect(calls[0]?.headers.authorization).not.toBe("Bearer env-should-not-win");
+    const blob = JSON.stringify({
+      status: getCursorJob(job.id),
+      list: listCursorJobs(5),
+      traces: listTrace(300).items,
+    });
+    expect(blob).not.toContain("param-wins-999");
+    expect(blob).not.toContain("env-should-not-win");
   });
 });

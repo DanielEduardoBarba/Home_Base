@@ -94,6 +94,8 @@ This lives in the repo until Home Base is pulled and deployed. The running servi
 | **Good** | `waitMs: 600000` — one long wait (test your client; some give up earlier) |
 | **Last resort** | `homebase_cursor_job_status` at most **every 5 minutes** |
 
+**Webhook auth (optional):** If the receiver requires `Authorization: Bearer <key>`, pass `callbackAuth` on `homebase_cursor_job` with the **exact** header value (e.g. `"Bearer abc"`). If omitted, Home Base uses server env `HOMEBASE_CALLBACK_AUTH` when set. The auth string is kept only in memory for delivery — it is never written to the job store, status, list, notifications, or logs.
+
 Webhook body (POST JSON):
 
 ```json
@@ -167,6 +169,7 @@ JOB HANDOFF
    - projectId + full prompt
    - branch: development_grok (default)
    - Prefer: callbackUrl=__JOB_DONE_WEBHOOK__ and waitMs: 0
+   - If webhook needs auth: callbackAuth="Bearer <key>" (or set HOMEBASE_CALLBACK_AUTH on the laptop)
    - Else: waitMs: 600000 (if your MCP session stays open that long)
    - Else: status polls ≥5 minutes apart only
 3. Read summary (≤10 lines) + commit.short
@@ -242,7 +245,7 @@ Placeholders:
 | `homebase_github_list_repos` / `_clone_workspace` / `_connect_workspace` / `_create_repo` | Need **Allow MCP GitHub repo access**; clone also needs workspace-create; create/push needs git-write |
 | `homebase_git_status` / `_branches` / `_log` | Read-only git (Projects feature on) |
 | `homebase_git_fetch` / `_pull` / `_checkout` / `_create_branch` / `_merge` / `_commit` / `_push` / `_stash` | Writes need **Allow MCP git write actions** (default Off) |
-| `homebase_cursor_job` | One job per project at a time; `callbackUrl` or `waitMs: 600000` |
+| `homebase_cursor_job` | One job per project at a time; `callbackUrl` (+ optional `callbackAuth`) or `waitMs: 600000` |
 | `homebase_cursor_job_status` | Rare (≥5 min) |
 | `homebase_cursor_job_list` | See active/recent |
 | `homebase_presence_express` | Blob on laptop: `mood` / `form` / `color` / `energy` / `bubble` / `name` |
