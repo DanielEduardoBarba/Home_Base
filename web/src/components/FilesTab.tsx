@@ -939,7 +939,7 @@ export function FilesTab({
 
   return (
     <div className={`h-full flex flex-col min-h-0 ${embedded ? '' : 'hb-with-nav'}`}>
-      <div className="hb-chrome shrink-0">
+      <div className="hb-chrome hb-chrome--kb-keep shrink-0">
         <div className="px-3 pt-3 pb-2 space-y-2 max-w-6xl mx-auto w-full md:max-w-none md:mx-0">
           <div className="flex flex-wrap gap-2 items-center md:hidden">
             {!embedded && (
@@ -968,11 +968,11 @@ export function FilesTab({
           {explorerBar}
 
           <div className="min-w-0 w-full space-y-1">
-            <p className="text-[11px] font-mono text-mute min-w-0 max-w-full break-words [overflow-wrap:anywhere]">
+            <p className="hb-kb-hide text-[11px] font-mono text-mute min-w-0 max-w-full break-words [overflow-wrap:anywhere]">
               <span className="text-sky/90">Home Base files</span>
               <span className="opacity-50"> · </span>
               {status || project.name}
-              <span className="opacity-40"> — not Cursor’s open editor</span>
+              <span className="opacity-40 hidden md:inline"> — not Cursor’s open editor</span>
             </p>
             {error && (
               <p className="text-danger text-sm leading-relaxed break-words" role="alert">

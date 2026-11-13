@@ -1338,7 +1338,7 @@ export function ViewTab({ embedded = false }: ViewTabProps = {}) {
       style={{ minHeight: '100%' }}
     >
       {/* Compact chrome: actions stay tappable; quality/display/mode live in Menu sheet */}
-      <div className={`shrink-0 ${maximized ? 'hb-view-maxbar' : 'hb-chrome'}`}>
+      <div className={`shrink-0 ${maximized ? 'hb-view-maxbar' : 'hb-chrome hb-chrome--kb-keep'}`}>
         <div className={maximized ? undefined : 'hb-chrome-inner'}>
           <div className="hb-view-toolbar">
             {maximized ? (

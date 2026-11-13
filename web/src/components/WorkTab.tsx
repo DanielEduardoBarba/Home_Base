@@ -7,22 +7,12 @@ import { ChatPanel, readDockOpen, writeDockOpen } from './ChatPanel'
 import { CursorTab } from './CursorTab'
 import { FilesTab } from './FilesTab'
 import { GitTab } from './GitTab'
-import { AddProjectWizard, type AddProjectResult } from './AddProjectWizard'
-import { IconBtn } from './IconBtn'
-import { ProjectSelect } from './ProjectSelect'
 import { ShellTab } from './ShellTab'
 
-const ITEMS: { id: WorkItem; label: string }[] = [
-  { id: 'apps', label: 'Apps' },
-  { id: 'shell', label: 'Shell' },
-  { id: 'files', label: 'Files' },
-  { id: 'git', label: 'Git' },
-  { id: 'chat', label: 'Chat' },
-]
-
 /**
- * Work = one workspace: project + Apps / Shell / Files / Chat.
- * The parent remembers the project and the pane across visits.
+ * Work = one workspace: project + Apps / Shell / Files / Git / Chat.
+ * The app top bar owns the workspace picker and the bottom dock switches panes;
+ * the parent remembers the project and the pane across visits.
  */
 export function WorkTab({
   projects,
@@ -64,7 +54,6 @@ export function WorkTab({
     present?.scene === 'files' ? present.action || null : null,
   )
   // Incoming present from Chat → start with dock minimized so the scene is visible
-  const [addOpen, setAddOpen] = useState(false)
   const [dockOpen, setDockOpenState] = useState(false)
   // 0 so the first presentKey from Chat→Work is treated as a change
   const [lastPresentKey, setLastPresentKey] = useState(0)
@@ -127,39 +116,6 @@ export function WorkTab({
 
   return (
     <div className="hb-work h-full flex flex-col min-h-0 hb-with-nav">
-      <div className="hb-chrome shrink-0">
-        <div className="hb-chrome-inner">
-          <div className="hb-work-chrome-row">
-            <ProjectSelect
-              projects={projects}
-              selectedId={selectedId}
-              onSelect={onSelect}
-              className="hb-work-project-select"
-            />
-            <IconBtn
-              label="New workspace"
-              onClick={() => setAddOpen(true)}
-              className="!w-9 !h-9 shrink-0"
-            />
-            <div className="hb-work-scenes" role="tablist" aria-label="Workspace">
-              {ITEMS.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={item === s.id}
-                  data-active={item === s.id}
-                  className="hb-work-scene"
-                  onClick={() => onItemChange(s.id)}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-
       <div className="hb-work-body flex-1 min-h-0 relative">
         <div
           key={item === 'shell' ? `shell-${startShellKey}` : item}
@@ -227,6 +183,7 @@ export function WorkTab({
               selectedId={selectedId}
               onSelect={onSelect}
               onPresent={applyPresent}
+              embedded
             />
           )}
         </div>
@@ -243,17 +200,6 @@ export function WorkTab({
           />
         )}
       </div>
-      <AddProjectWizard
-        open={addOpen}
-        onClose={() => setAddOpen(false)}
-        onAdded={(result: AddProjectResult) => {
-          onSelect(result.projectId)
-          void onRefresh()
-          if (result.openGit) onItemChange('git')
-          else if (result.askAi) onItemChange('apps')
-          setAddOpen(false)
-        }}
-      />
     </div>
   )
 }

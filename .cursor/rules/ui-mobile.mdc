@@ -7,7 +7,7 @@ alwaysApply: false
 # Home Base UI
 
 - Primary viewport is still iPhone Safari over VPN; also keep desktop readable (wider max widths, clear contrast).
-- Bottom tabs (mobile order): Apps · Work · Chat · Shell · Files · View · Logs · More.
+- Work area: one-row top bar (Home · workspace picker + `+` inline · status chip · alerts). Bottom dock: Apps · Shell · Files · Chat · More (Git / View / Logs). No second scene switcher inside Work.
 - Work = Apps/Shell/Files scene switcher + bottom-right ChatPanel dock (present shell/files from chat).
 - Chat tab = full-page ChatPanel; can present into Work (+ Shell / Apps / Files).
 - View = live laptop screen + pointer/keyboard (`/ws/view`); mark stage `data-hb-no-ptr` so pull-to-refresh does not steal gestures.

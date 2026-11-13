@@ -8,11 +8,14 @@ export function CursorTab({
   selectedId,
   onSelect,
   onPresent,
+  embedded = false,
 }: {
   projects: Project[]
   selectedId: string
   onSelect: (id: string) => void
   onPresent?: (req: PresentRequest) => void
+  /** Inside Work — the app top bar already owns the workspace picker. */
+  embedded?: boolean
 }) {
   return (
     <ChatPanel
@@ -21,6 +24,7 @@ export function CursorTab({
       onSelect={onSelect}
       variant="page"
       onPresent={onPresent}
+      embedded={embedded}
     />
   )
 }

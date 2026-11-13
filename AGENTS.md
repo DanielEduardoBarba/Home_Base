@@ -32,7 +32,7 @@ SPA fetch/WebSocket paths are always relative (`/api/...`, `/ws/...` via `locati
 
 ### Homework tabs
 
-Apps · **Work** · Chat · Shell · Files · **View** · Logs. **Settings** is its own Home dashboard card (not in the Work dock). Alerts live in the status bar (host/live). Status bar **Home** returns to the dashboard.
+Bottom dock: Apps · Shell · Files · Chat · **More** (Git · **View** · Logs). One-row top bar: Home · workspace picker with inline **+** · status chip (tap for host/VPN/Cursor/version) · Alerts bell. **Settings** is its own Home dashboard card (not in the Work dock).
 
 - **Work** — switch Apps / Shell / Files in one workspace with a bottom-right chat dock (Cursor-like). File/shell present is click-to-open only (no auto-jump while the agent runs).
 - **Chat** — full-page agent; same engine as the Work dock; can jump into Work to show Apps/Shell/Files.

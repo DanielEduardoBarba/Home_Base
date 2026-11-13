@@ -1,15 +1,19 @@
 'use client'
 
 import dynamic from 'next/dynamic'
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { AddProjectWizard, type AddProjectResult } from './components/AddProjectWizard'
 import { AppsTab } from './components/AppsTab'
 import { HomeAccessTab } from './components/HomeAccessTab'
 import { HomeDashboard } from './components/HomeDashboard'
 import { HomeVisionTab } from './components/HomeVisionTab'
+import { IconBtn } from './components/IconBtn'
 import { LegalConnectionError, LegalGate } from './components/LegalGate'
 import { Login } from './components/Login'
 import { NotificationCenter } from './components/NotificationCenter'
+import { ProjectSelect } from './components/ProjectSelect'
 import { PullToRefresh } from './components/PullToRefresh'
+import { StatusChip } from './components/StatusChip'
 import { ToastStack } from './components/ToastStack'
 import { api } from './lib/api'
 import { clearSession, hasSession, isSessionValid, migrateLegacyLocalSession, registerSessionPoller, setSession, watchSessionExpiry } from './lib/auth'
@@ -83,25 +87,28 @@ const OnboardingFlow = dynamic(
   { ssr: false },
 )
 
-/** Primary dock: Work (expandable) · View · Logs (Alerts = status-bar bell; Settings = Home card) */
-const PRIMARY_TABS: { id: Tab; label: string }[] = [
-  { id: 'work', label: 'Work' },
+type NavId = 'apps' | 'shell' | 'files' | 'chat' | 'git' | 'view' | 'logs'
+
+/** Bottom dock: the workspace scenes, one tap each (Alerts = top-bar bell; Settings = Home card). */
+const NAV_MAIN: { id: NavId; label: string }[] = [
+  { id: 'apps', label: 'Apps' },
+  { id: 'shell', label: 'Shell' },
+  { id: 'files', label: 'Files' },
+  { id: 'chat', label: 'Chat' },
+]
+
+/** Behind the dock's More slot. */
+const NAV_MORE: { id: NavId; label: string }[] = [
+  { id: 'git', label: 'Git' },
   { id: 'view', label: 'View' },
   { id: 'logs', label: 'Logs' },
 ]
 
-/** Nested under Work — first Work tap expands; second tap opens the Work scene */
-const WORK_SUBTABS: { id: Tab; label: string }[] = [
-  { id: 'apps', label: 'Apps' },
-  { id: 'cursor', label: 'Chat' },
-  { id: 'shell', label: 'Shell' },
-  { id: 'files', label: 'Files' },
-]
-
-const WORK_SUB_IDS = new Set<Tab>(WORK_SUBTABS.map((t) => t.id))
-
-function isWorkFamily(id: Tab): boolean {
-  return id === 'work' || WORK_SUB_IDS.has(id)
+function activeNavId(tab: Tab, workItem: WorkItem): NavId | null {
+  if (tab === 'work') return workItem
+  if (tab === 'cursor') return 'chat'
+  if (tab === 'apps' || tab === 'shell' || tab === 'files' || tab === 'view' || tab === 'logs') return tab
+  return null
 }
 
 /** Home Access is advanced / off-by-default. */
@@ -110,9 +117,42 @@ function coerceArea(area: AppArea): AppArea {
   return area
 }
 
-function TabIcon({ id }: { id: Tab }) {
+function TabIcon({ id }: { id: NavId | 'more' | 'home' }) {
   const common = { className: 'hb-nav-icon', viewBox: '0 0 24 24', 'aria-hidden': true as const }
   switch (id) {
+    case 'home':
+      return (
+        <svg {...common}>
+          <path d="M4 11.5 12 5l8 6.5" />
+          <path d="M6.5 10v9.5h11V10" />
+          <path d="M10 19.5v-5h4v5" />
+        </svg>
+      )
+    case 'git':
+      return (
+        <svg {...common}>
+          <circle cx="7" cy="6" r="2.25" />
+          <circle cx="7" cy="18" r="2.25" />
+          <circle cx="17" cy="8" r="2.25" />
+          <path d="M7 8.25v7.5" />
+          <path d="M17 10.25c0 3.5-4 3.5-8.2 6.4" />
+        </svg>
+      )
+    case 'more':
+      return (
+        <svg {...common}>
+          <circle cx="5.5" cy="12" r="1.4" />
+          <circle cx="12" cy="12" r="1.4" />
+          <circle cx="18.5" cy="12" r="1.4" />
+        </svg>
+      )
+    case 'chat':
+      return (
+        <svg {...common}>
+          <path d="M5 5.5h14a1.5 1.5 0 0 1 1.5 1.5v8.5A1.5 1.5 0 0 1 19 17h-7l-4.5 3.5V17H5a1.5 1.5 0 0 1-1.5-1.5V7A1.5 1.5 0 0 1 5 5.5z" />
+          <path d="M8 10h8M8 13h5" />
+        </svg>
+      )
     case 'apps':
       return (
         <svg {...common}>
@@ -120,14 +160,6 @@ function TabIcon({ id }: { id: Tab }) {
           <rect x="13.5" y="3.5" width="7" height="7" rx="1.5" />
           <rect x="3.5" y="13.5" width="7" height="7" rx="1.5" />
           <rect x="13.5" y="13.5" width="7" height="7" rx="1.5" />
-        </svg>
-      )
-    case 'work':
-      return (
-        <svg {...common}>
-          <rect x="3.5" y="5" width="17" height="14" rx="1.5" />
-          <path d="M3.5 9.5h17" />
-          <path d="M14 9.5v9.5" />
         </svg>
       )
     case 'shell':
@@ -149,12 +181,6 @@ function TabIcon({ id }: { id: Tab }) {
           <rect x="3.5" y="5" width="17" height="12" rx="1.5" />
           <circle cx="12" cy="11" r="2.75" />
           <path d="M8 19.5h8" />
-        </svg>
-      )
-    case 'cursor':
-      return (
-        <svg {...common}>
-          <path d="M5 4.5 19 12 5 19.5V4.5z" />
         </svg>
       )
     case 'logs':
@@ -210,7 +236,8 @@ function AuthedApp() {
   const failStreak = useRef(0)
   const { unread, inboxOpen, toggleInbox, closeInbox, unlockAudio } = useNotify()
   const [viewVisited, setViewVisited] = useState(false)
-  const [workMenuOpen, setWorkMenuOpen] = useState(false)
+  const [moreOpen, setMoreOpen] = useState(false)
+  const [addOpen, setAddOpen] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [onboardingReady, setOnboardingReady] = useState(false)
 
@@ -285,7 +312,7 @@ function AuthedApp() {
     setNotFoundPath(null)
     writeLastArea(target)
     setArea(target)
-    setWorkMenuOpen(false)
+    setMoreOpen(false)
     closeInbox()
     logActivity('nav', `Area → ${target}`, { area: target })
     presenceHeartbeat({ area: target, tab })
@@ -296,11 +323,9 @@ function AuthedApp() {
   }, [tab])
 
   useEffect(() => {
-    if (!isWorkFamily(tab)) setWorkMenuOpen(false)
-  }, [tab])
+    setMoreOpen(false)
+  }, [tab, workItem])
 
-  const primaryTabs = useMemo(() => PRIMARY_TABS, [])
-  const workSubtabs = useMemo(() => WORK_SUBTABS, [])
   const activeProject = projects.find((p) => p.id === selectedId) || projects[0]
 
   const goTab = useCallback(async (id: Tab) => {
@@ -327,27 +352,6 @@ function AuthedApp() {
     }
   }, [area, tab])
 
-  const onPrimaryNav = useCallback(
-    (id: Tab) => {
-      unlockAudio()
-      closeInbox()
-      if (id === 'work') {
-        if (tab !== 'work' || notFoundPath) {
-          setWorkMenuOpen(false)
-          void goTab('work')
-          return
-        }
-        // Already in Work — tray switches Apps / Chat / Shell / Files
-        setWorkMenuOpen((open) => !open)
-        return
-      }
-      setWorkMenuOpen(false)
-      setWorkPresent(null)
-      void goTab(id)
-    },
-    [closeInbox, goTab, notFoundPath, tab, unlockAudio],
-  )
-
   const chooseWorkItem = useCallback(
     async (item: WorkItem) => {
       if (item === workItem && tab === 'work' && area === 'homework' && !notFoundPath) return
@@ -356,7 +360,7 @@ function AuthedApp() {
       setWorkItem(item)
       if (selectedId) writeWorkPlace(selectedId, { item })
       setWorkPresent(null)
-      setWorkMenuOpen(false)
+      setMoreOpen(false)
       writeLastTab('work')
       setTab('work')
       writeLastArea('homework')
@@ -367,16 +371,19 @@ function AuthedApp() {
     [area, notFoundPath, selectedId, tab, workItem],
   )
 
-  const onWorkSubNav = useCallback(
-    (id: Tab) => {
+  const onNav = useCallback(
+    (id: NavId) => {
       unlockAudio()
       closeInbox()
-      const item: WorkItem | null =
-        id === 'cursor' ? 'chat' : id === 'apps' || id === 'shell' || id === 'files' ? id : null
-      if (!item) return
-      chooseWorkItem(item)
+      setMoreOpen(false)
+      if (id === 'view' || id === 'logs') {
+        setWorkPresent(null)
+        void goTab(id)
+        return
+      }
+      void chooseWorkItem(id)
     },
-    [chooseWorkItem, closeInbox, unlockAudio],
+    [chooseWorkItem, closeInbox, goTab, unlockAudio],
   )
 
   // Each project keeps its own Apps / Shell / Files / Chat pane.
@@ -397,17 +404,17 @@ function AuthedApp() {
     setWorkItem(readWorkPlace(selectedId).item)
   }, [selectedId, routesReady])
 
-  // Close Work submenu on outside tap / Escape
+  // Close the More tray on outside tap / Escape
   useEffect(() => {
-    if (!workMenuOpen) return
+    if (!moreOpen) return
     const onPointer = (e: PointerEvent) => {
       const t = e.target
       if (!(t instanceof Element)) return
       if (t.closest('.hb-nav')) return
-      setWorkMenuOpen(false)
+      setMoreOpen(false)
     }
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setWorkMenuOpen(false)
+      if (e.key === 'Escape') setMoreOpen(false)
     }
     document.addEventListener('pointerdown', onPointer, true)
     window.addEventListener('keydown', onKey)
@@ -415,7 +422,7 @@ function AuthedApp() {
       document.removeEventListener('pointerdown', onPointer, true)
       window.removeEventListener('keydown', onKey)
     }
-  }, [workMenuOpen])
+  }, [moreOpen])
 
   useEffect(() => {
     if (!routesReady || notFoundPath) return
@@ -537,6 +544,24 @@ function AuthedApp() {
     }
   }, [selectedId])
 
+  const onProjectAdded = useCallback(
+    (result: AddProjectResult) => {
+      setAddOpen(false)
+      const item: WorkItem | null = result.openGit ? 'git' : result.askAi ? 'apps' : null
+      if (item) writeWorkPlace(result.projectId, { item })
+      if (result.askAi) writeDockOpen(true)
+      writeLastProjectId(result.projectId)
+      setSelectedId(result.projectId)
+      if (item) {
+        setWorkItem(item)
+        writeLastTab('work')
+        setTab('work')
+      }
+      void refreshProjects()
+    },
+    [refreshProjects],
+  )
+
   const refresh = useCallback(async () => {
     setRefreshing(true)
     try {
@@ -629,10 +654,11 @@ function AuthedApp() {
     )
   }
 
-  const linkLabel =
-    hostLink === 'live' ? 'Live' : hostLink === 'reconnecting' ? 'Reconnecting' : 'Unreachable'
   const cursorHint = activeProject?.cursor
   const cursorRunning = !!(cursorHint?.running || cursorHint?.active)
+  const navActive = activeNavId(tab, workItem)
+  const moreActive = NAV_MORE.find((t) => t.id === navActive) || null
+  const showWorkspacePicker = tab !== 'view' && tab !== 'logs' && projects.length > 0
 
   if (notFoundPath) {
     return (
@@ -782,17 +808,17 @@ function AuthedApp() {
   }
 
   return (
-    <div className={`hb-app-shell h-full flex flex-col${workMenuOpen ? ' hb-nav-work-open' : ''}`}>
+    <div className={`hb-app-shell h-full flex flex-col${moreOpen ? ' hb-nav-more-open' : ''}`}>
       <PullToRefresh onRefresh={refresh} />
       {refreshing && (
         <div className="hb-refresh-overlay" role="status" aria-live="polite" aria-label="Refreshing">
           <div className="hb-spinner" />
         </div>
       )}
-      <div className="hb-status-bar">
+      <header className="hb-topbar">
         <button
           type="button"
-          className="hb-status-home shrink-0"
+          className="hb-topbar-home shrink-0"
           onClick={() => {
             unlockAudio()
             goArea('home')
@@ -800,71 +826,42 @@ function AuthedApp() {
           aria-label="Home dashboard"
           title="Home"
         >
-          Home
+          <TabIcon id="home" />
         </button>
-        <span className="hb-status-sep shrink-0">·</span>
-        <div className="hb-status-meta min-w-0" role="status" aria-live="polite">
-          <span
-            className={`hb-status-dot ${
-              hostLink === 'live'
-                ? 'hb-status-dot--ok'
-                : hostLink === 'reconnecting'
-                  ? 'hb-status-dot--warn'
-                  : 'hb-status-dot--err'
-            }`}
-          />
-          <span className="hb-status-host truncate" title={hostLabel}>
-            {hostLabel}
-          </span>
-          <span className="hb-status-sep">·</span>
-          <span
-            className={
-              hostLink === 'live'
-                ? 'text-ok'
-                : hostLink === 'reconnecting'
-                  ? 'text-amber'
-                  : 'text-danger'
-            }
-          >
-            {linkLabel}
-          </span>
-          {activeProject && (
+        <div className="hb-topbar-center">
+          {showWorkspacePicker ? (
             <>
-              <span className="hb-status-sep">·</span>
-              <span className="truncate min-w-0" title={activeProject.path}>
-                {activeProject.name}
-              </span>
+              <ProjectSelect
+                projects={projects}
+                selectedId={selectedId}
+                onSelect={selectProject}
+                className="hb-topbar-picker"
+              />
+              <IconBtn
+                label="New workspace"
+                onClick={() => setAddOpen(true)}
+                className="hb-topbar-add"
+              />
             </>
-          )}
-          {cursorConfigured && (
-            <>
-              <span className="hb-status-sep">·</span>
-              <span className={cursorRunning ? 'text-sky' : 'text-mute'} title="Local Cursor agent">
-                Cursor{cursorRunning ? ' run' : ''}
-              </span>
-            </>
-          )}
-          {vpnActive !== null && (
-            <>
-              <span className="hb-status-sep">·</span>
-              <span
-                className={vpnActive ? 'text-ok' : 'text-amber'}
-                title={
-                  vpnActive
-                    ? vpnHostHint
-                      ? `WireGuard up · ${vpnHostHint}`
-                      : 'WireGuard up'
-                    : 'WireGuard configured but down — open Settings → WireGuard'
-                }
-              >
-                VPN {vpnActive ? 'up' : 'down'}
-              </span>
-            </>
+          ) : (
+            <h1 className="hb-topbar-title">
+              {tab === 'view' ? 'View' : tab === 'logs' ? 'Logs' : 'Work'}
+            </h1>
           )}
         </div>
+        <StatusChip
+          hostLabel={hostLabel}
+          hostLink={hostLink}
+          vpnActive={vpnActive}
+          vpnHostHint={vpnHostHint}
+          cursorConfigured={cursorConfigured}
+          cursorRunning={cursorRunning}
+          version={version}
+          backup={backup}
+        />
         <button
           type="button"
-          className="hb-status-alerts shrink-0"
+          className="hb-status-alerts hb-topbar-icon shrink-0"
           onClick={() => {
             unlockAudio()
             toggleInbox()
@@ -882,13 +879,7 @@ function AuthedApp() {
             <span className="hb-status-badge">{unread > 9 ? '9+' : unread}</span>
           )}
         </button>
-        {version && (
-          <span className="hb-status-ver shrink-0">
-            v{version}
-            {backup ? ' · bak' : ''}
-          </span>
-        )}
-      </div>
+      </header>
       <main className="flex-1 min-h-0 overflow-hidden relative">
         {/* Mount View on first visit; keep mounted (hidden) so capture survives tab switches. */}
         {viewVisited && (
@@ -902,67 +893,62 @@ function AuthedApp() {
         {tab !== 'view' && body}
       </main>
 
+      <AddProjectWizard open={addOpen} onClose={() => setAddOpen(false)} onAdded={onProjectAdded} />
       <ToastStack />
       <NotificationCenter />
 
-      <nav
-        className="hb-nav"
-        aria-label="Primary"
-        data-work-open={workMenuOpen ? 'true' : 'false'}
-      >
-        {workMenuOpen && (
-          <div
-            className="hb-nav-work-tray"
-            role="group"
-            aria-label="Work"
-          >
-            {workSubtabs.map((t) => {
-              const item: WorkItem | null =
-                t.id === 'cursor'
-                  ? 'chat'
-                  : t.id === 'apps' || t.id === 'shell' || t.id === 'files'
-                    ? t.id
-                    : null
-              const subActive = tab === 'work' && item != null && workItem === item
+      <nav className="hb-nav" aria-label="Primary" data-more-open={moreOpen ? 'true' : 'false'}>
+        {moreOpen && (
+          <div className="hb-nav-more-tray" role="group" aria-label="More">
+            {NAV_MORE.map((t) => {
+              const active = navActive === t.id
               return (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => onWorkSubNav(t.id)}
-                className="hb-nav-item hb-nav-item--sub"
-                data-active={subActive}
-                aria-current={subActive ? 'page' : undefined}
-              >
-                <TabIcon id={t.id} />
-                <span className="truncate max-w-full px-0.5">{t.label}</span>
-              </button>
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => onNav(t.id)}
+                  className="hb-nav-more-item"
+                  data-active={active}
+                  aria-current={active ? 'page' : undefined}
+                >
+                  <TabIcon id={t.id} />
+                  <span>{t.label}</span>
+                </button>
               )
             })}
           </div>
         )}
-        <div
-          className="hb-nav-dock"
-          style={{ gridTemplateColumns: `repeat(${primaryTabs.length}, minmax(0, 1fr))` }}
-        >
-          {primaryTabs.map((t) => {
-            const workActive = t.id === 'work' && isWorkFamily(tab)
-            const active = t.id === 'work' ? workActive : tab === t.id
+        <div className="hb-nav-dock" style={{ gridTemplateColumns: `repeat(${NAV_MAIN.length + 1}, minmax(0, 1fr))` }}>
+          {NAV_MAIN.map((t) => {
+            const active = navActive === t.id
             return (
               <button
                 key={t.id}
                 type="button"
-                onClick={() => onPrimaryNav(t.id)}
+                onClick={() => onNav(t.id)}
                 className="hb-nav-item"
                 data-active={active}
                 aria-current={active ? 'page' : undefined}
-                aria-expanded={t.id === 'work' ? workMenuOpen : undefined}
-                aria-haspopup={t.id === 'work' ? 'true' : undefined}
               >
                 <TabIcon id={t.id} />
                 <span className="truncate max-w-full px-0.5">{t.label}</span>
               </button>
             )
           })}
+          <button
+            type="button"
+            onClick={() => setMoreOpen((v) => !v)}
+            className="hb-nav-item"
+            data-active={!!moreActive || moreOpen}
+            aria-current={moreActive ? 'page' : undefined}
+            aria-expanded={moreOpen}
+            aria-haspopup="true"
+          >
+            <TabIcon id={moreActive && !moreOpen ? moreActive.id : 'more'} />
+            <span className="truncate max-w-full px-0.5">
+              {moreActive && !moreOpen ? moreActive.label : 'More'}
+            </span>
+          </button>
         </div>
       </nav>
     </div>

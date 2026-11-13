@@ -827,6 +827,7 @@ export function ChatPanel({
   onAgentBack,
   defaultCwd,
   defaultCwdLabel,
+  embedded = false,
 }: {
   projects: Project[]
   selectedId: string
@@ -843,6 +844,8 @@ export function ChatPanel({
   defaultCwd?: string
   /** Primary new-chat button label when defaultCwd is set. */
   defaultCwdLabel?: string
+  /** Page variant inside Work — hide the project row (the app top bar owns it). */
+  embedded?: boolean
 }) {
   const project = projects.find((p) => p.id === selectedId) || projects[0]
   const isDock = variant === 'dock'
@@ -3196,7 +3199,7 @@ export function ChatPanel({
   ) : (
     <div className={`shrink-0 ${isDock ? 'hb-chat-dock-chrome' : 'hb-chrome'}`}>
       <div className={`${isDock ? 'px-3 py-2 space-y-2' : 'hb-chrome-inner space-y-2'}`}>
-        {!isDock && (
+        {!isDock && !embedded && (
           <div className="flex gap-2 items-center">
             <ProjectSelect
               projects={projects}
@@ -3272,7 +3275,7 @@ export function ChatPanel({
           <span className="text-mute truncate min-w-0">
             <span className="text-sky font-medium">{cwdLabel}</span>
           </span>
-          {isDock && (
+          {(isDock || embedded) && (
             <button
               type="button"
               title={connected ? 'Cursor agent socket live' : 'Tap to reconnect'}
@@ -3293,7 +3296,7 @@ export function ChatPanel({
           {!isDock && (
             <button
               type="button"
-              className="text-accent font-semibold shrink-0 ml-auto"
+              className={`text-accent font-semibold shrink-0 ${embedded ? '' : 'ml-auto'}`}
               onClick={() => {
                 setNewOpen(true)
                 setPickingFolder(false)

@@ -282,7 +282,18 @@ export function AppsTab({
           </div>
         )}
         {embedded && (
-          <div className="flex items-center justify-end gap-1.5">
+          <div className="hb-apps-head">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 min-w-0">
+                <h2 className="hb-apps-head-name truncate">{project.name}</h2>
+                <span className="hb-apps-run-pill" data-running={running ? '1' : '0'}>
+                  {running ? 'Running' : 'Idle'}
+                </span>
+              </div>
+              <p className="hb-apps-head-path truncate" title={project.path}>
+                {project.path}
+              </p>
+            </div>
             {project.id !== 'homebase' && (
               <HoldButton
                 label={busy === 'Remove' ? '…' : 'Remove'}
@@ -295,7 +306,6 @@ export function AppsTab({
                 onConfirm={() => void doRemove()}
               />
             )}
-            <IconBtn label="Add app" onClick={() => setAddOpen(true)} className="!w-9 !h-9" />
           </div>
         )}
 

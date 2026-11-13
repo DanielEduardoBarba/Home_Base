@@ -32,22 +32,36 @@ export function installViewportHeight(): () => void {
     return false
   }
 
+  // Tallest layout height seen with no editable focused (per window width).
+  // With `interactive-widget=resizes-content` (Android Chrome) the keyboard
+  // shrinks the layout viewport itself, so visual vs layout never diverge —
+  // compare against this baseline instead.
+  let baseW = window.innerWidth
+  let baseH = Math.max(window.innerHeight, document.documentElement.clientHeight || 0)
+
   const sync = () => {
     const vv = window.visualViewport
     let h = window.innerHeight
     let top = 0
     let keyboardOpen = false
     const fullscreen = isFullscreenLike()
+    const editable = isEditableFocus()
+
+    if (window.innerWidth !== baseW) {
+      baseW = window.innerWidth
+      baseH = 0
+    }
 
     if (vv) {
       const layoutH = Math.max(
         window.innerHeight,
         document.documentElement.clientHeight || 0,
       )
-      // Soft keyboard only when an editable is focused AND the visual viewport
+      if (!editable || baseH === 0) baseH = Math.max(baseH, layoutH)
+      // Soft keyboard only when an editable is focused AND the viewport
       // shrinks meaningfully. URL-bar show/hide alone must not flip this.
-      const shrunk = vv.height < layoutH - 100
-      keyboardOpen = isEditableFocus() && (shrunk || vv.offsetTop > 2)
+      const shrunk = vv.height < layoutH - 100 || vv.height < baseH - 150
+      keyboardOpen = editable && (shrunk || vv.offsetTop > 2)
 
       if (keyboardOpen) {
         // Pin shell to the visual viewport — not layout viewport + nav clearance.
