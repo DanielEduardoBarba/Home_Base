@@ -85,6 +85,10 @@ export const PROJECTS_PATH = resolve(
 export const AGENTS_PATH = join(RUNTIME_DIR, "agents.json");
 export const LOCKOUT_PATH = join(RUNTIME_DIR, "lockout.json");
 export const MCP_LOCKOUT_PATH = join(RUNTIME_DIR, "mcp_lockout.json");
+/** Separate backoff for local-seat password recovery attempts. */
+export const LOCAL_LOCKOUT_PATH = join(RUNTIME_DIR, "local_lockout.json");
+/** Written into lockout files from 1.20.3 on. Absence means a pre-1.20.3 / 1.19.x file. */
+export const LOCKOUT_SCHEMA_VERSION = 2;
 export const SECURITY_DIR = join(RUNTIME_DIR, "security");
 export const TRUSTED_DEVICES_PATH = join(RUNTIME_DIR, "trusted_devices.json");
 export const NOTIFICATIONS_PATH = join(RUNTIME_DIR, "notifications.jsonl");

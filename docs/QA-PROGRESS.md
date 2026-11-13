@@ -110,3 +110,18 @@ Closes the R7 findings on 1.20.1 before deploy. See `docs/qa/homebase-1.20.2-fix
 - **Lows:** Logout revokes the session JWT's jti server-side (a captured cookie or Bearer no longer works). A brute-force burst alert fires even when the fifth failure is recorded as `lockout`. HTTP 423 `pin_locked` has its own PIN-pad / login message and does not look like a wrong PIN or a stale session.
 
 Version bump to 1.20.2. **Not deployed** from this change.
+
+
+## 2026-11-13 (America/New_York) — v1.20.3 local-seat lockout recovery
+
+Follow-up to the 1.19.x shared lockout that survived the 1.20.2 upgrade and forced a manual `sudo rm` of `/var/lib/homebased/.runtime/lockout.json`. See `docs/qa/homebase-1.20.3-lockout-recovery.md`.
+
+- A human browser on the same machine can sign in with the correct password while the human lockout is active, which clears it. Locality is the real socket peer (loopback only). Any forwarding header, a set `HOMEBASE_TRUSTED_PROXIES`, VPN/LAN peers, Bearer/MCP/connector tokens, and PIN-only attempts are refused. Local attempts have a separate 5-try backoff. The login page explains the local path when the server allows it.
+- Every clear writes a hash-chained `lockout_cleared` event (method, previous fail count, previous lockedUntil, IP, user agent, path) and is filterable on Settings → Security. An email alert uses the existing email-alerts settings; if there is no recipient, the gap is still logged and reported. No secrets in the log or mail.
+- `sudo homebase unlock` (root only) clears the human lockout, optionally MCP (`--mcp` / `--all`), prints what it cleared, and logs + emails as above.
+- First start of 1.20.3 migrates a legacy unversioned `lockout.json` once (`upgrade_migration`). New files carry `schemaVersion: 2`.
+- HB-R7b-01: the PIN pad shows the 423 “App PIN required” headline and status line.
+- New read-only MCP tool `homebase_session_output` returns a redacted PTY/session tail (max 500 lines). Documented in the MCP guide.
+
+Version bump to 1.20.3. **Not deployed** from this change.
+

@@ -59,6 +59,11 @@ export type SecurityEvent = {
   trusted?: boolean;
   firstSeen?: boolean;
   message?: string;
+  method?: string;
+  previousFailCount?: number;
+  previousLockedUntil?: number;
+  emailSent?: boolean;
+  emailGap?: string;
   prev: string;
   mac: string;
 };
@@ -77,6 +82,11 @@ export type SecurityEventInput = {
   connectorId?: string;
   connectorLabel?: string;
   message?: string;
+  method?: string;
+  previousFailCount?: number;
+  previousLockedUntil?: number;
+  emailSent?: boolean;
+  emailGap?: string;
 };
 
 const HEAD_PATH = () => join(SECURITY_DIR, "head.json");
@@ -254,6 +264,11 @@ export function recordSecurityEvent(input: SecurityEventInput): SecurityEvent {
     trusted: device?.trusted,
     firstSeen: firstSeen || undefined,
     message: redactSecrets(input.message || "").slice(0, 240) || undefined,
+    method: input.method?.slice(0, 64) || undefined,
+    previousFailCount: input.previousFailCount,
+    previousLockedUntil: input.previousLockedUntil,
+    emailSent: input.emailSent,
+    emailGap: input.emailGap?.slice(0, 180) || undefined,
   };
   const mac = sign(head.lastMac, body);
   const ev: SecurityEvent = { ...body, prev: head.lastMac, mac };
@@ -296,7 +311,7 @@ export function recordSecurityEvent(input: SecurityEventInput): SecurityEvent {
 }
 
 const SECRET_RE =
-  /(hb_mcp_[A-Za-z0-9_\-]+|Bearer\s+\S+|eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+)/g;
+  /hb_mcp_[A-Za-z0-9_\-]+|Bearer\s+\S+|eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+|(?:password|passwd|pwd|secret|api[_-]?key|private[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token)\s*[=:]\s*\S+|-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/gi;
 
 export function redactSecrets(text: string): string {
   return String(text || "").replace(SECRET_RE, "[redacted]");
@@ -344,6 +359,7 @@ function eventMatches(ev: SecurityEvent, q: SecurityQuery): boolean {
       ev.wgPeerName,
       ev.deviceName,
       ev.message,
+      ev.method,
     ]
       .filter(Boolean)
       .join(" ")
@@ -539,6 +555,8 @@ export function exportSecurityLog(
     trusted: ev.trusted ? "yes" : "no",
     status: ev.status ?? "",
     message: ev.message || "",
+    method: ev.method || "",
+    previousFailCount: ev.previousFailCount ?? "",
   }));
   const stamp = todayUtc();
   if (format === "csv") {

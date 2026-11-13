@@ -79,10 +79,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         if (!credential) clearSession('unauthorized')
       }
     }
-    // Server-side App PIN gate — tell PinLock to cover the UI
+    // Server-side App PIN gate — tell PinLock to cover the UI, with the 423 copy.
     if (res.status === 423) {
       try {
-        window.dispatchEvent(new Event('hb-pin-lock'))
+        window.dispatchEvent(new CustomEvent('hb-pin-lock', { detail: err }))
       } catch {
         /* ignore */
       }
@@ -492,12 +492,17 @@ export const api = {
         retryAfter?: number
         remainingAttempts?: number
         failCount?: number
+        method?: string
+        previousFailCount?: number
+        previousLockedUntil?: number
+        emailSent?: boolean
+        emailGap?: string
       }[]
     }>(`/api/security/events${qs ? `?${qs}` : ''}`)
   },
   securityStatus: () =>
     request<{
-      lockout: { failCount: number; locked: boolean; retryAfter: number; threshold: number }
+      lockout: { failCount: number; locked: boolean; retryAfter: number; threshold: number; localSeatRecovery?: boolean }
       mcpLockout: { failCount: number; locked: boolean; retryAfter: number; threshold: number; ip: string }
       devices: {
         id: string
@@ -688,7 +693,7 @@ export const api = {
       initialized: boolean
       canBootstrap: boolean
       jwtTtlSec: number
-      lockout: { locked: boolean; retryAfter: number; failCount: number }
+      lockout: { locked: boolean; retryAfter: number; failCount: number; threshold?: number; localSeatRecovery?: boolean }
       legal?: {
         version: string
         accepted: boolean

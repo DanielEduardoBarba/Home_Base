@@ -14,6 +14,17 @@ import {
   MCP_LOCKOUT_PATH,
   ensureRuntimeDirs,
 } from "./config";
+import {
+  clearHumanLockout,
+  expireHumanLockoutIfNeeded,
+  loadHumanLockout,
+  localLockoutStatus,
+  recordLocalFailure,
+  recordLocalSuccess,
+  remainingLocalAttempts,
+  saveHumanLockout,
+  LOCAL_FAIL_THRESHOLD,
+} from "./lockout_recovery";
 import { logWarn } from "./console_log";
 import { formatGeo, geoCached, warmGeo } from "./geo";
 import { desktopNotify } from "./desktop_notify";
@@ -304,21 +315,22 @@ export async function decodeJwt(
   return payload as Record<string, unknown>;
 }
 
-type LockoutFile = { failCount: number; lockedUntil: number };
+type LockoutFile = { failCount: number; lockedUntil: number; schemaVersion?: number };
 
 function loadLockout(): LockoutFile {
-  if (!existsSync(LOCKOUT_PATH)) return { failCount: 0, lockedUntil: 0 };
-  try {
-    return JSON.parse(readFileSync(LOCKOUT_PATH, "utf8")) as LockoutFile;
-  } catch {
-    return { failCount: 0, lockedUntil: 0 };
-  }
+  const data = loadHumanLockout();
+  return {
+    failCount: data.failCount,
+    lockedUntil: data.lockedUntil,
+    schemaVersion: data.schemaVersion,
+  };
 }
 
 function saveLockout(data: LockoutFile): void {
-  ensureRuntimeDirs();
-  writeFileSync(LOCKOUT_PATH, JSON.stringify(data, null, 2));
-  chmodPrivate(LOCKOUT_PATH);
+  saveHumanLockout({
+    failCount: Number(data.failCount || 0) || 0,
+    lockedUntil: Number(data.lockedUntil || 0) || 0,
+  });
 }
 
 function bumpLockout(data: LockoutFile): {
@@ -411,12 +423,17 @@ function noteSecurity(input: {
   }
 }
 
-export function lockoutStatus(): {
+export function lockoutStatus(ctx: AuthEventCtx = {}): {
   failCount: number;
   locked: boolean;
   retryAfter: number;
   threshold: number;
 } {
+  expireHumanLockoutIfNeeded({
+    ip: ctx.ip,
+    userAgent: ctx.userAgent,
+    path: ctx.path || "lockout_status",
+  });
   const data = loadLockout();
   const now = Date.now() / 1000;
   const remaining = Math.max(0, Math.floor((data.lockedUntil || 0) - now));
@@ -521,7 +538,12 @@ export function recordFailure(
   };
 }
 
-export function assertNotLocked(): void {
+export function assertNotLocked(ctx: AuthEventCtx = {}): void {
+  expireHumanLockoutIfNeeded({
+    ip: ctx.ip,
+    userAgent: ctx.userAgent,
+    path: ctx.path || "assert_not_locked",
+  });
   const data = loadLockout();
   const now = Date.now() / 1000;
   const remaining = Math.max(0, Math.floor((data.lockedUntil || 0) - now));
@@ -681,10 +703,16 @@ export function assertMcpNotLocked(ip = "unknown"): void {
   }
 }
 
+export type LoginPasswordCtx = AuthEventCtx & {
+  /** True only when evaluateLocalSeatPasswordBypass() said ok for this request. */
+  localSeat?: boolean;
+  socketIp?: string;
+};
+
 export async function loginWithPassword(
   password: string,
   ip = "unknown",
-  ctx: AuthEventCtx = {},
+  ctx: LoginPasswordCtx = {},
 ): Promise<{
   token: string;
   expiresAt: number;
@@ -692,7 +720,34 @@ export async function loginWithPassword(
   kind: string;
 }> {
   const eventCtx: AuthEventCtx = { ip, userAgent: ctx.userAgent, path: ctx.path };
-  assertNotLocked();
+  expireHumanLockoutIfNeeded({
+    ip,
+    userAgent: ctx.userAgent,
+    path: ctx.path || "/api/login",
+  });
+  const human = lockoutStatus(eventCtx);
+  const localSeat = Boolean(ctx.localSeat) && human.locked;
+  if (human.locked && !localSeat) {
+    assertNotLocked(eventCtx);
+  }
+  if (localSeat) {
+    const local = localLockoutStatus();
+    if (local.locked) {
+      throw new HttpError(
+        429,
+        {
+          code: "local_auth_lockout",
+          message: "Too many local sign-in attempts",
+          retryAfter: local.retryAfter,
+          failCount: local.failCount,
+          remainingAttempts: 0,
+          threshold: LOCAL_FAIL_THRESHOLD,
+          localSeat: true,
+        },
+        { "Retry-After": String(local.retryAfter) },
+      );
+    }
+  }
   if (!passwordIsSet()) {
     throw new HttpError(
       503,
@@ -700,6 +755,31 @@ export async function loginWithPassword(
     );
   }
   if (!verifyPassword(password)) {
+    if (localSeat) {
+      const info = recordLocalFailure();
+      noteSecurity({
+        event: "login_failure",
+        source: "ui",
+        result: info.locked ? "lockout" : "failure",
+        ip: ctx.socketIp || ip,
+        userAgent: ctx.userAgent,
+        path: ctx.path,
+        status: info.locked ? 429 : 401,
+        failCount: info.failCount,
+        retryAfter: info.retryAfter,
+        remainingAttempts: remainingLocalAttempts(info.failCount),
+        message: "invalid_password_local",
+      });
+      throw new HttpError(401, {
+        code: "invalid_password",
+        message: "Invalid password",
+        retryAfter: info.retryAfter,
+        failCount: info.failCount,
+        remainingAttempts: remainingLocalAttempts(info.failCount),
+        threshold: LOCAL_FAIL_THRESHOLD,
+        localSeat: true,
+      });
+    }
     const info = recordFailure(ip, "invalid_password", eventCtx);
     throw new HttpError(401, {
       code: "invalid_password",
@@ -710,7 +790,29 @@ export async function loginWithPassword(
       threshold: FAIL_THRESHOLD,
     });
   }
-  recordSuccess(eventCtx);
+  if (localSeat) {
+    const socketIp = ctx.socketIp || ip;
+    clearHumanLockout({
+      method: "local_password_signin",
+      ip: socketIp,
+      userAgent: ctx.userAgent,
+      path: ctx.path || "/api/login",
+      source: "ui",
+    });
+    recordLocalSuccess();
+    noteSecurity({
+      event: "login_success",
+      source: "ui",
+      result: "success",
+      ip: socketIp,
+      userAgent: ctx.userAgent,
+      path: ctx.path || "/api/login",
+      status: 200,
+      message: "local_password_signin",
+    });
+  } else {
+    recordSuccess(eventCtx);
+  }
   return issueJwt({ kind: "session", ttl: JWT_TTL_SEC });
 }
 

@@ -81,7 +81,8 @@ import {
 } from "./cursor";
 import { listDir, readFile, writeFile } from "./files";
 import { logInfo } from "./console_log";
-import { formatGeo, geoCached, warmGeo } from "./geo";
+import { formatGeo, geoCached, normalizeIp, warmGeo } from "./geo";
+import { evaluateLocalSeatPasswordBypass } from "./local_seat";
 import {
   deleteAccessWidget,
   getAccessWidget,
@@ -96,6 +97,7 @@ import {
   visionStatus,
 } from "./vision";
 import {
+  PEER_IP_HEADER,
   assertSameOrigin,
   clientIp,
   clientUserAgent,
@@ -407,7 +409,20 @@ app.post("/api/wireguard/uninstall", async (c) => {
 
 app.get("/api/auth/status", (c) => {
   const local = isLocalhostBrowser(c.req.raw.headers);
-  return c.json({ ...authStatusPayload(local), legal: legalPublic() });
+  const socketIp = normalizeIp(c.req.header(PEER_IP_HEADER) || "");
+  const payload = authStatusPayload(local);
+  const locked = Boolean((payload.lockout as { locked?: boolean })?.locked);
+  const localSeatRecovery =
+    locked &&
+    evaluateLocalSeatPasswordBypass({
+      socketIp,
+      headers: c.req.raw.headers,
+    }).ok;
+  return c.json({
+    ...payload,
+    lockout: { ...(payload.lockout as object), localSeatRecovery },
+    legal: legalPublic(),
+  });
 });
 
 /** Public — Terms / Privacy acceptance status for this install. */
@@ -425,10 +440,17 @@ app.post("/api/login", async (c) => {
   assertSameOrigin(c);
   const body = z.object({ password: z.string() }).parse(await readJson(c));
   const ip = clientIp(c);
+  const socketIp = normalizeIp(c.req.header(PEER_IP_HEADER) || "");
+  const localSeat = evaluateLocalSeatPasswordBypass({
+    socketIp,
+    headers: c.req.raw.headers,
+  }).ok;
   warmGeo(ip);
   const session = await loginWithPassword(body.password, ip, {
     userAgent: clientUserAgent(c),
     path: "/api/login",
+    localSeat,
+    socketIp,
   });
   logInfo("login ok", {
     source: "auth",
@@ -541,7 +563,21 @@ app.post("/api/ws-ticket", async (c) => {
   });
 });
 
-app.get("/api/lockout", (c) => c.json(lockoutStatus()));
+app.get("/api/lockout", (c) => {
+  const st = lockoutStatus({
+    ip: clientIp(c),
+    userAgent: clientUserAgent(c),
+    path: "/api/lockout",
+  });
+  const socketIp = normalizeIp(c.req.header(PEER_IP_HEADER) || "");
+  const localSeatRecovery =
+    st.locked &&
+    evaluateLocalSeatPasswordBypass({
+      socketIp,
+      headers: c.req.raw.headers,
+    }).ok;
+  return c.json({ ...st, localSeatRecovery });
+});
 
 app.get("/api/app-pin/status", async (c) => {
   await requireAuth(c, { allowPinLocked: true });

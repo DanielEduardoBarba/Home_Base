@@ -55,6 +55,7 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
   const [error, setError] = useState('')
   const [banner, setBanner] = useState('')
   const [retryAfter, setRetryAfter] = useState(0)
+  const [localRecovery, setLocalRecovery] = useState(false)
   const [autoStatus, setAutoStatus] = useState('')
   const [canBootstrap, setCanBootstrap] = useState<boolean | null>(null)
   const [legalOk, setLegalOk] = useState<boolean | null>(null)
@@ -106,6 +107,7 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
         if (cancelled) return
         setCanBootstrap(!!s.canBootstrap)
         if (s.lockout?.locked) setRetryAfter(s.lockout.retryAfter)
+        setLocalRecovery(!!s.lockout?.localSeatRecovery)
         const legal = s.legal
         if (legal) applyLegal(legal)
         else void loadLegal()
@@ -155,7 +157,7 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
 
   async function submit(e: FormEvent) {
     e.preventDefault()
-    if (retryAfter > 0) return
+    if (retryAfter > 0 && !localRecovery) return
     setError('')
 
     if (setupMode) {
@@ -258,13 +260,13 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder={setupMode ? 'Upper, lower, digit, special…' : 'Password'}
-                disabled={retryAfter > 0 || !!autoStatus}
+                disabled={(retryAfter > 0 && !localRecovery) || !!autoStatus}
                 className="w-full rounded-[var(--radius-control)] bg-panel-2 border border-line pl-4 pr-16 py-3.5 text-text disabled:opacity-50"
               />
               <button
                 type="button"
                 onClick={() => setShow((v) => !v)}
-                disabled={retryAfter > 0}
+                disabled={retryAfter > 0 && !localRecovery}
                 aria-label={show ? 'Hide password' : 'Show password'}
                 className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-mute hover:text-text disabled:opacity-40"
               >
@@ -315,6 +317,11 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
               Locked — try again in {formatWait(retryAfter)}
             </p>
           )}
+          {localRecovery && retryAfter > 0 && (
+            <p className="text-sm leading-relaxed">
+              A local password sign-in from this computer will clear the lockout.
+            </p>
+          )}
           {!local && canBootstrap === true && (
             <p className="text-warn text-sm leading-relaxed">
               Password has not been set yet. Open Home Base on the host via localhost first.
@@ -323,7 +330,7 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
 
           <button
             type="submit"
-            disabled={retryAfter > 0 || !!autoStatus || canBootstrap === null}
+            disabled={(retryAfter > 0 && !localRecovery) || !!autoStatus || canBootstrap === null}
             className="hb-btn hb-btn-primary w-full py-3.5 disabled:shadow-none"
           >
             {setupMode ? 'Create password' : 'Enter'}

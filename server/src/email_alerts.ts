@@ -70,6 +70,7 @@ export type EmailAlertsPublic = {
   scopes: {
     suspiciousAuth: true;
     aiAwayAccess: true;
+    lockoutCleared: true;
   };
 };
 
@@ -181,7 +182,7 @@ export function emailAlertsPublic(): EmailAlertsPublic {
     smtpPassConfigured: !!secrets.smtpPass,
     ready: isReady(cfg, secrets),
     updatedAt: cfg.updatedAt,
-    scopes: { suspiciousAuth: true, aiAwayAccess: true },
+    scopes: { suspiciousAuth: true, aiAwayAccess: true, lockoutCleared: true },
   };
 }
 
@@ -271,13 +272,38 @@ async function sendResend(opts: {
   }
 }
 
+export function emailAlertDeliveryStatus(): { ready: boolean; gap?: string } {
+  const cfg = loadConfig();
+  const secrets = loadSecrets();
+  if (!cfg.enabled) {
+    return { ready: false, gap: "email alerts are disabled" };
+  }
+  if (!cfg.to) {
+    return { ready: false, gap: "no email recipient configured" };
+  }
+  if (!isReady(cfg, secrets)) {
+    return { ready: false, gap: "email alerts not configured or no recipient" };
+  }
+  return { ready: true };
+}
+
+type DeliverFn = (payload: EmailPayload) => Promise<{ ok: boolean; error?: string }>;
+let deliverOverride: DeliverFn | undefined;
+
+/** Test hook — intercept outbound alert mail. Never used in production. */
+export function setEmailDeliverOverrideForTests(fn?: DeliverFn): void {
+  deliverOverride = fn;
+}
+
 async function deliverPayload(
   payload: EmailPayload,
 ): Promise<{ ok: boolean; error?: string }> {
+  if (deliverOverride) return deliverOverride(payload);
   const cfg = loadConfig();
   const secrets = loadSecrets();
   if (!isReady(cfg, secrets)) {
-    return { ok: false, error: "Email alerts not configured or disabled" };
+    const peek = emailAlertDeliveryStatus();
+    return { ok: false, error: peek.gap || "Email alerts not configured or disabled" };
   }
   const mail = buildAlertEmail(payload);
   try {
@@ -311,6 +337,12 @@ async function deliverPayload(
     appendTrace("warn", `email alert failed: ${msg}`, "email");
     return { ok: false, error: msg };
   }
+}
+
+export async function deliverEmailAlert(
+  payload: EmailPayload,
+): Promise<{ ok: boolean; error?: string }> {
+  return deliverPayload(payload);
 }
 
 export async function sendEmailAlertTest(): Promise<{ ok: boolean; error?: string }> {

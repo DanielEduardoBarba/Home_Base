@@ -249,6 +249,25 @@ export function getSession(id: string): PtySession | undefined {
   return sessions.get(id);
 }
 
+/** Read-only tail of a session's PTY ring (no secrets handling here). */
+export function readSessionOutput(sessionId: string): {
+  projectId: string;
+  sessionId: string;
+  output: string;
+  alive: boolean;
+  title: string;
+} | undefined {
+  const s = sessions.get(sessionId);
+  if (!s) return undefined;
+  return {
+    projectId: s.info.projectId,
+    sessionId: s.info.id,
+    output: s.ring || "",
+    alive: !s.exited,
+    title: s.info.title,
+  };
+}
+
 export function spawnShell(opts: {
   projectId: string;
   cwd: string;

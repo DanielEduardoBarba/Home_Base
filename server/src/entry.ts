@@ -77,6 +77,21 @@ if (process.argv.includes("--view-worker")) {
   process.exit(await runViewWorker());
 }
 
+if (process.argv.includes("unlock")) {
+  const { runUnlockCli } = await import("./cli_unlock");
+  process.exit(await runUnlockCli(process.argv.slice(2)));
+}
+
+try {
+  const { migrateLegacyLockoutIfNeeded } = await import("./lockout_recovery");
+  migrateLegacyLockoutIfNeeded();
+} catch (e) {
+  logWarn(
+    `legacy lockout migration skipped: ${e instanceof Error ? e.message : String(e)}`,
+    { source: "boot" },
+  );
+}
+
 const hostname = bindHost();
 const port = bindPort();
 

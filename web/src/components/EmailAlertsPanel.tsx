@@ -98,7 +98,7 @@ export function EmailAlertsPanel() {
     <div className="space-y-3">
       <section className="hb-surface p-3.5 space-y-2.5">
         <p className="text-xs text-mute leading-relaxed">
-          Emails only for suspicious auth (3+ failed logins / PIN attempts, or lockout) and when
+          Emails for suspicious auth (3+ failed logins / PIN attempts, or lockout), when a lockout is cleared, and when
           an AI uses Home Base while you are away (locked, no desktop session, or idle 10+ min).
           One AI mail per away period — not a stream of tool pings. Humans only; MCP cannot change
           this.

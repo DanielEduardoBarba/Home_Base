@@ -249,6 +249,7 @@ Placeholders:
 | `homebase_cursor_job` | One job per project at a time; `callbackUrl` (+ optional `callbackAuth`) or `waitMs: 600000` |
 | `homebase_cursor_job_status` | Rare (≥5 min) |
 | `homebase_cursor_job_list` | See active/recent |
+| `homebase_session_output` | Read-only tail of a PTY/session (`projectId`, `sessionId`, `lines` ≤ 500). Secrets (tokens, Bearer, keys, passwords) are redacted. Requires MCP auth. |
 | `homebase_presence_express` | Blob on laptop: `mood` / `form` / `color` / `energy` / `bubble` / `name` |
 | `homebase_presence_status` | Who is remoted in + guidance |
 | `homebase_presence_chat_send` / `_read` | Short questions only (not job reports) |
@@ -294,6 +295,10 @@ Humans use **Work → Git** (not gated by the MCP write toggle).
 ## homebase_ping
 
 Use **`homebase_ping`** instead of opening a test chat. Returns Home Base up, version, uptime, Cursor API-key + agent/CLI probe (reports a clear error — never a false “alive”), and any queued/running `homebase_cursor_job` per project. Does not create chats or start jobs.
+
+## homebase_session_output
+
+Read-only tail of a running (or recently exited) PTY/session ring. MCP auth required. Arguments: `projectId`, `sessionId`, optional `lines` (default 200, max 500). The tool returns the text with secrets redacted (MCP tokens, `Bearer` values, JWTs, `password=` / `api_key=` / `secret=` style assignments, and PEM private keys). It never writes to the session. Use it to read what already happened in a terminal; do not use it to poll for job results (prefer the job webhook or `homebase_cursor_job_status` on a long interval).
 
 ## GitHub repo hookup
 

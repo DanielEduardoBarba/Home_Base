@@ -132,6 +132,7 @@ export const MCP_TOOL_FEATURE: Record<string, McpFeatureId> = {
   homebase_list_projects: "projects",
   homebase_list_presets: "projects",
   homebase_project_status: "projects",
+  homebase_session_output: "projects",
   homebase_project_upsert: "projects",
   homebase_create_mcp_workspace: "projects",
   homebase_project_delete: "projects",
@@ -554,6 +555,34 @@ export function buildHomebaseTools(
         action: "log",
         limit: args.limit != null ? Number(args.limit) : 15,
       }),
+  };
+
+  tools.homebase_session_output = {
+    description:
+      "Read-only: return the recent tail of a PTY/session's output (max 500 lines). " +
+      "Secrets (tokens, Bearer, keys, passwords) are redacted. Requires MCP auth.",
+    parameters: {
+      type: "object",
+      properties: {
+        projectId: { type: "string", description: "Project id that owns the session" },
+        sessionId: { type: "string", description: "PTY / session id" },
+        lines: {
+          type: "number",
+          description: "Lines to return from the end (default 200, max 500)",
+        },
+      },
+      required: ["projectId", "sessionId"],
+    },
+    execute: async (args) => {
+      const { homebaseSessionOutput } = await import("./session_output");
+      return json(
+        homebaseSessionOutput({
+          projectId: resolvePid(args),
+          sessionId: String(args.sessionId || args.session_id || "").trim(),
+          lines: args.lines != null ? Number(args.lines) : undefined,
+        }),
+      );
+    },
   };
 
   if (!readonly) {

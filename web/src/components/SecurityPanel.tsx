@@ -35,6 +35,7 @@ async function downloadExport(opts: Record<string, string>, format: 'csv' | 'jso
 
 export function SecurityPanel() {
   const [source, setSource] = useState('all')
+  const [eventName, setEventName] = useState('all')
   const [result, setResult] = useState('all')
   const [klass, setKlass] = useState('all')
   const [ip, setIp] = useState('')
@@ -55,8 +56,8 @@ export function SecurityPanel() {
   const [retryTick, setRetryTick] = useState(0)
 
   const filters = useMemo(
-    () => ({ source, result, class: klass, ip, from, to, q, offset, limit: 50 }),
-    [source, result, klass, ip, from, to, q, offset],
+    () => ({ source, result, event: eventName, class: klass, ip, from, to, q, offset, limit: 50 }),
+    [source, result, eventName, klass, ip, from, to, q, offset],
   )
 
   const load = useCallback(async () => {
@@ -97,8 +98,9 @@ export function SecurityPanel() {
       <section className="hb-surface p-3.5 space-y-2">
         <h2 className="text-sm font-semibold text-text">Lockout status</h2>
         <p className="text-xs text-mute leading-relaxed">
-          Login and PIN share one lockout. MCP tokens have a separate per-source limit. Correct
-          credentials cannot be used to skip an active lockout.
+          Login and PIN share one lockout. MCP tokens have a separate per-source limit. Remote
+          sign-in cannot skip an active lockout. A password sign-in from a browser on this machine
+          (loopback only) can clear it; PIN alone cannot.
         </p>
         <div className="rounded-xl border border-line bg-panel-2/40 px-3 py-2 text-sm">
           {lockout?.locked ? (
@@ -232,6 +234,15 @@ export function SecurityPanel() {
             <option value="expired">Expired</option>
             <option value="invalid">Invalid</option>
             <option value="revoked">Revoked</option>
+            <option value="info">Info</option>
+          </select>
+          <select className="hb-select text-sm" value={eventName} onChange={(e) => { setOffset(0); setEventName(e.target.value) }} aria-label="Event">
+            <option value="all">All events</option>
+            <option value="lockout_cleared">Lockout cleared</option>
+            <option value="login_success">Login success</option>
+            <option value="login_failure">Login failure</option>
+            <option value="pin_success">PIN success</option>
+            <option value="pin_failure">PIN failure</option>
           </select>
           <select className="hb-select text-sm" value={klass} onChange={(e) => { setOffset(0); setKlass(e.target.value) }}>
             <option value="all">All classes</option>
@@ -255,7 +266,7 @@ export function SecurityPanel() {
             type="button"
             className="hb-btn hb-btn-ghost text-xs"
             onClick={() =>
-              void downloadExport({ source, result, class: klass, ip, from, to, q }, 'csv')
+              void downloadExport({ source, result, event: eventName, class: klass, ip, from, to, q }, 'csv')
                 .then(() => setMsg('CSV exported'))
                 .catch((e) => setError(e instanceof Error ? e.message : String(e)))
             }
@@ -266,7 +277,7 @@ export function SecurityPanel() {
             type="button"
             className="hb-btn hb-btn-ghost text-xs"
             onClick={() =>
-              void downloadExport({ source, result, class: klass, ip, from, to, q }, 'json')
+              void downloadExport({ source, result, event: eventName, class: klass, ip, from, to, q }, 'json')
                 .then(() => setMsg('JSON exported'))
                 .catch((e) => setError(e instanceof Error ? e.message : String(e)))
             }
@@ -309,6 +320,10 @@ export function SecurityPanel() {
                     </td>
                     <td className="py-1.5 pr-2">
                       {ev.event}
+                      {ev.method ? <span className="block text-mute">method {ev.method}</span> : null}
+                      {typeof ev.previousFailCount === 'number' ? (
+                        <span className="block text-mute">previous fails {ev.previousFailCount}</span>
+                      ) : null}
                       {ev.message ? <span className="block text-mute">{ev.message}</span> : null}
                     </td>
                     <td className="py-1.5 pr-2">{ev.result}</td>

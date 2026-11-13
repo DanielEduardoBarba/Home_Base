@@ -124,13 +124,22 @@ export function PinLock({ children }: { children: ReactNode }) {
       if (!e.key || e.key.startsWith('hb-pin')) void refreshPrefs()
     }
     const onChanged = () => void refreshPrefs()
-    const onForceLock = () => {
+    const onForceLock = (e: Event) => {
       if (!enabledRef.current) return
-      // Already locked: keep partial PIN entry (423 polls must not wipe digits).
-      if (lockedRef.current) return
+      const alreadyLocked = lockedRef.current
       setLocked(true)
       writeCachedGate(true, true)
-      setDigits('')
+      // Already locked: keep partial PIN entry (423 polls must not wipe digits).
+      if (!alreadyLocked) setDigits('')
+      const detail = (e as CustomEvent).detail
+      const parsed = parseAuthError(
+        detail || { status: 423, detail: { code: 'pin_locked', message: 'App PIN required' } },
+        { surface: 'pin' },
+      )
+      if (parsed.kind === 'pin_required' || parsed.status === 423) {
+        setErrorHeadline(parsed.headline)
+        setErrorStatus(parsed.statusLine)
+      }
     }
     window.addEventListener('storage', onStorage)
     window.addEventListener('hb-pin-changed', onChanged)
