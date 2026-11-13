@@ -63,9 +63,10 @@ export function TerminalView({ path, sessionId, onSession, className }: Props) {
       cursorBlink: true,
       rightClickSelectsWord: true,
       macOptionClickForcesSelection: true,
-      // Fallbacks cover common zsh/OMZ glyphs (➜ etc.) when Plex lacks them.
+      // Symbols Nerd Font Mono first so oh-my-zsh / Powerline git glyphs render;
+      // Plex + system monos cover the rest of the prompt.
       fontFamily:
-        '"IBM Plex Mono", "DejaVu Sans Mono", "Noto Sans Mono", ui-monospace, monospace',
+        '"Symbols Nerd Font Mono", "IBM Plex Mono", "DejaVu Sans Mono", "Noto Sans Mono", ui-monospace, monospace',
       fontSize: 13,
       lineHeight: 1.25,
       theme: {
