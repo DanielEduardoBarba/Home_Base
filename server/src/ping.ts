@@ -9,7 +9,13 @@ import { cursorConfigured, getWorkspace } from "./cursor";
 import { listCursorJobs } from "./cursor_jobs";
 import { loadCursorApiKey } from "./secrets_vault";
 
-const STARTED_AT_MS = Date.now();
+/**
+ * Uptime must track the homebased process, not the first dynamic import of this
+ * module (MCP tools `await import("./ping")` only when first called).
+ */
+function uptimeSecNow(): number {
+  return Math.max(0, Math.floor(process.uptime()));
+}
 
 export type CursorProbe = {
   apiKeyConfigured: boolean;
@@ -144,7 +150,7 @@ export function homebasePing(): HomebasePingResult {
     ok: true,
     homebase: "up",
     version: readVersion(),
-    uptimeSec: Math.max(0, Math.floor((Date.now() - STARTED_AT_MS) / 1000)),
+    uptimeSec: uptimeSecNow(),
     cursor,
     jobs: active.map((j) => ({
       id: j.id,
@@ -160,7 +166,7 @@ export function homebasePing(): HomebasePingResult {
   };
 }
 
-/** Test helper — process uptime baseline used by ping. */
-export function pingStartedAtMs(): number {
-  return STARTED_AT_MS;
+/** Test helper — process uptime seconds used by ping. */
+export function pingUptimeSec(): number {
+  return uptimeSecNow();
 }

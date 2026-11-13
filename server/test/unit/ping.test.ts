@@ -76,6 +76,16 @@ describePing("homebase_ping", () => {
     expect(a.counts.chatsSample).toBe(beforeChats);
   });
 
+  test("uptimeSec tracks process.uptime not first-import clock", () => {
+    const proc = Math.floor(process.uptime());
+    const a = ping.homebasePing();
+    const b = ping.homebasePing();
+    expect(a.uptimeSec).toBeGreaterThanOrEqual(Math.max(0, proc - 1));
+    expect(a.uptimeSec).toBeLessThanOrEqual(proc + 2);
+    expect(b.uptimeSec).toBeGreaterThanOrEqual(a.uptimeSec);
+    expect(Math.abs(a.uptimeSec - ping.pingUptimeSec())).toBeLessThanOrEqual(1);
+  });
+
   test("lists active jobs without mutating queue", () => {
     jobs._setCursorJobDepsForTests({
       configured: () => true,
