@@ -86,3 +86,15 @@ Fixes in 1.20.0:
 - Same-origin check on login/PIN/password POSTs. Tokens not accepted in `/mcp` query strings. Constant-time token hash compare retained.
 
 Version bump to 1.20.0.
+
+
+## 2026-11-13 (America/New_York) — v1.20.1 HttpOnly session cookies and WebSocket tickets
+
+Closes the two gaps left in 1.20.0 before deploy.
+
+- Web UI session JWT moved out of `localStorage` into an `hb_session` cookie: **HttpOnly**, **SameSite=Strict**, **Secure when the request is HTTPS** (including `X-Forwarded-Proto: https` from a socket in `HOMEBASE_TRUSTED_PROXIES`). On plain HTTP (localhost, LAN, WireGuard VPN IPs) the cookie is intentionally not marked Secure, otherwise the browser would refuse to store it. HTTP is only for trusted networks; put TLS in front for anything exposed more widely.
+- Double-submit CSRF (`hb_csrf` cookie + `X-CSRF-Token` header) on all cookie-authenticated state-changing `/api` requests. Bearer clients (MCP, presence app, CLI) skip CSRF and keep working with `Authorization: Bearer`. Query-string JWTs are no longer accepted for HTTP or WebSocket session auth.
+- First load after upgrade clears any leftover `homebase_jwt` / `homebase_jwt_exp` / `homebase_token` in localStorage and sends the user to password/PIN login once. Existing tabs will not carry the old token forward.
+- WebSockets: authenticated `POST /api/ws-ticket` mints a ≤30s single-use ticket bound to the session; the browser redeems it on connect (`?ticket=`). Tickets are hashed at rest, never logged, and rejected on reuse or expiry. Non-browser clients may still send `Authorization: Bearer` on the upgrade.
+
+Version bump to 1.20.1. **Not deployed** from this change.

@@ -1,4 +1,4 @@
-import { clearSession, getToken, type AuthLostReason } from './auth'
+import { clearSession, hasSession, type AuthLostReason } from './auth'
 
 export type WsConnState = 'connecting' | 'live' | 'reconnecting' | 'offline' | 'auth'
 
@@ -17,6 +17,7 @@ const AUTH_REASON_PREFIXES = [
   'stale_session',
   'invalid_token',
   'missing_token',
+  'invalid_ticket',
   'unauthorized',
   'share_token',
   'invalid_kind',
@@ -32,8 +33,8 @@ function parseAuthReason(code: number, reason: string): AuthLostReason | null {
 }
 
 export function connectWithReconnect(opts: {
-  /** Build URL each attempt (picks up fresh JWT). */
-  url: () => string
+  /** Build URL each attempt (mints a fresh single-use ticket). */
+  url: () => string | Promise<string>
   onOpen?: (ws: WebSocket) => void
   onMessage?: (ev: MessageEvent, ws: WebSocket) => void
   onState?: (state: WsConnState) => void
@@ -101,10 +102,14 @@ export function connectWithReconnect(opts: {
   }
 
   const open = () => {
+    void openAsync()
+  }
+
+  const openAsync = async () => {
     if (disposed) return
     clearTimer()
     stopPing()
-    if (!getToken()) {
+    if (!hasSession()) {
       setState('auth')
       return
     }
@@ -120,8 +125,11 @@ export function connectWithReconnect(opts: {
     setState(attempt === 0 ? 'connecting' : 'reconnecting')
     let socket: WebSocket
     try {
-      socket = new WebSocket(opts.url())
+      const href = await opts.url()
+      if (disposed || myEpoch !== epoch) return
+      socket = new WebSocket(href)
     } catch {
+      if (disposed || myEpoch !== epoch) return
       schedule()
       return
     }
@@ -226,7 +234,7 @@ export function connectWithReconnect(opts: {
     },
     reconnect: () => {
       if (disposed) return
-      if (state === 'auth' && !getToken()) return
+      if (state === 'auth' && !hasSession()) return
       epoch += 1
       clearTimer()
       stopPing()

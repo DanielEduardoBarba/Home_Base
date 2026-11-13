@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { getToken, registerSessionPoller } from './auth'
+import { hasSession, registerSessionPoller } from './auth'
 
 /** True when the document is visible (or APIs unavailable). */
 export function pageIsVisible(): boolean {
@@ -18,7 +18,7 @@ export function useVisibleInterval(tick: () => void, ms: number, enabled = true)
   useEffect(() => {
     if (!enabled) return
     const run = () => {
-      if (!getToken()) return
+      if (!hasSession()) return
       if (pageIsVisible()) tickRef.current()
     }
     run()

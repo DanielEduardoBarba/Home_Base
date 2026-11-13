@@ -37,3 +37,7 @@ Password login will show the lockout once 1.20.0 is deployed; on 1.19.x the PIN 
 ## What 1.20.0 changes
 
 See `docs/QA-PROGRESS.md` and `docs/HOMEBASE-MCP-GUIDE.md` (connector refresh section). QA should retest the PIN pad (wrong PIN, lockout message, password path, stale session), MCP 401 codes, refresh reuse revocation, and Settings → Security after Dan deploys.
+
+## Follow-up
+
+Cookie-session and WebSocket ticket work landed in **1.20.1** — see `docs/qa/homebase-1.20.1-session-ws.md`. Do not deploy 1.20.0 alone; use 1.20.1.

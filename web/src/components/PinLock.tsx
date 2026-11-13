@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { api } from '../lib/api'
-import { clearSession, getToken } from '../lib/auth'
+import { clearSession, hasSession } from '../lib/auth'
 import { formatWait, parseAuthError } from '../lib/authErrors'
 import {
   clearLegacyLocalPin,
@@ -76,7 +76,7 @@ export function PinLock({ children }: { children: ReactNode }) {
   }, [])
 
   const refreshPrefs = useCallback(async () => {
-    if (!getToken()) {
+    if (!hasSession()) {
       setEnabled(false)
       setLocked(false)
       writeCachedGate(false, false)

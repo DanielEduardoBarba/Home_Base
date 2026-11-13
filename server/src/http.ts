@@ -3,6 +3,7 @@ import { ZodError } from "zod";
 import { isAppPinLocked } from "./app_pin";
 import { HttpError, bearerFromHeader, verifyAccessToken } from "./auth";
 import { trustedProxyList } from "./config";
+import { readSessionCookie } from "./session_cookie";
 import { logError, logWarn } from "./console_log";
 import { formatGeo, geoCached, normalizeIp, warmGeo } from "./geo";
 
@@ -72,6 +73,31 @@ export function clientUserAgent(c: Context): string {
   return (c.req.header("user-agent") || "").trim().slice(0, 180);
 }
 
+/**
+ * True when the client reached us over HTTPS (direct TLS, or
+ * X-Forwarded-Proto: https from a socket in HOMEBASE_TRUSTED_PROXIES).
+ * Session cookies are marked Secure only in this case. Plain HTTP
+ * (localhost, LAN, WireGuard VPN IPs) must use a non-Secure cookie or
+ * the browser will refuse to store it — only do that on a trusted network.
+ */
+export function requestIsHttps(c: Context): boolean {
+  try {
+    if (new URL(c.req.url).protocol === "https:") return true;
+  } catch {
+    /* ignore bad url */
+  }
+  const socket = normalizeIp(c.req.header(PEER_IP_HEADER) || "");
+  if (!socket || socket === "unknown" || !isTrustedProxyIp(socket)) return false;
+  const proto = ((c.req.header("x-forwarded-proto") || "").split(",")[0] || "")
+    .trim()
+    .toLowerCase();
+  return proto === "https";
+}
+
+export function cookieSecure(c: Context): boolean {
+  return requestIsHttps(c);
+}
+
 /** Browser requests with a mismatched Origin are rejected. Non-browser (no Origin) is allowed. */
 export function assertSameOrigin(c: Context): void {
   const origin = (c.req.header("origin") || "").trim();
@@ -102,9 +128,11 @@ export async function requireAuth(
   c: Context,
   opts?: { allowPinLocked?: boolean },
 ): Promise<Record<string, unknown>> {
+  // Prefer Authorization Bearer (MCP / presence / CLI). Otherwise the
+  // HttpOnly session cookie. Query-string JWTs are no longer accepted.
   const token =
     bearerFromHeader(c.req.header("authorization")) ||
-    c.req.query("token") ||
+    readSessionCookie(c) ||
     undefined;
   const claims = await verifyAccessToken(token, clientIp(c));
   if (!opts?.allowPinLocked && isAppPinLocked()) {

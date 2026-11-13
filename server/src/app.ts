@@ -95,7 +95,23 @@ import {
   visionArmStatus,
   visionStatus,
 } from "./vision";
-import { assertSameOrigin, clientIp, clientUserAgent, jsonError, readJson, requireAuth } from "./http";
+import {
+  assertSameOrigin,
+  clientIp,
+  clientUserAgent,
+  cookieSecure,
+  jsonError,
+  readJson,
+  requireAuth,
+} from "./http";
+import {
+  applySessionCookies,
+  assertCsrf,
+  clearSessionCookies,
+  csrfRequired,
+  ensureCsrfCookie,
+} from "./session_cookie";
+import { mintWsTicket, redeemWsTicket } from "./ws_tickets";
 import { readDailyLogs } from "./logging";
 import { clearRead, listNotifications, markRead } from "./notifications";
 import { projectPublic, runAction, stopProject, tailLogs } from "./process";
@@ -155,6 +171,20 @@ import {
 
 export const app = new Hono();
 
+/** Set session cookies and include csrfToken in the JSON body (token kept for CLI). */
+function sessionResponse(
+  c: import("hono").Context,
+  session: Record<string, unknown> & { token: string; expiresAt: number },
+) {
+  const { csrfToken } = applySessionCookies(
+    c,
+    session.token,
+    session.expiresAt,
+    cookieSecure(c),
+  );
+  return c.json({ ok: true, ...session, csrfToken });
+}
+
 app.onError((err, c) => jsonError(c, err));
 app.use("*", requestLogMiddleware);
 
@@ -204,6 +234,13 @@ app.use("/api/*", async (c, next) => {
         "MCP tokens cannot access the Web GUI API. Use /mcp only. Password/PIN gate the human UI.",
     });
   }
+  await next();
+});
+
+/** Double-submit CSRF for cookie-authenticated state changes. Bearer clients skip. */
+app.use("/api/*", async (c, next) => {
+  const hasBearer = Boolean(bearerFromHeader(c.req.header("authorization")));
+  if (csrfRequired(c, hasBearer)) assertCsrf(c);
   await next();
 });
 
@@ -433,7 +470,7 @@ app.post("/api/login", async (c) => {
   } catch {
     /* ignore */
   }
-  return c.json({ ok: true, ...session });
+  return sessionResponse(c, session);
 });
 
 app.post("/api/auth/bootstrap", async (c) => {
@@ -443,7 +480,7 @@ app.post("/api/auth/bootstrap", async (c) => {
   const body = z.object({ password: z.string() }).parse(await readJson(c));
   bootstrapPassword(body.password);
   const session = await issueJwt({ kind: "session" });
-  return c.json({ ok: true, ...session });
+  return sessionResponse(c, session);
 });
 
 app.post("/api/auth/password", async (c) => {
@@ -457,7 +494,44 @@ app.post("/api/auth/password", async (c) => {
   const { revokeAllMcpTokens } = await import("./mcp_server");
   revokeAllMcpTokens();
   const session = await issueJwt({ kind: "session" });
-  return c.json({ ok: true, ...session });
+  return sessionResponse(c, session);
+});
+
+app.get("/api/auth/session", async (c) => {
+  try {
+    const claims = await requireAuth(c, { allowPinLocked: true });
+    const exp = Number(claims.exp) || 0;
+    const csrfToken = ensureCsrfCookie(c, exp, cookieSecure(c));
+    return c.json({
+      authenticated: true,
+      expiresAt: exp,
+      expiresIn: Math.max(0, exp - Math.floor(Date.now() / 1000)),
+      csrfToken,
+    });
+  } catch {
+    return c.json({ authenticated: false });
+  }
+});
+
+app.post("/api/logout", async (c) => {
+  // Cookie clients need a valid CSRF header (middleware). Bearer may logout too.
+  try {
+    await requireAuth(c, { allowPinLocked: true });
+  } catch {
+    /* still clear cookies so a stale browser session is dropped */
+  }
+  clearSessionCookies(c);
+  return c.json({ ok: true });
+});
+
+app.post("/api/ws-ticket", async (c) => {
+  const claims = await requireAuth(c, { allowPinLocked: true });
+  const minted = mintWsTicket(claims);
+  return c.json({
+    ticket: minted.ticket,
+    expiresAt: minted.expiresAt,
+    expiresIn: minted.expiresIn,
+  });
 });
 
 app.get("/api/lockout", (c) => c.json(lockoutStatus()));
@@ -537,7 +611,8 @@ app.post("/api/share/hide", async (c) => {
 
 app.post("/api/share/redeem", async (c) => {
   const body = z.object({ shareId: z.string() }).parse(await readJson(c));
-  return c.json(await shareRedeem(body.shareId));
+  const session = await shareRedeem(body.shareId);
+  return sessionResponse(c, session);
 });
 
 app.get("/api/share/hostname", async (c) => {
@@ -1922,12 +1997,19 @@ export async function authenticateWsToken(
   url: URL,
   headers: Headers,
 ): Promise<boolean> {
-  let token = url.searchParams.get("token") || undefined;
-  if (!token) token = bearerFromHeader(headers.get("authorization"));
-  try {
-    await verifyAccessToken(token);
+  // Prefer a short-lived single-use ticket (?ticket=). Do not log the value.
+  // Long-lived JWTs are no longer accepted in the query string.
+  const ticket = url.searchParams.get("ticket") || "";
+  if (ticket) {
+    const rec = redeemWsTicket(ticket);
     // PIN lock does not drop auth — sockets may stay up so server work continues;
     // message handlers refuse client commands until unlock (see entry.ts).
+    return Boolean(rec);
+  }
+  const token = bearerFromHeader(headers.get("authorization"));
+  if (!token) return false;
+  try {
+    await verifyAccessToken(token);
     return true;
   } catch {
     return false;

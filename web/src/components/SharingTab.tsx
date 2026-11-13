@@ -114,7 +114,7 @@ export function SharingTab(_props: { embedded?: boolean } = {}) {
     }
     try {
       const session = await api.changePassword(newPw, currentPw)
-      setSession(session.token, session.expiresAt)
+      setSession({ expiresAt: session.expiresAt, csrfToken: session.csrfToken })
       setCurrentPw('')
       setNewPw('')
       setConfirmPw('')

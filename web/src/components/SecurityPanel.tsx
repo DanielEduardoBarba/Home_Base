@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../lib/api'
-import { getToken } from '../lib/auth'
 import { formatWait } from '../lib/authErrors'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 
@@ -21,9 +20,8 @@ async function downloadExport(opts: Record<string, string>, format: 'csv' | 'jso
   for (const [k, v] of Object.entries(opts)) {
     if (v && v !== 'all') q.set(k, v)
   }
-  const token = getToken()
   const res = await fetch(`/api/security/export?${q}`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    credentials: 'include',
   })
   if (!res.ok) throw new Error(`Export failed (HTTP ${res.status})`)
   const blob = await res.blob()

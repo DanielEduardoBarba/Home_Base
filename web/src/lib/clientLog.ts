@@ -1,6 +1,6 @@
 /** Forward browser console lines to the server trace ring. */
 
-import { getToken } from './auth'
+import { getCsrfToken, hasSession } from './auth'
 
 type ClientLogLine = {
   level: string
@@ -71,17 +71,18 @@ async function flushToServer() {
   if (!pendingPush.length) return
   const batch = pendingPush.splice(0, 50)
   try {
-    const token = getToken()
-    if (!token) {
+    if (!hasSession()) {
       pendingPush.unshift(...batch)
       if (pendingPush.length > MAX_PENDING) pendingPush.splice(0, pendingPush.length - MAX_PENDING)
       return
     }
+    const csrf = getCsrfToken()
     await fetch('/api/trace/client', {
       method: 'POST',
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
+        ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
       },
       body: JSON.stringify({
         lines: batch.map((l) => ({ level: l.level, message: l.message })),

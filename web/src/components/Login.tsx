@@ -131,7 +131,7 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
         scrubShareParamsFromUrl()
         const session = await api.shareRedeem(shareId)
         if (cancelled) return
-        setSession(session.token, session.expiresAt)
+        setSession({ expiresAt: session.expiresAt, csrfToken: session.csrfToken })
         setAutoStatus('')
         onAuthed()
       } catch {
@@ -169,7 +169,7 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
       }
       try {
         const session = await api.bootstrapPassword(password)
-        setSession(session.token, session.expiresAt)
+        setSession({ expiresAt: session.expiresAt, csrfToken: session.csrfToken })
         onAuthed()
       } catch (err) {
         const detail = (err as { detail?: unknown }).detail
@@ -186,7 +186,7 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
 
     try {
       const session = await api.login(password)
-      setSession(session.token, session.expiresAt)
+      setSession({ expiresAt: session.expiresAt, csrfToken: session.csrfToken })
       onAuthed()
     } catch (err) {
       const parsed = parseAuthError(err, { surface: 'login' })

@@ -394,9 +394,16 @@ export function SettingsTab({
   }
 
   function doSignOut() {
-    clearSession('signed_out')
-    setConfirmSignOut(false)
-    onSignedOut()
+    void api
+      .logout()
+      .catch(() => {
+        /* still drop the local session */
+      })
+      .finally(() => {
+        clearSession('signed_out')
+        setConfirmSignOut(false)
+        onSignedOut()
+      })
   }
 
   async function restartHb() {

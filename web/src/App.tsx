@@ -12,7 +12,7 @@ import { NotificationCenter } from './components/NotificationCenter'
 import { PullToRefresh } from './components/PullToRefresh'
 import { ToastStack } from './components/ToastStack'
 import { api } from './lib/api'
-import { clearSession, getToken, isSessionValid, registerSessionPoller, watchSessionExpiry } from './lib/auth'
+import { clearSession, hasSession, isSessionValid, migrateLegacyLocalSession, registerSessionPoller, setSession, watchSessionExpiry } from './lib/auth'
 import { LEGAL_DOC_VERSION } from './lib/legalDocs'
 import type { PresentRequest } from './lib/chatTypes'
 import { installClientLog } from './lib/clientLog'
@@ -314,10 +314,10 @@ function AuthedApp() {
   }, [area, notFoundPath, tab])
 
   useEffect(() => {
-    if (!getToken()) return
+    if (!hasSession()) return
     presenceHeartbeat({ area, tab })
     const t = setInterval(() => {
-      if (!getToken()) return
+      if (!hasSession()) return
       presenceHeartbeat({ area, tab })
     }, 20_000)
     const unregister = registerSessionPoller(() => clearInterval(t))
@@ -979,8 +979,28 @@ export default function App() {
   useEffect(() => {
     installClientLog()
     applyMobileSafeTop()
-    setAuthed(isSessionValid())
-    setAuthReady(true)
+    migrateLegacyLocalSession()
+    let cancelled = false
+    void api
+      .authSession()
+      .then((s) => {
+        if (cancelled) return
+        if (s.authenticated && s.csrfToken && s.expiresAt) {
+          setSession({ expiresAt: s.expiresAt, csrfToken: s.csrfToken })
+          setAuthed(true)
+        } else {
+          setAuthed(false)
+        }
+        setAuthReady(true)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setAuthed(false)
+        setAuthReady(true)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {

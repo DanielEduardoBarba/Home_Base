@@ -1,4 +1,4 @@
-import { clearSession, getToken, type AuthLostReason } from './auth'
+import { clearSession, getCsrfToken, type AuthLostReason } from './auth'
 import type {
   AccessWidget,
   FsEntry,
@@ -15,17 +15,23 @@ import type {
  * Never hardcode host/port here.
  */
 
-function authHeaders(): HeadersInit {
-  const token = getToken()
-  return token ? { Authorization: `Bearer ${token}` } : {}
+function authHeaders(method?: string): HeadersInit {
+  const headers: Record<string, string> = {}
+  const csrf = getCsrfToken()
+  const m = (method || 'GET').toUpperCase()
+  if (csrf && m !== 'GET' && m !== 'HEAD' && m !== 'OPTIONS') {
+    headers['X-CSRF-Token'] = csrf
+  }
+  return headers
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
-      ...authHeaders(),
+      ...authHeaders(init?.method),
       ...(init?.headers || {}),
     },
   })
@@ -86,16 +92,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
-export function wsUrl(path: string): string {
+export async function wsUrl(path: string): Promise<string> {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const token = encodeURIComponent(getToken() || '')
+  const minted = await request<{ ticket: string; expiresAt: number; expiresIn: number }>(
+    '/api/ws-ticket',
+    { method: 'POST' },
+  )
   const sep = path.includes('?') ? '&' : '?'
-  return `${proto}//${location.host}${path}${sep}token=${token}`
+  return `${proto}//${location.host}${path}${sep}ticket=${encodeURIComponent(minted.ticket)}`
 }
 
 type SessionResponse = {
   ok: boolean
-  token: string
+  token?: string
+  csrfToken: string
   expiresAt: number
   expiresIn: number
   shareConsumed?: boolean
@@ -705,6 +715,7 @@ export const api = {
   acceptLegal: (version: string) =>
     fetch('/api/legal/accept', {
       method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ version }),
     }).then(async (res) => {
@@ -729,6 +740,7 @@ export const api = {
   login: async (password: string) => {
     const res = await fetch('/api/login', {
       method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password }),
     })
@@ -748,6 +760,7 @@ export const api = {
   bootstrapPassword: async (password: string) => {
     const res = await fetch('/api/auth/bootstrap', {
       method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password }),
     })
@@ -770,9 +783,29 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ password, currentPassword }),
     }),
+  authSession: () =>
+    fetch('/api/auth/session', { credentials: 'include' }).then(async (res) => {
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        return { authenticated: false as const }
+      }
+      return body as {
+        authenticated: boolean
+        expiresAt?: number
+        expiresIn?: number
+        csrfToken?: string
+      }
+    }),
+  logout: () =>
+    request<{ ok: boolean }>('/api/logout', { method: 'POST' }),
+  wsTicket: () =>
+    request<{ ticket: string; expiresAt: number; expiresIn: number }>('/api/ws-ticket', {
+      method: 'POST',
+    }),
   shareRedeem: async (shareId: string) => {
     const res = await fetch('/api/share/redeem', {
       method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ shareId }),
     })

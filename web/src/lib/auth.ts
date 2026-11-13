@@ -4,19 +4,52 @@ const REASON_KEY = 'hb_auth_reason'
 
 export type AuthLostReason = 'expired' | 'signed_out' | 'unauthorized' | 'stale_session'
 
-export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY)
-}
-
-export function getExpiresAt(): number | null {
-  const raw = localStorage.getItem(EXP_KEY)
-  if (!raw) return null
-  const n = Number(raw)
-  return Number.isFinite(n) ? n : null
-}
+/** In-memory only — the JWT lives in an HttpOnly cookie and is not readable by JS. */
+let csrfToken: string | null = null
+let expiresAtMem: number | null = null
+let sessionPresent = false
 
 const sessionPollers = new Set<() => void>()
 let authLostSent = false
+
+/**
+ * Drop any 1.20.0 localStorage JWTs. Must run on first load after upgrade so a
+ * leftover token is never reused; the user signs in once with password or PIN.
+ * Returns true if a legacy token was present.
+ */
+export function migrateLegacyLocalSession(): boolean {
+  let had = false
+  try {
+    had = Boolean(
+      localStorage.getItem(TOKEN_KEY) ||
+        localStorage.getItem(EXP_KEY) ||
+        localStorage.getItem('homebase_token'),
+    )
+    localStorage.removeItem(TOKEN_KEY)
+    localStorage.removeItem(EXP_KEY)
+    localStorage.removeItem('homebase_token')
+  } catch {
+    /* private mode */
+  }
+  return had
+}
+
+export function getCsrfToken(): string | null {
+  return csrfToken
+}
+
+export function hasSession(): boolean {
+  if (!sessionPresent) return false
+  if (expiresAtMem != null && expiresAtMem * 1000 <= Date.now() + 5_000) {
+    clearSession('expired')
+    return false
+  }
+  return true
+}
+
+export function getExpiresAt(): number | null {
+  return expiresAtMem
+}
 
 /** Register a timer/poller that must stop on sign-out or any 401. */
 export function registerSessionPoller(stop: () => void): () => void {
@@ -38,28 +71,40 @@ export function stopAllSessionPollers(): void {
   sessionPollers.clear()
 }
 
-export function setSession(token: string, expiresAt: number): void {
-  localStorage.setItem(TOKEN_KEY, token.trim())
-  localStorage.setItem(EXP_KEY, String(expiresAt))
+export function setSession(session: { expiresAt: number; csrfToken: string }): void {
+  csrfToken = session.csrfToken
+  expiresAtMem = session.expiresAt
+  sessionPresent = true
   authLostSent = false
   try {
     sessionStorage.removeItem(REASON_KEY)
   } catch {
     /* ignore */
   }
+  // Belt and suspenders: never leave a JWT in localStorage after login.
+  migrateLegacyLocalSession()
 }
 
-export function clearToken(): void {
-  localStorage.removeItem(TOKEN_KEY)
-  localStorage.removeItem(EXP_KEY)
-  // Clear legacy shared-secret storage
-  localStorage.removeItem('homebase_token')
+function clearMemory(): void {
+  csrfToken = null
+  expiresAtMem = null
+  sessionPresent = false
+  try {
+    localStorage.removeItem(TOKEN_KEY)
+    localStorage.removeItem(EXP_KEY)
+    localStorage.removeItem('homebase_token')
+  } catch {
+    /* ignore */
+  }
 }
 
-/** Clear session and notify the app shell (optional reason for Login copy). */
+/** Clear in-memory session and notify the app shell (optional reason for Login copy). */
 export function clearSession(reason?: AuthLostReason): void {
-  const hadSession = Boolean(getToken() || (typeof localStorage !== 'undefined' && localStorage.getItem('homebase_token')))
-  clearToken()
+  const hadSession = sessionPresent || Boolean(
+    typeof localStorage !== 'undefined' &&
+      (localStorage.getItem(TOKEN_KEY) || localStorage.getItem('homebase_token')),
+  )
+  clearMemory()
   stopAllSessionPollers()
   if (reason) {
     try {
@@ -87,14 +132,7 @@ export function takeAuthLostReason(): AuthLostReason | '' {
 }
 
 export function isSessionValid(): boolean {
-  const token = getToken()
-  if (!token) return false
-  const exp = getExpiresAt()
-  if (exp != null && exp * 1000 <= Date.now() + 5_000) {
-    clearSession('expired')
-    return false
-  }
-  return true
+  return hasSession()
 }
 
 /** Schedule proactive expiry → clearSession('expired'). Returns cleanup. */
@@ -102,8 +140,8 @@ export function watchSessionExpiry(): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined
   const arm = () => {
     if (timer) clearTimeout(timer)
-    if (!getToken()) return
-    const exp = getExpiresAt()
+    if (!sessionPresent) return
+    const exp = expiresAtMem
     if (exp == null) return
     const ms = exp * 1000 - Date.now() - 5_000
     if (ms <= 0) {
@@ -113,12 +151,7 @@ export function watchSessionExpiry(): () => void {
     timer = setTimeout(() => clearSession('expired'), Math.min(ms, 2_147_000_000))
   }
   arm()
-  const onStorage = (e: StorageEvent) => {
-    if (e.key === TOKEN_KEY || e.key === EXP_KEY) arm()
-  }
-  window.addEventListener('storage', onStorage)
   return () => {
     if (timer) clearTimeout(timer)
-    window.removeEventListener('storage', onStorage)
   }
 }
