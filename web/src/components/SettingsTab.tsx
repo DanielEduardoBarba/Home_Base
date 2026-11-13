@@ -13,7 +13,12 @@ import {
   type ThemeMode,
 } from '../lib/theme'
 import { isLocalHostPage } from '../lib/types'
-import { readPinIdleMs, writePinIdleMs } from '../lib/uiPrefs'
+import {
+  readPinIdleMs,
+  readShowAccess,
+  writePinIdleMs,
+  writeShowAccess,
+} from '../lib/uiPrefs'
 import { AccessibleDialog } from './AccessibleDialog'
 import { HoldButton } from './HoldButton'
 import { SharingTab } from './SharingTab'
@@ -128,6 +133,7 @@ export function SettingsTab({
   const [scene, setScene] = useState<SettingsScene>('hub')
   const [theme, setThemeState] = useState<ThemeMode>(() => getStoredTheme())
   const [safeTop, setSafeTopState] = useState(() => getMobileSafeTop())
+  const [showAccess, setShowAccessState] = useState(() => readShowAccess())
   const [cacheMsg, setCacheMsg] = useState('')
   const [sysMsg, setSysMsg] = useState('')
   const [notifyMsg, setNotifyMsg] = useState('')
@@ -368,6 +374,12 @@ export function SettingsTab({
     setSafeTopState(next)
   }
 
+  function toggleShowAccess() {
+    const next = !showAccess
+    writeShowAccess(next)
+    setShowAccessState(next)
+  }
+
   function doClearCache() {
     const { removed } = clearAppCache()
     setConfirmCache(false)
@@ -396,9 +408,13 @@ export function SettingsTab({
   const goHub = () => setScene('hub')
 
   const hubGroups: HubGroup[] = useMemo(() => {
-    const appearanceHint = `${theme === 'night' ? 'Night' : 'Day'}${
-      safeTop ? ' · safe top on' : ''
-    }`
+    const appearanceHint = [
+      theme === 'night' ? 'Night' : 'Day',
+      safeTop ? 'safe top' : null,
+      showAccess ? 'Access on' : null,
+    ]
+      .filter(Boolean)
+      .join(' · ')
 
     const groups: HubGroup[] = [
       {
@@ -527,6 +543,7 @@ export function SettingsTab({
   }, [
     theme,
     safeTop,
+    showAccess,
     identity.displayName,
     cursorConfigured,
     cursorHint,
@@ -752,6 +769,30 @@ export function SettingsTab({
                 </span>
               </span>
               <span className={`hb-switch shrink-0 ${safeTop ? 'hb-switch--on' : ''}`} aria-hidden>
+                <span className="hb-switch-knob" />
+              </span>
+            </button>
+          </section>
+          <section className="hb-surface p-3.5 space-y-2.5">
+            <h2 className="hb-label">Advanced</h2>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={showAccess}
+              onClick={toggleShowAccess}
+              className="w-full flex items-center justify-between gap-3 text-left rounded-xl border border-line bg-panel-2/60 px-3 py-3"
+            >
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold">Show Home Access</span>
+                <span className="block text-xs text-mute mt-0.5 leading-snug">
+                  Off by default. Enables the Access area on Home for buttons, toggles, and gauges.
+                  APIs and MCP tools stay available either way.
+                </span>
+              </span>
+              <span
+                className={`hb-switch shrink-0 ${showAccess ? 'hb-switch--on' : ''}`}
+                aria-hidden
+              >
                 <span className="hb-switch-knob" />
               </span>
             </button>

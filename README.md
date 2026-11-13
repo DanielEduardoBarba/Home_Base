@@ -67,7 +67,7 @@ Safe to run again. It won’t wipe other projects.
 | **Home Agent** | Simple project chat |
 | **Homework** | Full control plane (Apps, Work, Chat, Shell, Files, View, Logs) |
 | **Settings** | Theme, PIN, Cursor key, WireGuard, Cloudflare, MCP Server, reset / erase, About |
-| **Home Access** | House widgets (buttons / toggles / sliders / gauges) |
+| **Home Access** | Advanced (off by default) — house widgets; enable under Settings → Appearance |
 
 
 ---

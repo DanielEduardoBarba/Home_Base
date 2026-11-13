@@ -1,7 +1,9 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import { BrandTitle } from './BrandTitle'
 import { useServerIdentity } from '../lib/serverIdentity'
+import { readShowAccess } from '../lib/uiPrefs'
 
 type Props = {
   version?: string
@@ -16,7 +18,8 @@ type Props = {
 }
 
 /**
- * Post-login landing — Agent, Work, Access, Vision, Settings.
+ * Post-login landing — Agent, Work, Vision, Settings.
+ * Home Access is advanced / off-by-default (Settings → Appearance).
  */
 export function HomeDashboard({
   version,
@@ -30,6 +33,10 @@ export function HomeDashboard({
   onOpenSettings,
 }: Props) {
   const { displayName } = useServerIdentity()
+  const [showAccess, setShowAccess] = useState(false)
+  useEffect(() => {
+    setShowAccess(readShowAccess())
+  }, [])
   const linkLabel =
     hostLink === 'live' ? 'Live' : hostLink === 'reconnecting' ? 'Reconnecting' : 'Unreachable'
 
@@ -83,14 +90,7 @@ export function HomeDashboard({
           <button type="button" className="hb-home-card" onClick={onOpenHomework}>
             <span className="hb-home-card-label">Work</span>
             <span className="hb-home-card-desc">
-              Projects, Work, Chat, Shell, Files, View — the full laptop control plane.
-            </span>
-            <span className="hb-home-card-go">Open →</span>
-          </button>
-          <button type="button" className="hb-home-card hb-home-card--access" onClick={onOpenAccess}>
-            <span className="hb-home-card-label">Access</span>
-            <span className="hb-home-card-desc">
-              Buttons, toggles, sliders, and gauges that trip scripts and APIs around the house.
+              Projects, Chat, Shell, Files, View — the full laptop control plane.
             </span>
             <span className="hb-home-card-go">Open →</span>
           </button>
@@ -108,10 +108,25 @@ export function HomeDashboard({
           >
             <span className="hb-home-card-label">Settings</span>
             <span className="hb-home-card-desc">
-              Theme, PIN, Cursor key, AI usage (plan + models + MCP), VPN, tunnel, storage, legal.
+              Theme, PIN, Cursor key, AI usage, VPN, tunnel, storage, advanced areas.
             </span>
             <span className="hb-home-card-go">Open →</span>
           </button>
+          {showAccess ? (
+            <button
+              type="button"
+              className="hb-home-card hb-home-card--access hb-home-card--advanced"
+              onClick={onOpenAccess}
+            >
+              <span className="hb-home-card-label">
+                Access <span className="hb-home-card-badge">Advanced</span>
+              </span>
+              <span className="hb-home-card-desc">
+                Buttons, toggles, sliders, and gauges that trip scripts and APIs around the house.
+              </span>
+              <span className="hb-home-card-go">Open →</span>
+            </button>
+          ) : null}
         </div>
       </div>
     </div>

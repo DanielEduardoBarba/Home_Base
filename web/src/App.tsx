@@ -25,6 +25,7 @@ import { type AppArea, type Project, type Tab } from './lib/types'
 import {
   migrateLegacyWorkTab,
   readLastArea,
+  readShowAccess,
   readLastProjectId,
   readLastTab,
   readWorkPlace,
@@ -101,6 +102,12 @@ const WORK_SUB_IDS = new Set<Tab>(WORK_SUBTABS.map((t) => t.id))
 
 function isWorkFamily(id: Tab): boolean {
   return id === 'work' || WORK_SUB_IDS.has(id)
+}
+
+/** Home Access is advanced / off-by-default. */
+function coerceArea(area: AppArea): AppArea {
+  if (area === 'access' && !readShowAccess()) return 'home'
+  return area
 }
 
 function TabIcon({ id }: { id: Tab }) {
@@ -232,6 +239,7 @@ function AuthedApp() {
     } else if (path === '/work' || path === '/homework') {
       loc = { ...parsed.loc, workItem: savedItem }
     }
+    loc = { ...loc, area: coerceArea(loc.area) }
     setArea(loc.area)
     setTab(loc.tab)
     setWorkItem(loc.workItem)
@@ -273,13 +281,14 @@ function AuthedApp() {
   const goArea = useCallback(async (next: AppArea) => {
     if (next === area && !notFoundPath) return
     if (!(await confirmNavigation())) return
+    const target = coerceArea(next)
     setNotFoundPath(null)
-    writeLastArea(next)
-    setArea(next)
+    writeLastArea(target)
+    setArea(target)
     setWorkMenuOpen(false)
     closeInbox()
-    logActivity('nav', `Area → ${next}`, { area: next })
-    presenceHeartbeat({ area: next, tab })
+    logActivity('nav', `Area → ${target}`, { area: target })
+    presenceHeartbeat({ area: target, tab })
   }, [area, closeInbox, notFoundPath, tab])
 
   useEffect(() => {
@@ -434,10 +443,11 @@ function AuthedApp() {
           return
         }
         setNotFoundPath(null)
-        setArea(parsed.loc.area)
+        const nextArea = coerceArea(parsed.loc.area)
+        setArea(nextArea)
         setTab(parsed.loc.tab)
         setWorkItem(parsed.loc.workItem)
-        writeLastArea(parsed.loc.area)
+        writeLastArea(nextArea)
         writeLastTab(parsed.loc.tab)
       })()
     }

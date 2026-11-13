@@ -138,6 +138,25 @@ export function writeLastProjectId(id: string): void {
   }
 }
 
+const SHOW_ACCESS_KEY = 'hb-ui-show-access'
+
+/** Home Access is an advanced area — off by default until enabled in Settings. */
+export function readShowAccess(): boolean {
+  try {
+    return localStorage.getItem(SHOW_ACCESS_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function writeShowAccess(on: boolean): void {
+  try {
+    localStorage.setItem(SHOW_ACCESS_KEY, on ? '1' : '0')
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Work workspace pane. Chat is the full chat view inside Work. */
 export type WorkItem = 'apps' | 'shell' | 'files' | 'git' | 'chat'
 
