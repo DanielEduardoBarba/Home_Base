@@ -13,7 +13,13 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { RUNTIME_DIR, ensureRuntimeDirs, readVersion } from "./config";
-import { HttpError, recordFailure } from "./auth";
+import {
+  HttpError,
+  assertMcpNotLocked,
+  recordMcpFailure,
+  recordMcpSuccess,
+  type AuthEventCtx,
+} from "./auth";
 import {
   type McpFeatureId,
   type McpFeatures,
@@ -28,6 +34,10 @@ const STATE_PATH = join(RUNTIME_DIR, "mcp_server.json");
 const TOKENS_PATH = join(RUNTIME_DIR, "mcp_tokens.json");
 
 const TOKEN_PREFIX = "hb_mcp_";
+const ACCESS_PREFIX = "hb_mcp_at_";
+const REFRESH_PREFIX = "hb_mcp_rt_";
+export const MCP_ACCESS_TTL_SEC = 60 * 60;
+export const MCP_REFRESH_TTL_SEC = 90 * 24 * 60 * 60;
 
 export type McpServerState = {
   enabled: boolean;
@@ -44,9 +54,18 @@ export type McpServerState = {
 type McpTokenRecord = {
   id: string;
   prefix: string;
-  hash: string;
+  /** Legacy long-lived static token hash (kind=static). */
+  hash?: string;
+  kind?: "static" | "connector";
   label: string;
   createdAt: number;
+  lastUsedAt?: number;
+  lastUsedIp?: string;
+  accessHash?: string;
+  accessExpiresAt?: number;
+  refreshHash?: string;
+  previousRefreshHash?: string;
+  refreshExpiresAt?: number;
 };
 
 type McpTokensFile = {
@@ -159,7 +178,7 @@ function loadTokensFile(): McpTokensFile {
     return {
       tokens: tokens.filter(
         (t): t is McpTokenRecord =>
-          Boolean(t && t.id && t.hash && t.prefix),
+          Boolean(t && t.id && t.prefix && (t.hash || t.accessHash || t.refreshHash)),
       ),
       updatedAt: Number(raw.updatedAt) || undefined,
     };
@@ -195,38 +214,244 @@ export function listMcpTokens(): {
   prefix: string;
   label: string;
   createdAt: number;
+  kind: "static" | "connector";
+  lastUsedAt?: number;
+  lastUsedIp?: string;
+  accessExpiresAt?: number;
 }[] {
   return loadTokensFile().tokens.map((t) => ({
     id: t.id,
     prefix: t.prefix,
     label: t.label,
     createdAt: t.createdAt,
+    kind: t.kind === "connector" || t.accessHash ? "connector" : "static",
+    lastUsedAt: t.lastUsedAt,
+    lastUsedIp: t.lastUsedIp,
   }));
+}
+
+function publicPrefix(token: string): string {
+  return token.slice(0, 16) + "…";
+}
+
+function issueAccessPair(id: string): {
+  accessToken: string;
+  refreshToken: string;
+  accessHash: string;
+  refreshHash: string;
+  accessExpiresAt: number;
+  refreshExpiresAt: number;
+  accessExpiresIn: number;
+} {
+  const accessSecret = randomBytes(24).toString("base64url");
+  const refreshSecret = randomBytes(32).toString("base64url");
+  const accessToken = `${ACCESS_PREFIX}${id}_${accessSecret}`;
+  const refreshToken = `${REFRESH_PREFIX}${id}_${refreshSecret}`;
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    accessToken,
+    refreshToken,
+    accessHash: hashToken(accessToken),
+    refreshHash: hashToken(refreshToken),
+    accessExpiresAt: now + MCP_ACCESS_TTL_SEC,
+    refreshExpiresAt: now + MCP_REFRESH_TTL_SEC,
+    accessExpiresIn: MCP_ACCESS_TTL_SEC,
+  };
+}
+
+function touchToken(id: string, ip: string): void {
+  const file = loadTokensFile();
+  const rec = file.tokens.find((t) => t.id === id);
+  if (!rec) return;
+  rec.lastUsedAt = Date.now();
+  rec.lastUsedIp = ip || rec.lastUsedIp;
+  saveTokensFile(file);
 }
 
 export function mintMcpToken(label = ""): {
   id: string;
   token: string;
+  accessToken: string;
+  refreshToken: string;
   prefix: string;
+  refreshPrefix: string;
   label: string;
   createdAt: number;
+  kind: "connector";
+  accessExpiresAt: number;
+  accessExpiresIn: number;
+  refreshExpiresAt: number;
 } {
   const id = randomBytes(8).toString("hex");
-  const secret = randomBytes(24).toString("base64url");
-  const token = `${TOKEN_PREFIX}${secret}`;
-  const prefix = token.slice(0, 14) + "…";
   const createdAt = Date.now();
   const cleanLabel = String(label || "").trim().slice(0, 64) || "MCP client";
+  const pair = issueAccessPair(id);
+  const prefix = publicPrefix(pair.accessToken);
   const file = loadTokensFile();
   file.tokens.push({
     id,
     prefix,
-    hash: hashToken(token),
+    kind: "connector",
     label: cleanLabel,
     createdAt,
+    accessHash: pair.accessHash,
+    accessExpiresAt: pair.accessExpiresAt,
+    refreshHash: pair.refreshHash,
+    refreshExpiresAt: pair.refreshExpiresAt,
   });
   saveTokensFile(file);
-  return { id, token, prefix, label: cleanLabel, createdAt };
+  return {
+    id,
+    token: pair.accessToken,
+    accessToken: pair.accessToken,
+    refreshToken: pair.refreshToken,
+    prefix,
+    refreshPrefix: publicPrefix(pair.refreshToken),
+    label: cleanLabel,
+    createdAt,
+    kind: "connector",
+    accessExpiresAt: pair.accessExpiresAt,
+    accessExpiresIn: pair.accessExpiresIn,
+    refreshExpiresAt: pair.refreshExpiresAt,
+  };
+}
+
+export function rotateMcpConnector(id: string): ReturnType<typeof mintMcpToken> {
+  const file = loadTokensFile();
+  const rec = file.tokens.find((t) => t.id === id);
+  if (!rec) {
+    throw new HttpError(404, { code: "not_found", message: "Unknown connector" });
+  }
+  const pair = issueAccessPair(rec.id);
+  rec.kind = "connector";
+  rec.hash = undefined;
+  rec.accessHash = pair.accessHash;
+  rec.accessExpiresAt = pair.accessExpiresAt;
+  rec.previousRefreshHash = rec.refreshHash;
+  rec.refreshHash = pair.refreshHash;
+  rec.refreshExpiresAt = pair.refreshExpiresAt;
+  rec.prefix = publicPrefix(pair.accessToken);
+  saveTokensFile(file);
+  return {
+    id: rec.id,
+    token: pair.accessToken,
+    accessToken: pair.accessToken,
+    refreshToken: pair.refreshToken,
+    prefix: rec.prefix,
+    refreshPrefix: publicPrefix(pair.refreshToken),
+    label: rec.label,
+    createdAt: rec.createdAt,
+    kind: "connector",
+    accessExpiresAt: pair.accessExpiresAt,
+    accessExpiresIn: pair.accessExpiresIn,
+    refreshExpiresAt: pair.refreshExpiresAt,
+  };
+}
+
+export function refreshMcpTokens(
+  refreshToken: string | undefined | null,
+  ip = "unknown",
+  ctx: AuthEventCtx = {},
+): {
+  accessToken: string;
+  refreshToken: string;
+  accessExpiresAt: number;
+  accessExpiresIn: number;
+  refreshExpiresAt: number;
+  id: string;
+  label: string;
+} {
+  assertMcpNotLocked(ip);
+  const raw = String(refreshToken || "").trim();
+  if (!raw.startsWith(REFRESH_PREFIX)) {
+    recordMcpFailure(ip, "invalid_mcp_token", {
+      ...ctx,
+      result: "invalid",
+      status: 401,
+    });
+    throw new HttpError(401, {
+      code: "mcp_token_invalid",
+      message: "Invalid refresh token",
+    });
+  }
+  const digest = hashToken(raw);
+  const file = loadTokensFile();
+  let match: McpTokenRecord | undefined;
+  let reuse = false;
+  for (const t of file.tokens) {
+    if (t.refreshHash && hashesEqual(t.refreshHash, digest)) {
+      match = t;
+      break;
+    }
+    if (t.previousRefreshHash && hashesEqual(t.previousRefreshHash, digest)) {
+      match = t;
+      reuse = true;
+      break;
+    }
+  }
+  if (!match) {
+    recordMcpFailure(ip, "invalid_mcp_token", {
+      ...ctx,
+      result: "invalid",
+      status: 401,
+    });
+    throw new HttpError(401, {
+      code: "mcp_token_invalid",
+      message: "Invalid refresh token",
+    });
+  }
+  if (reuse) {
+    const id = match.id;
+    const label = match.label;
+    file.tokens = file.tokens.filter((t) => t.id !== id);
+    saveTokensFile(file);
+    recordMcpFailure(ip, "mcp_refresh_reuse", {
+      ...ctx,
+      result: "revoked",
+      status: 401,
+      connectorId: id,
+      connectorLabel: label,
+    });
+    throw new HttpError(401, {
+      code: "mcp_token_revoked",
+      message: "Refresh token reuse detected — connector revoked. Ask the owner to mint a new one.",
+    });
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (match.refreshExpiresAt && match.refreshExpiresAt <= now) {
+    recordMcpFailure(ip, "mcp_refresh_expired", {
+      ...ctx,
+      result: "expired",
+      status: 401,
+      connectorId: match.id,
+      connectorLabel: match.label,
+    });
+    throw new HttpError(401, {
+      code: "mcp_token_expired",
+      message: "Refresh token expired — ask the owner to mint a new one.",
+    });
+  }
+  const pair = issueAccessPair(match.id);
+  match.kind = "connector";
+  match.previousRefreshHash = match.refreshHash;
+  match.refreshHash = pair.refreshHash;
+  match.refreshExpiresAt = pair.refreshExpiresAt;
+  match.accessHash = pair.accessHash;
+  match.accessExpiresAt = pair.accessExpiresAt;
+  match.prefix = publicPrefix(pair.accessToken);
+  match.lastUsedAt = Date.now();
+  match.lastUsedIp = ip;
+  saveTokensFile(file);
+  recordMcpSuccess(ip);
+  return {
+    accessToken: pair.accessToken,
+    refreshToken: pair.refreshToken,
+    accessExpiresAt: pair.accessExpiresAt,
+    accessExpiresIn: pair.accessExpiresIn,
+    refreshExpiresAt: pair.refreshExpiresAt,
+    id: match.id,
+    label: match.label,
+  };
 }
 
 export function revokeMcpToken(id: string): boolean {
@@ -248,24 +473,62 @@ export function revokeAllMcpTokens(): number {
 export function verifyMcpBearerToken(
   token: string | undefined | null,
   ip = "unknown",
-): { id: string; label: string } {
-  if (!token || !token.startsWith(TOKEN_PREFIX)) {
-    recordFailure(ip, "invalid_mcp_token");
-    throw new HttpError(401, {
-      message: "Missing or invalid MCP token",
-      code: "invalid_mcp_token",
-    });
+  ctx: AuthEventCtx = {},
+): { id: string; label: string; kind: "static" | "connector" } {
+  assertMcpNotLocked(ip);
+  const raw = String(token || "").trim();
+  const fail = (code: "mcp_token_invalid" | "mcp_token_expired", message: string, reason = "invalid_mcp_token"): never => {
+    if (code !== "mcp_token_expired") {
+      recordMcpFailure(ip, reason, {
+        ...ctx,
+        result: code === "mcp_token_invalid" ? "invalid" : "failure",
+        status: 401,
+      });
+    }
+    throw new HttpError(401, { message, code });
+  };
+  if (!raw || !raw.startsWith(TOKEN_PREFIX)) {
+    fail("mcp_token_invalid", "Missing or invalid MCP token");
   }
-  const digest = hashToken(token);
-  const match = loadTokensFile().tokens.find((t) => hashesEqual(t.hash, digest));
-  if (!match) {
-    recordFailure(ip, "invalid_mcp_token");
-    throw new HttpError(401, {
-      message: "Invalid MCP token",
-      code: "invalid_mcp_token",
-    });
+  if (raw.startsWith(REFRESH_PREFIX)) {
+    fail("mcp_token_invalid", "Invalid MCP token");
   }
-  return { id: match.id, label: match.label };
+  const digest = hashToken(raw);
+  const file = loadTokensFile();
+  const now = Math.floor(Date.now() / 1000);
+
+  if (raw.startsWith(ACCESS_PREFIX)) {
+    let rec: McpTokenRecord | undefined;
+    for (const t of file.tokens) {
+      if (t.accessHash && hashesEqual(t.accessHash, digest)) {
+        rec = t;
+        break;
+      }
+    }
+    if (!rec) fail("mcp_token_invalid", "Invalid MCP token");
+    if (rec!.accessExpiresAt && rec!.accessExpiresAt <= now) {
+      throw new HttpError(401, {
+        code: "mcp_token_expired",
+        message: "Access token expired — refresh it, then retry once. Do not retry this request.",
+      });
+    }
+    touchToken(rec!.id, ip);
+    recordMcpSuccess(ip);
+    return { id: rec!.id, label: rec!.label, kind: "connector" };
+  }
+
+  // Legacy long-lived static tokens (hb_mcp_<secret>).
+  let rec: McpTokenRecord | undefined;
+  for (const t of file.tokens) {
+    if (t.hash && hashesEqual(t.hash, digest)) {
+      rec = t;
+      break;
+    }
+  }
+  if (!rec) fail("mcp_token_invalid", "Invalid MCP token");
+  touchToken(rec!.id, ip);
+  recordMcpSuccess(ip);
+  return { id: rec!.id, label: rec!.label, kind: "static" };
 }
 
 function preferredBaseUrl(): string {
@@ -303,7 +566,9 @@ function grokHookupGuide(url: string | null): string {
     "",
     "## 3. Mint a token",
     "- MCP Server → Mint (label e.g. \"grok-developer\" — dedicated, not shared).",
-    "- Copy the `hb_mcp_…` secret once. Session login JWTs are rejected on /mcp.",
+    "- Copy the access token and refresh token once (shown only at mint). Session login JWTs are rejected on /mcp.",
+    "- Access tokens expire (~1 hour). POST /mcp/token with the refresh token to rotate both. If a refresh token is reused, the connector is revoked.",
+    "- On HTTP 401 (mcp_token_expired or mcp_token_invalid), stop retrying the same request. Refresh once, or ask the owner to mint a new connector.",
     "",
     "## 4. Point the bot at Streamable HTTP MCP",
     `- URL: ${endpoint}`,

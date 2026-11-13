@@ -11,6 +11,7 @@ import {
   AUTH_PATH,
   JWT_SECRET_PATH,
   LOCKOUT_PATH,
+  MCP_LOCKOUT_PATH,
   ensureRuntimeDirs,
 } from "./config";
 import { logWarn } from "./console_log";
@@ -320,6 +321,96 @@ function saveLockout(data: LockoutFile): void {
   chmodPrivate(LOCKOUT_PATH);
 }
 
+function bumpLockout(data: LockoutFile): {
+  next: LockoutFile;
+  delay: number;
+  now: number;
+} {
+  const failCount = Number(data.failCount || 0) + 1;
+  let lockedUntil = Number(data.lockedUntil || 0);
+  const now = Date.now() / 1000;
+  let delay = 0;
+  if (failCount >= FAIL_THRESHOLD) {
+    const idx = Math.min(
+      failCount - FAIL_THRESHOLD,
+      LOCKOUT_SCHEDULE.length - 1,
+    );
+    delay = LOCKOUT_SCHEDULE[idx] ?? 86400;
+    lockedUntil = now + delay;
+  }
+  return { next: { failCount, lockedUntil }, delay, now };
+}
+
+export function remainingAttempts(failCount: number): number {
+  return Math.max(0, FAIL_THRESHOLD - Number(failCount || 0));
+}
+
+function lockoutSourceKey(ip: string): string {
+  const s = (ip || "unknown").trim().slice(0, 64) || "unknown";
+  return s.replace(/[^A-Za-z0-9.:_-]/g, "_");
+}
+
+type McpLockoutFile = {
+  sources: Record<string, LockoutFile>;
+};
+
+function loadMcpLockout(): McpLockoutFile {
+  if (!existsSync(MCP_LOCKOUT_PATH)) return { sources: {} };
+  try {
+    const raw = JSON.parse(readFileSync(MCP_LOCKOUT_PATH, "utf8")) as Partial<McpLockoutFile>;
+    const sources =
+      raw && typeof raw === "object" && raw.sources && typeof raw.sources === "object"
+        ? raw.sources
+        : {};
+    const clean: Record<string, LockoutFile> = {};
+    for (const [key, val] of Object.entries(sources)) {
+      if (!val || typeof val !== "object") continue;
+      clean[key] = {
+        failCount: Number(val.failCount || 0) || 0,
+        lockedUntil: Number(val.lockedUntil || 0) || 0,
+      };
+    }
+    return { sources: clean };
+  } catch {
+    return { sources: {} };
+  }
+}
+
+function saveMcpLockout(data: McpLockoutFile): void {
+  ensureRuntimeDirs();
+  writeFileSync(MCP_LOCKOUT_PATH, JSON.stringify(data, null, 2));
+  chmodPrivate(MCP_LOCKOUT_PATH);
+}
+
+export type AuthEventCtx = {
+  ip?: string;
+  userAgent?: string;
+  path?: string;
+};
+
+function noteSecurity(input: {
+  event: string;
+  source: "ui" | "mcp" | "api";
+  result: "success" | "failure" | "lockout" | "expired" | "invalid" | "revoked" | "info";
+  ip?: string;
+  userAgent?: string;
+  path?: string;
+  status?: number;
+  failCount?: number;
+  retryAfter?: number;
+  remainingAttempts?: number;
+  connectorId?: string;
+  connectorLabel?: string;
+  message?: string;
+}): void {
+  try {
+    const { recordSecurityEvent } = require("./security_log") as typeof import("./security_log");
+    recordSecurityEvent(input);
+  } catch {
+    /* never break auth on log failure */
+  }
+}
+
 export function lockoutStatus(): {
   failCount: number;
   locked: boolean;
@@ -337,28 +428,29 @@ export function lockoutStatus(): {
   };
 }
 
-export function recordSuccess(): void {
+export function recordSuccess(ctx: AuthEventCtx = {}): void {
   saveLockout({ failCount: 0, lockedUntil: 0 });
+  if (ctx.ip) {
+    noteSecurity({
+      event: "login_success",
+      source: "ui",
+      result: "success",
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
+      path: ctx.path,
+      status: 200,
+    });
+  }
 }
 
 export function recordFailure(
   ip = "unknown",
   reason = "invalid_password",
 ): { failCount: number; locked: boolean; retryAfter: number } {
-  const data = loadLockout();
-  const failCount = Number(data.failCount || 0) + 1;
-  let lockedUntil = Number(data.lockedUntil || 0);
-  const now = Date.now() / 1000;
-  let delay = 0;
-  if (failCount >= FAIL_THRESHOLD) {
-    const idx = Math.min(
-      failCount - FAIL_THRESHOLD,
-      LOCKOUT_SCHEDULE.length - 1,
-    );
-    delay = LOCKOUT_SCHEDULE[idx] ?? 86400;
-    lockedUntil = now + delay;
-  }
-  saveLockout({ failCount, lockedUntil });
+  const { next, delay, now } = bumpLockout(loadLockout());
+  const failCount = next.failCount;
+  const lockedUntil = next.lockedUntil;
+  saveLockout(next);
   appendDaily("auth_failure", { ip, reason, failCount, lockoutSeconds: delay });
   warmGeo(ip);
   const geo = formatGeo(geoCached(ip));
@@ -407,9 +499,21 @@ export function recordFailure(
       });
     })
     .catch(() => undefined);
+  const locked = delay > 0 || lockedUntil > now;
+  noteSecurity({
+    event: reason.startsWith("invalid_pin") ? "pin_failure" : "login_failure",
+    source: "ui",
+    result: locked ? "lockout" : "failure",
+    ip,
+    status: locked ? 429 : 401,
+    failCount,
+    retryAfter,
+    remainingAttempts: remainingAttempts(failCount),
+    message: reason,
+  });
   return {
     failCount,
-    locked: delay > 0 || lockedUntil > now,
+    locked,
     retryAfter,
   };
 }
@@ -422,11 +526,154 @@ export function assertNotLocked(): void {
     throw new HttpError(
       429,
       {
+        code: "auth_lockout",
         message: "Too many failed attempts",
         retryAfter: remaining,
         failCount: data.failCount || 0,
+        remainingAttempts: 0,
+        threshold: FAIL_THRESHOLD,
       },
       { "Retry-After": String(remaining) },
+    );
+  }
+}
+
+
+export function mcpLockoutStatus(ip = "unknown"): {
+  failCount: number;
+  locked: boolean;
+  retryAfter: number;
+  threshold: number;
+  ip: string;
+} {
+  const key = lockoutSourceKey(ip);
+  const data = loadMcpLockout().sources[key] || { failCount: 0, lockedUntil: 0 };
+  const now = Date.now() / 1000;
+  const remaining = Math.max(0, Math.floor((data.lockedUntil || 0) - now));
+  return {
+    failCount: Number(data.failCount || 0),
+    locked: remaining > 0,
+    retryAfter: remaining,
+    threshold: FAIL_THRESHOLD,
+    ip: key,
+  };
+}
+
+export function recordMcpSuccess(ip = "unknown"): void {
+  const key = lockoutSourceKey(ip);
+  const file = loadMcpLockout();
+  if (!file.sources[key]) return;
+  delete file.sources[key];
+  saveMcpLockout(file);
+}
+
+export function recordMcpFailure(
+  ip = "unknown",
+  reason = "invalid_mcp_token",
+  ctx: AuthEventCtx & {
+    connectorId?: string;
+    connectorLabel?: string;
+    status?: number;
+    result?: "failure" | "expired" | "invalid" | "lockout" | "revoked";
+  } = {},
+): { failCount: number; locked: boolean; retryAfter: number } {
+  const key = lockoutSourceKey(ip);
+  const file = loadMcpLockout();
+  const prev = file.sources[key] || { failCount: 0, lockedUntil: 0 };
+  const { next, delay, now } = bumpLockout(prev);
+  file.sources[key] = next;
+  saveMcpLockout(file);
+  const failCount = next.failCount;
+  const lockedUntil = next.lockedUntil;
+  appendDaily("mcp_auth_failure", {
+    ip: key,
+    reason,
+    failCount,
+    lockoutSeconds: delay,
+  });
+  warmGeo(ip);
+  const geo = formatGeo(geoCached(ip));
+  logWarn(`MCP auth failure #${failCount}`, {
+    source: "auth",
+    fields: {
+      ip: key,
+      geo,
+      reason,
+      lockoutSeconds: delay || undefined,
+    },
+  });
+  const title =
+    failCount >= FAIL_THRESHOLD
+      ? "MCP token lockout"
+      : failCount >= 3
+        ? "Repeated bad MCP tokens"
+        : "Bad MCP token";
+  const body =
+    failCount >= FAIL_THRESHOLD
+      ? `${reason} from ${key}${geo ? ` (${geo})` : ""}. MCP locked ${delay}s (failure #${failCount}).`
+      : `${reason} from ${key}${geo ? ` (${geo})` : ""}. Failure #${failCount}/${FAIL_THRESHOLD} before MCP lockout.`;
+  pushNotification(title, body, {
+    level: failCount >= FAIL_THRESHOLD ? "error" : "warn",
+    category: "security",
+    meta: { ip: key, failCount, delay, reason, scope: "mcp" },
+  });
+  if (failCount >= 3) {
+    desktopNotify(title, body.slice(0, 120), {
+      urgency: failCount >= FAIL_THRESHOLD ? "normal" : "low",
+      replaceKey: `mcp-auth-fail:${key}`,
+      dedupeKey: `mcp-auth-fail:${key}`,
+      dedupeMs: 20_000,
+      expireMs: failCount >= FAIL_THRESHOLD ? 6_000 : 4_000,
+    });
+  }
+  const retryAfter = Math.max(0, Math.floor(lockedUntil - now));
+  const locked = delay > 0 || lockedUntil > now;
+  void import("./email_alerts")
+    .then(({ maybeEmailSuspiciousAuth }) => {
+      maybeEmailSuspiciousAuth({
+        ip: key,
+        reason,
+        failCount,
+        retryAfter,
+      });
+    })
+    .catch(() => undefined);
+  noteSecurity({
+    event: reason,
+    source: "mcp",
+    result: locked ? "lockout" : ctx.result || "failure",
+    ip: key,
+    userAgent: ctx.userAgent,
+    path: ctx.path,
+    status: ctx.status || (locked ? 429 : 401),
+    failCount,
+    retryAfter,
+    remainingAttempts: remainingAttempts(failCount),
+    connectorId: ctx.connectorId,
+    connectorLabel: ctx.connectorLabel,
+    message: reason,
+  });
+  return {
+    failCount,
+    locked,
+    retryAfter,
+  };
+}
+
+export function assertMcpNotLocked(ip = "unknown"): void {
+  const status = mcpLockoutStatus(ip);
+  if (status.retryAfter > 0) {
+    throw new HttpError(
+      429,
+      {
+        code: "mcp_lockout",
+        message: "Too many failed MCP token attempts",
+        retryAfter: status.retryAfter,
+        failCount: status.failCount,
+        remainingAttempts: 0,
+        threshold: FAIL_THRESHOLD,
+      },
+      { "Retry-After": String(status.retryAfter) },
     );
   }
 }
@@ -450,12 +697,15 @@ export async function loginWithPassword(
   if (!verifyPassword(password)) {
     const info = recordFailure(ip, "invalid_password");
     throw new HttpError(401, {
+      code: "invalid_password",
       message: "Invalid password",
       retryAfter: info.retryAfter,
       failCount: info.failCount,
+      remainingAttempts: remainingAttempts(info.failCount),
+      threshold: FAIL_THRESHOLD,
     });
   }
-  recordSuccess();
+  recordSuccess({ ip });
   return issueJwt({ kind: "session", ttl: JWT_TTL_SEC });
 }
 

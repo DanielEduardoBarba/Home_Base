@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { api } from '../lib/api'
-import { getToken } from '../lib/auth'
+import { clearSession, getToken } from '../lib/auth'
+import { formatWait, parseAuthError } from '../lib/authErrors'
 import {
   clearLegacyLocalPin,
   readLegacyLocalPin,
@@ -43,6 +44,9 @@ export function PinLock({ children }: { children: ReactNode }) {
   const [locked, setLocked] = useState(cached.locked)
   const [digits, setDigits] = useState('')
   const [shake, setShake] = useState(false)
+  const [errorHeadline, setErrorHeadline] = useState('')
+  const [errorStatus, setErrorStatus] = useState('')
+  const [retryAfter, setRetryAfter] = useState(0)
   const lastActive = useRef(Date.now())
   const idleMs = useRef(readPinIdleMs())
   const enabledRef = useRef(cached.enabled)
@@ -59,6 +63,16 @@ export function PinLock({ children }: { children: ReactNode }) {
     idleMs.current = s.idleMs
     writePinIdleMs(s.idleMs)
     if (!nextLocked) lastActive.current = Date.now()
+  }, [])
+
+  useEffect(() => {
+    if (retryAfter <= 0) return
+    const tmr = window.setInterval(() => setRetryAfter((s) => Math.max(0, s - 1)), 1000)
+    return () => window.clearInterval(tmr)
+  }, [retryAfter])
+
+  const goToPassword = useCallback((reason: 'expired' | 'signed_out' | 'unauthorized' | 'stale_session' = 'signed_out') => {
+    clearSession(reason)
   }, [])
 
   const refreshPrefs = useCallback(async () => {
@@ -87,10 +101,22 @@ export function PinLock({ children }: { children: ReactNode }) {
         clearLegacyLocalPin()
       }
       applyStatus(s)
-    } catch {
-      /* offline / unauthorized — keep cached gate so refresh stays locked */
+      if (s.lockout?.locked) {
+        setRetryAfter(s.lockout.retryAfter || 0)
+        setErrorHeadline(
+          `Too many attempts. Try again in ${formatWait(s.lockout.retryAfter || 0)}, or sign in with your password.`,
+        )
+        setErrorStatus('HTTP 429 · Too many failed attempts')
+      }
+    } catch (err) {
+      const parsed = parseAuthError(err, { surface: 'pin' })
+      if (parsed.kind === 'session') {
+        goToPassword(parsed.sessionReason || 'expired')
+        return
+      }
+      /* offline / other — keep cached gate so refresh stays locked */
     }
-  }, [applyStatus])
+  }, [applyStatus, goToPassword])
 
   useEffect(() => {
     void refreshPrefs()
@@ -180,24 +206,42 @@ export function PinLock({ children }: { children: ReactNode }) {
 
   const tryUnlock = useCallback(
     async (pin: string) => {
+      if (retryAfter > 0) {
+        setDigits('')
+        return
+      }
       try {
         await api.appPinUnlock(pin)
         setLocked(false)
         writeCachedGate(true, false)
         setDigits('')
+        setErrorHeadline('')
+        setErrorStatus('')
+        setRetryAfter(0)
         markActive()
-      } catch {
-        setShake(true)
+      } catch (err) {
+        const parsed = parseAuthError(err, { surface: 'pin' })
+        setErrorHeadline(parsed.headline)
+        setErrorStatus(parsed.statusLine)
+        if (parsed.retryAfter > 0) setRetryAfter(parsed.retryAfter)
         setDigits('')
-        window.setTimeout(() => setShake(false), 420)
+        if (parsed.kind === 'session') {
+          goToPassword(parsed.sessionReason || 'expired')
+          return
+        }
+        if (parsed.kind === 'wrong_credentials') {
+          setShake(true)
+          window.setTimeout(() => setShake(false), 420)
+        }
       }
     },
-    [markActive],
+    [markActive, retryAfter, goToPassword],
   )
 
   useEffect(() => {
+    if (retryAfter > 0) return
     if (digits.length === 4) void tryUnlock(digits)
-  }, [digits, tryUnlock])
+  }, [digits, tryUnlock, retryAfter])
 
   const press = useCallback((d: string) => {
     setDigits((prev) => (prev.length >= 4 ? prev : prev + d))
@@ -209,7 +253,7 @@ export function PinLock({ children }: { children: ReactNode }) {
 
   // Desktop / hardware keyboard only — no <input>, so mobile soft keyboard stays closed.
   useEffect(() => {
-    if (!enabled || !locked) return
+    if (!enabled || !locked || retryAfter > 0) return
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return
       if (e.isComposing) return
@@ -241,7 +285,7 @@ export function PinLock({ children }: { children: ReactNode }) {
     }
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [enabled, locked, press, backspace])
+  }, [enabled, locked, press, backspace, retryAfter])
 
   if (!enabled || !locked) return <>{children}</>
 
@@ -259,12 +303,21 @@ export function PinLock({ children }: { children: ReactNode }) {
           <p className="text-center text-xs text-mute mt-1.5 leading-snug">
             Server keeps running — unlock to use this client
           </p>
+          {(errorHeadline || retryAfter > 0) && (
+            <div className="hb-pin-error" role="alert">
+              <p>{errorHeadline || (retryAfter > 0 ? `Too many attempts. Try again in ${formatWait(retryAfter)}, or sign in with your password.` : '')}</p>
+              {errorStatus ? <span className="hb-pin-error-status">{errorStatus}</span> : null}
+              {retryAfter > 0 ? (
+                <span className="hb-pin-error-status">Try again in {formatWait(retryAfter)}</span>
+              ) : null}
+            </div>
+          )}
           <div className="hb-pin-dots" aria-hidden>
             {[0, 1, 2, 3].map((i) => (
               <span key={i} className="hb-pin-dot" data-on={digits.length > i ? '1' : '0'} />
             ))}
           </div>
-          <div className="hb-pin-pad">
+          <div className="hb-pin-pad" data-disabled={retryAfter > 0 ? '1' : '0'}>
             {keys.map((k, i) =>
               k === '' ? (
                 <span key={`sp-${i}`} />
@@ -273,6 +326,7 @@ export function PinLock({ children }: { children: ReactNode }) {
                   key={k === '⌫' ? 'back' : k}
                   type="button"
                   tabIndex={-1}
+                  disabled={retryAfter > 0}
                   onClick={() => (k === '⌫' ? backspace() : press(k))}
                   aria-label={k === '⌫' ? 'Delete' : k}
                 >
@@ -281,6 +335,13 @@ export function PinLock({ children }: { children: ReactNode }) {
               ),
             )}
           </div>
+          <button
+            type="button"
+            className="hb-pin-password"
+            onClick={() => goToPassword('signed_out')}
+          >
+            Sign in with your password
+          </button>
         </div>
       </div>
     </>

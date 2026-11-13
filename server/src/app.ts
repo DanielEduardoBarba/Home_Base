@@ -95,7 +95,7 @@ import {
   visionArmStatus,
   visionStatus,
 } from "./vision";
-import { clientIp, jsonError, readJson, requireAuth } from "./http";
+import { assertSameOrigin, clientIp, clientUserAgent, jsonError, readJson, requireAuth } from "./http";
 import { readDailyLogs } from "./logging";
 import { clearRead, listNotifications, markRead } from "./notifications";
 import { projectPublic, runAction, stopProject, tailLogs } from "./process";
@@ -165,12 +165,17 @@ app.use("/api/*", async (c, next) => {
   const looksMcp =
     /bearer\s+hb_mcp_/i.test(auth) || q.startsWith("hb_mcp_");
   if (looksMcp) {
-    const { recordFailure } = await import("./auth");
+    const { recordMcpFailure } = await import("./auth");
     const { recordActivity } = await import("./activity_audit");
     const { desktopNotify } = await import("./desktop_notify");
     const { pushNotification } = await import("./notifications");
     const ip = clientIp(c);
-    recordFailure(ip, "mcp_token_on_web_api");
+    recordMcpFailure(ip, "mcp_token_on_web_api", {
+      userAgent: clientUserAgent(c),
+      path: c.req.path,
+      result: "invalid",
+      status: 403,
+    });
     recordActivity({
       source: "auth",
       kind: "mcp_blocked_from_web",
@@ -380,6 +385,7 @@ app.post("/api/legal/accept", async (c) => {
 });
 
 app.post("/api/login", async (c) => {
+  assertSameOrigin(c);
   const body = z.object({ password: z.string() }).parse(await readJson(c));
   const ip = clientIp(c);
   warmGeo(ip);
@@ -431,6 +437,7 @@ app.post("/api/login", async (c) => {
 });
 
 app.post("/api/auth/bootstrap", async (c) => {
+  assertSameOrigin(c);
   requireLocalhostBrowser(c.req.raw.headers);
   requireLegalAccepted();
   const body = z.object({ password: z.string() }).parse(await readJson(c));
@@ -440,6 +447,7 @@ app.post("/api/auth/bootstrap", async (c) => {
 });
 
 app.post("/api/auth/password", async (c) => {
+  assertSameOrigin(c);
   await requireAuth(c);
   requireLocalhostBrowser(c.req.raw.headers);
   const body = z
@@ -465,6 +473,7 @@ app.post("/api/app-pin/lock", async (c) => {
 });
 
 app.post("/api/app-pin/unlock", async (c) => {
+  assertSameOrigin(c);
   await requireAuth(c, { allowPinLocked: true });
   const body = z.object({ pin: z.string() }).parse(await readJson(c));
   return c.json({ ok: true, ...unlockAppPin(body.pin, clientIp(c)) });
@@ -1554,6 +1563,122 @@ app.post("/api/mcp-server/tokens/revoke-all", async (c) => {
   const { revokeAllMcpTokens, mcpServerPublic } = await import("./mcp_server");
   const revoked = revokeAllMcpTokens();
   return c.json({ ok: true, revoked, ...mcpServerPublic() });
+});
+
+app.post("/api/mcp-server/tokens/:id/rotate", async (c) => {
+  await requireAuth(c);
+  const id = c.req.param("id");
+  const { rotateMcpConnector, mcpServerPublic } = await import("./mcp_server");
+  const minted = rotateMcpConnector(id);
+  return c.json({ ok: true, ...minted, ...mcpServerPublic() });
+});
+
+app.get("/api/security/events", async (c) => {
+  await requireAuth(c);
+  const { querySecurityLog } = await import("./security_log");
+  const q = {
+    source: c.req.query("source") || undefined,
+    event: c.req.query("event") || undefined,
+    ip: c.req.query("ip") || undefined,
+    result: c.req.query("result") || undefined,
+    class: c.req.query("class") || undefined,
+    q: c.req.query("q") || undefined,
+    from: c.req.query("from") || undefined,
+    to: c.req.query("to") || undefined,
+    offset: Number(c.req.query("offset") || 0),
+    limit: Number(c.req.query("limit") || 50),
+  };
+  return c.json(querySecurityLog(q));
+});
+
+app.get("/api/security/export", async (c) => {
+  await requireAuth(c);
+  const { exportSecurityLog } = await import("./security_log");
+  const format = c.req.query("format") === "csv" ? "csv" : "json";
+  const out = exportSecurityLog(
+    {
+      source: c.req.query("source") || undefined,
+      event: c.req.query("event") || undefined,
+      ip: c.req.query("ip") || undefined,
+      result: c.req.query("result") || undefined,
+      class: c.req.query("class") || undefined,
+      q: c.req.query("q") || undefined,
+      from: c.req.query("from") || undefined,
+      to: c.req.query("to") || undefined,
+    },
+    format,
+  );
+  return new Response(out.body, {
+    status: 200,
+    headers: {
+      "content-type": out.contentType,
+      "content-disposition": `attachment; filename="${out.filename}"`,
+      "cache-control": "no-store",
+    },
+  });
+});
+
+app.get("/api/security/status", async (c) => {
+  await requireAuth(c);
+  const { lockoutStatus, mcpLockoutStatus } = await import("./auth");
+  const { listDevices } = await import("./devices");
+  const { securityLogStats } = await import("./security_log");
+  const ip = clientIp(c);
+  return c.json({
+    lockout: lockoutStatus(),
+    mcpLockout: mcpLockoutStatus(ip),
+    devices: listDevices(),
+    stats: securityLogStats(),
+  });
+});
+
+app.get("/api/security/devices", async (c) => {
+  await requireAuth(c);
+  const { listDevices } = await import("./devices");
+  return c.json({ devices: listDevices() });
+});
+
+app.post("/api/security/devices/:id", async (c) => {
+  await requireAuth(c);
+  const id = c.req.param("id");
+  const body = z
+    .object({ name: z.string().optional(), trusted: z.boolean().optional() })
+    .parse(await readJson(c));
+  const { updateDevice } = await import("./devices");
+  const device = updateDevice(id, body);
+  if (!device) throw new HttpError(404, "device not found");
+  return c.json({ ok: true, device });
+});
+
+/** Refresh rotating MCP tokens. Authenticated by the refresh token, not a public mint. */
+app.post("/mcp/token", async (c) => {
+  const { refreshMcpTokens } = await import("./mcp_server");
+  const { bearerFromHeader } = await import("./auth");
+  let refresh = bearerFromHeader(c.req.header("authorization")) || "";
+  if (!refresh || !refresh.startsWith("hb_mcp_rt_")) {
+    try {
+      const body = await readJson<{ refreshToken?: string; refresh_token?: string }>(c);
+      refresh = String(body.refreshToken || body.refresh_token || refresh);
+    } catch {
+      /* ignore */
+    }
+  }
+  const ip = clientIp(c);
+  const result = refreshMcpTokens(refresh, ip, {
+    ip,
+    userAgent: clientUserAgent(c),
+    path: "/mcp/token",
+  });
+  return c.json({
+    ok: true,
+    token: result.accessToken,
+    accessToken: result.accessToken,
+    refreshToken: result.refreshToken,
+    accessExpiresAt: result.accessExpiresAt,
+    accessExpiresIn: result.accessExpiresIn,
+    refreshExpiresAt: result.refreshExpiresAt,
+    tokenType: "Bearer",
+  });
 });
 
 /** Human Settings only — never exposed as MCP tools. */

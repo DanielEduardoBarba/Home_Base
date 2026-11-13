@@ -47,7 +47,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     err.detail = typeof detail === 'object' && detail && 'detail' in detail
       ? (detail as { detail: unknown }).detail
       : detail
-    // Any 401 → drop the local session once and stop pollers (login is shown by the shell).
+    // Session 401s drop the local JWT. Credential errors (bad PIN / password) must not.
     if (res.status === 401) {
       const code =
         typeof err.detail === 'object' && err.detail && 'code' in err.detail
@@ -61,7 +61,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         invalid_kind: 'unauthorized',
         share_token: 'unauthorized',
       }
-      clearSession(reasons[code] || 'unauthorized')
+      if (code && reasons[code]) {
+        clearSession(reasons[code])
+      } else if (!code && code !== 'bad_pin') {
+        const msg = String(
+          typeof err.detail === 'object' && err.detail && 'message' in err.detail
+            ? (err.detail as { message?: string }).message || ''
+            : err.detail || '',
+        )
+        const credential = /invalid password|incorrect pin|bad_pin/i.test(msg)
+        if (!credential) clearSession('unauthorized')
+      }
     }
     // Server-side App PIN gate — tell PinLock to cover the UI
     if (res.status === 423) {
@@ -287,7 +297,15 @@ export const api = {
       url: string | null
       version: string
       tokenCount: number
-      tokens: { id: string; prefix: string; label: string; createdAt: number }[]
+      tokens: {
+        id: string
+        prefix: string
+        label: string
+        createdAt: number
+        kind?: string
+        lastUsedAt?: number
+        lastUsedIp?: string
+      }[]
       catalog: {
         allowed: {
           name: string
@@ -368,16 +386,44 @@ export const api = {
       ok: boolean
       id: string
       token: string
+      accessToken: string
+      refreshToken: string
       prefix: string
+      refreshPrefix: string
       label: string
       createdAt: number
-      tokens: { id: string; prefix: string; label: string; createdAt: number }[]
+      kind: 'connector'
+      accessExpiresAt: number
+      accessExpiresIn: number
+      refreshExpiresAt: number
+      tokens: {
+        id: string
+        prefix: string
+        label: string
+        createdAt: number
+        kind?: string
+        lastUsedAt?: number
+        lastUsedIp?: string
+      }[]
       clientConfigs: { cursorMcpJson: string; genericUrl: string }
       url: string | null
     }>('/api/mcp-server/tokens', {
       method: 'POST',
       body: JSON.stringify({ label: label || undefined }),
     }),
+  rotateMcpToken: (id: string) =>
+    request<{
+      ok: boolean
+      id: string
+      token: string
+      accessToken: string
+      refreshToken: string
+      prefix: string
+      refreshPrefix: string
+      label: string
+      accessExpiresAt: number
+      accessExpiresIn: number
+    }>(`/api/mcp-server/tokens/${encodeURIComponent(id)}/rotate`, { method: 'POST', body: '{}' }),
   revokeMcpToken: (id: string) =>
     request<{
       ok: boolean
@@ -388,6 +434,97 @@ export const api = {
       '/api/mcp-server/tokens/revoke-all',
       { method: 'POST', body: '{}' },
     ),
+  securityEvents: (opts?: {
+    source?: string
+    event?: string
+    ip?: string
+    result?: string
+    class?: string
+    q?: string
+    from?: string
+    to?: string
+    offset?: number
+    limit?: number
+  }) => {
+    const q = new URLSearchParams()
+    if (opts) {
+      for (const [k, v] of Object.entries(opts)) {
+        if (v != null && v !== '' && v !== 'all') q.set(k, String(v))
+      }
+    }
+    const qs = q.toString()
+    return request<{
+      total: number
+      offset: number
+      limit: number
+      days: string[]
+      integrityOk: boolean
+      events: {
+        id: string
+        ts: string
+        event: string
+        source: string
+        ip: string
+        result: string
+        class: string
+        classLabel: string
+        userAgent?: string
+        status?: number
+        connectorLabel?: string
+        wgPeerName?: string
+        deviceId?: string
+        deviceName?: string
+        trusted?: boolean
+        firstSeen?: boolean
+        message?: string
+        retryAfter?: number
+        remainingAttempts?: number
+        failCount?: number
+      }[]
+    }>(`/api/security/events${qs ? `?${qs}` : ''}`)
+  },
+  securityStatus: () =>
+    request<{
+      lockout: { failCount: number; locked: boolean; retryAfter: number; threshold: number }
+      mcpLockout: { failCount: number; locked: boolean; retryAfter: number; threshold: number; ip: string }
+      devices: {
+        id: string
+        name: string
+        trusted: boolean
+        ip: string
+        userAgent?: string
+        class: string
+        wgPeerName?: string
+        connectorLabel?: string
+        firstSeenAt: number
+        lastSeenAt: number
+        seenCount: number
+      }[]
+      stats: { files: number; bytes: number; headCount: number }
+    }>('/api/security/status'),
+  updateSecurityDevice: (id: string, patch: { name?: string; trusted?: boolean }) =>
+    request<{
+      ok: boolean
+      device: {
+        id: string
+        name: string
+        trusted: boolean
+        ip: string
+        class: string
+      }
+    }>(`/api/security/devices/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      body: JSON.stringify(patch),
+    }),
+  securityExportUrl: (opts?: Record<string, string>, format: 'csv' | 'json' = 'json') => {
+    const q = new URLSearchParams({ format })
+    if (opts) {
+      for (const [k, v] of Object.entries(opts)) {
+        if (v) q.set(k, v)
+      }
+    }
+    return `/api/security/export?${q}`
+  },
   restartHomebased: () =>
     request<{ ok: boolean; unit: string; active: boolean }>('/api/system/restart/homebased', {
       method: 'POST',
@@ -1258,7 +1395,12 @@ export const api = {
       },
     ),
   appPinStatus: () =>
-    request<{ enabled: boolean; locked: boolean; idleMs: number }>('/api/app-pin/status'),
+    request<{
+      enabled: boolean
+      locked: boolean
+      idleMs: number
+      lockout?: { locked: boolean; retryAfter: number; failCount: number; threshold?: number }
+    }>('/api/app-pin/status'),
   appPinLock: () => request<{ ok: boolean; locked: boolean }>('/api/app-pin/lock', { method: 'POST' }),
   appPinUnlock: (pin: string) =>
     request<{ ok: boolean; locked: boolean }>('/api/app-pin/unlock', {

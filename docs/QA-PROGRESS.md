@@ -71,3 +71,18 @@ The cause was real in code, not just a headless quirk: `Terminal.tsx` had no sel
 
 Version bump to 1.17.7.
 
+
+## 2026-11-13 (America/New_York) — v1.20.0 PIN lockout, MCP lockout split, Security page
+
+Root cause of Dan's PIN pad "correct PIN keeps failing" on live 1.19.x: 18 `invalid_mcp_token` failures at 06:38 UTC went through the shared `recordFailure()` / `lockout.json`, so the human PIN/password gate was locked for 86400s. The PIN pad only shook and showed no lockout, remaining time, or password path. A stale session was a reasonable guess but was not required to produce this symptom; a valid session plus an active lockout is enough, and failed PIN verify already did not increment the counter when `assertNotLocked()` ran first.
+
+Fixes in 1.20.0:
+
+- Human login/PIN lockout is separate from a per-source MCP lockout.
+- PIN pad and login show HTTP status and server messages, remaining attempts, lockout wait time, and a path to password sign-in. Stale/expired/invalid session tokens go to password login and do not count as a wrong PIN. `bad_pin` 401 no longer clears the session.
+- Named MCP connectors with short-lived access tokens and rotating refresh tokens (`POST /mcp/token`). Refresh reuse revokes the connector. Distinct 401 codes: `mcp_token_expired`, `mcp_token_invalid`, `mcp_token_revoked`. Clients must not retry a 401 in a loop.
+- Socket IP capture; `X-Forwarded-For` only from `HOMEBASE_TRUSTED_PROXIES`. User-Agent recorded. IPs mapped to WireGuard peers, connectors, and presence; classified as known Grok Bot / known VPN device / LAN / unknown-external.
+- Settings → Security: lockout status, named/trusted devices (new devices flagged), filterable paginated log (time, source, IP, event, result, class badge), CSV/JSON export without secrets. Append-only hash-chained log with daily rotation. In-app alerts for lockouts, first-seen devices, and brute-force bursts.
+- Same-origin check on login/PIN/password POSTs. Tokens not accepted in `/mcp` query strings. Constant-time token hash compare retained.
+
+Version bump to 1.20.0.

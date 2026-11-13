@@ -84,6 +84,9 @@ export const PROJECTS_PATH = resolve(
 );
 export const AGENTS_PATH = join(RUNTIME_DIR, "agents.json");
 export const LOCKOUT_PATH = join(RUNTIME_DIR, "lockout.json");
+export const MCP_LOCKOUT_PATH = join(RUNTIME_DIR, "mcp_lockout.json");
+export const SECURITY_DIR = join(RUNTIME_DIR, "security");
+export const TRUSTED_DEVICES_PATH = join(RUNTIME_DIR, "trusted_devices.json");
 export const NOTIFICATIONS_PATH = join(RUNTIME_DIR, "notifications.jsonl");
 export const AUTH_PATH = join(RUNTIME_DIR, "auth.json");
 export const JWT_SECRET_PATH = join(RUNTIME_DIR, "jwt_secret");
@@ -95,6 +98,7 @@ export function ensureRuntimeDirs(): void {
     join(RUNTIME_DIR, "logs"),
     join(RUNTIME_DIR, "chats"),
     join(RUNTIME_DIR, "vision"),
+    SECURITY_DIR,
     CONFIG_DIR,
   ]) {
     try {
@@ -404,4 +408,12 @@ export function bindPort(): number {
   const raw = (process.env.HOMEBASE_PORT || "8080").trim();
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : 8080;
+}
+
+/** Comma/space-separated IPs or CIDRs of reverse proxies allowed to set X-Forwarded-For. */
+export function trustedProxyList(): string[] {
+  return (process.env.HOMEBASE_TRUSTED_PROXIES || "")
+    .split(/[,\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
 }

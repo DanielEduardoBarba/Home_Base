@@ -371,21 +371,34 @@ export function maybeEmailSuspiciousAuth(opts: {
 
   const geo = formatGeo(geoCached(opts.ip));
   const pin = /pin/i.test(opts.reason);
+  const mcp = /mcp/i.test(opts.reason);
   void deliverPayload({
     subject: locked
-      ? "Home Base · auth lockout"
-      : pin
-        ? "Home Base · repeated PIN failures"
-        : "Home Base · repeated login failures",
+      ? mcp
+        ? "Home Base · MCP token lockout"
+        : "Home Base · auth lockout"
+      : mcp
+        ? "Home Base · repeated MCP token failures"
+        : pin
+          ? "Home Base · repeated PIN failures"
+          : "Home Base · repeated login failures",
     eyebrow: locked ? "Lockout" : "Suspicious auth",
     title: locked
-      ? "Authentication lockout engaged"
-      : pin
-        ? "Repeated PIN failures"
-        : "Repeated login failures",
+      ? mcp
+        ? "MCP token lockout engaged"
+        : "Authentication lockout engaged"
+      : mcp
+        ? "Repeated MCP token failures"
+        : pin
+          ? "Repeated PIN failures"
+          : "Repeated login failures",
     lead: locked
-      ? "Home Base paused further attempts after too many failures."
-      : "Someone hit your Home Base login or PIN gate multiple times.",
+      ? mcp
+        ? "Home Base paused further MCP token attempts from this source."
+        : "Home Base paused further login/PIN attempts after too many failures."
+      : mcp
+        ? "Someone presented invalid MCP tokens to Home Base multiple times."
+        : "Someone hit your Home Base login or PIN gate multiple times.",
     tone: locked ? "danger" : "warn",
     fields: [
       { label: "Reason", value: opts.reason },

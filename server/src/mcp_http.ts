@@ -11,7 +11,7 @@ import {
 import type { Context } from "hono";
 import { bearerFromHeader, HttpError } from "./auth";
 import { readVersion } from "./config";
-import { clientIp } from "./http";
+import { clientIp, clientUserAgent } from "./http";
 import { buildMcpTools } from "./homebase_tools";
 import { mcpRequestContext } from "./mcp_context";
 import {
@@ -123,14 +123,13 @@ export async function handleMcpHttp(c: Context): Promise<Response> {
     return c.json({ detail: "Not found" }, 404);
   }
 
-  const token =
-    bearerFromHeader(c.req.header("authorization")) ||
-    c.req.query("token") ||
-    undefined;
+  // Bearer header only — never accept tokens in the URL (they leak to logs/history).
+  const token = bearerFromHeader(c.req.header("authorization"));
   const ip = clientIp(c);
+  const userAgent = clientUserAgent(c);
   let actor: { id: string; label: string };
   try {
-    actor = verifyMcpBearerToken(token, ip);
+    actor = verifyMcpBearerToken(token, ip, { ip, userAgent, path: "/mcp" });
     const peerIp = ip === "unknown" ? undefined : ip;
     // Always register AI presence. Seat-local MCP (rare) stays quiet for the window;
     // unknown/remote opens Presence. Store peerIp even when unknown-ish via label.

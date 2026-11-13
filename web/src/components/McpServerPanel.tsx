@@ -57,6 +57,8 @@ export function McpServerPanel() {
   const [busy, setBusy] = useState('')
   const [label, setLabel] = useState('')
   const [freshToken, setFreshToken] = useState<string | null>(null)
+  const [freshRefresh, setFreshRefresh] = useState<string | null>(null)
+  const [freshExpiry, setFreshExpiry] = useState<string>('')
   const [showTools, setShowTools] = useState(false)
   const [showHuman, setShowHuman] = useState(true)
   const [showGrok, setShowGrok] = useState(true)
@@ -229,9 +231,10 @@ export function McpServerPanel() {
       <section className="hb-surface p-3.5 space-y-2.5">
         <h2 className="text-sm font-semibold text-text">Access tokens</h2>
         <p className="text-xs text-mute leading-relaxed">
-          Mint a Bearer token for Grok / Cursor / other MCP hosts. Session login JWTs are not
-          accepted on <code className="text-text">/mcp</code>. Keep the Cursor API key in Home Base
-          — bots use MCP tokens only.
+          Mint a named connector. You get a short-lived access token (use as Bearer on{' '}
+          <code className="text-text">/mcp</code>) and a rotating refresh token (POST{' '}
+          <code className="text-text">/mcp/token</code>). Reuse of an old refresh token revokes the
+          connector. Session JWTs are not accepted on /mcp. Keep the Cursor API key in Home Base.
         </p>
         <div className="flex gap-2">
           <input
@@ -247,36 +250,66 @@ export function McpServerPanel() {
             onClick={() =>
               void run('mint', async () => {
                 const r = await api.mintMcpToken(label.trim() || undefined)
-                setFreshToken(r.token)
+                setFreshToken(r.accessToken || r.token)
+                setFreshRefresh(r.refreshToken || null)
+                setFreshExpiry(
+                  r.accessExpiresIn
+                    ? `Access expires in ${Math.round(r.accessExpiresIn / 60)} min`
+                    : '',
+                )
                 setLabel('')
-                setMsg('Token created — copy it now; it will not be shown again')
+                setMsg('Access and refresh tokens created — copy them now; they will not be shown again')
               })
             }
           >
-            Mint
+            Add connector
           </button>
         </div>
 
         {freshToken ? (
           <div className="rounded-xl border border-sky/40 bg-sky/10 px-3 py-2.5 space-y-2">
-            <p className="text-xs text-sky font-semibold">New token (shown once)</p>
+            <p className="text-xs text-sky font-semibold">New credentials (shown once)</p>
+            {freshExpiry ? <p className="text-[11px] text-mute">{freshExpiry}</p> : null}
+            <p className="text-[11px] text-mute">Access token</p>
             <code className="block text-[11px] break-all font-mono text-text">{freshToken}</code>
+            {freshRefresh ? (
+              <>
+                <p className="text-[11px] text-mute">Refresh token</p>
+                <code className="block text-[11px] break-all font-mono text-text">{freshRefresh}</code>
+              </>
+            ) : null}
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
                 className="hb-btn hb-btn-ghost text-xs !min-h-8"
                 onClick={() =>
                   void copyText(freshToken).then((ok) =>
-                    setMsg(ok ? 'Token copied' : 'Copy failed'),
+                    setMsg(ok ? 'Access token copied' : 'Copy failed'),
                   )
                 }
               >
-                Copy token
+                Copy access
               </button>
+              {freshRefresh ? (
+                <button
+                  type="button"
+                  className="hb-btn hb-btn-ghost text-xs !min-h-8"
+                  onClick={() =>
+                    void copyText(freshRefresh).then((ok) =>
+                      setMsg(ok ? 'Refresh token copied' : 'Copy failed'),
+                    )
+                  }
+                >
+                  Copy refresh
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="hb-btn hb-btn-ghost text-xs !min-h-8"
-                onClick={() => setFreshToken(null)}
+                onClick={() => {
+                  setFreshToken(null)
+                  setFreshRefresh(null)
+                }}
               >
                 Hide
               </button>
@@ -296,22 +329,50 @@ export function McpServerPanel() {
                 <span className="min-w-0">
                   <span className="block text-sm text-text truncate">{t.label}</span>
                   <span className="block text-[11px] text-mute font-mono truncate">
-                    {t.prefix} · {new Date(t.createdAt).toLocaleString()}
+                    {t.prefix} · {t.kind === 'static' ? 'static' : 'connector'} ·{' '}
+                    {new Date(t.createdAt).toLocaleString()}
+                  </span>
+                  <span className="block text-[11px] text-mute truncate">
+                    {t.lastUsedAt
+                      ? `Last used ${new Date(t.lastUsedAt).toLocaleString()}${t.lastUsedIp ? ` · ${t.lastUsedIp}` : ''}`
+                      : 'Never used'}
                   </span>
                 </span>
-                <button
-                  type="button"
-                  className="hb-btn hb-btn-ghost text-xs !min-h-8 shrink-0 text-danger"
-                  disabled={Boolean(busy)}
-                  onClick={() =>
-                    void run(`revoke-${t.id}`, async () => {
-                      await api.revokeMcpToken(t.id)
-                      setMsg('Token revoked')
-                    })
-                  }
-                >
-                  Revoke
-                </button>
+                <span className="flex shrink-0 gap-1">
+                  <button
+                    type="button"
+                    className="hb-btn hb-btn-ghost text-xs !min-h-8"
+                    disabled={Boolean(busy)}
+                    onClick={() =>
+                      void run(`rotate-${t.id}`, async () => {
+                        const r = await api.rotateMcpToken(t.id)
+                        setFreshToken(r.accessToken || r.token)
+                        setFreshRefresh(r.refreshToken || null)
+                        setFreshExpiry(
+                          r.accessExpiresIn
+                            ? `Access expires in ${Math.round(r.accessExpiresIn / 60)} min`
+                            : '',
+                        )
+                        setMsg('Connector rotated — copy the new tokens now')
+                      })
+                    }
+                  >
+                    Rotate
+                  </button>
+                  <button
+                    type="button"
+                    className="hb-btn hb-btn-ghost text-xs !min-h-8 text-danger"
+                    disabled={Boolean(busy)}
+                    onClick={() =>
+                      void run(`revoke-${t.id}`, async () => {
+                        await api.revokeMcpToken(t.id)
+                        setMsg('Token revoked')
+                      })
+                    }
+                  >
+                    Revoke
+                  </button>
+                </span>
               </li>
             ))
           )}

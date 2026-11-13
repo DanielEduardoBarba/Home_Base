@@ -94,6 +94,7 @@ export function softReset(): { ok: boolean; removed: number } {
     "agents.json",
     "security_monitor.json",
     "lockout.json",
+    "mcp_lockout.json",
   ]) {
     const p = join(RUNTIME_DIR, name);
     if (existsSync(p)) {

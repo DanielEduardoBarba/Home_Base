@@ -1,7 +1,7 @@
 {
   "name": "homebase-presence",
   "private": true,
-  "version": "1.19.3",
+  "version": "1.20.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

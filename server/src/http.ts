@@ -2,20 +2,93 @@ import type { Context } from "hono";
 import { ZodError } from "zod";
 import { isAppPinLocked } from "./app_pin";
 import { HttpError, bearerFromHeader, verifyAccessToken } from "./auth";
+import { trustedProxyList } from "./config";
 import { logError, logWarn } from "./console_log";
 import { formatGeo, geoCached, normalizeIp, warmGeo } from "./geo";
 
 /** Trusted peer header set by Bun.serve after stripping client spoofing. */
 export const PEER_IP_HEADER = "x-homebase-peer";
 
+function ipv4ToInt(ip: string): number | null {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return null;
+  let n = 0;
+  for (const p of parts) {
+    if (!/^\d{1,3}$/.test(p)) return null;
+    const v = Number(p);
+    if (!Number.isInteger(v) || v < 0 || v > 255) return null;
+    n = (n << 8) + v;
+  }
+  return n >>> 0;
+}
+
+/** IPv4 address or CIDR match. IPv6 only exact (or exact with zone stripped). */
+export function ipMatchesAllowlist(ip: string, entries: string[]): boolean {
+  const n = normalizeIp(ip);
+  if (!n || n === "unknown") return false;
+  for (const raw of entries) {
+    const entry = raw.trim();
+    if (!entry) continue;
+    if (entry.includes("/")) {
+      const [base, bitsStr] = entry.split("/", 2);
+      const bits = Number(bitsStr);
+      const a = ipv4ToInt(normalizeIp(base));
+      const b = ipv4ToInt(n);
+      if (a == null || b == null || !Number.isInteger(bits) || bits < 0 || bits > 32) {
+        continue;
+      }
+      const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+      if ((a & mask) === (b & mask)) return true;
+    } else if (normalizeIp(entry) === n) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function isTrustedProxyIp(ip: string): boolean {
+  return ipMatchesAllowlist(ip, trustedProxyList());
+}
+
+/**
+ * Client IP from the socket (injected as x-homebase-peer after spoofed
+ * headers are stripped). X-Forwarded-For / X-Real-IP are used only when
+ * that socket address is in HOMEBASE_TRUSTED_PROXIES.
+ */
 export function clientIp(c: Context): string {
-  const peer = c.req.header(PEER_IP_HEADER);
-  if (peer) return normalizeIp(peer);
-  const fwd = c.req.header("x-forwarded-for");
-  if (fwd) return normalizeIp(fwd.split(",")[0]);
-  const real = c.req.header("x-real-ip");
-  if (real) return normalizeIp(real);
+  const socket = normalizeIp(c.req.header(PEER_IP_HEADER) || "");
+  if (socket && socket !== "unknown" && isTrustedProxyIp(socket)) {
+    const fwd = c.req.header("x-forwarded-for");
+    const real = c.req.header("x-real-ip");
+    const cand = (fwd || real || "").split(",")[0];
+    const forwarded = normalizeIp(cand);
+    if (forwarded !== "unknown") return forwarded;
+  }
+  if (socket && socket !== "unknown") return socket;
   return "unknown";
+}
+
+export function clientUserAgent(c: Context): string {
+  return (c.req.header("user-agent") || "").trim().slice(0, 180);
+}
+
+/** Browser requests with a mismatched Origin are rejected. Non-browser (no Origin) is allowed. */
+export function assertSameOrigin(c: Context): void {
+  const origin = (c.req.header("origin") || "").trim();
+  if (!origin) return;
+  let expected = "";
+  try {
+    const url = new URL(c.req.url);
+    expected = `${url.protocol}//${url.host}`;
+  } catch {
+    return;
+  }
+  if (origin !== expected) {
+    throw new HttpError(403, {
+      code: "csrf_origin",
+      message: "Request origin does not match this server",
+    });
+  }
 }
 
 export function clientIpFields(c: Context): Record<string, unknown> {

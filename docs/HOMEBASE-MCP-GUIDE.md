@@ -217,7 +217,7 @@ Placeholders:
 |---|---|
 | Path | `/mcp` |
 | Transport | Streamable HTTP MCP |
-| Auth | `Authorization: Bearer hb_mcp_…` (secret card) |
+| Auth | `Authorization: Bearer` access token (`hb_mcp_at_…` or legacy `hb_mcp_…`). On 401 see **Connector tokens and refresh**. |
 | Cursor spend | Home Base in-app key → operator Cursor plan pool |
 
 ```json
@@ -315,3 +315,38 @@ GUI: **New workspace → From GitHub**; each project’s **Git** panel has **Con
 ## Related
 
 Settings → **MCP Server** · `presence-app/` · `AGENTS.md`
+
+---
+
+## Connector tokens and refresh (v1.20.0)
+
+Named connectors are minted in **Settings → MCP Server → Add connector**. The access token and refresh token are shown **once**.
+
+| Token | Prefix | Use |
+|---|---|---|
+| Access | `hb_mcp_at_…` | `Authorization: Bearer` on `/mcp` only. Lives about **1 hour**. |
+| Refresh | `hb_mcp_rt_…` | `POST /mcp/token` (header or JSON `{ "refreshToken": "…" }`). Issues a new access + refresh pair. |
+| Legacy static | `hb_mcp_…` (no `_at_` / `_rt_`) | Still accepted on `/mcp` until revoked. Prefer connectors for new bots. |
+
+**Refresh rules (secure rehydration, no unauthenticated mint):**
+
+1. There is **no** public endpoint that issues a first token. Only the human operator mints or rotates a connector in Settings (after password / PIN login).
+2. A known connector refreshes itself with its **current** refresh token. The previous refresh token is retired.
+3. If an **old** refresh token is used again, Home Base treats that as theft, **revokes the connector**, and returns `401` with `code: "mcp_token_revoked"`. The operator must mint a new connector.
+4. `POST /mcp/token` is authenticated by the refresh token itself, not a session JWT.
+
+**401 codes — stop retrying:**
+
+| HTTP | `code` | Meaning | What the bot should do |
+|---|---|---|---|
+| 401 | `mcp_token_expired` | Access token TTL ended | Refresh **once**, then retry the original call **once**. Do not loop. |
+| 401 | `mcp_token_invalid` | Wrong, missing, or malformed token | **Stop.** Do not retry. Ask the operator to mint or rotate the connector. |
+| 401 | `mcp_token_revoked` | Refresh reuse or operator revoke | **Stop.** Ask the operator to mint a new connector. |
+| 429 | `mcp_lockout` | Too many failed MCP attempts from this source | **Stop.** Wait `retryAfter` seconds. This lockout is **not** the human PIN/password lockout. |
+
+A helper that follows these rules lives in the repo at `scripts/hb-mcp.sh`. Box-side `hb.sh` also exits on HTTP 401 and does not retry.
+
+Never put tokens in URLs, logs, or group chat. `/mcp` accepts the `Authorization` header only.
+
+MCP token failures use a **per-source** rate limit and cannot lock the human out of the PIN pad or password login.
+

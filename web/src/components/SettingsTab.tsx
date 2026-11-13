@@ -30,6 +30,7 @@ import { UsageBillingPanel } from './UsageBillingPanel'
 import { WireGuardPanel } from './WireGuardPanel'
 import { McpServerPanel } from './McpServerPanel'
 import { ActivityHistoryPanel } from './ActivityHistoryPanel'
+import { SecurityPanel } from './SecurityPanel'
 import { EmailAlertsPanel } from './EmailAlertsPanel'
 import { GitGithubPanel } from './GitGithubPanel'
 import type { PresentRequest } from '../lib/chatTypes'
@@ -50,6 +51,7 @@ type SettingsScene =
   | 'mcp'
   | 'git'
   | 'activity'
+  | 'security'
   | 'services'
   | 'storage'
   | 'session'
@@ -470,6 +472,11 @@ export function SettingsTab({
                 ? 'Global set · session active'
                 : 'Global set'
               : 'Empty',
+          },
+          {
+            id: 'security',
+            title: 'Security',
+            hint: 'Lockouts · devices · event log',
           },
           {
             id: 'activity',
@@ -1427,6 +1434,21 @@ export function SettingsTab({
           onBack={goHub}
         >
           <GitGithubPanel onPresent={onPresent} />
+        </SceneShell>
+        {modals}
+      </>
+    )
+  }
+
+  if (scene === 'security') {
+    return (
+      <>
+        <SceneShell
+          title="Security"
+          hint="Lockouts, trusted devices, and a human-only event log. Secrets are never stored here."
+          onBack={goHub}
+        >
+          <SecurityPanel />
         </SceneShell>
         {modals}
       </>

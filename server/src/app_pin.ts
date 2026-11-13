@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { RUNTIME_DIR, ensureRuntimeDirs } from "./config";
-import { assertNotLocked, HttpError, recordFailure } from "./auth";
+import { assertNotLocked, FAIL_THRESHOLD, HttpError, lockoutStatus, recordFailure, remainingAttempts } from "./auth";
 
 const APP_PIN_PATH = join(RUNTIME_DIR, "app_pin.json");
 const DEFAULT_IDLE_MS = 5 * 60 * 1000;
@@ -91,12 +91,14 @@ export function appPinStatus(): {
   enabled: boolean;
   locked: boolean;
   idleMs: number;
+  lockout: ReturnType<typeof import("./auth").lockoutStatus>;
 } {
   const data = loadPin();
   return {
     enabled: data.enabled,
     locked: data.enabled && data.locked,
     idleMs: data.idleMs,
+    lockout: lockoutStatus(),
   };
 }
 
@@ -145,11 +147,25 @@ export function unlockAppPin(
       message: "Incorrect PIN",
       failCount: info.failCount,
       retryAfter: info.retryAfter,
+      remainingAttempts: remainingAttempts(info.failCount),
+      threshold: FAIL_THRESHOLD,
     });
   }
   const data = loadPin();
   data.locked = false;
   savePin(data);
+  try {
+    const { recordSecurityEvent } = require("./security_log") as typeof import("./security_log");
+    recordSecurityEvent({
+      event: "pin_success",
+      source: "ui",
+      result: "success",
+      ip,
+      status: 200,
+    });
+  } catch {
+    /* ignore */
+  }
   return { locked: false };
 }
 

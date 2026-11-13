@@ -3703,6 +3703,68 @@ html.hb-view-max .hb-status-bar {
   animation: hb-pin-shake 0.4s ease;
 }
 
+.hb-pin-error {
+  margin-top: 0.85rem;
+  text-align: center;
+  color: var(--hb-danger, #f07178);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+.hb-pin-error-status {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--hb-mute);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+}
+.hb-pin-password {
+  appearance: none;
+  display: block;
+  width: 100%;
+  margin-top: 0.9rem;
+  border: 0;
+  background: transparent;
+  color: var(--hb-accent, var(--hb-sky, #6cb6ff));
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+  min-height: 2.5rem;
+}
+.hb-pin-pad[data-disabled='1'] button {
+  opacity: 0.45;
+  pointer-events: none;
+}
+.hb-sec-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.hb-sec-badge[data-class='known_grok_bot'] {
+  background: color-mix(in srgb, #7c6af0 22%, transparent);
+  color: #c5b8ff;
+}
+.hb-sec-badge[data-class='known_vpn_device'] {
+  background: color-mix(in srgb, #3d9bff 22%, transparent);
+  color: #9fd0ff;
+}
+.hb-sec-badge[data-class='lan'] {
+  background: color-mix(in srgb, #3dbf8a 22%, transparent);
+  color: #8fe0c0;
+}
+.hb-sec-badge[data-class='unknown_external'] {
+  background: color-mix(in srgb, #e05d5d 22%, transparent);
+  color: #ffb4b4;
+}
+.hb-sec-badge[data-trusted='1'] {
+  outline: 1px solid color-mix(in srgb, #3dbf8a 55%, transparent);
+}
+
 .hb-shell-sudo-btn {
   appearance: none;
   border: 1px solid color-mix(in srgb, var(--hb-amber) 45%, var(--hb-line));

@@ -7,19 +7,13 @@ import { BrandTitle } from './BrandTitle'
 import { LegalAbout } from './LegalAbout'
 import { LegalConnectionError, LegalGate } from './LegalGate'
 import { useServerIdentity } from '../lib/serverIdentity'
+import { formatWait, parseAuthError } from '../lib/authErrors'
 
 const AUTH_REASON_COPY: Record<string, string> = {
   expired: 'Session expired — sign in again',
   signed_out: 'Signed out',
   unauthorized: 'Session ended — sign in again',
   stale_session: 'Password changed — sign in again',
-}
-
-function formatWait(sec: number): string {
-  if (sec >= 86400) return `${Math.ceil(sec / 86400)}d`
-  if (sec >= 3600) return `${Math.ceil(sec / 3600)}h`
-  if (sec >= 60) return `${Math.ceil(sec / 60)}m`
-  return `${sec}s`
 }
 
 function scrubShareParamsFromUrl() {
@@ -195,24 +189,13 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
       setSession(session.token, session.expiresAt)
       onAuthed()
     } catch (err) {
-      const detail = (err as { detail?: unknown }).detail
-      let message = 'Invalid password'
-      let wait = 0
-      if (typeof detail === 'object' && detail) {
-        const d = detail as { message?: string; retryAfter?: number }
-        message = d.message || message
-        wait = d.retryAfter || 0
-      } else if (typeof detail === 'string') {
-        try {
-          const parsed = JSON.parse(detail)
-          message = parsed.message || message
-          wait = parsed.retryAfter || 0
-        } catch {
-          message = detail
-        }
-      }
-      setError(message)
-      if (wait > 0) setRetryAfter(wait)
+      const parsed = parseAuthError(err, { surface: 'login' })
+      setError(
+        parsed.status
+          ? `${parsed.headline} (${parsed.statusLine})`
+          : parsed.headline,
+      )
+      if (parsed.retryAfter > 0) setRetryAfter(parsed.retryAfter)
     }
   }
 
