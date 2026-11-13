@@ -34,6 +34,9 @@ export type ChatTodoItem = {
 
 export type PlanCardState = 'open' | 'building' | 'cancelled' | 'done'
 
+/** Origin of a bubble. Missing → treat as human (web GUI). */
+export type ChatMsgSource = 'web' | 'mcp' | 'system'
+
 export type ChatMsg = {
   id: string
   role: ChatRole
@@ -47,6 +50,17 @@ export type ChatMsg = {
   images?: ChatImage[]
   /** Project-relative paths attached via @ picker. */
   contextPaths?: string[]
+  /**
+   * Who authored this bubble. MCP bots set `mcp` (+ label); human GUI = `web`
+   * or omitted (legacy messages without this field render as human).
+   */
+  source?: ChatMsgSource
+  /** MCP token label / bot name, e.g. "devcon1-developer". */
+  sourceLabel?: string
+  /** Model id when known. */
+  model?: string
+  /** Cursor job id when this message came from homebase_cursor_job. */
+  jobId?: string
   tool?: {
     name: string
     status: string

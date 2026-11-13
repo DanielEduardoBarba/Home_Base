@@ -798,6 +798,8 @@ export function buildHomebaseTools(
       execute: async (args) => {
         try {
           const { startCursorJob } = await import("./cursor_jobs");
+          const { getMcpRequestContext } = await import("./mcp_context");
+          const mcpCtx = getMcpRequestContext();
           const job = await startCursorJob({
             projectId: resolvePid(args),
             prompt: String(args.prompt || ""),
@@ -810,6 +812,7 @@ export function buildHomebaseTools(
               args.callbackUrl != null ? String(args.callbackUrl) : undefined,
             waitMs: args.waitMs != null ? Number(args.waitMs) : 0,
             source: "mcp",
+            sourceLabel: mcpCtx?.actorLabel || undefined,
           });
           return json({ ok: true, job });
         } catch (e) {

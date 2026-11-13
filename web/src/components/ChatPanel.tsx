@@ -110,6 +110,34 @@ function MsgMeta({ at, align = 'start' }: { at?: number; align?: 'start' | 'end'
   )
 }
 
+/** Meta line above MCP-authored bubbles (missing source → human, no chrome). */
+function McpMsgSourceLine({
+  source,
+  sourceLabel,
+  model,
+  jobId,
+  at,
+}: {
+  source?: string
+  sourceLabel?: string
+  model?: string
+  jobId?: string
+  at?: number
+}) {
+  if (source !== 'mcp') return null
+  const label = (sourceLabel || 'MCP bot').trim() || 'MCP bot'
+  const t = formatMsgTime(at)
+  const bits = [label, 'via MCP']
+  if (t) bits.push(t)
+  if (model) bits.push(model)
+  if (jobId) bits.push(`job ${jobId}`)
+  return (
+    <div className="hb-chat-mcp-meta" title={bits.join(' · ')}>
+      {bits.join(' · ')}
+    </div>
+  )
+}
+
 function formatElapsed(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000))
   if (s < 60) return `${s}s`
@@ -324,10 +352,20 @@ function MessageCard({
   const lp = useLongPressCopy(() => copyBody, flashCopied)
 
   if (m.role === 'user') {
+    const fromMcp = m.source === 'mcp'
     return (
       <div className="ml-6 min-w-0 max-w-full relative">
+        <McpMsgSourceLine
+          source={m.source}
+          sourceLabel={m.sourceLabel}
+          model={m.model}
+          jobId={m.jobId}
+          at={m.at}
+        />
         <div
-          className="hb-chat-user hb-chat-copyable rounded-2xl px-3.5 py-3 text-sm leading-relaxed shadow-sm whitespace-pre-wrap break-words"
+          className={`hb-chat-user hb-chat-copyable rounded-2xl px-3.5 py-3 text-sm leading-relaxed shadow-sm whitespace-pre-wrap break-words${
+            fromMcp ? ' hb-chat-user--mcp' : ''
+          }`}
           title="Hold to copy"
           {...lp}
         >
@@ -360,13 +398,13 @@ function MessageCard({
           {m.text}
           <CopyFlash show={copied} />
         </div>
-        <MsgMeta at={m.at} align="end" />
+        {!fromMcp ? <MsgMeta at={m.at} align="end" /> : null}
         <MsgActions
           actions={[
             ...(m.text && onCopy
               ? [{ label: 'Copy', onClick: () => onCopy(m.text || ''), title: 'Copy message' }]
               : []),
-            ...(canEdit && onEdit && (m.text || m.contextPaths?.length)
+            ...(canEdit && onEdit && (m.text || m.contextPaths?.length) && !fromMcp
               ? [
                   {
                     label: 'Edit',

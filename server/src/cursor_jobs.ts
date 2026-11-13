@@ -65,6 +65,9 @@ export type CursorJobRunOpts = {
   mode: string;
   cwd?: string;
   queueIfBusy?: boolean;
+  source?: "web" | "mcp" | "system";
+  sourceLabel?: string;
+  jobId?: string;
   onStarted?: () => void;
 };
 
@@ -416,6 +419,8 @@ export async function startCursorJob(opts: {
   branch?: string;
   callbackUrl?: string;
   source?: string;
+  /** MCP token label / bot name for chat bubble meta. */
+  sourceLabel?: string;
 }): Promise<CursorJob> {
   const projectId = String(opts.projectId || "").trim();
   const prompt = String(opts.prompt || "").trim();
@@ -473,6 +478,12 @@ export async function startCursorJob(opts: {
   );
 
   const start = { started: false, error: null as unknown, settled: false };
+  const source =
+    opts.source === "web" || opts.source === "system" ? opts.source : "mcp";
+  const sourceLabel = String(opts.sourceLabel || "")
+    .trim()
+    .slice(0, 64);
+
   detach(() => {
     void deps
       .runner(projectId, {
@@ -482,6 +493,9 @@ export async function startCursorJob(opts: {
         mode,
         cwd,
         queueIfBusy: true,
+        source,
+        sourceLabel: sourceLabel || undefined,
+        jobId: job.id,
         onStarted: () => {
           start.started = true;
         },

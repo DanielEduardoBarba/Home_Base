@@ -58,6 +58,9 @@ export type ChatTodoItem = {
   status: TodoStatus;
 };
 
+/** Origin of a chat bubble. Missing / unknown → treat as human (web GUI). */
+export type ChatMsgSource = "web" | "mcp" | "system";
+
 export type ChatMsg = {
   id: string;
   role: string;
@@ -68,6 +71,17 @@ export type ChatMsg = {
   images?: ChatImage[];
   /** Project-relative (or absolute host) paths from the @ context picker. */
   contextPaths?: string[];
+  /**
+   * Who authored this bubble. MCP bots set `mcp` (+ label); human GUI = `web`
+   * or omitted (legacy messages without this field render as human).
+   */
+  source?: ChatMsgSource;
+  /** MCP token label / bot name, e.g. "devcon1-developer". */
+  sourceLabel?: string;
+  /** Model id when known (MCP job / send). */
+  model?: string;
+  /** Cursor job id when this message came from homebase_cursor_job. */
+  jobId?: string;
   tool?: {
     name: string;
     status: string;
@@ -691,6 +705,9 @@ type QueuedPrompt = {
   cwd?: string;
   images?: ChatImage[];
   contextPaths?: string[];
+  source?: ChatMsgSource;
+  sourceLabel?: string;
+  jobId?: string;
 };
 
 const MAX_CONTEXT_PATHS = 12;
@@ -2010,6 +2027,7 @@ export async function handleCursorMessage(
       contextPaths: normalizeContextPaths(msg.contextPaths),
       replaceLastUser: msg.replaceLastUser === true,
       queueIfBusy: msg.queueIfBusy !== false,
+      source: "web",
     });
     return;
   }
@@ -2265,6 +2283,9 @@ export async function startCursorRun(
     contextPaths?: string[];
     replaceLastUser?: boolean;
     queueIfBusy?: boolean;
+    source?: ChatMsgSource;
+    sourceLabel?: string;
+    jobId?: string;
     /** Fired once the user message is posted and the chat is marked running. */
     onStarted?: () => void;
   },
@@ -2284,6 +2305,9 @@ async function startRun(
     contextPaths?: string[];
     replaceLastUser?: boolean;
     queueIfBusy?: boolean;
+    source?: ChatMsgSource;
+    sourceLabel?: string;
+    jobId?: string;
     onStarted?: () => void;
   },
 ): Promise<void> {
@@ -2337,6 +2361,9 @@ async function startRun(
         cwd: opts.cwd,
         images,
         contextPaths,
+        source: opts.source,
+        sourceLabel: opts.sourceLabel,
+        jobId: opts.jobId,
       });
       promptQueues.set(key, q);
       broadcast(projectId, {
@@ -2381,11 +2408,16 @@ async function startRun(
   if (userCount === 0 && (tab.title === "New chat" || tab.title.startsWith("./"))) {
     tab.title = prompt.slice(0, 32) + (prompt.length > 32 ? "…" : "");
   }
+  const msgSource: ChatMsgSource = opts.source || "web";
   tab.messages.push({
     id: randomBytes(6).toString("hex"),
     role: "user",
     text: prompt,
     at: Date.now(),
+    source: msgSource,
+    model: opts.model,
+    ...(opts.sourceLabel ? { sourceLabel: opts.sourceLabel.slice(0, 64) } : {}),
+    ...(opts.jobId ? { jobId: opts.jobId.slice(0, 32) } : {}),
     ...(images.length ? { images } : {}),
     ...(contextPaths.length ? { contextPaths } : {}),
   });
@@ -2867,6 +2899,9 @@ async function startRun(
         cwd: next.cwd,
         images: next.images,
         contextPaths: next.contextPaths,
+        source: next.source,
+        sourceLabel: next.sourceLabel,
+        jobId: next.jobId,
         queueIfBusy: false,
       });
     }

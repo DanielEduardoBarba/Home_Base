@@ -14,7 +14,16 @@ type Tab = {
   title: string;
   cwd: string;
   running: boolean;
-  messages: Array<{ id: string; role: string; text: string; at: number }>;
+  messages: Array<{
+    id: string;
+    role: string;
+    text: string;
+    at: number;
+    source?: string;
+    sourceLabel?: string;
+    model?: string;
+    jobId?: string;
+  }>;
 };
 
 type Ws = { tabs: Tab[] };
@@ -54,6 +63,10 @@ function makeHarness() {
       role: "user",
       text: opts.prompt,
       at: Date.now(),
+      source: opts.source,
+      sourceLabel: opts.sourceLabel,
+      model: opts.model,
+      jobId: opts.jobId,
     });
     tab.running = true;
     opts.onStarted?.();
@@ -126,9 +139,11 @@ describe("homebase_cursor_job kickoff", () => {
     expect(job.chatId).toBeTruthy();
     expect(h.startedChats).toContain(job.chatId);
     expect(h.workspace("demo").tabs[0]?.running).toBe(true);
-    expect(h.workspace("demo").tabs[0]?.messages.some((m) => m.role === "user")).toBe(
-      true,
-    );
+    const userMsg = h.workspace("demo").tabs[0]?.messages.find((m) => m.role === "user");
+    expect(userMsg).toBeTruthy();
+    expect(userMsg?.source).toBe("mcp");
+    expect(userMsg?.jobId).toBe(job.id);
+    expect(userMsg?.model).toBeTruthy();
 
     const mid = getCursorJob(job.id);
     expect(mid?.status).toBe("running");
@@ -144,6 +159,23 @@ describe("homebase_cursor_job kickoff", () => {
     expect(done?.finishedAt).toBeGreaterThan(0);
     expect(done?.summary).toMatch(/Job finished/);
     expect(h.workspace("demo").tabs[0]?.running).toBe(false);
+  });
+
+  test("MCP sourceLabel is stored on the kickoff user message", async () => {
+    const h = makeHarness();
+    const job = await startCursorJob({
+      projectId: "demo",
+      prompt: "labeled bot job",
+      waitMs: 0,
+      source: "mcp",
+      sourceLabel: "devcon1-developer",
+    });
+    const userMsg = h.workspace("demo").tabs[0]?.messages.find((m) => m.role === "user");
+    expect(userMsg?.source).toBe("mcp");
+    expect(userMsg?.sourceLabel).toBe("devcon1-developer");
+    expect(userMsg?.jobId).toBe(job.id);
+    h.release(job.chatId);
+    await waitUntil(() => getCursorJob(job.id)?.status === "done", 4_000, "job done");
   });
 
   test("second job on the same project is refused with a clear error", async () => {
