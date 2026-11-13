@@ -446,6 +446,7 @@ export function recordSuccess(ctx: AuthEventCtx = {}): void {
 export function recordFailure(
   ip = "unknown",
   reason = "invalid_password",
+  ctx: AuthEventCtx = {},
 ): { failCount: number; locked: boolean; retryAfter: number } {
   const { next, delay, now } = bumpLockout(loadLockout());
   const failCount = next.failCount;
@@ -505,6 +506,8 @@ export function recordFailure(
     source: "ui",
     result: locked ? "lockout" : "failure",
     ip,
+    userAgent: ctx.userAgent,
+    path: ctx.path,
     status: locked ? 429 : 401,
     failCount,
     retryAfter,
@@ -681,12 +684,14 @@ export function assertMcpNotLocked(ip = "unknown"): void {
 export async function loginWithPassword(
   password: string,
   ip = "unknown",
+  ctx: AuthEventCtx = {},
 ): Promise<{
   token: string;
   expiresAt: number;
   expiresIn: number;
   kind: string;
 }> {
+  const eventCtx: AuthEventCtx = { ip, userAgent: ctx.userAgent, path: ctx.path };
   assertNotLocked();
   if (!passwordIsSet()) {
     throw new HttpError(
@@ -695,7 +700,7 @@ export async function loginWithPassword(
     );
   }
   if (!verifyPassword(password)) {
-    const info = recordFailure(ip, "invalid_password");
+    const info = recordFailure(ip, "invalid_password", eventCtx);
     throw new HttpError(401, {
       code: "invalid_password",
       message: "Invalid password",
@@ -705,7 +710,7 @@ export async function loginWithPassword(
       threshold: FAIL_THRESHOLD,
     });
   }
-  recordSuccess({ ip });
+  recordSuccess(eventCtx);
   return issueJwt({ kind: "session", ttl: JWT_TTL_SEC });
 }
 
@@ -763,6 +768,16 @@ export async function verifyAccessToken(
       message: "Session invalidated — sign in again",
       code: "stale_session",
     });
+  }
+  const jti = typeof claims.jti === "string" ? claims.jti : "";
+  if (jti) {
+    const { isSessionRevoked } = require("./session_revoke") as typeof import("./session_revoke");
+    if (isSessionRevoked(jti)) {
+      throw new HttpError(401, {
+        message: "Session ended — sign in again",
+        code: "revoked_session",
+      });
+    }
   }
   return claims;
 }

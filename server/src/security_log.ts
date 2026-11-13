@@ -14,7 +14,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
 import { SECURITY_DIR, ensureRuntimeDirs } from "./config";
 import { observeDevice, type TrustedDevice } from "./devices";
@@ -281,7 +281,7 @@ export function recordSecurityEvent(input: SecurityEventInput): SecurityEvent {
       { ip: attr.ip, class: attr.class, retryAfter: input.retryAfter, source: input.source },
     );
   }
-  if (input.result === "failure") {
+  if (input.result === "failure" || input.result === "lockout") {
     const burst = recentFailures(attr.ip, input.event, Date.now() - BURST_WINDOW_MS);
     if (burst >= BURST_THRESHOLD) {
       alert(
@@ -353,21 +353,134 @@ function eventMatches(ev: SecurityEvent, q: SecurityQuery): boolean {
   return true;
 }
 
+function eventMacPayload(ev: SecurityEvent): string {
+  const { mac: _mac, ...rest } = ev;
+  return JSON.stringify(rest);
+}
+
+function expectedMac(ev: SecurityEvent): string {
+  return createHmac("sha256", macKey()).update(eventMacPayload(ev)).digest("hex");
+}
+
+function eventMacValid(ev: SecurityEvent): boolean {
+  if (!ev || !ev.mac || !ev.prev) return false;
+  try {
+    const got = Buffer.from(String(ev.mac), "hex");
+    const want = Buffer.from(expectedMac(ev), "hex");
+    return got.length === want.length && got.length > 0 && timingSafeEqual(got, want);
+  } catch {
+    return false;
+  }
+}
+
+export type SecurityIntegrity = {
+  ok: boolean;
+  error?: string;
+  tamperedAt?: { day: string; line: number };
+};
+
+const INTEGRITY_ALERT_PATH = () => join(SECURITY_DIR, ".integrity-alert");
+
+function maybeAlertIntegrity(result: SecurityIntegrity): void {
+  if (result.ok || !result.error) return;
+  let last = "";
+  try {
+    if (existsSync(INTEGRITY_ALERT_PATH())) {
+      last = readFileSync(INTEGRITY_ALERT_PATH(), "utf8").trim();
+    }
+  } catch {
+    /* ignore */
+  }
+  const key = `${result.error}:${result.tamperedAt?.day || ""}:${result.tamperedAt?.line || 0}`;
+  if (key === last) return;
+  try {
+    writeFileSync(INTEGRITY_ALERT_PATH(), key + "\n", { mode: 0o600 });
+    chmodPrivate(INTEGRITY_ALERT_PATH());
+  } catch {
+    /* still alert */
+  }
+  alert(
+    "Security log tampered",
+    result.error,
+    "error",
+    {
+      day: result.tamperedAt?.day,
+      line: result.tamperedAt?.line,
+    },
+  );
+}
+
+/**
+ * Walk every daily jsonl in order and verify each entry's HMAC over its
+ * canonical content plus prev hash, and that prev matches the previous mac
+ * (or "genesis" for the first event).
+ */
+export function verifySecurityLog(): SecurityIntegrity {
+  let lastMac = "genesis";
+  let line = 0;
+  for (const day of listDayFiles()) {
+    const path = dayPath(day);
+    let raw = "";
+    try {
+      raw = readFileSync(path, "utf8");
+    } catch {
+      line += 1;
+      return {
+        ok: false,
+        error: `tampered at line ${line}`,
+        tamperedAt: { day, line: 1 },
+      };
+    }
+    let dayLine = 0;
+    for (const text of raw.split("\n")) {
+      if (!text.trim()) continue;
+      line += 1;
+      dayLine += 1;
+      try {
+        const ev = JSON.parse(text) as SecurityEvent;
+        const macOk = eventMacValid(ev);
+        const prevOk = ev.prev === lastMac;
+        if (!macOk || !prevOk) {
+          return {
+            ok: false,
+            error: `tampered at line ${line}`,
+            tamperedAt: { day, line: dayLine },
+          };
+        }
+        lastMac = ev.mac;
+      } catch {
+        return {
+          ok: false,
+          error: `tampered at line ${line}`,
+          tamperedAt: { day, line: dayLine },
+        };
+      }
+    }
+  }
+  return { ok: true };
+}
+
 export function querySecurityLog(q: SecurityQuery = {}): {
   total: number;
   offset: number;
   limit: number;
   days: string[];
   integrityOk: boolean;
+  integrityError?: string;
+  tamperedAt?: { day: string; line: number };
   events: SecurityEvent[];
 } {
+  const integrity = verifySecurityLog();
+  maybeAlertIntegrity(integrity);
+
   const days = listDayFiles();
   const fromDay = (q.from || "").slice(0, 10);
   const toDay = (q.to || "").slice(0, 10);
-  const files = days.filter((d) => (!fromDay || d >= fromDay) && (!toDay || d <= toDay));
+  const dayInRange = (d: string) => (!fromDay || d >= fromDay) && (!toDay || d <= toDay);
   const collected: SecurityEvent[] = [];
-  let integrityOk = true;
-  for (const day of files) {
+  let lastMac = "genesis";
+  // Walk every day so prev-chain state is correct when the query is date-filtered.
+  for (const day of days) {
     const path = dayPath(day);
     let raw = "";
     try {
@@ -375,14 +488,18 @@ export function querySecurityLog(q: SecurityQuery = {}): {
     } catch {
       continue;
     }
-    for (const line of raw.split("\n")) {
-      if (!line.trim()) continue;
+    for (const text of raw.split("\n")) {
+      if (!text.trim()) continue;
       try {
-        const ev = JSON.parse(line) as SecurityEvent;
-        if (!ev.mac || !ev.prev) integrityOk = false;
-        if (eventMatches(ev, q)) collected.push(ev);
+        const ev = JSON.parse(text) as SecurityEvent;
+        const macOk = eventMacValid(ev);
+        const prevOk = ev.prev === lastMac;
+        if (ev.mac) lastMac = ev.mac;
+        // Mutated / broken chain entries are not treated as normal events.
+        if (!macOk || !prevOk) continue;
+        if (dayInRange(day) && eventMatches(ev, q)) collected.push(ev);
       } catch {
-        integrityOk = false;
+        /* unreadable line already flagged by verifySecurityLog */
       }
     }
   }
@@ -394,7 +511,9 @@ export function querySecurityLog(q: SecurityQuery = {}): {
     offset,
     limit,
     days,
-    integrityOk,
+    integrityOk: integrity.ok,
+    integrityError: integrity.error,
+    tamperedAt: integrity.tamperedAt,
     events: collected.slice(offset, offset + limit),
   };
 }

@@ -46,6 +46,7 @@ export function SecurityPanel() {
   const [total, setTotal] = useState(0)
   const [limit, setLimit] = useState(50)
   const [integrityOk, setIntegrityOk] = useState(true)
+  const [integrityError, setIntegrityError] = useState<string | undefined>()
   const [devices, setDevices] = useState<Dev[]>([])
   const [lockout, setLockout] = useState<{ locked: boolean; retryAfter: number; failCount: number; threshold: number } | null>(null)
   const [mcpLockout, setMcpLockout] = useState<{ locked: boolean; retryAfter: number; failCount: number; ip: string } | null>(null)
@@ -65,6 +66,7 @@ export function SecurityPanel() {
       setTotal(log.total)
       setLimit(log.limit)
       setIntegrityOk(log.integrityOk)
+      setIntegrityError(log.integrityError)
       setDevices(st.devices)
       setLockout(st.lockout)
       setMcpLockout(st.mcpLockout)
@@ -199,7 +201,11 @@ export function SecurityPanel() {
           Append-only, hash-chained events. Secrets, tokens, PINs and passwords are never stored
           here.
           {!integrityOk ? (
-            <span className="text-danger"> Log integrity check reported a broken or unreadable line.</span>
+            <span className="text-danger">
+              {' '}
+              Security log integrity failure
+              {integrityError ? `: ${integrityError}` : ' — broken or unreadable line'}.
+            </span>
           ) : null}
         </p>
         <div className="flex flex-wrap gap-2">

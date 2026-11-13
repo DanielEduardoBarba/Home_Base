@@ -22,7 +22,13 @@ export function formatWait(sec: number): string {
   return `${r}s`
 }
 
-export type AuthErrorKind = 'wrong_credentials' | 'locked_out' | 'session' | 'server' | 'network'
+export type AuthErrorKind =
+  | 'wrong_credentials'
+  | 'locked_out'
+  | 'pin_required'
+  | 'session'
+  | 'server'
+  | 'network'
 
 export type ParsedAuthError = {
   kind: AuthErrorKind
@@ -118,6 +124,19 @@ export function parseAuthError(
       retryAfter,
       failCount,
       remainingAttempts: 0,
+    }
+  }
+
+  if (status === 423 || code === 'pin_locked') {
+    const msg = serverMessage || 'App PIN required'
+    return {
+      kind: 'pin_required',
+      status,
+      code: code || 'pin_locked',
+      serverMessage: msg,
+      headline: 'App PIN required. Unlock with your PIN to continue.',
+      statusLine: status ? `HTTP ${status} · ${msg}` : `HTTP 423 · ${msg}`,
+      retryAfter: 0,
     }
   }
 

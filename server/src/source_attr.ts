@@ -119,28 +119,43 @@ export function classifySource(opts: {
 }): SourceAttribution {
   const ip = normalizeIp(opts.ip || "") || "unknown";
   const wgPeer = ip !== "unknown" ? lookupWgPeer(ip) : undefined;
-  const connector = lookupConnector(ip, {
-    id: opts.connectorId,
-    label: opts.connectorLabel,
-  });
-  const presence = ip !== "unknown" ? lookupPresence(ip) : undefined;
   const lan = isLanIp(ip);
+  // Credential type first: a connector token is a bot; PIN, password, and
+  // UI cookie sessions are human even when the same IP also has MCP presence.
+  const botCredential = opts.source === "mcp" || Boolean(opts.connectorId);
 
+  if (botCredential) {
+    const connector = lookupConnector(ip, {
+      id: opts.connectorId,
+      label: opts.connectorLabel,
+    });
+    const presence = ip !== "unknown" ? lookupPresence(ip) : undefined;
+    let cls: SourceClass = "unknown_external";
+    if (connector || presence?.kind === "ai" || opts.connectorId) {
+      cls = "known_grok_bot";
+    } else if (wgPeer) {
+      cls = "known_vpn_device";
+    } else if (lan) {
+      cls = "lan";
+    }
+    return {
+      ip,
+      class: cls,
+      classLabel: SOURCE_CLASS_LABEL[cls],
+      wgPeer,
+      connector,
+      presence,
+      lan,
+    };
+  }
+
+  // Human (PIN / password / cookie / UI session): label by device / VPN peer,
+  // never by MCP presence or a connector last-used on this address.
   let cls: SourceClass = "unknown_external";
-  const looksBot =
-    Boolean(connector) ||
-    presence?.kind === "ai" ||
-    opts.source === "mcp" ||
-    /mcp|grok|bot/i.test(opts.connectorLabel || presence?.name || "");
-  if (looksBot && (connector || presence?.kind === "ai" || opts.connectorId)) {
-    cls = "known_grok_bot";
-  } else if (wgPeer) {
+  if (wgPeer) {
     cls = "known_vpn_device";
   } else if (lan) {
     cls = "lan";
-  } else if (looksBot && opts.source === "mcp" && ip !== "unknown") {
-    // MCP from an address we have not yet bound to a named connector.
-    cls = "unknown_external";
   }
 
   return {
@@ -148,8 +163,6 @@ export function classifySource(opts: {
     class: cls,
     classLabel: SOURCE_CLASS_LABEL[cls],
     wgPeer,
-    connector,
-    presence,
     lan,
   };
 }

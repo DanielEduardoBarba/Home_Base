@@ -266,4 +266,43 @@ describeIso("session cookies, CSRF, and WebSocket tickets", () => {
     const anonBody = (await anon.json()) as { authenticated: boolean };
     expect(anonBody.authenticated).toBe(false);
   });
+
+  test("logout revokes the server-side session token, not only the cookie", async () => {
+    const res = await login("http://127.0.0.1/api/login");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { token: string; csrfToken: string };
+    const jar = cookieJar(res);
+
+    const before = await app.fetch(
+      new Request("http://127.0.0.1/api/app-pin/status", {
+        headers: { authorization: `Bearer ${body.token}` },
+      }),
+    );
+    expect(before.status).toBe(200);
+
+    const logout = await app.fetch(
+      new Request("http://127.0.0.1/api/logout", {
+        method: "POST",
+        headers: {
+          cookie: jar,
+          "x-csrf-token": body.csrfToken,
+        },
+      }),
+    );
+    expect(logout.status).toBe(200);
+
+    const cookieAfter = await app.fetch(
+      new Request("http://127.0.0.1/api/app-pin/status", { headers: { cookie: jar } }),
+    );
+    expect(cookieAfter.status).toBe(401);
+
+    const bearerAfter = await app.fetch(
+      new Request("http://127.0.0.1/api/app-pin/status", {
+        headers: { authorization: `Bearer ${body.token}` },
+      }),
+    );
+    expect(bearerAfter.status).toBe(401);
+    const detail = (await bearerAfter.json()) as { detail?: { code?: string } };
+    expect(detail.detail?.code).toBe("revoked_session");
+  });
 });

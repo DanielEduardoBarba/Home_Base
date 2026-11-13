@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { RUNTIME_DIR, ensureRuntimeDirs } from "./config";
-import { assertNotLocked, FAIL_THRESHOLD, HttpError, lockoutStatus, recordFailure, remainingAttempts } from "./auth";
+import { assertNotLocked, FAIL_THRESHOLD, HttpError, lockoutStatus, recordFailure, remainingAttempts, type AuthEventCtx } from "./auth";
 
 const APP_PIN_PATH = join(RUNTIME_DIR, "app_pin.json");
 const DEFAULT_IDLE_MS = 5 * 60 * 1000;
@@ -138,10 +138,11 @@ export function verifyAppPin(pin: string): boolean {
 export function unlockAppPin(
   pin: string,
   ip = "unknown",
+  ctx: AuthEventCtx = {},
 ): { locked: boolean } {
   assertNotLocked();
   if (!verifyAppPin(pin)) {
-    const info = recordFailure(ip, "invalid_pin");
+    const info = recordFailure(ip, "invalid_pin", { userAgent: ctx.userAgent, path: ctx.path });
     throw new HttpError(401, {
       code: "bad_pin",
       message: "Incorrect PIN",
@@ -161,6 +162,8 @@ export function unlockAppPin(
       source: "ui",
       result: "success",
       ip,
+      userAgent: ctx.userAgent,
+      path: ctx.path,
       status: 200,
     });
   } catch {

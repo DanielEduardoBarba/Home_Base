@@ -426,7 +426,10 @@ app.post("/api/login", async (c) => {
   const body = z.object({ password: z.string() }).parse(await readJson(c));
   const ip = clientIp(c);
   warmGeo(ip);
-  const session = await loginWithPassword(body.password, ip);
+  const session = await loginWithPassword(body.password, ip, {
+    userAgent: clientUserAgent(c),
+    path: "/api/login",
+  });
   logInfo("login ok", {
     source: "auth",
     fields: { ip, geo: formatGeo(geoCached(ip)), ttlSec: JWT_TTL_SEC },
@@ -516,7 +519,11 @@ app.get("/api/auth/session", async (c) => {
 app.post("/api/logout", async (c) => {
   // Cookie clients need a valid CSRF header (middleware). Bearer may logout too.
   try {
-    await requireAuth(c, { allowPinLocked: true });
+    const claims = await requireAuth(c, { allowPinLocked: true });
+    const { revokeSessionJti } = await import("./session_revoke");
+    const jti = typeof claims.jti === "string" ? claims.jti : "";
+    const exp = Number(claims.exp) || 0;
+    revokeSessionJti(jti, exp);
   } catch {
     /* still clear cookies so a stale browser session is dropped */
   }
@@ -550,7 +557,13 @@ app.post("/api/app-pin/unlock", async (c) => {
   assertSameOrigin(c);
   await requireAuth(c, { allowPinLocked: true });
   const body = z.object({ pin: z.string() }).parse(await readJson(c));
-  return c.json({ ok: true, ...unlockAppPin(body.pin, clientIp(c)) });
+  return c.json({
+    ok: true,
+    ...unlockAppPin(body.pin, clientIp(c), {
+      userAgent: clientUserAgent(c),
+      path: "/api/app-pin/unlock",
+    }),
+  });
 });
 
 app.post("/api/app-pin/set", async (c) => {

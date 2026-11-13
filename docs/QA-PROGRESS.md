@@ -98,3 +98,15 @@ Closes the two gaps left in 1.20.0 before deploy.
 - WebSockets: authenticated `POST /api/ws-ticket` mints a ≤30s single-use ticket bound to the session; the browser redeems it on connect (`?ticket=`). Tickets are hashed at rest, never logged, and rejected on reuse or expiry. Non-browser clients may still send `Authorization: Bearer` on the upgrade.
 
 Version bump to 1.20.1. **Not deployed** from this change.
+
+
+## 2026-11-13 (America/New_York) — v1.20.2 QA R7 fixes
+
+Closes the R7 findings on 1.20.1 before deploy. See `docs/qa/homebase-1.20.2-fixes.md`.
+
+- **HB-R7-01:** `querySecurityLog` now recomputes each entry's HMAC over canonical content plus the previous hash and walks the chain. A broken or edited line returns `integrityOk=false` with `integrityError: "tampered at line N"` (and `tamperedAt`) on the API and Security page, raises a one-shot alert, and is not listed as a normal event. Unit tests cover edited, deleted, and reordered lines.
+- **HB-R7-03:** Source class is decided by credential type first. Connector tokens stay Known Grok Bot; PIN, password, and UI cookie sessions from the same IP are human (LAN or VPN device), not relabeled because MCP presence was seen there.
+- **HB-R7-02:** PIN and password events from the app record `userAgent` and `path`.
+- **Lows:** Logout revokes the session JWT's jti server-side (a captured cookie or Bearer no longer works). A brute-force burst alert fires even when the fifth failure is recorded as `lockout`. HTTP 423 `pin_locked` has its own PIN-pad / login message and does not look like a wrong PIN or a stale session.
+
+Version bump to 1.20.2. **Not deployed** from this change.

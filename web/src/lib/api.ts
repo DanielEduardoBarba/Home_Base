@@ -469,6 +469,8 @@ export const api = {
       limit: number
       days: string[]
       integrityOk: boolean
+      integrityError?: string
+      tamperedAt?: { day: string; line: number }
       events: {
         id: string
         ts: string
