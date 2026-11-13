@@ -94,7 +94,9 @@ This lives in the repo until Home Base is pulled and deployed. The running servi
 | **Good** | `waitMs: 600000` — one long wait (test your client; some give up earlier) |
 | **Last resort** | `homebase_cursor_job_status` at most **every 5 minutes** |
 
-**Webhook auth (optional):** If the receiver requires `Authorization: Bearer <key>`, pass `callbackAuth` on `homebase_cursor_job` with the **exact** header value (e.g. `"Bearer abc"`). If omitted, Home Base uses server env `HOMEBASE_CALLBACK_AUTH` when set. The auth string is kept only in memory for delivery — it is never written to the job store, status, list, notifications, or logs.
+**Webhook auth (optional):** If the receiver requires `Authorization: Bearer <key>`, pass `callbackAuth` on `homebase_cursor_job` with the **exact** header value (e.g. `"Bearer abc"`). If omitted, Home Base uses the default stored in **Settings → Job webhook auth** (encrypted AES-256-GCM vault). The `HOMEBASE_CALLBACK_AUTH` environment variable is **not** read for delivery. If it is still set (for example in `/var/lib/homebased/.env`), a first start may one-time import it into the vault when the vault is empty, and Settings plus `/api/health` / system status show a boolean-only warning (`callbackAuthEnvSet`) until you remove the env var. Auth is never returned in job status/list and is never written in plaintext to logs or runtime files.
+
+**Restart mid-job:** When a job has a `callbackUrl`, Home Base persists an encrypted pending-callback record (`cursor_callbacks.pending.enc`, mode 0600). If Home Base restarts before the job finishes, startup POSTs the webhook with status `interrupted` and the summary `Home Base restarted while this job was running; the job did not finish`, with the `Authorization` header intact, then deletes the record. Records older than 24 hours are expired and logged, not delivered. If the stored token cannot be decrypted, the webhook is **not** sent unauthenticated; a lost-callback entry appears in `homebase_cursor_job_list`.
 
 Webhook body (POST JSON):
 
@@ -169,7 +171,7 @@ JOB HANDOFF
    - projectId + full prompt
    - branch: development_grok (default)
    - Prefer: callbackUrl=__JOB_DONE_WEBHOOK__ and waitMs: 0
-   - If webhook needs auth: callbackAuth="Bearer <key>" (or set HOMEBASE_CALLBACK_AUTH on the laptop)
+   - If webhook needs auth: callbackAuth="Bearer <key>" (or set the default in Settings → Job webhook auth)
    - Else: waitMs: 600000 (if your MCP session stays open that long)
    - Else: status polls ≥5 minutes apart only
 3. Read summary (≤10 lines) + commit.short

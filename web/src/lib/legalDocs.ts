@@ -98,7 +98,7 @@ export const PRIVACY_POLICY: LegalSection[] = [
   {
     heading: '2. Data stored on the host',
     body: [
-      'Depending on features you enable, the host may store: password hash and auth metadata; JWT signing material; optional App PIN hash; encrypted secrets (e.g. Cursor API key, Cloudflare tunnel token, sudo session vault, email alert API keys / SMTP passwords) using AES-256-GCM under a local vault key; chat transcripts; daily logs; Home Access widget config; Vision/desktop capture artifacts; WireGuard/Cloudflare state; project registry; notifications; email alert preferences; and onboarding/legal acceptance records. Sensitive files are typically written with restrictive permissions (e.g. mode 0600) under the runtime directory.',
+      'Depending on features you enable, the host may store: password hash and auth metadata; JWT signing material; optional App PIN hash; encrypted secrets (e.g. Cursor API key, job webhook auth, Cloudflare tunnel token, sudo session vault, email alert API keys / SMTP passwords) using AES-256-GCM under a local vault key; chat transcripts; daily logs; Home Access widget config; Vision/desktop capture artifacts; WireGuard/Cloudflare state; project registry; notifications; email alert preferences; and onboarding/legal acceptance records. Sensitive files are typically written with restrictive permissions (e.g. mode 0600) under the runtime directory.',
       'Browser storage on your clients may hold a session JWT (typically ~24h), UI preferences, and theme settings.',
     ],
   },

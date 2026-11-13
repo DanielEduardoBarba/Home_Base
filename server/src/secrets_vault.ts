@@ -1,6 +1,6 @@
 /**
  * AES-256-GCM secrets at rest under .runtime/ (mode 0600).
- * Used for Cursor API key and optional Cloudflare tokens.
+ * Used for Cursor API key, job webhook callback auth, and optional Cloudflare tokens.
  */
 import {
   createCipheriv,
@@ -22,6 +22,8 @@ const KEY_PATH = join(RUNTIME_DIR, "secrets_vault.key");
 const CURSOR_KEY_PATH = join(RUNTIME_DIR, "cursor_api_key.enc");
 /** Non-secret display placeholder only (first/last 4). Never store the full key here. */
 const CURSOR_HINT_PATH = join(RUNTIME_DIR, "cursor_api_key.hint");
+const CALLBACK_AUTH_PATH = join(RUNTIME_DIR, "callback_auth.enc");
+const CALLBACK_AUTH_HINT_PATH = join(RUNTIME_DIR, "callback_auth.hint");
 
 /** Min length before first/last 4 are safe (shorter secrets would be fully revealed). */
 const HINT_MIN_LEN = 12;
@@ -220,4 +222,95 @@ export function decryptFromFile(path: string): string | null {
   } catch {
     return null;
   }
+}
+
+
+// --- Job webhook callback auth (Settings vault; env is not used for delivery) ---
+
+let callbackAuthTestOverride: string | null | undefined = undefined;
+
+/** Test-only: short-circuit vault load without writing files. undefined = use vault. */
+export function _setCallbackAuthForTests(value: string | null | undefined): void {
+  callbackAuthTestOverride = value;
+}
+
+export function callbackAuthEnvSet(): boolean {
+  return Boolean((process.env.HOMEBASE_CALLBACK_AUTH || "").trim());
+}
+
+export function loadCallbackAuthFromVault(): string {
+  if (callbackAuthTestOverride !== undefined) {
+    return (callbackAuthTestOverride || "").trim();
+  }
+  if (!existsSync(CALLBACK_AUTH_PATH)) return "";
+  try {
+    const blob = readFileSync(CALLBACK_AUTH_PATH, "utf8");
+    return (decryptSecret(blob) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+export type CallbackAuthMeta = {
+  configured: boolean;
+  /** Client-safe first/last-4 placeholder; never the full secret. */
+  hint: string | null;
+  /** True when HOMEBASE_CALLBACK_AUTH is still in the process environment. Boolean only. */
+  envSet: boolean;
+};
+
+export function getCallbackAuthMeta(): CallbackAuthMeta {
+  const envSet = callbackAuthEnvSet();
+  const configured = Boolean(loadCallbackAuthFromVault()) || existsSync(CALLBACK_AUTH_PATH);
+  if (!configured) return { configured: false, hint: null, envSet };
+  const stored = readHintFile(CALLBACK_AUTH_HINT_PATH);
+  if (stored) return { configured: true, hint: stored, envSet };
+  const plain = loadCallbackAuthFromVault();
+  if (!plain) return { configured: true, hint: null, envSet };
+  const hint = writeHintFile(CALLBACK_AUTH_HINT_PATH, plain);
+  return { configured: true, hint, envSet };
+}
+
+export function setCallbackAuth(value: string): CallbackAuthMeta {
+  const trimmed = value.trim();
+  if (!trimmed) throw new Error("value required");
+  writePrivate(CALLBACK_AUTH_PATH, encryptSecret(trimmed));
+  const hint = writeHintFile(CALLBACK_AUTH_HINT_PATH, trimmed);
+  return { configured: true, hint, envSet: callbackAuthEnvSet() };
+}
+
+export function clearCallbackAuth(): CallbackAuthMeta {
+  try {
+    if (existsSync(CALLBACK_AUTH_PATH)) unlinkSync(CALLBACK_AUTH_PATH);
+  } catch {
+    /* ignore */
+  }
+  clearHintFile(CALLBACK_AUTH_HINT_PATH);
+  return { configured: false, hint: null, envSet: callbackAuthEnvSet() };
+}
+
+/**
+ * One-time copy of HOMEBASE_CALLBACK_AUTH into the vault when the vault is empty.
+ * Does not remove the env var (Settings / health keep a boolean warning until it is gone).
+ * resolveCallbackAuth never reads the env var for delivery.
+ */
+export function importCallbackAuthFromEnvIfNeeded(): {
+  imported: boolean;
+  envSet: boolean;
+} {
+  const fromEnv = (process.env.HOMEBASE_CALLBACK_AUTH || "").trim();
+  if (!fromEnv) return { imported: false, envSet: false };
+  const existing = (() => {
+    if (!existsSync(CALLBACK_AUTH_PATH)) return "";
+    try {
+      const blob = readFileSync(CALLBACK_AUTH_PATH, "utf8");
+      return (decryptSecret(blob) || "").trim();
+    } catch {
+      return "";
+    }
+  })();
+  if (existing) return { imported: false, envSet: true };
+  writePrivate(CALLBACK_AUTH_PATH, encryptSecret(fromEnv));
+  writeHintFile(CALLBACK_AUTH_HINT_PATH, fromEnv);
+  return { imported: true, envSet: true };
 }

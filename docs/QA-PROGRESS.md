@@ -125,3 +125,14 @@ Follow-up to the 1.19.x shared lockout that survived the 1.20.2 upgrade and forc
 
 Version bump to 1.20.3. **Not deployed** from this change.
 
+
+## 2026-11-13 (America/New_York) — v1.20.3b callback token vault, log redaction, restart callbacks
+
+Follow-up on 1.20.3 before deploy. **VERSION stays 1.20.3.** See `docs/qa/homebase-1.20.3b-callback-token.md`.
+
+- Default job-webhook auth moved from `HOMEBASE_CALLBACK_AUTH` env into the encrypted vault (Settings → Job webhook auth). Per-job `callbackAuth` still wins. The env var is not used for delivery. If it is still set, it may be one-time imported when the vault is empty, and Settings / `/api/health` / system status show a boolean-only `callbackAuthEnvSet` warning until it is removed from `.env`.
+- Central redaction on every log sink (activity, daily logs, traces, journal `log()`, notifications, security log). Pre-change audit: tool **values** were not written (MCP activity logged arg keys only; request log has no body/Authorization). The new tests grep the runtime directory for a dummy token after an MCP `homebase_cursor_job` and expect no hits.
+- Mid-job restart: pending encrypted callback records (`cursor_callbacks.pending.enc`, 0600). Startup POSTs status `interrupted` with the original Authorization header and a clear summary, then deletes the record. 24h expiry is logged and not delivered. Decrypt failure is a lost-callback list entry (no unauthenticated POST).
+
+Not deployed from this change.
+

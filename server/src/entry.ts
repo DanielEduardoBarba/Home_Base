@@ -38,8 +38,20 @@ ensureRuntimeDirs();
 ensureAskpass();
 Object.assign(process.env, sudoAskpassEnv());
 try {
-  const { hydrateCursorApiKeyFromVault } = await import("./secrets_vault");
+  const {
+    hydrateCursorApiKeyFromVault,
+    importCallbackAuthFromEnvIfNeeded,
+  } = await import("./secrets_vault");
   hydrateCursorApiKeyFromVault();
+  const imported = importCallbackAuthFromEnvIfNeeded();
+  if (imported.envSet) {
+    logWarn(
+      imported.imported
+        ? "Imported HOMEBASE_CALLBACK_AUTH into the encrypted vault. Remove it from the environment / .env — it is no longer used for webhook delivery."
+        : "HOMEBASE_CALLBACK_AUTH is still set in the environment. Webhook delivery uses the Settings vault only — remove the env var from .env.",
+      "boot",
+    );
+  }
 } catch {
   /* vault optional at boot */
 }
@@ -89,6 +101,22 @@ try {
   logWarn(
     `legacy lockout migration skipped: ${e instanceof Error ? e.message : String(e)}`,
     { source: "boot" },
+  );
+}
+
+try {
+  const { recoverInterruptedCallbacks } = await import("./cursor_jobs");
+  const rec = await recoverInterruptedCallbacks();
+  if (rec.recovered || rec.expired || rec.lost) {
+    logInfo(
+      `pending callback recovery recovered=${rec.recovered} expired=${rec.expired} lost=${rec.lost}`,
+      "boot",
+    );
+  }
+} catch (e) {
+  logWarn(
+    `pending callback recovery failed: ${e instanceof Error ? e.message : String(e)}`,
+    "boot",
   );
 }
 

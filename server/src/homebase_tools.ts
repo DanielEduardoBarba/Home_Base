@@ -798,7 +798,10 @@ export function buildHomebaseTools(
         "Cursor pulls/pushes development_grok by default; returns ≤10-line summary + commit. " +
         "Preferred: callbackUrl webhook (one wake) OR waitMs=600000. " +
         "Optional callbackAuth = exact Authorization header value (e.g. \"Bearer abc\"); " +
-        "else server env HOMEBASE_CALLBACK_AUTH. Auth is never returned in job status/list. " +
+        "else Settings → Job webhook auth (encrypted vault). " +
+        "HOMEBASE_CALLBACK_AUTH env is not used for delivery. " +
+        "Auth is never returned in job status/list. " +
+        "If Home Base restarts mid-job, the webhook is posted with status interrupted. " +
         "If polling status, ≥5 minutes apart. Not for Vision.",
       parameters: {
         type: "object",
@@ -834,7 +837,7 @@ export function buildHomebaseTools(
             type: "string",
             description:
               'Optional Authorization header value sent exactly on the webhook (e.g. "Bearer abc"). ' +
-              "Overrides HOMEBASE_CALLBACK_AUTH. Secret — never echoed in status/list/logs.",
+              "Overrides the Settings vault default. Secret — never echoed in status/list/logs.",
           },
           waitMs: {
             type: "number",

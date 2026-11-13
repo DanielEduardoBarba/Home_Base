@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { RUNTIME_DIR, ensureRuntimeDirs } from "./config";
+import { redactDeep, redactSecrets } from "./redact";
 
 const DIR = join(RUNTIME_DIR, "activity");
 const MAX_DAYS = 30;
@@ -87,8 +88,10 @@ export function recordActivity(ev: {
       at: Date.now(),
       source: ev.source,
       kind: String(ev.kind || "event").slice(0, 64),
-      summary: String(ev.summary || "").slice(0, 400),
-      detail: ev.detail,
+      summary: redactSecrets(String(ev.summary || "")).slice(0, 400),
+      detail: ev.detail
+        ? (redactDeep(ev.detail) as Record<string, unknown>)
+        : undefined,
       actor: ev.actor ? String(ev.actor).slice(0, 80) : undefined,
       peerIp: ev.peerIp ? String(ev.peerIp).slice(0, 64) : undefined,
     };

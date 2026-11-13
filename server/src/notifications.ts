@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { NOTIFICATIONS_PATH, ensureRuntimeDirs } from "./config";
+import { redactDeep, redactSecrets } from "./redact";
 
 const MAX_NOTIFICATIONS = 2000;
 
@@ -66,12 +67,12 @@ export function pushNotification(
   const item: NotificationItem = {
     id: randomBytes(16).toString("hex"),
     ts: new Date().toISOString(),
-    title,
-    body,
+    title: redactSecrets(title),
+    body: redactSecrets(body),
     level: opts.level || "info",
     category: opts.category || "system",
     read: false,
-    meta: opts.meta || {},
+    meta: (redactDeep(opts.meta || {}) as Record<string, unknown>) || {},
   };
   const items = readAll();
   items.push(item);

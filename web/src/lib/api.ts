@@ -1066,6 +1066,17 @@ export const api = {
     request<{ configured: boolean; hint: string | null }>('/api/cursor/credentials', {
       method: 'DELETE',
     }),
+  callbackAuth: () =>
+    request<{ configured: boolean; hint: string | null; envSet: boolean }>('/api/callback-auth'),
+  setCallbackAuth: (value: string) =>
+    request<{ configured: boolean; hint: string | null; envSet: boolean }>('/api/callback-auth', {
+      method: 'POST',
+      body: JSON.stringify({ value }),
+    }),
+  clearCallbackAuth: () =>
+    request<{ configured: boolean; hint: string | null; envSet: boolean }>('/api/callback-auth', {
+      method: 'DELETE',
+    }),
   usage: (opts?: { refresh?: boolean }) =>
     request<{
       generatedAt: number

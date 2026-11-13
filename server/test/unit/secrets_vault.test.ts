@@ -9,6 +9,12 @@ import {
   loadCursorApiKey,
   secretDisplayHint,
   setCursorApiKey,
+  callbackAuthEnvSet,
+  clearCallbackAuth,
+  getCallbackAuthMeta,
+  importCallbackAuthFromEnvIfNeeded,
+  loadCallbackAuthFromVault,
+  setCallbackAuth,
 } from "../../src/secrets_vault";
 
 describe("secrets_vault", () => {
@@ -58,6 +64,75 @@ describe("secrets_vault", () => {
         /* ignore */
       }
       if (prev) process.env.CURSOR_API_KEY = prev;
+    }
+  });
+
+  test("callback auth set/clear never returns plaintext; env is only a boolean warning", () => {
+    const prev = process.env.HOMEBASE_CALLBACK_AUTH;
+    delete process.env.HOMEBASE_CALLBACK_AUTH;
+    try {
+      clearCallbackAuth();
+      expect(getCallbackAuthMeta()).toEqual({
+        configured: false,
+        hint: null,
+        envSet: false,
+      });
+      const secret = "Bearer vault-callback-token-long";
+      const meta = setCallbackAuth(secret);
+      expect(meta.configured).toBe(true);
+      expect(meta.hint).toBe("Bear••••long");
+      expect(meta.envSet).toBe(false);
+      expect(JSON.stringify(meta)).not.toContain(secret);
+      expect(loadCallbackAuthFromVault()).toBe(secret);
+      expect(getCallbackAuthMeta().hint).not.toBe(secret);
+
+      process.env.HOMEBASE_CALLBACK_AUTH = "Bearer leftover-env-token-zzzz";
+      const warned = getCallbackAuthMeta();
+      expect(warned.envSet).toBe(true);
+      expect(callbackAuthEnvSet()).toBe(true);
+      expect(JSON.stringify(warned)).not.toContain("leftover-env-token");
+      expect(JSON.stringify(warned)).not.toContain(secret);
+      // env is not used as the vault value
+      expect(loadCallbackAuthFromVault()).toBe(secret);
+
+      clearCallbackAuth();
+      expect(getCallbackAuthMeta()).toEqual({
+        configured: false,
+        hint: null,
+        envSet: true,
+      });
+    } finally {
+      try {
+        clearCallbackAuth();
+      } catch {
+        /* ignore */
+      }
+      if (prev === undefined) delete process.env.HOMEBASE_CALLBACK_AUTH;
+      else process.env.HOMEBASE_CALLBACK_AUTH = prev;
+    }
+  });
+
+  test("one-time env import fills an empty vault and does not overwrite an existing one", () => {
+    const prev = process.env.HOMEBASE_CALLBACK_AUTH;
+    try {
+      clearCallbackAuth();
+      process.env.HOMEBASE_CALLBACK_AUTH = "Bearer import-me-token-aaaa";
+      const first = importCallbackAuthFromEnvIfNeeded();
+      expect(first).toEqual({ imported: true, envSet: true });
+      expect(loadCallbackAuthFromVault()).toBe("Bearer import-me-token-aaaa");
+
+      process.env.HOMEBASE_CALLBACK_AUTH = "Bearer should-not-overwrite-bbbb";
+      const second = importCallbackAuthFromEnvIfNeeded();
+      expect(second).toEqual({ imported: false, envSet: true });
+      expect(loadCallbackAuthFromVault()).toBe("Bearer import-me-token-aaaa");
+    } finally {
+      try {
+        clearCallbackAuth();
+      } catch {
+        /* ignore */
+      }
+      if (prev === undefined) delete process.env.HOMEBASE_CALLBACK_AUTH;
+      else process.env.HOMEBASE_CALLBACK_AUTH = prev;
     }
   });
 });

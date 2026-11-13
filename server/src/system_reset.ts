@@ -29,6 +29,8 @@ const KEEP_SOFT = new Set([
   "jwt_secret",
   "app_pin.json",
   "cursor_api_key.enc",
+  "callback_auth.enc",
+  "callback_auth.hint",
   "secrets_vault.key",
   "sudo_vault.key",
   "sudo_vault.enc",

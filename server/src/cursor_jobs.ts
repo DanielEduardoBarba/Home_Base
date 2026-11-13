@@ -14,6 +14,18 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { loadProjects } from "./config";
 import {
+  INTERRUPTED_SUMMARY,
+  PENDING_MAX_AGE_MS,
+  clearAllPendingCallbacks,
+  decryptPendingAuth,
+  loadPendingCallbacks,
+  persistPendingCallback,
+  removePendingCallback,
+  type PendingCallbackRecord,
+} from "./cursor_callbacks";
+import { loadCallbackAuthFromVault } from "./secrets_vault";
+import { redactSecrets } from "./redact";
+import {
   assertKnownCursorModel,
   createChat,
   cursorConfigured,
@@ -30,7 +42,8 @@ export type CursorJobStatus =
   | "running"
   | "done"
   | "error"
-  | "timeout";
+  | "timeout"
+  | "interrupted";
 
 export type CursorJobCommit = {
   hash: string;
@@ -59,6 +72,8 @@ export type CursorJob = {
   callbackUrl?: string;
   webhookDelivered?: boolean;
   webhookError?: string;
+  /** True when a webhook auth value was set for this job (never the value itself). */
+  callbackAuthExpected?: boolean;
 };
 
 export type CursorJobRunOpts = {
@@ -107,6 +122,13 @@ export function _setCursorJobDepsForTests(partial: Partial<JobDeps> | null): voi
 export function _resetCursorJobsForTests(): void {
   jobs.clear();
   callbackAuthByJobId.clear();
+  clearAllPendingCallbacks();
+}
+
+/** Drop in-memory state only (leave pending file) — simulates a process restart. */
+export function _forgetInMemoryJobsForTests(): void {
+  jobs.clear();
+  callbackAuthByJobId.clear();
 }
 
 const jobs = new Map<string, CursorJob>();
@@ -121,14 +143,15 @@ const IDLE_POLL_MS = 200;
 
 /**
  * Resolve webhook Authorization header value.
- * Per-job `callbackAuth` wins; else `HOMEBASE_CALLBACK_AUTH` env default.
+ * Per-job `callbackAuth` wins; else the Settings vault default.
+ * `HOMEBASE_CALLBACK_AUTH` env is never read for delivery.
  * Value is sent exactly (e.g. "Bearer abc") — do not add a Bearer prefix here.
  */
 export function resolveCallbackAuth(param?: string | null): string | undefined {
   const fromParam = String(param ?? "").trim();
   if (fromParam) return fromParam;
-  const fromEnv = String(process.env.HOMEBASE_CALLBACK_AUTH || "").trim();
-  return fromEnv || undefined;
+  const fromVault = loadCallbackAuthFromVault();
+  return fromVault || undefined;
 }
 
 /** Strip known callback auth material from error/log strings. */
@@ -143,6 +166,7 @@ export function redactCallbackSecrets(
     if (v.length < 4) continue;
     if (s.includes(v)) s = s.split(v).join("[redacted]");
   }
+  s = redactSecrets(s);
   // Generic Authorization / Bearer shapes (trimAgentError-compatible).
   s = s.replace(
     /(authorization)\s*[=:]\s*\S+/gi,
@@ -153,8 +177,11 @@ export function redactCallbackSecrets(
 }
 
 function publicJob(job: CursorJob): CursorJob {
-  // callbackAuth lives only in callbackAuthByJobId — never copy it onto the job.
-  return { ...job };
+  // callbackAuth lives only in callbackAuthByJobId / pending authEnc — never copy it onto the job.
+  return {
+    ...job,
+    callbackAuthExpected: Boolean(job.callbackAuthExpected),
+  };
 }
 
 function forgetCallbackAuth(jobId: string): void {
@@ -170,7 +197,8 @@ function trimJobs(): void {
       old &&
       (old.status === "done" ||
         old.status === "error" ||
-        old.status === "timeout")
+        old.status === "timeout" ||
+        old.status === "interrupted")
     ) {
       forgetCallbackAuth(old.id);
       jobs.delete(old.id);
@@ -348,6 +376,7 @@ async function deliverWebhook(job: CursorJob): Promise<void> {
   );
   // Auth is only needed for delivery; drop after attempt so status/list stay clean.
   forgetCallbackAuth(job.id);
+  removePendingCallback(job.id);
 }
 
 async function awaitChatIdle(
@@ -520,7 +549,8 @@ export async function startCursorJob(opts: {
   callbackUrl?: string;
   /**
    * Exact Authorization header value for the job webhook (e.g. "Bearer abc").
-   * Overrides HOMEBASE_CALLBACK_AUTH. Kept only in memory — never on job JSON.
+   * Overrides the Settings vault default. Kept in memory and in the
+   * encrypted pending-callback file — never on job JSON or in plaintext logs.
    */
   callbackAuth?: string;
   source?: string;
@@ -577,8 +607,26 @@ export async function startCursorJob(opts: {
     callbackUrl,
   };
   jobs.set(job.id, job);
-  if (callbackAuth && callbackUrl) {
-    callbackAuthByJobId.set(job.id, callbackAuth);
+  if (callbackUrl) {
+    job.callbackAuthExpected = Boolean(callbackAuth);
+    if (callbackAuth) callbackAuthByJobId.set(job.id, callbackAuth);
+    try {
+      persistPendingCallback({
+        jobId: job.id,
+        projectId,
+        callbackUrl,
+        startedAt: job.startedAt,
+        auth: callbackAuth,
+      });
+    } catch (e) {
+      appendTrace(
+        "error",
+        `cursor job ${job.id} failed to persist pending callback: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+        "cursor-job",
+      );
+    }
   }
   trimJobs();
 
@@ -664,3 +712,85 @@ export function listCursorJobs(limit = 20): CursorJob[] {
       return publicJob(j);
     });
 }
+
+function synthesizeRecoveredJob(
+  rec: PendingCallbackRecord,
+  status: CursorJobStatus,
+  extra?: Partial<CursorJob>,
+): CursorJob {
+  return {
+    id: rec.jobId,
+    projectId: rec.projectId,
+    chatId: "",
+    status,
+    prompt: "",
+    model: "",
+    mode: "",
+    cwd: "",
+    branch: "",
+    summary: INTERRUPTED_SUMMARY,
+    startedAt: rec.startedAt,
+    finishedAt: Date.now(),
+    source: "system",
+    callbackUrl: rec.callbackUrl,
+    callbackAuthExpected: rec.hasAuth,
+    ...extra,
+  };
+}
+
+/**
+ * On Home Base startup: leftover pending callbacks from a mid-job restart
+ * are delivered with status `interrupted` and Authorization intact, then deleted.
+ * Records older than 24h are expired and logged (not delivered).
+ * If auth was set but cannot be decrypted, the webhook is not sent unauthenticated
+ * and a lost-callback entry is listed in homebase_cursor_job_list.
+ */
+export async function recoverInterruptedCallbacks(): Promise<{
+  recovered: number;
+  expired: number;
+  lost: number;
+}> {
+  const pending = loadPendingCallbacks();
+  let recovered = 0;
+  let expired = 0;
+  let lost = 0;
+  const now = Date.now();
+  for (const rec of pending) {
+    if (now - rec.startedAt > PENDING_MAX_AGE_MS) {
+      appendTrace(
+        "warn",
+        `pending cursor job callback ${rec.jobId} expired after 24h; not delivered`,
+        "cursor-job",
+      );
+      removePendingCallback(rec.jobId);
+      expired++;
+      continue;
+    }
+    const { auth, decryptFailed } = decryptPendingAuth(rec);
+    if (decryptFailed) {
+      appendTrace(
+        "error",
+        `pending cursor job callback ${rec.jobId}: failed to decrypt auth; webhook not sent`,
+        "cursor-job",
+      );
+      const lostJob = synthesizeRecoveredJob(rec, "error", {
+        webhookDelivered: false,
+        webhookError:
+          "Callback token could not be decrypted after Home Base restarted; webhook was not sent.",
+        callbackAuthExpected: true,
+      });
+      jobs.set(lostJob.id, lostJob);
+      removePendingCallback(rec.jobId);
+      lost++;
+      continue;
+    }
+    const job = synthesizeRecoveredJob(rec, "interrupted");
+    if (auth) callbackAuthByJobId.set(job.id, auth);
+    jobs.set(job.id, job);
+    await deliverWebhook(job);
+    recovered++;
+  }
+  return { recovered, expired, lost };
+}
+
+export { INTERRUPTED_SUMMARY };

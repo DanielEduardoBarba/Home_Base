@@ -24,6 +24,7 @@ import {
   type SourceAttribution,
   type SourceClass,
 } from "./source_attr";
+import { redactSecrets } from "./redact";
 
 export type SecuritySource = "ui" | "mcp" | "api";
 export type SecurityResult =
@@ -310,12 +311,7 @@ export function recordSecurityEvent(input: SecurityEventInput): SecurityEvent {
   return ev;
 }
 
-const SECRET_RE =
-  /hb_mcp_[A-Za-z0-9_\-]+|Bearer\s+\S+|eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+|(?:password|passwd|pwd|secret|api[_-]?key|private[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token)\s*[=:]\s*\S+|-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/gi;
-
-export function redactSecrets(text: string): string {
-  return String(text || "").replace(SECRET_RE, "[redacted]");
-}
+export { redactSecrets };
 
 export type SecurityQuery = {
   source?: string;

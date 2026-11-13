@@ -42,6 +42,7 @@ type SettingsScene =
   | 'pin'
   | 'sudo'
   | 'cursor'
+  | 'callbackAuth'
   | 'usage'
   | 'notifications'
   | 'email'
@@ -167,6 +168,12 @@ export function SettingsTab({
   const [cursorKey, setCursorKey] = useState('')
   const [cursorMsg, setCursorMsg] = useState('')
   const [cursorBusy, setCursorBusy] = useState(false)
+  const [callbackAuthConfigured, setCallbackAuthConfigured] = useState(false)
+  const [callbackAuthHint, setCallbackAuthHint] = useState<string | null>(null)
+  const [callbackAuthEnvSet, setCallbackAuthEnvSet] = useState(false)
+  const [callbackAuthValue, setCallbackAuthValue] = useState('')
+  const [callbackAuthMsg, setCallbackAuthMsg] = useState('')
+  const [callbackAuthBusy, setCallbackAuthBusy] = useState(false)
   const [sudoPersistent, setSudoPersistent] = useState(false)
   const [sudoSession, setSudoSession] = useState(false)
   const [sudoTtlSec, setSudoTtlSec] = useState(0)
@@ -211,6 +218,14 @@ export function SettingsTab({
       .then((s) => {
         setCursorConfigured(s.configured)
         setCursorHint(s.hint)
+      })
+      .catch(() => undefined)
+    void api
+      .callbackAuth()
+      .then((s) => {
+        setCallbackAuthConfigured(s.configured)
+        setCallbackAuthHint(s.hint)
+        setCallbackAuthEnvSet(!!s.envSet)
       })
       .catch(() => undefined)
     refreshSudo()
@@ -449,6 +464,17 @@ export function SettingsTab({
               : 'Required for Chat',
           },
           {
+            id: 'callbackAuth',
+            title: 'Job webhook auth',
+            hint: callbackAuthEnvSet
+              ? 'Env var still set — move to Settings and remove from .env'
+              : callbackAuthConfigured
+                ? callbackAuthHint
+                  ? `Set · ${callbackAuthHint}`
+                  : 'Set · encrypted'
+                : 'Optional default for job webhooks',
+          },
+          {
             id: 'usage',
             title: 'AI usage',
             hint: cursorConfigured
@@ -571,6 +597,9 @@ export function SettingsTab({
     identity.displayName,
     cursorConfigured,
     cursorHint,
+    callbackAuthConfigured,
+    callbackAuthHint,
+    callbackAuthEnvSet,
     mcpEnabled,
     mcpTokenCount,
     emailReady,
@@ -1208,6 +1237,101 @@ export function SettingsTab({
             >
               AI usage →
             </button>
+          </section>
+        </SceneShell>
+        {modals}
+      </>
+    )
+  }
+
+
+  if (scene === 'callbackAuth') {
+    return (
+      <>
+        <SceneShell
+          title="Job webhook auth"
+          hint="Encrypted default Authorization header for cursor-job webhooks. Per-job callbackAuth still wins."
+          onBack={goHub}
+        >
+          <section className="hb-surface p-3.5 space-y-3">
+            {callbackAuthEnvSet && (
+              <p className="text-xs text-amber" role="status">
+                HOMEBASE_CALLBACK_AUTH is still set in the environment (for example
+                /var/lib/homebased/.env). It is no longer used for webhook delivery.
+                If the vault was empty it was copied here once — remove the env var
+                so this warning goes away. The value itself is never shown.
+              </p>
+            )}
+            <p className="text-xs text-mute">
+              {callbackAuthConfigured
+                ? callbackAuthHint
+                  ? `Stored token ${callbackAuthHint}`
+                  : 'A default token is set.'
+                : 'Optional. Bots can still pass callbackAuth on each job.'}
+            </p>
+            <input
+              type="password"
+              autoComplete="off"
+              className="w-full rounded-[var(--radius-control)] bg-panel-2 border border-line px-3 py-2.5 text-sm font-mono"
+              placeholder={
+                callbackAuthConfigured
+                  ? callbackAuthHint || 'Replace token…'
+                  : 'e.g. Bearer …'
+              }
+              value={callbackAuthValue}
+              onChange={(e) => setCallbackAuthValue(e.target.value)}
+            />
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="hb-btn hb-btn-primary text-sm !min-h-10"
+                disabled={callbackAuthBusy || !callbackAuthValue.trim()}
+                onClick={() => {
+                  setCallbackAuthBusy(true)
+                  setCallbackAuthMsg('')
+                  void api
+                    .setCallbackAuth(callbackAuthValue.trim())
+                    .then((s) => {
+                      setCallbackAuthConfigured(true)
+                      setCallbackAuthHint(s.hint)
+                      setCallbackAuthEnvSet(!!s.envSet)
+                      setCallbackAuthValue('')
+                      setCallbackAuthMsg('Saved')
+                    })
+                    .catch((e) =>
+                      setCallbackAuthMsg(e instanceof Error ? e.message : String(e)),
+                    )
+                    .finally(() => setCallbackAuthBusy(false))
+                }}
+              >
+                Save
+              </button>
+              {callbackAuthConfigured && (
+                <button
+                  type="button"
+                  className="hb-btn hb-btn-ghost text-sm !min-h-10"
+                  disabled={callbackAuthBusy}
+                  onClick={() => {
+                    setCallbackAuthBusy(true)
+                    void api
+                      .clearCallbackAuth()
+                      .then((s) => {
+                        setCallbackAuthConfigured(false)
+                        setCallbackAuthHint(null)
+                        setCallbackAuthEnvSet(!!s.envSet)
+                        setCallbackAuthMsg('Cleared')
+                      })
+                      .catch((e) =>
+                        setCallbackAuthMsg(e instanceof Error ? e.message : String(e)),
+                      )
+                      .finally(() => setCallbackAuthBusy(false))
+                  }}
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+            {callbackAuthMsg && <p className="text-xs text-sky">{callbackAuthMsg}</p>}
           </section>
         </SceneShell>
         {modals}

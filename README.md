@@ -120,7 +120,7 @@ sudo systemctl status|restart homebased
 | `HOMEBASE_PORT` | Production listen port (default `8080`; honored on deploy) |
 | `HOMEBASE_HOST` | Bind address |
 | `HOMEBASE_JWT_SECRET` | Optional JWT HMAC override |
-| `HOMEBASE_CALLBACK_AUTH` | Optional default `Authorization` header value for cursor-job webhooks (e.g. `Bearer …`; overridden by `callbackAuth`) |
+| `HOMEBASE_CALLBACK_AUTH` | **Deprecated for delivery.** One-time imported into Settings → Job webhook auth if the vault is empty. Remove from `.env`; `/api/health` reports `callbackAuthEnvSet` (boolean only) until it is gone. Per-job `callbackAuth` still overrides the vault default. |
 | `CURSOR_MODEL` | Default model |
 | `CURSOR_API_KEY` | Optional override (prefer in-app vault) |
 | `HOMEBASE_DISPLAY` / `HOMEBASE_XAUTHORITY` | Linux View (X11) only |

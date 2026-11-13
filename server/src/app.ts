@@ -59,9 +59,13 @@ import {
   saveOnboarding,
 } from "./onboarding_state";
 import {
+  clearCallbackAuth,
   clearCursorApiKey,
+  getCallbackAuthMeta,
   getCursorCredentialsMeta,
+  setCallbackAuth,
   setCursorApiKey,
+  callbackAuthEnvSet,
 } from "./secrets_vault";
 import {
   identityPublic,
@@ -262,6 +266,8 @@ app.get("/api/health", (c) => {
     wireguard: wireguardHealthSummary(),
     tools: seatToolHealth(),
     x11Auth: x11AuthorityKind(discoverX11Env().xauthority),
+    /** Boolean only: HOMEBASE_CALLBACK_AUTH is still set in the environment. */
+    callbackAuthEnvSet: callbackAuthEnvSet(),
     ...access,
   });
 });
@@ -953,6 +959,22 @@ app.post("/api/cursor/credentials", async (c) => {
 app.delete("/api/cursor/credentials", async (c) => {
   await requireAuth(c);
   return c.json(clearCursorApiKey());
+});
+
+app.get("/api/callback-auth", async (c) => {
+  await requireAuth(c);
+  return c.json(getCallbackAuthMeta());
+});
+
+app.post("/api/callback-auth", async (c) => {
+  await requireAuth(c);
+  const body = z.object({ value: z.string().min(1) }).parse(await readJson(c));
+  return c.json(setCallbackAuth(body.value));
+});
+
+app.delete("/api/callback-auth", async (c) => {
+  await requireAuth(c);
+  return c.json(clearCallbackAuth());
 });
 
 app.get("/api/usage", async (c) => {

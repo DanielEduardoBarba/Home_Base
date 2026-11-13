@@ -17,6 +17,7 @@ import {
   type CursorJobRunOpts,
 } from "../../src/cursor_jobs";
 import { listTrace, setTraceMirrorConsole } from "../../src/trace";
+import { _setCallbackAuthForTests } from "../../src/secrets_vault";
 
 setTraceMirrorConsole(false);
 
@@ -167,6 +168,7 @@ async function waitUntil(
 afterEach(() => {
   _resetCursorJobsForTests();
   _setCursorJobDepsForTests(null);
+  _setCallbackAuthForTests(undefined);
 });
 
 describe("homebase_cursor_job kickoff", () => {
@@ -398,16 +400,20 @@ describe("cursor job model / error helpers", () => {
     expect(evaluateIdleJobOutcome({ summary: "ok" })).toEqual({ status: "done" });
   });
 
-  test("resolveCallbackAuth: param wins over env; empty falls through", () => {
+  test("resolveCallbackAuth: param wins over vault; env is ignored", () => {
     const prev = process.env.HOMEBASE_CALLBACK_AUTH;
     try {
-      process.env.HOMEBASE_CALLBACK_AUTH = "Bearer from-env";
-      expect(resolveCallbackAuth(undefined)).toBe("Bearer from-env");
-      expect(resolveCallbackAuth("")).toBe("Bearer from-env");
+      process.env.HOMEBASE_CALLBACK_AUTH = "Bearer from-env-ignored";
+      _setCallbackAuthForTests("Bearer from-vault");
+      expect(resolveCallbackAuth(undefined)).toBe("Bearer from-vault");
+      expect(resolveCallbackAuth("")).toBe("Bearer from-vault");
       expect(resolveCallbackAuth("Bearer from-param")).toBe("Bearer from-param");
-      delete process.env.HOMEBASE_CALLBACK_AUTH;
+      _setCallbackAuthForTests(null);
       expect(resolveCallbackAuth(undefined)).toBeUndefined();
+      // env must not be used for delivery even when the vault is empty
+      expect(resolveCallbackAuth("")).toBeUndefined();
     } finally {
+      _setCallbackAuthForTests(undefined);
       if (prev !== undefined) process.env.HOMEBASE_CALLBACK_AUTH = prev;
       else delete process.env.HOMEBASE_CALLBACK_AUTH;
     }
@@ -473,36 +479,40 @@ describe("homebase_cursor_job webhook auth", () => {
     const listed = listCursorJobs(10);
     const blob = JSON.stringify({ status, listed });
     expect(blob).not.toContain("param-secret-xyz");
-    expect(blob).not.toMatch(/callbackAuth/i);
+    expect((status as { callbackAuth?: string } | null)?.callbackAuth).toBeUndefined();
+    expect(status?.callbackAuthExpected).toBe(true);
     const traces = listTrace(300).items.map((t) => t.message).join("\n");
     expect(traces).not.toContain("param-secret-xyz");
   });
 
-  test("uses HOMEBASE_CALLBACK_AUTH env default when param omitted", async () => {
+  test("uses Settings vault default when param omitted; env is ignored", async () => {
     const h = makeHarness();
     const calls = mockFetchCapture();
     process.env.HOMEBASE_CALLBACK_AUTH = "Bearer env-secret-abc";
+    _setCallbackAuthForTests("Bearer vault-secret-abc");
     const job = await startCursorJob({
       projectId: "demo",
-      prompt: "webhook with env auth",
+      prompt: "webhook with vault auth",
       waitMs: 0,
-      callbackUrl: "http://127.0.0.1:9/webhook-env",
+      callbackUrl: "http://127.0.0.1:9/webhook-vault",
     });
     h.release(job.chatId);
-    await waitUntil(() => getCursorJob(job.id)?.status === "done", 4_000, "env auth done");
+    await waitUntil(() => getCursorJob(job.id)?.status === "done", 4_000, "vault auth done");
     await waitUntil(() => calls.length >= 1, 4_000, "webhook fetch");
-    expect(calls[0]?.headers.authorization).toBe("Bearer env-secret-abc");
-    expect(JSON.stringify(getCursorJob(job.id))).not.toContain("env-secret-abc");
-    expect(JSON.stringify(listCursorJobs(5))).not.toContain("env-secret-abc");
+    expect(calls[0]?.headers.authorization).toBe("Bearer vault-secret-abc");
+    expect(calls[0]?.headers.authorization).not.toBe("Bearer env-secret-abc");
+    expect(JSON.stringify(getCursorJob(job.id))).not.toContain("vault-secret-abc");
+    expect(JSON.stringify(listCursorJobs(5))).not.toContain("vault-secret-abc");
   });
 
-  test("callbackAuth param overrides HOMEBASE_CALLBACK_AUTH", async () => {
+  test("callbackAuth param overrides vault default (and env)", async () => {
     const h = makeHarness();
     const calls = mockFetchCapture();
     process.env.HOMEBASE_CALLBACK_AUTH = "Bearer env-should-not-win";
+    _setCallbackAuthForTests("Bearer vault-should-not-win");
     const job = await startCursorJob({
       projectId: "demo",
-      prompt: "webhook param overrides env",
+      prompt: "webhook param overrides vault",
       waitMs: 0,
       callbackUrl: "http://127.0.0.1:9/webhook-override",
       callbackAuth: "Bearer param-wins-999",
@@ -511,13 +521,14 @@ describe("homebase_cursor_job webhook auth", () => {
     await waitUntil(() => getCursorJob(job.id)?.status === "done", 4_000, "override done");
     await waitUntil(() => calls.length >= 1, 4_000, "webhook fetch");
     expect(calls[0]?.headers.authorization).toBe("Bearer param-wins-999");
-    expect(calls[0]?.headers.authorization).not.toBe("Bearer env-should-not-win");
+    expect(calls[0]?.headers.authorization).not.toBe("Bearer vault-should-not-win");
     const blob = JSON.stringify({
       status: getCursorJob(job.id),
       list: listCursorJobs(5),
       traces: listTrace(300).items,
     });
     expect(blob).not.toContain("param-wins-999");
+    expect(blob).not.toContain("vault-should-not-win");
     expect(blob).not.toContain("env-should-not-win");
   });
 });

@@ -4,6 +4,8 @@
  * Forces ANSI when attached to the journal (stdout is not a TTY).
  */
 
+import { redactFields, redactSecrets } from "./redact";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 const LEVEL_RANK: Record<LogLevel, number> = {
@@ -142,7 +144,12 @@ export function log(
   const source = typeof opts === "string" ? opts : opts.source || "server";
   const fields = typeof opts === "string" ? undefined : opts.fields;
   if (LEVEL_RANK[level] < LEVEL_RANK[minLevel]) return;
-  const line = formatLogLine(level, message, source, fields);
+  const line = formatLogLine(
+    level,
+    redactSecrets(message),
+    source,
+    redactFields(fields),
+  );
   if (level === "error" || level === "warn") {
     console.error(line);
   } else {

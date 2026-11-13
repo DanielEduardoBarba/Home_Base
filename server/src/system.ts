@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { bindPort, isBackupBinary, readVersion } from "./config";
 import { accessHosts } from "./network";
 import { appendTrace } from "./trace";
+import { callbackAuthEnvSet } from "./secrets_vault";
 
 export function systemStatus(): Record<string, unknown> {
   const wireguard: { id: string; unit: string; conf: string }[] = [];
@@ -27,6 +28,7 @@ export function systemStatus(): Record<string, unknown> {
     homebasedUnit: "homebased.service",
     version: readVersion(),
     backup: isBackupBinary(),
+    callbackAuthEnvSet: callbackAuthEnvSet(),
     ...accessHosts(bindPort()),
   };
 }

@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { RUNTIME_DIR, ensureRuntimeDirs } from "./config";
+import { redactFields, redactSecrets } from "./redact";
 
 export function appendDaily(
   event: string,
@@ -17,8 +18,8 @@ export function appendDaily(
   const path = join(dir, `${day}.log`);
   const row = {
     ts: new Date().toISOString(),
-    event,
-    ...fields,
+    event: redactSecrets(event),
+    ...redactFields(fields),
   };
   try {
     appendFileSync(path, JSON.stringify(row) + "\n", "utf8");

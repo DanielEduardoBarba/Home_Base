@@ -1,4 +1,5 @@
 import { coerceLevel, log } from "./console_log";
+import { redactSecrets } from "./redact";
 
 export type TraceLine = {
   id: number;
@@ -34,7 +35,7 @@ export function appendTrace(
     id: nextId++,
     ts: Date.now() / 1000,
     level,
-    message,
+    message: redactSecrets(message),
     source,
   };
   ring.push(line);
