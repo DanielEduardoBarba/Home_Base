@@ -3,7 +3,7 @@
  * Falls back to Chromium --app if the Tauri binary is not installed yet.
  */
 import { existsSync } from "node:fs";
-import { spawn, type Subprocess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import { BUNDLE_ROOT, bindHost, bindPort } from "./config";
 import { detectSeatUser } from "./shell_env";
@@ -15,7 +15,7 @@ import {
   setPresenceChangeHandler,
 } from "./presence";
 
-let proc: Subprocess | null = null;
+let proc: ChildProcess | null = null;
 let starting = false;
 let syncTimer: ReturnType<typeof setTimeout> | null = null;
 

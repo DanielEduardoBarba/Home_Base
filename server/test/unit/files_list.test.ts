@@ -46,6 +46,10 @@ describe("listDir", () => {
   });
 
   test("throws a clear permission message for an unreadable folder", () => {
+    // Root bypasses directory mode bits — chmod 0 is not a meaningful EACCES probe.
+    if (typeof process.getuid === "function" && process.getuid() === 0) {
+      return;
+    }
     const { root, project, cleanup } = tempProject();
     temps.push(cleanup);
     const locked = join(root, "locked");

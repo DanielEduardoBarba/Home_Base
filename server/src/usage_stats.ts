@@ -335,10 +335,12 @@ function bumpDay(
     inputTokens: 0,
     outputTokens: 0,
   };
-  for (const [k, v] of Object.entries(patch)) {
-    if (k === "day") continue;
-    (cur as Record<string, number>)[k] =
-      ((cur as Record<string, number>)[k] || 0) + (v as number);
+  for (const [k, v] of Object.entries(patch) as [keyof DayBucket, DayBucket[keyof DayBucket]][]) {
+    if (k === "day" || v == null) continue;
+    const prev = cur[k];
+    if (typeof prev === "number" && typeof v === "number") {
+      cur[k] = prev + v;
+    }
   }
   map.set(day, cur);
 }
