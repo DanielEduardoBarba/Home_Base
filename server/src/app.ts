@@ -600,6 +600,96 @@ app.get("/api/github/status", async (c) => {
   return c.json(githubAuthStatus());
 });
 
+app.get("/api/git-github", async (c) => {
+  await requireAuth(c);
+  const {
+    gitEnvCheck,
+    loadOperatorGitSettings,
+  } = await import("./operator_git_env");
+  const { githubAuthStatus } = await import("./github");
+  const env = gitEnvCheck();
+  const settings = loadOperatorGitSettings();
+  const auth = githubAuthStatus();
+  return c.json({
+    ok: true,
+    settings,
+    env,
+    auth: auth.data || null,
+  });
+});
+
+app.post("/api/git-github/settings", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({ useOperatorLoginEnv: z.boolean() })
+    .parse(await readJson(c));
+  const { saveOperatorGitSettings, gitEnvCheck } = await import(
+    "./operator_git_env"
+  );
+  const settings = saveOperatorGitSettings({
+    useOperatorLoginEnv: body.useOperatorLoginEnv,
+  });
+  return c.json({ ok: true, settings, env: gitEnvCheck() });
+});
+
+app.post("/api/git-github/setup-git", async (c) => {
+  await requireAuth(c);
+  const { runGhAuthSetupGit } = await import("./operator_git_env");
+  const result = runGhAuthSetupGit();
+  if (!result.ok) throw new HttpError(400, result.error || "setup-git failed");
+  return c.json(result);
+});
+
+app.post("/api/git-github/test", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({ projectId: z.string().optional() })
+    .parse((await readJson(c).catch(() => ({}))) || {});
+  const { testGitGithubConnection } = await import("./operator_git_env");
+  return c.json(testGitGithubConnection(body));
+});
+
+app.post("/api/git-github/signin", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({ projectId: z.string().optional() })
+    .parse((await readJson(c).catch(() => ({}))) || {});
+  const { openGuidedGitShell } = await import("./operator_git_env");
+  const result = await openGuidedGitShell({
+    kind: "signin",
+    projectId: body.projectId,
+  });
+  if (!result.ok) throw new HttpError(400, result.error || "signin failed");
+  return c.json(result);
+});
+
+app.post("/api/git-github/install", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({
+      projectId: z.string().optional(),
+      confirm: z.boolean(),
+    })
+    .parse(await readJson(c));
+  const { openGuidedGitShell, gitEnvCheck } = await import("./operator_git_env");
+  if (!body.confirm) {
+    const env = gitEnvCheck();
+    return c.json({
+      ok: false,
+      error: "confirm: true required (never silent sudo)",
+      install: env.install,
+      hint: env.install?.hint || env.hint,
+    });
+  }
+  const result = await openGuidedGitShell({
+    kind: "install",
+    projectId: body.projectId,
+    confirmInstall: true,
+  });
+  if (!result.ok) throw new HttpError(400, result.error || "install failed");
+  return c.json(result);
+});
+
 app.get("/api/github/repos", async (c) => {
   await requireAuth(c);
   const { listGithubRepos } = await import("./github");

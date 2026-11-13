@@ -20,6 +20,8 @@ mkdirSync(repo, { recursive: true });
 process.env.HOMEBASE_RUNTIME = runtime;
 process.env.HOMEBASE_PROJECTS = projectsPath;
 process.env.HOMEBASE_HOME = root;
+// Root-owned 0700 temp repos are invisible after setpriv → seat user; keep argv path, skip wrap in unit tests.
+process.env.HOMEBASE_OPERATOR_GIT_ENV = "0";
 
 function git(cwd: string, args: string[]) {
   const r = spawnSync("git", args, {

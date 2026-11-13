@@ -699,6 +699,7 @@ function AuthedApp() {
         <main className="flex-1 min-h-0 overflow-hidden">
           <SettingsTab
             onHome={() => goArea('home')}
+            onPresent={presentInWork}
             onSignedOut={() => {
               // Session is already cleared; AuthedApp unmounts to Login.
               // Do not navigate (that would post /api/activity + heartbeat and 401).

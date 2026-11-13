@@ -11,7 +11,6 @@ import {
   statSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
 import {
   loadProjects,
   slugId,
@@ -29,6 +28,7 @@ import {
   validateWorkspaceName,
 } from "./workspace";
 import { validateBranchName } from "./git";
+import { gitEnvCheck, runOperatorCmd } from "./operator_git_env";
 
 export type CmdResult = {
   code: number | null;
@@ -61,24 +61,18 @@ function defaultRunner(
   args: string[],
   opts: { cwd?: string; timeoutMs?: number } = {},
 ): CmdResult {
-  const r = spawnSync(cmd, args, {
-    cwd: opts.cwd,
-    encoding: "utf8",
-    timeout: opts.timeoutMs ?? 180_000,
-    maxBuffer: 8 * 1024 * 1024,
-    env: {
-      ...process.env,
-      GIT_TERMINAL_PROMPT: "0",
-      GH_PROMPT_DISABLED: "1",
-      GIT_OPTIONAL_LOCKS: "0",
-    },
-  });
+  // git + gh go through the operator login-env runner (seat user / keyring).
+  if (cmd === "git" || cmd === "gh") {
+    const r = runOperatorCmd(cmd, args, {
+      cwd: opts.cwd,
+      timeoutMs: opts.timeoutMs,
+    });
+    return { code: r.code, stdout: r.stdout, stderr: r.stderr };
+  }
   return {
-    code: r.status,
-    stdout: (r.stdout || "").toString(),
-    stderr:
-      (r.stderr || "").toString() ||
-      (r.error ? String(r.error.message) : ""),
+    code: 1,
+    stdout: "",
+    stderr: `binary not allow-listed: ${cmd}`,
   };
 }
 
@@ -206,6 +200,7 @@ export function parseGithubRepoRef(input: string): {
 }
 
 export function githubAuthStatus(): GithubResult {
+  const env = gitEnvCheck();
   const r = run("gh", ["auth", "status"], { timeoutMs: 15_000 });
   const text = `${r.stdout}\n${r.stderr}`;
   const userMatch =
@@ -218,6 +213,18 @@ export function githubAuthStatus(): GithubResult {
     !/token .* is invalid/i.test(text) &&
     !/Failed to log in/i.test(text);
 
+  const envSummary = {
+    useOperatorLoginEnv: env.useOperatorLoginEnv,
+    seatUser: env.seat.name,
+    seatHome: env.seat.home,
+    gitPath: env.git.path,
+    gitVersion: env.git.version,
+    ghPath: env.gh.path,
+    ghVersion: env.gh.version,
+    wrappedForSeat: env.env.wrappedForSeat,
+    envHint: env.hint,
+  };
+
   if (loggedIn && user) {
     return {
       ok: true,
@@ -226,23 +233,26 @@ export function githubAuthStatus(): GithubResult {
         user,
         host: "github.com",
         hint: null,
+        ...envSummary,
       },
     };
   }
 
   // Prefer a clear sign-in hint; never echo tokens from hosts.yml.
+  // Env hints about setpriv/login-env stay in envHint — auth hint is always the sign-in command.
   return {
     ok: true,
     data: {
       loggedIn: false,
       user: null,
       host: "github.com",
-      hint: `Sign in to GitHub on this laptop: ${GH_SIGNIN_HINT}`,
+      hint: `Sign in to GitHub on this laptop: ${GH_SIGNIN_HINT} (Settings → Git & GitHub)`,
       detail: /invalid|Failed to log in|not logged/i.test(text)
         ? "GitHub CLI is not signed in (or the saved login is invalid)."
         : r.code === 0
           ? "GitHub CLI did not report a signed-in user."
           : (r.stderr || r.stdout || "gh auth status failed").slice(0, 240),
+      ...envSummary,
     },
   };
 }

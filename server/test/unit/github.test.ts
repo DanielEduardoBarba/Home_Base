@@ -22,6 +22,7 @@ process.env.HOMEBASE_RUNTIME = runtime;
 process.env.HOMEBASE_PROJECTS = projectsPath;
 process.env.HOMEBASE_MCP_WORKSPACES_ROOT = mcpRoot;
 process.env.HOMEBASE_HOME = root;
+process.env.HOMEBASE_OPERATOR_GIT_ENV = "0";
 
 writeFileSync(
   projectsPath,

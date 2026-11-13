@@ -4,11 +4,11 @@
  */
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
 import { RUNTIME_DIR, type Project } from "./config";
 import { projectHasActiveCursorJob } from "./cursor_jobs";
 import { pushNotification } from "./notifications";
 import { appendTrace } from "./trace";
+import { runOperatorCmd } from "./operator_git_env";
 
 export type GitSurface = "gui" | "mcp";
 
@@ -96,10 +96,10 @@ export function validateBranchName(name: string): string | null {
     return "branch name contains invalid characters";
   }
   if (/\s/.test(t)) return "branch name cannot contain whitespace";
-  const check = spawnSync("git", ["check-ref-format", "--branch", t], {
-    encoding: "utf8",
+  const check = runOperatorCmd("git", ["check-ref-format", "--branch", t], {
+    timeoutMs: 10_000,
   });
-  if (check.status !== 0) {
+  if (check.code !== 0) {
     return `invalid branch name (git check-ref-format rejected "${t}")`;
   }
   return null;
@@ -172,7 +172,8 @@ export function assertSafeGitArgv(args: string[]): string | null {
  * Env for every git spawn. homebased often runs as root while project trees are
  * seat-owned (e.g. /home/daniel/APP_PROJECTS/...); without safe.directory git
  * reports "dubious ownership" and callers see a false "Not a git repository".
- * Exported for unit tests.
+ * Prefer runOperatorCmd (seat login env). This helper remains for unit tests /
+ * callers that only need the safe.directory overlay on a base env.
  */
 export function gitSpawnEnv(
   base: NodeJS.ProcessEnv = process.env,
@@ -208,17 +209,14 @@ function runGitRaw(
   if (bad) {
     return { code: 1, stdout: "", stderr: bad };
   }
-  const r = spawnSync("git", args, {
+  const r = runOperatorCmd("git", args, {
     cwd,
-    encoding: "utf8",
-    timeout: opts.timeoutMs ?? 120_000,
-    maxBuffer: 4 * 1024 * 1024,
-    env: gitSpawnEnv(),
+    timeoutMs: opts.timeoutMs ?? 120_000,
   });
   return {
-    code: r.status,
-    stdout: (r.stdout || "").toString(),
-    stderr: (r.stderr || "").toString() || (r.error ? String(r.error.message) : ""),
+    code: r.code,
+    stdout: r.stdout,
+    stderr: r.stderr,
   };
 }
 
@@ -430,13 +428,12 @@ export function gitStatusSnapshot(project: Project): GitResult {
   if (!isGitRepo(cwd)) return notGitRepoError(cwd);
   const ab = parseAheadBehind(cwd);
   const remotesR = runGitRaw(cwd, ["remote"]);
-  const originR = spawnSync("git", ["remote", "get-url", "origin"], {
+  const originR = runOperatorCmd("git", ["remote", "get-url", "origin"], {
     cwd,
-    encoding: "utf8",
-    env: gitSpawnEnv(),
+    timeoutMs: 10_000,
   });
   let originUrl: string | null = null;
-  if (originR.status === 0) {
+  if (originR.code === 0) {
     originUrl = (originR.stdout || "").toString().trim() || null;
     // Strip embedded credentials if any (never display tokens).
     if (originUrl) {
@@ -554,10 +551,9 @@ export function runGitAction(
 
     case "remotes": {
       // `remote` subcommand is blocked for mutating forms; allow read-only listing via direct spawn.
-      const detail = spawnSync("git", ["remote", "-v"], {
+      const detail = runOperatorCmd("git", ["remote", "-v"], {
         cwd,
-        encoding: "utf8",
-        env: gitSpawnEnv(),
+        timeoutMs: 15_000,
       });
       const names = new Set<string>();
       for (const line of (detail.stdout || "").toString().split("\n")) {
@@ -566,13 +562,13 @@ export function runGitAction(
       }
       appendProjectLog(project, "git remotes");
       return {
-        ok: detail.status === 0,
+        ok: detail.code === 0,
         data: {
           remotes: [...names],
           detail: (detail.stdout || "").toString(),
         },
         error:
-          detail.status === 0
+          detail.code === 0
             ? undefined
             : (detail.stderr || "remotes failed").toString(),
       };
@@ -724,16 +720,15 @@ export function runGitAction(
           existsSync(join(cwd, ".git", "MERGE_HEAD"));
         if (conflict && action.abortOnConflict !== false) {
           // Allow merge --abort only for a merge we started.
-          const abort = spawnSync("git", ["merge", "--abort"], {
+          const abort = runOperatorCmd("git", ["merge", "--abort"], {
             cwd,
-            encoding: "utf8",
-            env: gitSpawnEnv(),
+            timeoutMs: 30_000,
           });
           return finishWrite(project, "merge", {
             ok: false,
             error:
               `Merge of ${source} into ${target} hit conflicts and was aborted` +
-              (abort.status === 0 ? "" : " (abort also failed — resolve manually)"),
+              (abort.code === 0 ? "" : " (abort also failed — resolve manually)"),
             stdout: r.stdout,
             stderr: r.stderr,
             code: r.code,

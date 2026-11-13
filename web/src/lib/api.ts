@@ -709,9 +709,101 @@ export const api = {
         host: string
         hint: string | null
         detail?: string
+        useOperatorLoginEnv?: boolean
+        seatUser?: string
+        seatHome?: string
+        gitPath?: string | null
+        gitVersion?: string | null
+        ghPath?: string | null
+        ghVersion?: string | null
+        wrappedForSeat?: boolean
+        envHint?: string | null
       }
       error?: string
     }>('/api/github/status'),
+  gitGithubStatus: () =>
+    request<{
+      ok: boolean
+      settings: { useOperatorLoginEnv: boolean; updatedAt?: number }
+      env: {
+        useOperatorLoginEnv: boolean
+        seat: { name: string; uid: number; home: string; shell: string }
+        service: { user: string | null; home: string | null; uid: number | null }
+        env: {
+          HOME: string | null
+          PATH: string | null
+          USER: string | null
+          wrappedForSeat: boolean
+        }
+        git: { found: boolean; path: string | null; version: string | null }
+        gh: { found: boolean; path: string | null; version: string | null }
+        install: {
+          id: string
+          packages: string[]
+          argv: string[]
+          hint: string
+        } | null
+        hint: string | null
+      }
+      auth: {
+        loggedIn: boolean
+        user: string | null
+        host: string
+        hint: string | null
+        detail?: string
+      } | null
+    }>('/api/git-github'),
+  setGitGithubSettings: (body: { useOperatorLoginEnv: boolean }) =>
+    request<{
+      ok: boolean
+      settings: { useOperatorLoginEnv: boolean }
+    }>('/api/git-github/settings', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  gitGithubSetupGit: () =>
+    request<{ ok: boolean; error?: string }>('/api/git-github/setup-git', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  gitGithubTest: (body: { projectId?: string } = {}) =>
+    request<{
+      ok: boolean
+      gh: { ok: boolean; loggedIn: boolean; user: string | null; detail: string }
+      lsRemote: {
+        ok: boolean
+        projectId: string | null
+        origin: string | null
+        detail: string
+      }
+      hint: string | null
+    }>('/api/git-github/test', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  gitGithubSignIn: (body: { projectId?: string } = {}) =>
+    request<{
+      ok: boolean
+      sessionId?: string
+      projectId?: string
+      hint?: string
+      error?: string
+    }>('/api/git-github/signin', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  gitGithubInstall: (body: { confirm: boolean; projectId?: string }) =>
+    request<{
+      ok: boolean
+      sessionId?: string
+      projectId?: string
+      hint?: string
+      error?: string
+      install?: { hint: string; argv: string[]; packages: string[] }
+    }>('/api/git-github/install', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   githubRepos: (opts: { search?: string; limit?: number } = {}) => {
     const q = new URLSearchParams()
     if (opts.search) q.set('search', opts.search)

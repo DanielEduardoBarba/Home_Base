@@ -152,6 +152,7 @@ export const MCP_TOOL_FEATURE: Record<string, McpFeatureId> = {
   homebase_git_push: "projects",
   homebase_git_stash: "projects",
   homebase_github_status: "projects",
+  homebase_git_env_check: "projects",
   homebase_github_list_repos: "projects",
   homebase_github_clone_workspace: "projects",
   homebase_github_connect_workspace: "projects",
@@ -475,12 +476,23 @@ export function buildHomebaseTools(
 
   tools.homebase_github_status = {
     description:
-      "Read-only check of the laptop's GitHub CLI login (gh auth status). " +
-      "Returns signed-in user or a Sign in to GitHub hint with the exact command. Never returns tokens.",
+      "Read-only check of the laptop's GitHub CLI login (gh auth status) plus git/gh env " +
+      "(seat user, login-env setting, paths/versions). Returns signed-in user or a Sign in " +
+      "to GitHub hint. Never returns tokens.",
     parameters: { type: "object", properties: {} },
     execute: async () => {
       const { githubAuthStatus } = await import("./github");
       return json(githubAuthStatus());
+    },
+  };
+  tools.homebase_git_env_check = {
+    description:
+      "Read-only: which git/gh binaries Home Base will use, whether operator login-shell " +
+      "env is on (seat HOME/PATH/setpriv), and fix hints. Never returns tokens.",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { gitEnvCheck } = await import("./operator_git_env");
+      return json({ ok: true, data: gitEnvCheck() });
     },
   };
   tools.homebase_github_list_repos = {

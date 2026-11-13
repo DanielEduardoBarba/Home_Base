@@ -31,6 +31,8 @@ import { WireGuardPanel } from './WireGuardPanel'
 import { McpServerPanel } from './McpServerPanel'
 import { ActivityHistoryPanel } from './ActivityHistoryPanel'
 import { EmailAlertsPanel } from './EmailAlertsPanel'
+import { GitGithubPanel } from './GitGithubPanel'
+import type { PresentRequest } from '../lib/chatTypes'
 
 type SettingsScene =
   | 'hub'
@@ -46,6 +48,7 @@ type SettingsScene =
   | 'wireguard'
   | 'cloudflare'
   | 'mcp'
+  | 'git'
   | 'activity'
   | 'services'
   | 'storage'
@@ -126,9 +129,11 @@ function SceneShell({
 export function SettingsTab({
   onSignedOut,
   onHome,
+  onPresent,
 }: {
   onSignedOut: () => void
   onHome?: () => void
+  onPresent?: (req: PresentRequest) => void
 }) {
   const [scene, setScene] = useState<SettingsScene>('hub')
   const [theme, setThemeState] = useState<ThemeMode>(() => getStoredTheme())
@@ -440,6 +445,11 @@ export function SettingsTab({
             hint: cursorConfigured
               ? 'Plan · Cursor/Other models · MCP / Grok'
               : 'Local + MCP · add key for Cursor plan',
+          },
+          {
+            id: 'git',
+            title: 'Git & GitHub',
+            hint: 'Login env · gh sign-in · test push',
           },
           { id: 'setup', title: 'Setup', hint: 'Replay first-run wizard' },
         ],
@@ -1402,6 +1412,21 @@ export function SettingsTab({
           }}
         >
           <McpServerPanel />
+        </SceneShell>
+        {modals}
+      </>
+    )
+  }
+
+  if (scene === 'git') {
+    return (
+      <>
+        <SceneShell
+          title="Git & GitHub"
+          hint="Use your login-shell git/gh so pushes match your own terminal."
+          onBack={goHub}
+        >
+          <GitGithubPanel onPresent={onPresent} />
         </SceneShell>
         {modals}
       </>
