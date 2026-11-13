@@ -3001,10 +3001,14 @@ export function ChatPanel({
   }, [isAgent, agentChatId, tabs, activeId])
 
   if (!project) {
+    // Work already applies .hb-with-nav — don't double-pad when embedded.
+    const emptyNav = !isDock && !isAgent && !embedded
     return (
       <div
         className={
-          isDock ? 'hb-chat-dock-body' : isAgent ? 'h-full flex flex-col min-h-0' : 'h-full flex flex-col min-h-0 hb-with-nav'
+          isDock
+            ? 'hb-chat-dock-body'
+            : `h-full flex flex-col min-h-0${emptyNav ? ' hb-with-nav' : ''}`
         }
       >
         <p className="hb-page text-mute text-sm">
@@ -4309,8 +4313,14 @@ export function ChatPanel({
     )
   }
 
+  // Page inside Work (embedded) inherits Work's .hb-with-nav; stacking it again
+  // lifts the composer ~one nav height off the iPhone bottom.
   return (
-    <div className={`h-full flex flex-col min-h-0${isAgent ? '' : ' hb-with-nav'}`}>
+    <div
+      className={`h-full flex flex-col min-h-0${
+        isAgent || embedded ? '' : ' hb-with-nav'
+      }`}
+    >
       {modals}
       {header}
       {messages}
