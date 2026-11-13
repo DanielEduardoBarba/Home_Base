@@ -138,11 +138,17 @@ type Workspace = {
 
 type SendFn = (data: unknown) => void;
 
+type AgentRunResult = {
+  status?: string;
+  result?: string;
+  error?: { message?: string; code?: string };
+};
+
 type AgentRun = {
   id?: string;
   status?: string;
   stream: () => AsyncIterable<unknown>;
-  wait: () => Promise<{ status?: string; result?: string }>;
+  wait: () => Promise<AgentRunResult>;
   cancel?: () => Promise<void> | void;
 };
 
@@ -151,12 +157,143 @@ const subscribers = new Map<string, Set<SendFn>>();
 const running = new Map<string, AbortController>();
 /** Live SDK Run handles — cancel must hit these even when AbortController races. */
 const liveRuns = new Map<string, AgentRun>();
+/** Last terminal run failure per chat (in-memory; for MCP job settle). */
+const lastRunErrors = new Map<string, string>();
 /** Debounced disk flushes so mid-run deploys keep assistant/tool history. */
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const SAVE_DEBOUNCE_MS = 400;
+const MAX_AGENT_ERROR_CHARS = 800;
 
 function sessionKey(projectId: string, chatId: string): string {
   return `${projectId}::${chatId}`;
+}
+
+/** Trim agent/CLI error text for job status + webhooks (no secrets). */
+export function trimAgentError(raw: unknown, max = MAX_AGENT_ERROR_CHARS): string {
+  let s = String(raw ?? "").trim();
+  if (!s) return "";
+  s = s.replace(
+    /(CURSOR_API_KEY|api[_-]?key|authorization|bearer|token)\s*[=:]\s*\S+/gi,
+    "$1=***",
+  );
+  s = s.replace(/\bkey_[a-zA-Z0-9_-]{12,}\b/g, "key_***");
+  s = s.replace(/\bsk-[a-zA-Z0-9_-]{10,}\b/g, "sk-***");
+  s = s.replace(/\bBearer\s+[A-Za-z0-9._\-+/=]{12,}/gi, "Bearer ***");
+  if (s.length > max) s = `${s.slice(0, max - 1).trimEnd()}…`;
+  return s;
+}
+
+/** Parse `agent --list-models` / `agent models` text into model ids. */
+export function parseAgentModelsCliOutput(text: string): string[] {
+  const ids: string[] = [];
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || /^available models/i.test(trimmed)) continue;
+    const m = trimmed.match(/^([a-zA-Z0-9][a-zA-Z0-9._-]*)\s+-\s+/);
+    if (m?.[1]) ids.push(m[1]);
+  }
+  return [...new Set(ids)];
+}
+
+function modelIdsFromListItems(models: unknown[]): string[] {
+  const ids: string[] = [];
+  for (const item of models) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const id = o.id != null ? String(o.id).trim() : o.model != null ? String(o.model).trim() : "";
+    if (id) ids.push(id);
+    const aliases = o.aliases;
+    if (Array.isArray(aliases)) {
+      for (const a of aliases) {
+        const s = String(a || "").trim();
+        if (s) ids.push(s);
+      }
+    }
+  }
+  return [...new Set(ids)];
+}
+
+function listModelsFromCli(): Array<{ id: string; displayName: string; description?: string }> {
+  const bins = ["agent", "cursor-agent"];
+  const argSets = [["--list-models"], ["models"]] as const;
+  for (const bin of bins) {
+    for (const args of argSets) {
+      try {
+        const r = spawnSync(bin, [...args], {
+          encoding: "utf8",
+          timeout: 20_000,
+          env: process.env,
+        });
+        if (r.status !== 0) continue;
+        const ids = parseAgentModelsCliOutput(
+          `${r.stdout || ""}\n${r.stderr || ""}`,
+        );
+        if (!ids.length) continue;
+        return ids.map((id) => ({
+          id,
+          displayName: id,
+          description: id === "auto" ? "Auto model routing" : undefined,
+        }));
+      } catch {
+        /* try next */
+      }
+    }
+  }
+  return [];
+}
+
+export function getLastCursorRunError(
+  projectId: string,
+  chatId: string,
+): string | undefined {
+  return lastRunErrors.get(sessionKey(projectId, chatId));
+}
+
+function setLastCursorRunError(key: string, message: string): void {
+  const trimmed = trimAgentError(message);
+  if (trimmed) lastRunErrors.set(key, trimmed);
+  else lastRunErrors.delete(key);
+}
+
+function clearLastCursorRunError(key: string): void {
+  lastRunErrors.delete(key);
+}
+
+/** Test-only: clear in-memory run errors between cases. */
+export function _resetCursorRunErrorsForTests(): void {
+  lastRunErrors.clear();
+}
+
+export function formatUnknownModelError(
+  model: string,
+  knownIds: string[],
+): string {
+  const sample = knownIds.slice(0, 24).join(", ");
+  const more = knownIds.length > 24 ? ` (+${knownIds.length - 24} more)` : "";
+  return (
+    `Unknown Cursor model "${model}". ` +
+    (sample
+      ? `Valid ids include: ${sample}${more}. `
+      : "") +
+    `Use "auto" for automatic routing.`
+  );
+}
+
+/**
+ * Reject unknown model ids when a catalog is available. "auto" always passes.
+ * If listing fails / returns empty, validation is skipped (runtime empty-output
+ * / exit checks still apply).
+ */
+export async function assertKnownCursorModel(model: string): Promise<void> {
+  const id = String(model || "").trim();
+  if (!id || id === "auto") return;
+  const listed = await listModels();
+  const models = Array.isArray(listed.models) ? listed.models : [];
+  const ids = modelIdsFromListItems(models as unknown[]);
+  if (!ids.length) return;
+  if (!ids.includes("auto")) ids.unshift("auto");
+  if (ids.includes(id)) return;
+  throw new Error(formatUnknownModelError(id, ids));
 }
 
 function chatPath(projectId: string): string {
@@ -622,26 +759,63 @@ export async function listModels(): Promise<Record<string, unknown>> {
       error: "Cursor API key not set — add it in Settings or onboarding",
     };
   }
+  const byId = new Map<string, { id: string; displayName: string; description?: string }>();
+  const add = (id: string, displayName?: string, description?: string) => {
+    const key = String(id || "").trim();
+    if (!key || byId.has(key)) return;
+    byId.set(key, {
+      id: key,
+      displayName: String(displayName || key).trim() || key,
+      ...(description ? { description } : {}),
+    });
+  };
+  add("auto", "Auto", "Auto model routing");
+
   try {
-    const { Agent } = await import("@cursor/sdk");
-    const listModels = (Agent as unknown as { listModels?: () => Promise<unknown[]> }).listModels;
-    if (typeof listModels === "function") {
-      const models = await listModels();
-      return { configured: true, default: defaultModel(), models };
+    const { Cursor } = await import("@cursor/sdk");
+    const apiKey = loadCursorApiKey() || (process.env.CURSOR_API_KEY || "").trim();
+    const listed = await Cursor.models.list(apiKey ? { apiKey } : undefined);
+    if (Array.isArray(listed)) {
+      for (const m of listed) {
+        if (!m || typeof m !== "object") continue;
+        const item = m as { id?: string; displayName?: string; description?: string; aliases?: string[] };
+        if (item.id) add(item.id, item.displayName, item.description);
+        for (const a of item.aliases || []) add(String(a));
+      }
     }
   } catch (e) {
-    appendTrace("warn", `listModels: ${e instanceof Error ? e.message : String(e)}`, "cursor");
+    appendTrace("warn", `listModels SDK: ${e instanceof Error ? e.message : String(e)}`, "cursor");
   }
+
+  try {
+    const { Agent } = await import("@cursor/sdk");
+    const legacyList = (Agent as unknown as { listModels?: () => Promise<unknown[]> }).listModels;
+    if (typeof legacyList === "function") {
+      const models = await legacyList();
+      if (Array.isArray(models)) {
+        for (const m of models) {
+          if (!m || typeof m !== "object") continue;
+          const item = m as { id?: string; displayName?: string; description?: string };
+          if (item.id) add(item.id, item.displayName, item.description);
+        }
+      }
+    }
+  } catch (e) {
+    appendTrace("warn", `listModels Agent: ${e instanceof Error ? e.message : String(e)}`, "cursor");
+  }
+
+  for (const m of listModelsFromCli()) {
+    add(m.id, m.displayName, m.description);
+  }
+
+  if (byId.size <= 1) {
+    add(defaultModel(), defaultModel(), "Configured default model");
+  }
+
   return {
     configured: true,
     default: defaultModel(),
-    models: [
-      {
-        id: defaultModel(),
-        displayName: defaultModel(),
-        description: "Configured default model",
-      },
-    ],
+    models: [...byId.values()],
   };
 }
 
@@ -2429,6 +2603,7 @@ async function startRun(
 
   const ac = new AbortController();
   running.set(key, ac);
+  clearLastCursorRunError(key);
   try {
     opts.onStarted?.();
   } catch {
@@ -2442,6 +2617,9 @@ async function startRun(
     chatId: opts.chatId,
     cwd,
   });
+  /** MCP jobs must observe run failures (empty/done was HB-R3-01). */
+  const failJobRun = Boolean(opts.jobId);
+  let jobRunFailure: Error | null = null;
 
   try {
     const ids = loadAgentIds();
@@ -2820,7 +2998,7 @@ async function startRun(
         }
       }
     }
-    const result: { status?: string; result?: string } =
+    const result: AgentRunResult =
       raced.kind === "done"
         ? raced.r
         : await waitPromise.catch(() => ({ status: "cancelled" as const }));
@@ -2838,26 +3016,48 @@ async function startRun(
     // Ensure no tool/task bubble is left "running" after a clean finish.
     finalizeInterruptedTools(tab, "cancelled");
 
-    broadcast(projectId, {
-      type: "done",
-      chatId: opts.chatId,
-      status: result?.status || "ok",
-    });
-    pushNotification("Cursor done", tab.title || "Chat finished", {
-      level: "success",
-      category: "cursor",
-      meta: { projectId, chatId: opts.chatId },
-    });
+    const runStatus = String(result?.status || "").toLowerCase();
+    if (runStatus === "error" || runStatus === "failed") {
+      const detail =
+        trimAgentError(result.error?.message) ||
+        `cursor-agent run ended with status ${runStatus}`;
+      setLastCursorRunError(key, detail);
+      broadcast(projectId, {
+        type: "error",
+        error: detail,
+        chatId: opts.chatId,
+        recoverable: true,
+      });
+      pushNotification("Cursor error", detail.slice(0, 120), {
+        level: "error",
+        category: "cursor",
+        meta: { projectId, chatId: opts.chatId },
+      });
+      jobRunFailure = new Error(detail);
+    } else {
+      broadcast(projectId, {
+        type: "done",
+        chatId: opts.chatId,
+        status: result?.status || "ok",
+      });
+      pushNotification("Cursor done", tab.title || "Chat finished", {
+        level: "success",
+        category: "cursor",
+        meta: { projectId, chatId: opts.chatId },
+      });
+    }
   } catch (e) {
     const err = e instanceof Error ? e.message : String(e);
     const busy = isAgentBusyError(e);
+    const publicErr = busy
+      ? "Agent had a stuck run — cleared locks; press Stop if it persists, then send again."
+      : trimAgentError(err) || err;
+    setLastCursorRunError(key, publicErr);
     finalizeInterruptedTools(tab, "error");
-    appendTrace("error", `cursor run ${key}: ${err}`, "cursor");
+    appendTrace("error", `cursor run ${key}: ${publicErr}`, "cursor");
     broadcast(projectId, {
       type: "error",
-      error: busy
-        ? "Agent had a stuck run — cleared locks; press Stop if it persists, then send again."
-        : err,
+      error: publicErr,
       chatId: opts.chatId,
       recoverable: true,
       busy,
@@ -2874,6 +3074,7 @@ async function startRun(
         }
       }
     }
+    jobRunFailure = e instanceof Error ? e : new Error(publicErr);
   } finally {
     liveRuns.delete(key);
     running.delete(key);
@@ -2906,6 +3107,7 @@ async function startRun(
       });
     }
   }
+  if (failJobRun && jobRunFailure) throw jobRunFailure;
 }
 
 async function cancelRun(

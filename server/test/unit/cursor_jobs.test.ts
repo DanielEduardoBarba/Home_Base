@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  formatUnknownModelError,
+  parseAgentModelsCliOutput,
+  trimAgentError,
+} from "../../src/cursor";
+import {
   _resetCursorJobsForTests,
   _setCursorJobDepsForTests,
+  evaluateIdleJobOutcome,
   getCursorJob,
   listCursorJobs,
   projectHasActiveCursorJob,
@@ -31,10 +37,14 @@ type Ws = { tabs: Tab[] };
 function makeHarness() {
   const workspaces = new Map<string, Ws>();
   let tabSeq = 0;
-  const releases = new Map<string, () => void>();
+  const releases = new Map<string, () => void | Promise<void>>();
   const startedChats: string[] = [];
+  const lastErrors = new Map<string, string>();
   let failStart = false;
+  let failAfterStart: string | null = null;
+  let emptyAssistant = false;
   let kickoffDelayMs = 0;
+  let knownModels: string[] | null = ["auto", "composer-2.5", "composer-2.5-fast"];
 
   const createChat = (projectId: string, opts: { title?: string; cwd?: string } = {}) => {
     const tab: Tab = {
@@ -71,16 +81,27 @@ function makeHarness() {
     tab.running = true;
     opts.onStarted?.();
     startedChats.push(opts.chatId);
-    await new Promise<void>((resolve) => {
-      releases.set(opts.chatId, resolve);
+    await new Promise<void>((resolve, reject) => {
+      releases.set(opts.chatId, async () => {
+        if (failAfterStart) {
+          const msg = failAfterStart;
+          lastErrors.set(`${projectId}::${opts.chatId}`, msg);
+          tab.running = false;
+          reject(new Error(msg));
+          return;
+        }
+        if (!emptyAssistant) {
+          tab.messages.push({
+            id: `a-${opts.chatId}`,
+            role: "assistant",
+            text: "Job finished.\nTests: pass\nCommit abcdef1 on development_grok\nnone",
+            at: Date.now(),
+          });
+        }
+        tab.running = false;
+        resolve();
+      });
     });
-    tab.messages.push({
-      id: `a-${opts.chatId}`,
-      role: "assistant",
-      text: "Job finished.\nTests: pass\nCommit abcdef1 on development_grok\nnone",
-      at: Date.now(),
-    });
-    tab.running = false;
   };
 
   _setCursorJobDepsForTests({
@@ -89,6 +110,14 @@ function makeHarness() {
     createChat: createChat as never,
     workspace: workspace as never,
     runner,
+    validateModel: async (model) => {
+      const id = String(model || "").trim();
+      if (!id || id === "auto") return;
+      if (knownModels == null) return;
+      if (knownModels.includes(id)) return;
+      throw new Error(formatUnknownModelError(id, knownModels));
+    },
+    lastRunError: (projectId, chatId) => lastErrors.get(`${projectId}::${chatId}`),
   });
 
   return {
@@ -97,13 +126,22 @@ function makeHarness() {
     setFailStart(v: boolean) {
       failStart = v;
     },
+    setFailAfterStart(msg: string | null) {
+      failAfterStart = msg;
+    },
+    setEmptyAssistant(v: boolean) {
+      emptyAssistant = v;
+    },
+    setKnownModels(ids: string[] | null) {
+      knownModels = ids;
+    },
     setKickoffDelay(ms: number) {
       kickoffDelayMs = ms;
     },
-    release(chatId: string) {
+    async release(chatId: string) {
       const fn = releases.get(chatId);
       if (!fn) throw new Error(`no release gate for ${chatId}`);
-      fn();
+      await fn();
     },
   };
 }
@@ -259,5 +297,99 @@ describe("homebase_cursor_job kickoff", () => {
     expect(job.status).toBe("error");
     expect(job.error).toMatch(/simulated start failure/);
     expect(h.startedChats).toHaveLength(0);
+  });
+
+  test("non-zero exit after kickoff marks the job error (not done)", async () => {
+    const h = makeHarness();
+    h.setFailAfterStart("cursor-agent exited 1: Unknown model composer-1");
+    const job = await startCursorJob({
+      projectId: "demo",
+      prompt: "Should fail after start",
+      waitMs: 0,
+    });
+    expect(job.status).toBe("running");
+    await h.release(job.chatId);
+    await waitUntil(() => getCursorJob(job.id)?.status === "error", 4_000, "job error");
+    const done = getCursorJob(job.id);
+    expect(done?.status).toBe("error");
+    expect(done?.error).toMatch(/exited 1|Unknown model/i);
+    expect(done?.summary || "").toBe("");
+  });
+
+  test("empty assistant output marks the job error (not done)", async () => {
+    const h = makeHarness();
+    h.setEmptyAssistant(true);
+    const job = await startCursorJob({
+      projectId: "demo",
+      prompt: "Silent finish",
+      waitMs: 0,
+    });
+    await h.release(job.chatId);
+    await waitUntil(() => getCursorJob(job.id)?.status === "error", 4_000, "empty output error");
+    const done = getCursorJob(job.id);
+    expect(done?.status).toBe("error");
+    expect(done?.error).toMatch(/no assistant output/i);
+  });
+
+  test("unknown model is rejected up front with valid ids", async () => {
+    const h = makeHarness();
+    let err = "";
+    try {
+      await startCursorJob({
+        projectId: "demo",
+        prompt: "bad model",
+        model: "composer-1",
+        waitMs: 0,
+      });
+    } catch (e) {
+      err = e instanceof Error ? e.message : String(e);
+    }
+    expect(err).toMatch(/Unknown Cursor model "composer-1"/);
+    expect(err).toMatch(/auto/);
+    expect(err).toMatch(/composer-2\.5/);
+    expect(h.startedChats).toHaveLength(0);
+  });
+
+  test("model auto is accepted and can finish done", async () => {
+    const h = makeHarness();
+    const job = await startCursorJob({
+      projectId: "demo",
+      prompt: "Use auto",
+      model: "auto",
+      waitMs: 0,
+    });
+    expect(job.status).toBe("running");
+    expect(job.model).toBe("auto");
+    await h.release(job.chatId);
+    await waitUntil(() => getCursorJob(job.id)?.status === "done", 4_000, "auto done");
+    expect(getCursorJob(job.id)?.status).toBe("done");
+  });
+});
+
+describe("cursor job model / error helpers", () => {
+  test("parseAgentModelsCliOutput reads id before dash", () => {
+    const ids = parseAgentModelsCliOutput(
+      "Available models\n\nauto - Auto (default)\ncomposer-2.5 - Composer 2.5\n",
+    );
+    expect(ids).toEqual(["auto", "composer-2.5"]);
+  });
+
+  test("trimAgentError redacts secrets and caps length", () => {
+    const out = trimAgentError(
+      "fail CURSOR_API_KEY=secret-value-here and Bearer abcdefghijklmnop",
+      200,
+    );
+    expect(out).not.toMatch(/secret-value-here/);
+    expect(out).toMatch(/CURSOR_API_KEY=\*\*\*/i);
+    expect(out.length).toBeLessThanOrEqual(200);
+  });
+
+  test("evaluateIdleJobOutcome: error / empty / ok", () => {
+    expect(evaluateIdleJobOutcome({ summary: "", lastError: "boom" })).toEqual({
+      status: "error",
+      error: "boom",
+    });
+    expect(evaluateIdleJobOutcome({ summary: "" }).status).toBe("error");
+    expect(evaluateIdleJobOutcome({ summary: "ok" })).toEqual({ status: "done" });
   });
 });

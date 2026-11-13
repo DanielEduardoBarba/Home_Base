@@ -14,11 +14,14 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { loadProjects } from "./config";
 import {
+  assertKnownCursorModel,
   createChat,
   cursorConfigured,
   defaultModel,
+  getLastCursorRunError,
   getWorkspace,
   startCursorRun,
+  trimAgentError,
 } from "./cursor";
 import { appendTrace } from "./trace";
 
@@ -77,6 +80,8 @@ type JobDeps = {
   getProject: (id: string) => { path: string } | undefined;
   createChat: typeof createChat;
   workspace: typeof getWorkspace;
+  validateModel: (model: string) => Promise<void>;
+  lastRunError: (projectId: string, chatId: string) => string | undefined;
 };
 
 function defaultDeps(): JobDeps {
@@ -86,6 +91,8 @@ function defaultDeps(): JobDeps {
     getProject: (id) => loadProjects().get(id),
     createChat,
     workspace: getWorkspace,
+    validateModel: assertKnownCursorModel,
+    lastRunError: getLastCursorRunError,
   };
 }
 
@@ -323,12 +330,39 @@ async function finishJob(
   }
   job.status = status;
   job.finishedAt = Date.now();
-  if (error) job.error = error;
+  if (error) job.error = trimAgentError(error) || error;
   job.summary = lastAssistantSummary(job.projectId, job.chatId) || job.summary;
   job.commit = gitTip(job.cwd);
   jobs.set(job.id, job);
   await deliverWebhook(job);
   return { ...job };
+}
+
+/** After the chat goes idle: fail on run error or empty assistant output. */
+export function evaluateIdleJobOutcome(opts: {
+  summary: string;
+  lastError?: string;
+}): { status: "done" | "error"; error?: string } {
+  const err = trimAgentError(opts.lastError || "");
+  if (err) return { status: "error", error: err };
+  if (!String(opts.summary || "").trim()) {
+    return {
+      status: "error",
+      error:
+        "Cursor job finished with no assistant output (model may be invalid, or the agent exited without a reply)",
+    };
+  }
+  return { status: "done" };
+}
+
+async function finishIdleJob(job: CursorJob): Promise<CursorJob> {
+  const summary = lastAssistantSummary(job.projectId, job.chatId);
+  const lastError = deps.lastRunError(job.projectId, job.chatId);
+  const outcome = evaluateIdleJobOutcome({ summary, lastError });
+  if (outcome.status === "error") {
+    return finishJob(job, "error", outcome.error);
+  }
+  return finishJob(job, "done");
 }
 
 async function watchUntilSettled(job: CursorJob, maxMs: number): Promise<CursorJob> {
@@ -347,17 +381,18 @@ async function watchUntilSettled(job: CursorJob, maxMs: number): Promise<CursorJ
       "MCP job did not start a Cursor chat run — the prompt never triggered a reply",
     );
   }
-  return finishJob(job, "done");
+  return finishIdleJob(job);
 }
 
 /**
  * Mark a running job done only after kickoff succeeded and the chat has
  * since gone idle. Never treat "not running yet" (still queued) as finished.
+ * Empty assistant output / last run error → error (HB-R3-01).
  */
 function maybeFinishIfIdle(job: CursorJob): void {
   if (job.status !== "running") return;
   if (chatRunning(job.projectId, job.chatId)) return;
-  void finishJob(job, "done");
+  void finishIdleJob(job);
 }
 
 /** True if a handoff job is still queued/running for this project. */
@@ -452,6 +487,8 @@ export async function startCursorJob(opts: {
   const title =
     String(opts.title || "").trim() ||
     `MCP · ${prompt.slice(0, 28)}${prompt.length > 28 ? "…" : ""}`;
+
+  await deps.validateModel(model);
 
   const tab = deps.createChat(projectId, { title, cwd });
   const job: CursorJob = {
