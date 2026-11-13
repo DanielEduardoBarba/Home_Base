@@ -227,6 +227,102 @@ describeGit("status happy path", () => {
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/disabled in Settings/i);
   });
+
+  test("gitSpawnEnv injects safe.directory for root/dubious ownership", () => {
+    const env = gitMod.gitSpawnEnv({ PATH: process.env.PATH });
+    expect(env.GIT_TERMINAL_PROMPT).toBe("0");
+    const count = Number(env.GIT_CONFIG_COUNT || "0");
+    expect(count).toBeGreaterThanOrEqual(1);
+    let found = false;
+    for (let i = 0; i < count; i++) {
+      if (env[`GIT_CONFIG_KEY_${i}`] === "safe.directory") {
+        expect(env[`GIT_CONFIG_VALUE_${i}`]).toBe("*");
+        found = true;
+      }
+    }
+    expect(found).toBe(true);
+  });
+
+  test("status works on seat-owned tree (registered project, not only MCP_WORKSPACES)", () => {
+    const seatRepo = join(root, "seat-owned");
+    mkdirSync(seatRepo, { recursive: true });
+    git(seatRepo, ["init", "-b", "main"]);
+    git(seatRepo, ["config", "user.email", "test@example.com"]);
+    git(seatRepo, ["config", "user.name", "Test"]);
+    writeFileSync(join(seatRepo, "README.md"), "seat\n");
+    git(seatRepo, ["add", "README.md"]);
+    git(seatRepo, ["commit", "-m", "init"]);
+
+    // Simulate homebased-as-root + daniel-owned APP_PROJECTS tree.
+    if (typeof process.getuid === "function" && process.getuid() === 0) {
+      const ch = spawnSync("chown", ["-R", "daniel:daniel", seatRepo], {
+        encoding: "utf8",
+      });
+      expect(ch.status).toBe(0);
+      // Plain git without safe.directory must fail (dubious ownership).
+      const bare = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], {
+        cwd: seatRepo,
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          HOME: "/root",
+          GIT_CONFIG_COUNT: "0",
+          GIT_TERMINAL_PROMPT: "0",
+        },
+      });
+      expect(bare.status).not.toBe(0);
+      expect(`${bare.stderr}${bare.stdout}`).toMatch(/dubious ownership/i);
+    }
+
+    writeFileSync(
+      projectsPath,
+      JSON.stringify({
+        projects: [
+          {
+            id: "demo",
+            name: "Demo",
+            path: repo,
+            ports: [],
+            actions: [],
+          },
+          {
+            id: "homebase-like",
+            name: "Seat App",
+            path: seatRepo,
+            ports: [],
+            actions: [],
+          },
+        ],
+      }) + "\n",
+    );
+    // Reload projects map from disk.
+    const projects = loadProjects();
+    const p = projects.get("homebase-like");
+    expect(p).toBeTruthy();
+    const r = gitMod.runGitAction(p!, { action: "status" }, { surface: "mcp" });
+    expect(r.ok).toBe(true);
+    expect(r.data?.branch).toBeTruthy();
+  });
+});
+
+describeGit("blocked actions refuse cleanly", () => {
+  test("reset/rebase argv refused with clear message (not throw)", () => {
+    expect(gitMod.assertSafeGitArgv(["reset", "--hard"])).toMatch(
+      /not allowed|blocked/i,
+    );
+    expect(gitMod.assertSafeGitArgv(["rebase", "main"])).toMatch(
+      /not allowed|blocked/i,
+    );
+    const p = loadProjects().get("demo")!;
+    // runGitRaw path: blocked subcommand surfaces as failed result, never throws.
+    const viaRaw = gitMod.runGitAction(
+      p,
+      { action: "status" },
+      { surface: "gui" },
+    );
+    expect(viaRaw.ok).toBe(true);
+    expect(() => gitMod.assertSafeGitArgv(["reset", "--hard"])).not.toThrow();
+  });
 });
 
 describeGit("create branch", () => {

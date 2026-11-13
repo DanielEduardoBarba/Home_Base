@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import { ZodError } from "zod";
 import { isAppPinLocked } from "./app_pin";
 import { HttpError, bearerFromHeader, verifyAccessToken } from "./auth";
 import { logError, logWarn } from "./console_log";
@@ -91,6 +92,17 @@ export function jsonError(c: Context, err: unknown): Response {
       status: err.status,
       headers,
     });
+  }
+  // Zod validation (e.g. blocked/unknown git action enum) → clean 400, not 500.
+  if (err instanceof ZodError) {
+    const issue = err.issues[0];
+    const where = issue?.path?.length ? `${issue.path.join(".")}: ` : "";
+    const detail = `${where}${issue?.message || "invalid request"}`.slice(0, 400);
+    logWarn(`${method} ${path} → 400 ${detail}`, {
+      source: "http",
+      fields: ipFields,
+    });
+    return c.json({ detail }, 400);
   }
   const msg = err instanceof Error ? err.message : String(err);
   const stack = err instanceof Error ? err.stack : undefined;

@@ -168,6 +168,37 @@ export function assertSafeGitArgv(args: string[]): string | null {
   return null;
 }
 
+/**
+ * Env for every git spawn. homebased often runs as root while project trees are
+ * seat-owned (e.g. /home/daniel/APP_PROJECTS/...); without safe.directory git
+ * reports "dubious ownership" and callers see a false "Not a git repository".
+ * Exported for unit tests.
+ */
+export function gitSpawnEnv(
+  base: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...base,
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_OPTIONAL_LOCKS: "0",
+  };
+  const existing = Number(env.GIT_CONFIG_COUNT || "0");
+  let hasSafe = false;
+  for (let i = 0; i < existing; i++) {
+    if (env[`GIT_CONFIG_KEY_${i}`] === "safe.directory") {
+      hasSafe = true;
+      break;
+    }
+  }
+  if (!hasSafe) {
+    const n = Number.isFinite(existing) && existing > 0 ? existing : 0;
+    env.GIT_CONFIG_COUNT = String(n + 1);
+    env[`GIT_CONFIG_KEY_${n}`] = "safe.directory";
+    env[`GIT_CONFIG_VALUE_${n}`] = "*";
+  }
+  return env;
+}
+
 function runGitRaw(
   cwd: string,
   args: string[],
@@ -182,7 +213,7 @@ function runGitRaw(
     encoding: "utf8",
     timeout: opts.timeoutMs ?? 120_000,
     maxBuffer: 4 * 1024 * 1024,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" },
+    env: gitSpawnEnv(),
   });
   return {
     code: r.status,
@@ -210,6 +241,18 @@ export function appendProjectLog(project: Project, line: string): void {
 function isGitRepo(cwd: string): boolean {
   const r = runGitRaw(cwd, ["rev-parse", "--is-inside-work-tree"]);
   return r.code === 0 && r.stdout.trim() === "true";
+}
+
+/** Prefer a clear refusal when rev-parse fails for a non-repo vs ownership. */
+function notGitRepoError(cwd: string): GitResult {
+  const r = runGitRaw(cwd, ["rev-parse", "--is-inside-work-tree"]);
+  const err = `${r.stderr || ""} ${r.stdout || ""}`;
+  if (/dubious ownership/i.test(err)) {
+    return plainError(
+      "Not a git repository (dubious ownership — Home Base could not mark safe.directory)",
+    );
+  }
+  return plainError("Not a git repository");
 }
 
 export function isWorkingTreeDirty(cwd: string): boolean {
@@ -384,13 +427,13 @@ export type GitStatusSnapshot = {
 export function gitStatusSnapshot(project: Project): GitResult {
   const cwd = projectRoot(project);
   if (!existsSync(cwd)) return plainError("Project path does not exist");
-  if (!isGitRepo(cwd)) return plainError("Not a git repository");
+  if (!isGitRepo(cwd)) return notGitRepoError(cwd);
   const ab = parseAheadBehind(cwd);
   const remotesR = runGitRaw(cwd, ["remote"]);
   const originR = spawnSync("git", ["remote", "get-url", "origin"], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    env: gitSpawnEnv(),
   });
   let originUrl: string | null = null;
   if (originR.status === 0) {
@@ -453,7 +496,7 @@ export function runGitAction(
   const surface: GitSurface = opts.surface || "gui";
   const cwd = projectRoot(project);
   if (!existsSync(cwd)) return plainError("Project path does not exist");
-  if (!isGitRepo(cwd)) return plainError("Not a git repository");
+  if (!isGitRepo(cwd)) return notGitRepoError(cwd);
 
   const opName =
     action.action === "stash" ? `stash_${action.mode}` : action.action;
@@ -514,7 +557,7 @@ export function runGitAction(
       const detail = spawnSync("git", ["remote", "-v"], {
         cwd,
         encoding: "utf8",
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+        env: gitSpawnEnv(),
       });
       const names = new Set<string>();
       for (const line of (detail.stdout || "").toString().split("\n")) {
@@ -684,7 +727,7 @@ export function runGitAction(
           const abort = spawnSync("git", ["merge", "--abort"], {
             cwd,
             encoding: "utf8",
-            env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+            env: gitSpawnEnv(),
           });
           return finishWrite(project, "merge", {
             ok: false,
