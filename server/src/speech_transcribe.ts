@@ -1,12 +1,14 @@
 /**
- * Optional server-side speech transcription (OpenAI Whisper-compatible).
+ * Server-side speech transcription (OpenAI Whisper-compatible).
+ * PRIMARY Talk mic path on iOS / iPadOS / WebKit (MediaRecorder audio/mp4).
+ * Desktop Chrome may still use on-device SpeechRecognition as a fast path.
  *
  * Env (never commit secrets):
  *   HOMEBASE_TRANSCRIBE_API_KEY — preferred dedicated key
  *   OPENAI_API_KEY              — fallback if the dedicated key is unset
  *
  * When neither is set, /api/speech/status reports configured:false and the
- * client falls back to on-device SpeechRecognition / keyboard dictation.
+ * UI shows a clear "not configured" message (keyboard mic / type still work).
  */
 import { HttpError } from "./auth";
 

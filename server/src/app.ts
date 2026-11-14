@@ -53,6 +53,13 @@ import {
   transcribeAudio,
 } from "./speech_transcribe";
 import {
+  ensureLocalTlsCerts,
+  httpsPort,
+  readCaCertPem,
+  tlsMaterialPresent,
+  tlsStatusPublic,
+} from "./tls_certs";
+import {
   acceptLegal,
   legalPublic,
   requireLegalAccepted,
@@ -295,7 +302,10 @@ app.use("/api/*", async (c, next) => {
 });
 
 app.get("/api/health", (c) => {
-  const access = accessHosts(bindPort());
+  const https = tlsMaterialPresent() ? httpsPort() : 0;
+  const access = accessHosts(bindPort(), {
+    httpsPort: https > 0 ? https : null,
+  });
   const identity = identityPublic();
   return c.json({
     ok: true,
@@ -1478,7 +1488,46 @@ app.post("/api/cloudflare/clear", async (c) => {
   return c.json(clearCloudflareTunnel());
 });
 
-/** Optional Whisper transcription for iOS MediaRecorder fallback (session or Doodle). */
+/** Local CA / VPN HTTPS status (public — needed before trust). */
+app.get("/api/tls/status", (c) => c.json(tlsStatusPublic()));
+
+/** Download Home Base Local CA over HTTP so iOS can trust before opening HTTPS. */
+app.get("/api/tls/ca.crt", (c) => {
+  const pem = readCaCertPem();
+  if (!pem) {
+    throw new HttpError(404, {
+      code: "tls_ca_missing",
+      message:
+        "Local CA not generated yet. Run ./build.sh --setup (or Settings → regenerate TLS).",
+    });
+  }
+  return new Response(pem, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/x-x509-ca-cert",
+      "Content-Disposition": 'attachment; filename="homebase-local-ca.crt"',
+      "Cache-Control": "no-store",
+    },
+  });
+});
+
+/** Ensure / regenerate local CA + server cert (auth). Keys stay in .runtime/tls. */
+app.post("/api/tls/ensure", async (c) => {
+  await requireAuth(c);
+  let force = false;
+  try {
+    const body = z
+      .object({ force: z.boolean().optional() })
+      .parse(await readJson(c));
+    force = !!body.force;
+  } catch {
+    /* empty body ok */
+  }
+  const result = ensureLocalTlsCerts({ force });
+  return c.json({ ...result, ...tlsStatusPublic() });
+});
+
+/** Server Whisper transcription — PRIMARY Talk mic path on iOS/WebKit. */
 app.get("/api/speech/status", async (c) => {
   await requireDoodleAuth(c);
   return c.json(speechTranscribeStatus());

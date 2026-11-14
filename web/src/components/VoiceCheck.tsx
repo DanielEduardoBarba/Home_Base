@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from '../lib/api'
 import {
   collectVoiceDiagnostics,
+  preferServerTranscription,
   unlockSpeechSynthesis,
   type VoiceDiagnostics,
 } from '../lib/speech'
@@ -21,8 +22,10 @@ type Props = {
 export function VoiceCheck({ kid = false, className = '' }: Props) {
   const [diag, setDiag] = useState<VoiceDiagnostics | null>(null)
   const [httpsUrl, setHttpsUrl] = useState<string | null>(null)
+  const [caPath, setCaPath] = useState<string | null>(null)
   const [transcribe, setTranscribe] = useState<boolean | null>(null)
   const [busy, setBusy] = useState(false)
+  const serverPrimary = preferServerTranscription()
 
   const refresh = useCallback(async () => {
     setBusy(true)
@@ -30,10 +33,18 @@ export function VoiceCheck({ kid = false, className = '' }: Props) {
       const d = await collectVoiceDiagnostics()
       setDiag(d)
       try {
-        const cf = await api.cloudflareStatus()
-        setHttpsUrl(cf.publicUrl || null)
+        const tls = await api.tlsStatus()
+        setHttpsUrl(tls.urls?.vpnHttps || tls.urls?.lanHttps || null)
+        setCaPath(tls.materialPresent ? tls.caDownloadPath : null)
       } catch {
         setHttpsUrl(null)
+        setCaPath(null)
+        try {
+          const cf = await api.cloudflareStatus()
+          setHttpsUrl(cf.publicUrl || null)
+        } catch {
+          setHttpsUrl(null)
+        }
       }
       try {
         const st = await api.speechStatus()
@@ -93,8 +104,13 @@ export function VoiceCheck({ kid = false, className = '' }: Props) {
             diag.secureContext ? 'Yes' : 'No — voice blocked',
             diag.secureContext,
           )}
+          {row(
+            'Mic path',
+            serverPrimary ? 'Server STT (primary)' : 'Browser SpeechRecognition (fast path)',
+            true,
+          )}
           {row('Speech recognition API', diag.recognitionApi ? 'Present' : 'Missing', diag.recognitionApi)}
-          {row('MediaRecorder fallback', diag.mediaRecorder ? 'Present' : 'Missing', diag.mediaRecorder)}
+          {row('MediaRecorder', diag.mediaRecorder ? 'Present' : 'Missing', diag.mediaRecorder)}
           {row(
             'Mic permission',
             diag.micPermission,
@@ -121,10 +137,26 @@ export function VoiceCheck({ kid = false, className = '' }: Props) {
           {kid
             ? httpsUrl
               ? `Ask a grown-up to open ${httpsUrl} for Talk to work.`
-              : 'Ask a grown-up to open the Home Base https link (Cloudflare Tunnel) for Talk to work.'
+              : 'Ask a grown-up to open the Home Base https link (VPN HTTPS or Cloudflare Tunnel) for Talk to work.'
             : httpsUrl
-              ? `Open the HTTPS tunnel URL instead: ${httpsUrl}`
-              : 'Open Settings → Cloudflare Tunnel and use the https:// public URL (not http://LAN or VPN IP).'}
+              ? `Open the HTTPS URL instead: ${httpsUrl}`
+              : 'Open Settings → WireGuard / Voice check for the VPN HTTPS URL (trust the local CA first), or use Cloudflare Tunnel.'}
+        </p>
+      )}
+
+      {caPath && !diag?.secureContext && (
+        <p className="hb-voice-check-hint" role="status">
+          {kid
+            ? 'A grown-up can download the trust file over HTTP, then turn on Certificate Trust Settings.'
+            : `Download CA over HTTP: ${caPath} — then Settings → General → About → Certificate Trust Settings.`}
+        </p>
+      )}
+
+      {diag?.ios && (
+        <p className="hb-voice-check-hint" role="status">
+          {kid
+            ? 'If you cannot hear replies, flip the mute switch on the side to Ring and turn the volume up.'
+            : 'Silent switch mutes spoken replies — flip to Ring and raise volume.'}
         </p>
       )}
 
@@ -135,6 +167,11 @@ export function VoiceCheck({ kid = false, className = '' }: Props) {
         <button type="button" className="hb-voice-check-btn" disabled={busy} onClick={() => void unlock()}>
           Unlock speech
         </button>
+        {caPath && (
+          <a className="hb-voice-check-btn" href={caPath} download="homebase-local-ca.crt">
+            Download CA
+          </a>
+        )}
       </div>
     </section>
   )

@@ -4443,6 +4443,18 @@ html.hb-view-max .hb-topbar {
   min-width: 0;
 }
 
+.hb-voice-silent-hint {
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: var(--hb-mute);
+}
+
+.hb-voice-silent-hint--kid {
+  padding: 0 0.75rem 0.35rem;
+  text-align: center;
+}
+
 .hb-agent-talk-btn {
   appearance: none;
   display: inline-flex;

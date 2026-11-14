@@ -2,10 +2,15 @@ import { describe, expect, test } from 'bun:test'
 import {
   chunkTextForSpeech,
   isIosUserAgent,
+  isWebKitUserAgent,
   mapSpeechRecognitionError,
   pickEnglishVoice,
+  preferBrowserSpeechRecognition,
+  preferServerTranscription,
   secureContextMessages,
+  serverTranscriptionMissingMessages,
   shouldUseContinuousRecognition,
+  silentSwitchHintMessages,
 } from './speech'
 
 describe('isIosUserAgent / continuous mode', () => {
@@ -20,6 +25,37 @@ describe('isIosUserAgent / continuous mode', () => {
     expect(shouldUseContinuousRecognition('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120')).toBe(
       true,
     )
+  })
+})
+
+describe('preferServerTranscription / browser fast path', () => {
+  const ios = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15'
+  const safari =
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15'
+  const chrome =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+  test('iOS and Safari WebKit prefer server STT', () => {
+    expect(preferServerTranscription(ios)).toBe(true)
+    expect(isWebKitUserAgent(safari)).toBe(true)
+    expect(preferServerTranscription(safari)).toBe(true)
+    expect(preferBrowserSpeechRecognition(ios)).toBe(false)
+  })
+
+  test('desktop Chrome prefers browser SpeechRecognition', () => {
+    expect(preferServerTranscription(chrome)).toBe(false)
+    expect(preferBrowserSpeechRecognition(chrome)).toBe(true)
+  })
+})
+
+describe('silent switch + missing STT messages', () => {
+  test('silent switch hint mentions Ring', () => {
+    expect(silentSwitchHintMessages().body.toLowerCase()).toContain('ring')
+    expect(silentSwitchHintMessages({ kid: true }).body.toLowerCase()).toContain('mute')
+  })
+
+  test('missing key message names env var', () => {
+    expect(serverTranscriptionMissingMessages().body).toContain('HOMEBASE_TRANSCRIBE_API_KEY')
   })
 })
 

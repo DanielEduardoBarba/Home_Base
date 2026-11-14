@@ -128,7 +128,13 @@ export const api = {
       vpnHost?: string | null
       advertiseHost?: string | null
       port?: number
-      urls?: { lan: string | null; vpn: string | null }
+      httpsPort?: number | null
+      urls?: {
+        lan: string | null
+        vpn: string | null
+        lanHttps?: string | null
+        vpnHttps?: string | null
+      }
       wireguard?: {
         installed: boolean
         configured: boolean
@@ -186,8 +192,47 @@ export const api = {
       vpnHost?: string | null
       advertiseHost?: string | null
       port?: number
-      urls?: { lan: string | null; vpn: string | null }
+      httpsPort?: number | null
+      urls?: {
+        lan: string | null
+        vpn: string | null
+        lanHttps?: string | null
+        vpnHttps?: string | null
+      }
     }>('/api/system/status'),
+  tlsStatus: () =>
+    request<{
+      enabled: boolean
+      httpsPort: number | null
+      httpPort: number
+      materialPresent: boolean
+      caDownloadPath: string
+      trustHint: string
+      urls: {
+        vpnHttp: string | null
+        vpnHttps: string | null
+        lanHttp: string | null
+        lanHttps: string | null
+      }
+    }>('/api/tls/status'),
+  tlsEnsure: (force?: boolean) =>
+    request<{
+      ok: boolean
+      created: boolean
+      dir: string
+      error?: string
+      enabled: boolean
+      httpsPort: number | null
+      urls: {
+        vpnHttp: string | null
+        vpnHttps: string | null
+        lanHttp: string | null
+        lanHttps: string | null
+      }
+    }>('/api/tls/ensure', {
+      method: 'POST',
+      body: JSON.stringify({ force: !!force }),
+    }),
   presenceHeartbeat: (body?: { area?: string; tab?: string; label?: string }) =>
     request<{ ok: boolean }>('/api/presence/heartbeat', {
       method: 'POST',

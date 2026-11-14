@@ -4,6 +4,7 @@ import { bindPort, isBackupBinary, readVersion } from "./config";
 import { accessHosts } from "./network";
 import { appendTrace } from "./trace";
 import { callbackAuthEnvSet } from "./secrets_vault";
+import { httpsPort, tlsMaterialPresent } from "./tls_certs";
 
 export function systemStatus(): Record<string, unknown> {
   const wireguard: { id: string; unit: string; conf: string }[] = [];
@@ -23,13 +24,14 @@ export function systemStatus(): Record<string, unknown> {
       /* ignore */
     }
   }
+  const https = tlsMaterialPresent() ? httpsPort() : 0;
   return {
     wireguard,
     homebasedUnit: "homebased.service",
     version: readVersion(),
     backup: isBackupBinary(),
     callbackAuthEnvSet: callbackAuthEnvSet(),
-    ...accessHosts(bindPort()),
+    ...accessHosts(bindPort(), { httpsPort: https > 0 ? https : null }),
   };
 }
 

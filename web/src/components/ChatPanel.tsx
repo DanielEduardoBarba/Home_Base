@@ -35,19 +35,7 @@ import {
   writeChatDraft,
   writeChatDraftScratch,
 } from '../lib/uiPrefs'
-import {
-  isSecureContext,
-  mediaRecorderSupported,
-  secureContextMessages,
-  speakText,
-  speechSupported,
-  speechSynthesisSupported,
-  startMediaRecorderCapture,
-  startSpeechDictation,
-  stopSpeaking,
-  unlockSpeechSynthesis,
-  type SpeechHandle,
-} from '../lib/speech'
+import { useVoiceSession } from '../lib/useVoiceSession'
 import {
   formatMsgTime,
   formatToolDetail,
@@ -932,12 +920,6 @@ export function ChatPanel({
   const [pickerDir, setPickerDir] = useState('')
   const [pickerEntries, setPickerEntries] = useState<FsEntry[]>([])
   const [pickingFolder, setPickingFolder] = useState(false)
-  const [listening, setListening] = useState(false)
-  /** Home Agent: mic session stays armed until user turns it off; replies are spoken. */
-  const [voiceMode, setVoiceMode] = useState(false)
-  const voiceModeRef = useRef(false)
-  voiceModeRef.current = voiceMode
-  const canTts = useMemo(() => speechSynthesisSupported(), [])
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [activity, setActivity] = useState('')
   /** Durable agent phase for status chrome (survives brief empty activity). */
@@ -970,8 +952,6 @@ export function ChatPanel({
     setDockOpenLocal(open)
     setDockMounted(open)
   }, [])
-  const canSpeak = useMemo(() => speechSupported(), [])
-
   const dockOpen = dockOpenProp ?? dockOpenLocal
   function setDockOpen(open: boolean) {
     if (open) {
@@ -1015,8 +995,6 @@ export function ChatPanel({
   const pendingComposeApplied = useRef('')
   const pendingComposeCreating = useRef('')
   const tabsRef = useRef(tabs)
-  const speechRef = useRef<SpeechHandle | null>(null)
-  const inputBeforeSpeech = useRef('')
   const streamingRef = useRef(false)
   const phaseRef = useRef(agentPhase)
   const notifyRef = useRef(notify)
@@ -1140,6 +1118,47 @@ export function ChatPanel({
     persistComposer(text)
     setInput(text)
   }
+
+  function reportAgentIssue(message: string, level: 'error' | 'warn' = 'error') {
+    const text = message.trim()
+    if (!text) return
+    setError(text)
+    console.error('[home-agent]', text)
+    try {
+      notify?.ping({
+        title: level === 'error' ? 'Agent error' : 'Agent',
+        body: text.slice(0, 200),
+        level,
+        category: 'home-agent',
+      })
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const voice = useVoiceSession({
+    enabled: isAgent || !!kid,
+    kid: !!kid,
+    onText: setComposerText,
+    onIssue: (message, level) => {
+      if (isAgent || kid) reportAgentIssue(message, level)
+      else setError(message)
+    },
+    unlockAudio: () => notify?.unlockAudio(),
+    getComposerText: () => inputRef.current,
+  })
+  const voiceRef = useRef(voice)
+  voiceRef.current = voice
+  const {
+    voiceMode,
+    listening,
+    canSpeak,
+    canTts,
+    showSilentSwitchHint,
+    silentSwitchHint,
+    toggleTalk: toggleListen,
+    stopListening,
+  } = voice
 
   // Persist / restore composer drafts per chat. Unsent text survives tab
   // switches, workspace reloads, and leaving the screen.
@@ -2181,29 +2200,13 @@ export function ChatPanel({
               })
             }
             // Talk mode: speak the assistant reply (pause mic during TTS to avoid echo).
-            if (!err && voiceModeRef.current && forActive) {
+            if (!err && voiceRef.current.voiceMode && forActive) {
               const tab = tabsRef.current.find((t) => t.id === (chatId || activeIdRef.current))
               const lastAssistant = [...(tab?.messages || [])]
                 .reverse()
                 .find((m) => m.role === 'assistant' && (m.text || '').trim())
               if (lastAssistant?.text) {
-                try {
-                  stopListening()
-                  speakText(lastAssistant.text, {
-                    onEnd: () => {
-                      if (
-                        voiceModeRef.current &&
-                        (speechSupported() || mediaRecorderSupported())
-                      ) {
-                        window.setTimeout(() => {
-                          if (voiceModeRef.current) beginListen('')
-                        }, 280)
-                      }
-                    },
-                  })
-                } catch (e) {
-                  console.error('[home-agent] speak failed', e)
-                }
+                voiceRef.current.speakReply(lastAssistant.text)
               }
             }
           } else if (msg.type === 'error') {
@@ -2599,13 +2602,9 @@ export function ChatPanel({
     setDraftImages([])
     setDraftContext([])
     // Voice mode: pause mic while sending; resume after (TTS of the reply pauses again).
-    if ((isAgent || kid) && voiceModeRef.current) {
-      stopListening()
-      if (canSpeak || mediaRecorderSupported()) {
-        window.setTimeout(() => {
-          if (voiceModeRef.current) beginListen('')
-        }, 400)
-      }
+    if ((isAgent || kid) && voiceRef.current.voiceMode) {
+      voiceRef.current.stopListening()
+      voiceRef.current.resumeListenSoon(400)
     }
     const chatId = active.id
     if (!opts?.skipOptimistic && !queueing) {
@@ -2869,224 +2868,6 @@ export function ChatPanel({
     onPresent?.(req)
     if (isDock) setDockOpen(false)
   }
-
-  const listenGen = useRef(0)
-
-  function stopListening() {
-    listenGen.current += 1
-    const handle = speechRef.current
-    speechRef.current = null
-    setListening(false)
-    handle?.stop()
-  }
-
-  function beginListen(prefix?: string) {
-    const gen = ++listenGen.current
-    const prev = speechRef.current
-    speechRef.current = null
-    setListening(false)
-    prev?.stop()
-    notify?.unlockAudio()
-    void unlockSpeechSynthesis()
-
-    if (!isSecureContext()) {
-      const msg = secureContextMessages({ kid }).body
-      if (isAgent || kid) reportAgentIssue(msg)
-      else setError(msg)
-      void (async () => {
-        try {
-          const cf = await api.cloudflareStatus()
-          if (cf.publicUrl) {
-            const withUrl = secureContextMessages({ kid, httpsUrl: cf.publicUrl }).body
-            if (isAgent || kid) reportAgentIssue(withUrl)
-            else setError(withUrl)
-          }
-        } catch {
-          /* keep generic message */
-        }
-      })()
-      return
-    }
-
-    // Freeze composer prefix for the whole listen session — speech.ts owns the
-    // cumulative transcript so words append instead of overwriting / doubling.
-    inputBeforeSpeech.current = (prefix ?? input).trim()
-    const applySpeech = (text: string) => {
-      if (gen !== listenGen.current) return
-      const base = inputBeforeSpeech.current
-      setComposerText(base ? `${base} ${text}` : text)
-    }
-    const onSpeechError = (message: string) => {
-      if (gen !== listenGen.current) return
-      if (isAgent || kid) reportAgentIssue(message)
-      else setError(message)
-    }
-    const handle = startSpeechDictation({
-      onPartial: applySpeech,
-      onFinal: applySpeech,
-      onError: onSpeechError,
-      onEnd: () => {
-        if (gen !== listenGen.current) return
-        speechRef.current = null
-        setListening(false)
-        // Talk mode: engine ended — keep mode on, restart if still armed.
-        if (voiceModeRef.current && (isAgent || kid)) {
-          window.setTimeout(() => {
-            if (voiceModeRef.current && listenGen.current === gen) beginListen()
-          }, 250)
-        }
-      },
-      lang: 'en-US',
-      kid,
-    })
-    if (!handle) {
-      // Fallback: MediaRecorder → server Whisper when SpeechRecognition is missing.
-      if (mediaRecorderSupported() && (isAgent || kid) && voiceModeRef.current) {
-        beginRecordFallback(gen, prefix)
-      }
-      return
-    }
-    if (gen !== listenGen.current) {
-      handle.stop()
-      return
-    }
-    speechRef.current = handle
-    setListening(true)
-    setError('')
-  }
-
-  /** Push-to-talk MediaRecorder → /api/speech/transcribe when Web Speech API fails. */
-  function beginRecordFallback(gen: number, prefix?: string) {
-    inputBeforeSpeech.current = (prefix ?? input).trim()
-    const handle = startMediaRecorderCapture({
-      kid,
-      onError: (message) => {
-        if (gen !== listenGen.current) return
-        reportAgentIssue(
-          `${message} Tip: use the keyboard mic (dictation) or type — text chat always works.`,
-          'warn',
-        )
-      },
-      onBlob: (blob, mime) => {
-        if (gen !== listenGen.current) return
-        setListening(false)
-        speechRef.current = null
-        void (async () => {
-          try {
-            const st = await api.speechStatus()
-            if (!st.configured) {
-              reportAgentIssue(
-                kid
-                  ? 'Voice typing needs a grown-up to set up server listening, or use the keyboard mic. You can still type!'
-                  : 'SpeechRecognition unavailable and server transcription is not configured (set HOMEBASE_TRANSCRIBE_API_KEY). Use the keyboard mic / type instead.',
-                'warn',
-              )
-              return
-            }
-            const filename =
-              mime.includes('mp4') || mime.includes('aac') ? 'speech.m4a' : 'speech.webm'
-            const res = await api.speechTranscribe(blob, filename)
-            const text = (res.text || '').trim()
-            if (!text) {
-              reportAgentIssue(kid ? 'I could not catch that — try again!' : 'No speech transcribed', 'warn')
-              return
-            }
-            const base = inputBeforeSpeech.current
-            setComposerText(base ? `${base} ${text}` : text)
-            setError('')
-          } catch (e) {
-            reportAgentIssue(
-              e instanceof Error ? e.message : 'Transcription failed',
-              'warn',
-            )
-          }
-        })()
-      },
-    })
-    if (!handle) return
-    if (gen !== listenGen.current) {
-      handle.stop()
-      return
-    }
-    speechRef.current = handle
-    setListening(true)
-    setError('')
-    if (isAgent || kid) {
-      reportAgentIssue(
-        kid ? 'Hold Talk — I am recording. Tap again when you finish.' : 'Recording… tap Talk again to send audio for transcription.',
-        'warn',
-      )
-    }
-  }
-
-  function reportAgentIssue(message: string, level: 'error' | 'warn' = 'error') {
-    const text = message.trim()
-    if (!text) return
-    setError(text)
-    console.error('[home-agent]', text)
-    try {
-      notify?.ping({
-        title: level === 'error' ? 'Agent error' : 'Agent',
-        body: text.slice(0, 200),
-        level,
-        category: 'home-agent',
-      })
-    } catch {
-      /* ignore */
-    }
-  }
-
-  function toggleListen() {
-    if (isAgent || kid) {
-      if (voiceMode) {
-        // If MediaRecorder fallback is mid-capture, stopping commits the clip.
-        const wasListening = listening
-        setVoiceMode(false)
-        voiceModeRef.current = false
-        stopListening()
-        stopSpeaking()
-        if (wasListening && !canSpeak) {
-          // stop() already triggered onBlob for MediaRecorder
-        }
-        return
-      }
-      // Talk mode always arms TTS for replies. Mic listen is optional.
-      setVoiceMode(true)
-      voiceModeRef.current = true
-      notify?.unlockAudio()
-      void unlockSpeechSynthesis()
-      if (!isSecureContext()) {
-        beginListen() // surfaces secure-context message
-        return
-      }
-      if (canSpeak || mediaRecorderSupported()) {
-        beginListen()
-      } else {
-        stopListening()
-        reportAgentIssue(
-          kid
-            ? 'I can still talk back out loud — type your words, or ask a grown-up to check Voice check in Settings.'
-            : 'Microphone dictation unavailable here — Talk will still speak AI replies. Use the keyboard mic if available.',
-          'warn',
-        )
-      }
-      return
-    }
-    if (listening) {
-      stopListening()
-      return
-    }
-    void unlockSpeechSynthesis()
-    beginListen()
-  }
-
-  useEffect(() => {
-    return () => {
-      listenGen.current += 1
-      speechRef.current?.stop()
-      stopSpeaking()
-    }
-  }, [])
 
   function resetChat() {
     if (!active || !socketOpen()) return
@@ -3931,7 +3712,13 @@ export function ChatPanel({
   )
 
   const kidComposer = (
-    <form onSubmit={send} className="hb-kid-composer shrink-0">
+    <div className="hb-kid-composer-wrap shrink-0">
+    {showSilentSwitchHint && (
+      <p className="hb-voice-silent-hint hb-voice-silent-hint--kid" role="status">
+        {silentSwitchHint}
+      </p>
+    )}
+    <form onSubmit={send} className="hb-kid-composer">
       <button
         type="button"
         className={`hb-kid-mic${listening || voiceMode ? ' hb-kid-mic--on' : ''}`}
@@ -3989,6 +3776,7 @@ export function ChatPanel({
         </button>
       )}
     </form>
+    </div>
   )
 
   const composer = kid ? kidComposer : (
@@ -4305,6 +4093,11 @@ export function ChatPanel({
             <span>{voiceMode ? 'Talk on' : 'Talk'}</span>
           </button>
         </div>
+      )}
+      {showSilentSwitchHint && (
+        <p className="hb-voice-silent-hint" role="status">
+          {silentSwitchHint}
+        </p>
       )}
       <div
         className="flex gap-2 items-stretch"

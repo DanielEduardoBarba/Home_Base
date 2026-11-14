@@ -186,6 +186,22 @@ try {
 const hostname = bindHost();
 const port = bindPort();
 
+// Best-effort local CA for VPN/LAN HTTPS (iOS secure context). HTTP stays up for MCP.
+try {
+  const { ensureLocalTlsCerts } = await import("./tls_certs");
+  const tls = ensureLocalTlsCerts();
+  if (tls.ok && tls.created) {
+    logInfo(`local TLS CA created under ${tls.dir}`, "boot");
+  } else if (!tls.ok && tls.error) {
+    logWarn(`local TLS certs: ${tls.error}`, "boot");
+  }
+} catch (e) {
+  logWarn(
+    `local TLS ensure skipped: ${e instanceof Error ? e.message : String(e)}`,
+    "boot",
+  );
+}
+
 try {
   compactLargeChats();
 } catch (e) {
@@ -230,31 +246,38 @@ function wsFields(data: WsData, extra?: Record<string, unknown>): Record<string,
   };
 }
 
-const server = Bun.serve<WsData>({
-  hostname,
-  port,
-  fetch(req, srv) {
-    const peer = peerFromServer(srv, req);
-    const url = new URL(req.url);
-    if (url.pathname.startsWith("/ws/")) {
-      const upgraded = srv.upgrade(req, {
-        data: { url, headers: req.headers, peerIp: peer },
-      });
-      if (upgraded) return undefined as unknown as Response;
-      logWarn("websocket upgrade failed", {
-        source: "ws",
-        fields: { ip: peer, path: url.pathname },
-      });
-      return new Response("WebSocket upgrade failed", { status: 400 });
-    }
-    return app.fetch(withPeerIp(req, peer === "unknown" ? undefined : peer));
+function handleFetch(
+  req: Request,
+  srv: {
+    requestIP?: (req: Request) => { address: string } | null;
+    upgrade: (
+      req: Request,
+      opts: { data: WsData },
+    ) => boolean;
   },
-  websocket: {
+): Response | Promise<Response> | undefined {
+  const peer = peerFromServer(srv, req);
+  const url = new URL(req.url);
+  if (url.pathname.startsWith("/ws/")) {
+    const upgraded = srv.upgrade(req, {
+      data: { url, headers: req.headers, peerIp: peer },
+    });
+    if (upgraded) return undefined as unknown as Response;
+    logWarn("websocket upgrade failed", {
+      source: "ws",
+      fields: { ip: peer, path: url.pathname },
+    });
+    return new Response("WebSocket upgrade failed", { status: 400 });
+  }
+  return app.fetch(withPeerIp(req, peer === "unknown" ? undefined : peer));
+}
+
+const websocketHandlers = {
     // VPN / iOS Safari can go quiet for minutes during long agent tool runs.
     // Bun's default 120s idle close drops the cursor socket mid-prompt.
     idleTimeout: 300,
     sendPings: true,
-    async open(ws) {
+    async open(ws: import("bun").ServerWebSocket<WsData>) {
       const data = ws.data;
       const auth = await authenticateWsToken(data.url, data.headers);
       const ok = auth === true || (typeof auth === "object" && auth.ok);
@@ -375,7 +398,7 @@ const server = Bun.serve<WsData>({
       });
       ws.close(4404, "unknown ws path");
     },
-    async message(ws, message) {
+    async message(ws: import("bun").ServerWebSocket<WsData>, message: string | Buffer) {
       const data = ws.data;
       // App PIN lock: keep sessions/workers alive; reject commands until unlock
       // (clients must not hang waiting for delete/create acks).
@@ -467,7 +490,7 @@ const server = Bun.serve<WsData>({
         );
       }
     },
-    async close(ws) {
+    async close(ws: import("bun").ServerWebSocket<WsData>) {
       const data = ws.data;
       if (
         (data.kind === "pty" || data.kind === "session") &&
@@ -485,8 +508,40 @@ const server = Bun.serve<WsData>({
         logInfo("websocket close", { source: "ws", fields: wsFields(data) });
       }
     },
+};
+
+const server = Bun.serve<WsData>({
+  hostname,
+  port,
+  fetch(req, srv) {
+    return handleFetch(req, srv) as Response;
   },
+  websocket: websocketHandlers,
 });
+
+let httpsServer: ReturnType<typeof Bun.serve> | null = null;
+try {
+  const { httpsPort, loadTlsServeMaterial } = await import("./tls_certs");
+  const mat = loadTlsServeMaterial();
+  const hp = httpsPort();
+  if (mat && hp > 0) {
+    httpsServer = Bun.serve<WsData>({
+      hostname,
+      port: hp,
+      tls: { key: mat.key, cert: mat.cert },
+      fetch(req, srv) {
+        return handleFetch(req, srv) as Response;
+      },
+      websocket: websocketHandlers,
+    });
+    logInfo(`Home Base HTTPS listening on ${hostname}:${hp}`, "boot");
+  }
+} catch (e) {
+  logWarn(
+    `HTTPS listener skipped: ${e instanceof Error ? e.message : String(e)}`,
+    "boot",
+  );
+}
 
 // View IPC used to surface unhandledRejections ("worker closed") that exited
 // the process and bounced systemd — keep the API up even if a subsystem faults.
@@ -515,6 +570,11 @@ function gracefulExit(signal: string): void {
   } catch {
     /* ignore */
   }
+  try {
+    httpsServer?.stop(true);
+  } catch {
+    /* ignore */
+  }
   process.exit(0);
 }
 process.on("SIGTERM", () => gracefulExit("SIGTERM"));
@@ -522,7 +582,9 @@ process.on("SIGINT", () => gracefulExit("SIGINT"));
 
 appendTrace(
   "info",
-  `Home Base Bun listening on ${hostname}:${port} v${readVersion()}`,
+  `Home Base Bun listening on ${hostname}:${port} v${readVersion()}` +
+    (httpsServer ? ` (+ HTTPS :${httpsServer.port})` : ""),
   "boot",
 );
 void server;
+void httpsServer;

@@ -362,6 +362,11 @@ export function WireGuardPanel() {
                 </span>
               )}
             </div>
+            <p className="text-[11px] text-mute leading-relaxed">
+              iPhone Talk needs HTTPS on this VPN (default{' '}
+              <span className="font-mono">:8443</span>). Trust the local CA once — see Voice check /
+              docs/VOICE-IOS.md. HTTP stays available for MCP.
+            </p>
             {status.state?.endpoint && (
               <p className="font-mono text-[11px] break-all">
                 <span className="text-mute">endpoint </span>

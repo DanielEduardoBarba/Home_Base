@@ -21,6 +21,7 @@ const QUIET_EXACT = new Set([
   "/api/sudo/status",
   "/api/share/status",
   "/api/system/status",
+  "/api/tls/status",
 ]);
 
 const QUIET_PREFIX = ["/api/trace/", "/assets/", "/_next/"];

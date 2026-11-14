@@ -167,23 +167,37 @@ export function vpnHost(): string | null {
 }
 
 /** Access URLs for the control plane (health / Settings). */
-export function accessHosts(port: number): {
+export function accessHosts(
+  port: number,
+  opts: { httpsPort?: number | null } = {},
+): {
   lanHost: string | null;
   vpnHost: string | null;
   advertiseHost: string | null;
   port: number;
-  urls: { lan: string | null; vpn: string | null };
+  httpsPort: number | null;
+  urls: {
+    lan: string | null;
+    vpn: string | null;
+    lanHttps: string | null;
+    vpnHttps: string | null;
+  };
 } {
   const lan = lanHost();
   const vpn = vpnHost();
+  const httpsPort =
+    opts.httpsPort != null && opts.httpsPort > 0 ? opts.httpsPort : null;
   return {
     lanHost: lan,
     vpnHost: vpn,
     advertiseHost: advertiseHost(),
     port,
+    httpsPort,
     urls: {
       lan: lan ? `http://${lan}:${port}/` : null,
       vpn: vpn ? `http://${vpn}:${port}/` : null,
+      lanHttps: httpsPort && lan ? `https://${lan}:${httpsPort}/` : null,
+      vpnHttps: httpsPort && vpn ? `https://${vpn}:${httpsPort}/` : null,
     },
   };
 }

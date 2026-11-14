@@ -1,6 +1,11 @@
 /**
  * Browser speech helpers for Home Base + Doodle (Chrome / Safari / iOS WebKit).
  * Pure helpers are unit-tested; browser APIs are gated for iOS secure-context quirks.
+ *
+ * Listen path policy:
+ * - iOS / iPadOS / WebKit → server STT (MediaRecorder → POST /api/speech/transcribe) PRIMARY
+ * - Desktop Chrome/Edge with SpeechRecognition → optional fast on-device path
+ * - Browser SpeechRecognition elsewhere is best-effort only
  */
 
 export type SpeechHandle = {
@@ -85,6 +90,55 @@ export function isIosBrowser(): boolean {
   return isIosUserAgent(navigator.userAgent || '')
 }
 
+/** Safari / WebKit (incl. iOS) without Chrome/Chromium/Firefox engines. */
+export function isWebKitUserAgent(ua: string): boolean {
+  const u = (ua || '').toLowerCase()
+  if (!/applewebkit/.test(u)) return false
+  if (/chrome|chromium|crios|fxios|edg\//.test(u)) return false
+  return true
+}
+
+/**
+ * Prefer MediaRecorder → Home Base server Whisper on iOS/WebKit.
+ * Desktop Chrome keeps on-device SpeechRecognition as the fast path.
+ */
+export function preferServerTranscription(ua?: string): boolean {
+  const agent =
+    ua ??
+    (typeof navigator !== 'undefined' ? navigator.userAgent || '' : '')
+  if (isIosUserAgent(agent)) return true
+  if (isWebKitUserAgent(agent)) return true
+  return false
+}
+
+/** Desktop Chrome/Edge-style browsers where SpeechRecognition is usually reliable. */
+export function preferBrowserSpeechRecognition(ua?: string): boolean {
+  if (preferServerTranscription(ua)) return false
+  const agent =
+    ua ??
+    (typeof navigator !== 'undefined' ? navigator.userAgent || '' : '')
+  const u = (agent || '').toLowerCase()
+  // Chrome, Chromium, Edge, Opera — not Safari/WebKit-only.
+  return /chrome|chromium|edg\/|opr\//.test(u) && !/iphone|ipad|ipod/.test(u)
+}
+
+/** iOS Ring/Silent switch mutes speechSynthesis — hint copy for Talk UI. */
+export function silentSwitchHintMessages(opts: { kid?: boolean } = {}): {
+  title: string
+  body: string
+} {
+  if (opts.kid) {
+    return {
+      title: 'Silent switch',
+      body: 'If you cannot hear me, flip the mute switch on the side of the iPhone/iPad (Ring mode), then turn the volume up.',
+    }
+  }
+  return {
+    title: 'Silent switch mutes spoken replies',
+    body: 'iPhone/iPad Ring/Silent switch mutes speechSynthesis. Flip to Ring and raise volume to hear Talk replies. Text chat still works.',
+  }
+}
+
 /** iOS continuous=true is unreliable — use false + restart loop. */
 export function shouldUseContinuousRecognition(ua: string): boolean {
   return !isIosUserAgent(ua)
@@ -134,7 +188,7 @@ export function secureContextMessages(opts: {
   const https = (opts.httpsUrl || '').trim()
   const linkHint = https
     ? ` Open ${https} instead.`
-    : ' Ask a grown-up to open the Cloudflare Tunnel HTTPS link from Home Base Settings → Cloudflare Tunnel (or finish the Setup HTTPS step).'
+    : ' Ask a grown-up to open the VPN HTTPS link (or Cloudflare Tunnel) from Home Base Settings.'
   if (opts.kid) {
     return {
       title: 'Voice needs a safe link',
@@ -148,11 +202,27 @@ export function secureContextMessages(opts: {
     title: 'Secure connection required for voice',
     body:
       'Microphone and speech recognition need a secure context (HTTPS or localhost). ' +
-      'http://LAN-IP and WireGuard VPN IPs are blocked by iOS/Safari.' +
+      'Plain http://LAN-IP and http://WireGuard VPN IPs are blocked by iOS/Safari.' +
       (https
-        ? ` Use the Cloudflare Tunnel URL: ${https}`
-        : ' Configure Settings → Cloudflare Tunnel (or the Setup HTTPS step) and open that https:// URL.') +
+        ? ` Use: ${https}`
+        : ' Use the VPN HTTPS URL (Settings → WireGuard / Voice check) after trusting the local CA, or Cloudflare Tunnel.') +
       ' Text chat still works.',
+  }
+}
+
+/** Clear message when server Whisper key is missing (iOS primary path). */
+export function serverTranscriptionMissingMessages(opts: {
+  kid?: boolean
+} = {}): { title: string; body: string } {
+  if (opts.kid) {
+    return {
+      title: 'Voice typing needs setup',
+      body: 'Voice typing needs a grown-up to set up server listening, or use the keyboard mic. You can still type!',
+    }
+  }
+  return {
+    title: 'Server transcription not configured',
+    body: 'Server transcription is not configured. Set HOMEBASE_TRANSCRIBE_API_KEY (or OPENAI_API_KEY) on the Home Base host. On iPhone/iPad this is the primary Talk mic path — use the keyboard mic / type until it is set.',
   }
 }
 

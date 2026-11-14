@@ -1,46 +1,47 @@
 # Voice on iPhone & iPad (Home Base + Doodle)
 
-Talk mode (mic + spoken replies) uses the browser **SpeechRecognition** and **speechSynthesis** APIs. On iOS Safari / Add-to-Home-Screen these only work under specific conditions. Text chat always works even when voice does not.
+Talk mode uses **server-side transcription** as the primary mic path on iOS/WebKit (`MediaRecorder` `audio/mp4` → Home Base `POST /api/speech/transcribe`). Spoken replies use browser **speechSynthesis**. Desktop Chrome may still use on-device **SpeechRecognition** as an optional fast path. Text chat always works even when voice does not.
 
 ## Quick checklist for Dan
 
-1. **Use HTTPS** — open the Cloudflare Tunnel URL (`https://…`), not `http://192.168.…` or a WireGuard VPN IP. iOS blocks mic / recognition outside a [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts).
-2. **Settings → Siri & Dictation** (wording varies by iOS version) — turn **Dictation** on. Or **Settings → General → Keyboard → Enable Dictation**.
-3. **Settings → Safari → Microphone** (or the site’s **Aa** menu → Website Settings) — allow microphone for your Home Base host.
-4. **Screen Time → Content & Privacy Restrictions** — if enabled, allow Dictation / Siri & Dictation; otherwise you often get `service-not-allowed`.
-5. Tap **Talk** once (user gesture) so iOS unlocks speech synthesis for later AI replies.
-6. Optional: **Add to Home Screen** — voice still needs the same HTTPS origin; do not bookmark the LAN http URL.
+1. **Use HTTPS on the VPN** — open `https://10.6.0.x:8443/` (or the URL from Settings / Voice check), not plain `http://`. iOS blocks mic outside a [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts). Cloudflare Tunnel HTTPS also works.
+2. **Trust the local CA once** (see below) so Safari accepts the self-signed VPN cert.
+3. **Set `HOMEBASE_TRANSCRIBE_API_KEY`** (or `OPENAI_API_KEY`) on the Home Base host — never commit keys. Without it, Talk shows a clear “not configured” message; use the keyboard mic / type.
+4. Tap **Talk** once (user gesture) so iOS unlocks speech synthesis for later AI replies.
+5. **Ring/Silent switch** — if replies are silent, flip the side switch to Ring and raise volume (speechSynthesis respects the mute switch).
 
-In-app: **Settings → Voice check** (and **Settings → Doodle → Devices**, which embeds the same panel) shows secure context, recognition API, mic permission, synth voice count, and the last error.
+In-app: **Settings → Voice check** (and **Settings → Doodle → Devices**) shows secure context, MediaRecorder, server transcription, HTTPS URLs, and the last error.
 
-Full field notes: `docs/VOICE-IOS.md` (this file). Implementation: `web/src/lib/speech.ts`.
+Implementation: `web/src/lib/speech.ts` + shared `web/src/lib/useVoiceSession.ts` (ChatPanel / every Doodle chat bot).
 
-## Why LAN / VPN http fails
+## Trust Home Base Local CA on iPhone / iPad
 
-`getUserMedia` and `webkitSpeechRecognition` require `window.isSecureContext === true` (HTTPS or `localhost` / `127.0.0.1`). Plain `http://` to a LAN or WireGuard address is **not** secure on iPhone/iPad, so Talk fails until you use the tunnel.
+`./build.sh --setup` (and boot) create a local CA + server cert under `.runtime/tls/` (gitignored). HTTP keeps working for MCP; HTTPS listens on **8443** by default (`HOMEBASE_HTTPS_PORT`).
 
-**Fix:** Settings → **Cloudflare Tunnel** — install/configure, set hostname, start, then open the `publicUrl` (`https://your-host`) on the phone. Setup wizard HTTPS step is the same idea.
+1. On the phone (WireGuard connected), open the **HTTP** CA download:  
+   `http://10.6.0.1:8080/api/tls/ca.crt`  
+   (or your VPN host + HTTP port — same path).
+2. Install the profile when iOS prompts.
+3. **Settings → General → About → Certificate Trust Settings** — enable full trust for **Home Base Local CA**.
+4. Open **`https://10.6.0.1:8443/`** (or the `vpnHttps` URL from `/api/tls/status` / Voice check).
 
-## iOS SpeechRecognition quirks (what Home Base does)
+Regenerate SANs after IP changes: Settings API `POST /api/tls/ensure` with `{ "force": true }`, or delete `.runtime/tls` and re-run `./build.sh --setup`. Optional: `HOMEBASE_TLS_SANS=…`.
 
-| Issue | Mitigation in `speech.ts` |
+## Why plain HTTP fails
+
+`getUserMedia` requires `window.isSecureContext === true` (HTTPS or `localhost`). Plain `http://` to a LAN or WireGuard IP is **not** secure on iPhone/iPad.
+
+## Listen path (what Home Base does)
+
+| Device | Mic path |
 | --- | --- |
-| `continuous=true` unreliable | iOS uses `continuous=false` + controlled restart loop |
-| Must start from a tap | Talk / mic button unlocks synth + starts recognition in the gesture |
-| Async TTS silent | `unlockSpeechSynthesis()` empty utterance + `resume()` on first tap |
-| Long replies cut off | Sentence chunking + English voice pick after `voiceschanged` |
-| Synth stuck / paused | Watchdog `cancel` + `resume` |
-| Echo / audio session | Stop recognition while speaking; restart on TTS `onend` |
-| `service-not-allowed` | Clear message → enable Dictation / fix Screen Time |
-| API missing | MediaRecorder (`audio/mp4` on iOS) → optional server Whisper |
+| iPhone / iPad / WebKit | **Primary:** MediaRecorder → server Whisper |
+| Desktop Chrome / Edge | Optional fast path: SpeechRecognition; server STT still available |
+| Missing API key | Clear UI message; keyboard mic / type |
 
-## Server transcription fallback (optional)
+Also: iOS TTS unlock + sentence chunking; mic pauses while speaking; silent-switch hint when Talk is on.
 
-When on-device recognition is missing or blocked, Talk can **record** a short clip and POST it to:
-
-`POST /api/speech/transcribe` (session or Doodle cookie)
-
-Set **one** of these on the Home Base host (never commit secrets):
+## Server transcription env
 
 ```bash
 # Preferred dedicated key
@@ -50,24 +51,24 @@ HOMEBASE_TRANSCRIBE_API_KEY=sk-...
 OPENAI_API_KEY=sk-...
 ```
 
-Uses OpenAI Whisper (`whisper-1`). If unset, `/api/speech/status` reports `configured: false` and the UI hints to use the **keyboard mic** (iOS dictation) or type. No key → no cloud audio.
+Uses OpenAI Whisper (`whisper-1`). `/api/speech/status` reports `configured: false` when unset. No key → no cloud audio.
 
 ## Hands-free flow
 
-1. Tap **Talk** (Agent) or the kid mic (Doodle) — unlocks TTS, starts listening.
-2. Speak → text lands in the composer → send / Confirm.
+1. Tap **Talk** (Agent) or the kid mic (Doodle) — unlocks TTS, starts recording / listening.
+2. On iOS: tap Talk again to finish the clip → server transcribes into the composer.
 3. Mic pauses while the reply is spoken (chunked).
-4. Listening resumes automatically while Talk stays on.
+4. Listening resumes while Talk stays on.
 5. Tap **Talk** again to stop.
 
 ## Still stuck?
 
 Open **Voice check** on the device and note:
 
-- Secure page = No → switch to the HTTPS tunnel URL  
-- Recognition API = Missing → try another browser or rely on MediaRecorder / keyboard mic  
+- Secure page = No → use VPN HTTPS (trust CA) or Cloudflare Tunnel  
+- Server transcription = Not configured → set `HOMEBASE_TRANSCRIBE_API_KEY`  
 - Mic permission = denied → Safari site settings  
-- Last error = `service-not-allowed` → Dictation / Screen Time  
+- Spoken replies silent → Ring switch + volume  
 - Synth voices = 0 → tap **Unlock speech**, wait a second, Refresh  
 
-See also: Settings → Cloudflare Tunnel; `.env.example` for `HOMEBASE_TRANSCRIBE_API_KEY`.
+See also: Settings → WireGuard; Settings → Cloudflare Tunnel; `.env.example`.

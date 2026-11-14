@@ -824,6 +824,21 @@ cmd_setup() {
   )
   hb_ok "JWT ready"
 
+  hb_step "Local TLS CA (VPN/LAN HTTPS for iOS Talk)"
+  (
+    cd "$(bun_server_dir)"
+    bun -e '
+      import { ensureLocalTlsCerts, tlsStatusPublic } from "./src/tls_certs.ts";
+      const r = ensureLocalTlsCerts();
+      if (!r.ok) {
+        console.error(r.error || "tls ensure failed");
+        process.exit(1);
+      }
+      const s = tlsStatusPublic();
+      console.log(r.created ? "created" : "present", s.urls.vpnHttps || s.urls.lanHttps || `https://…:${s.httpsPort}`);
+    '
+  ) && hb_ok "TLS certs ready (.runtime/tls — not committed)" || hb_warn "TLS certs skipped (openssl?)"
+
   if grep -qE '^HOMEBASE_TOKEN=' .env 2>/dev/null; then
     sed_inplace '/^HOMEBASE_TOKEN=/d' .env
     hb_warn "removed legacy HOMEBASE_TOKEN from .env"

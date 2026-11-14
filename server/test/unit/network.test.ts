@@ -47,11 +47,25 @@ describe("advertiseHost", () => {
   test("accessHosts exposes separate LAN and VPN URLs", () => {
     const access = accessHosts(8888);
     expect(access.port).toBe(8888);
+    expect(access.httpsPort).toBe(null);
+    expect(access.urls.lanHttps).toBe(null);
+    expect(access.urls.vpnHttps).toBe(null);
     if (access.vpnHost) {
       expect(access.urls.vpn).toBe(`http://${access.vpnHost}:8888/`);
     }
     if (access.lanHost) {
       expect(access.urls.lan).toBe(`http://${access.lanHost}:8888/`);
+    }
+  });
+
+  test("accessHosts includes HTTPS when httpsPort set", () => {
+    const access = accessHosts(8080, { httpsPort: 8443 });
+    expect(access.httpsPort).toBe(8443);
+    if (access.vpnHost) {
+      expect(access.urls.vpnHttps).toBe(`https://${access.vpnHost}:8443/`);
+    }
+    if (access.lanHost) {
+      expect(access.urls.lanHttps).toBe(`https://${access.lanHost}:8443/`);
     }
   });
 });
