@@ -73,8 +73,21 @@ Each role is a separate headless agent run; state is shared under `docs/selfqa/<
 
 1. **Orchestrator** — goal + `docs/QA-PROGRESS.md` + open `docs/qa/` findings → plan.
 2. **Developer** — fix on `development_grok`, typecheck + tests, commit/push (no force).
-3. **QA Manager** — test plan, spawn testers, write cycle report + strict `VERDICT.json`.
+3. **QA Manager** — test plan, spawn testers, write cycle report + strict `VERDICT.json` (`verdict` + required `openFindings`).
 4. **Testers** — persona workflows against localhost only; personas get `qa+personaN@example.test` emails.
+
+### `VERDICT.json` (strict)
+
+Every cycle the QA Manager writes:
+
+```json
+{
+  "verdict": "PASS",
+  "openFindings": []
+}
+```
+
+`openFindings` is required (`[]` when none). Each open item is `{"id","severity","title"}`. The runner uses this list for consecutive-round repeat `BLOCKED` and for callback `items`/`bugs`. A missing or malformed field fails closed as `BLOCKED` (one callback). Markdown report text is only a warning cross-check.
 
 ## Home Base UI
 
@@ -94,6 +107,6 @@ When the session ends, Home Base POSTs `type: "homebase.selfqa"` with a single `
 - Agent env: `SELFQA_RUN=1`, blank deploy tokens/keys, temp `HOME` / `XDG_CONFIG_HOME` / `CLOUDSDK_CONFIG`.
 - PATH shims refuse `ship.sh` / `deploy*.sh` / `ship-expo.sh` / `build.sh --deploy|--ship|d|a|s|m` / `pnpm deploy*` / `firebase|eas|gcloud` deploy / `xcrun altool`.
 
-**Text scan (second layer):** normalizes commands (split on `;` `&&` `||` `|` `$()`, strip env/`cd`, resolve basename). Catches ship/deploy forms, unsafe `git push`, price/subscription phrasing. Skips prose like “I will not run ./ship.sh”. Only **open** finding ids (not Pass/fixed/closed/verified) feed the consecutive-round BLOCKED rule.
+**Text scan (second layer):** normalizes commands (split on `;` `&&` `||` `|` `$()`, strip env/`cd`, resolve basename). Catches ship/deploy forms, unsafe `git push`, price/subscription phrasing. Skips prose like “I will not run ./ship.sh”. Repeat-finding BLOCKED uses `VERDICT.json` `openFindings` only; report text scan is a warning cross-check.
 
 See `scripts/selfqa/prompts/guardrails.md` and `docs/qa/selfqa-qa-spec.md`.

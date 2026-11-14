@@ -53,14 +53,43 @@ function initRepo(dir: string, branch = "development_grok") {
 }
 
 describe("selfqa lib helpers", () => {
-  test("strict verdict JSON only", () => {
+  test("strict verdict JSON requires openFindings", () => {
     const f = join(root, "verdict.json");
+    // Pass + empty openFindings
+    writeFileSync(f, '{"verdict":"PASS","openFindings":[]}\n');
+    let r = bash(`source "${LIB}"; selfqa_read_verdict_json "${f}"`);
+    expect(r.stdout.trim()).toBe("PASS");
+    // Missing openFindings → invalid
     writeFileSync(f, '{"verdict":"PASS"}\n');
-    const ok = bash(`source "${LIB}"; selfqa_read_verdict_json "${f}"`);
-    expect(ok.stdout.trim()).toBe("PASS");
+    r = bash(`source "${LIB}"; selfqa_read_verdict_json "${f}"`);
+    expect(r.stdout.trim()).toBe("");
+    // Malformed openFindings (not array) → invalid
+    writeFileSync(f, '{"verdict":"FAIL","openFindings":"HB-R1-01"}\n');
+    r = bash(`source "${LIB}"; selfqa_read_verdict_json "${f}"`);
+    expect(r.stdout.trim()).toBe("");
+    // Malformed item (missing title) → invalid
+    writeFileSync(
+      f,
+      '{"verdict":"FAIL","openFindings":[{"id":"HB-R1-01","severity":"high"}]}\n',
+    );
+    r = bash(`source "${LIB}"; selfqa_read_verdict_json "${f}"`);
+    expect(r.stdout.trim()).toBe("");
+    // Valid with findings
+    writeFileSync(
+      f,
+      JSON.stringify({
+        verdict: "FAIL",
+        openFindings: [
+          { id: "HB-R1-01", severity: "high", title: "Login broken" },
+        ],
+      }) + "\n",
+    );
+    r = bash(`source "${LIB}"; selfqa_read_verdict_json "${f}"`);
+    expect(r.stdout.trim()).toBe("FAIL");
+    // Markdown / non-JSON → invalid
     writeFileSync(f, "Verdict: PASS\n");
-    const bad = bash(`source "${LIB}"; selfqa_read_verdict_json "${f}"`);
-    expect(bad.stdout.trim()).toBe("");
+    r = bash(`source "${LIB}"; selfqa_read_verdict_json "${f}"`);
+    expect(r.stdout.trim()).toBe("");
   });
 
   test("guardrail abort on deploy pattern", () => {
@@ -151,19 +180,61 @@ describe("selfqa lib helpers", () => {
     expect(r.stdout).toMatch(/rc=0/);
   });
 
-  test("HB-122-03: Pass/fixed findings are not open for repeat-BLOCKED", () => {
-    const report = join(root, "findings-pass.md");
+  test("HB-122-03: openFindings from VERDICT.json (Pass/fixed not listed)", () => {
+    // Real-format: Pass + Fail mixed — only open id in openFindings
+    const passFail = join(root, "v-pass-fail.json");
     writeFileSync(
-      report,
-      `# cycle\n### HB-R1-01\n- Status: Pass / fixed\n\n### HB-R1-02\n- Status: Fail\n`,
+      passFail,
+      JSON.stringify({
+        verdict: "FAIL",
+        openFindings: [
+          { id: "HB-R1-02", severity: "medium", title: "Still broken" },
+        ],
+      }) + "\n",
     );
-    const r = bash(
-      `source "${LIB}"; selfqa_extract_finding_ids "${report}"`,
-    );
-    expect(r.stdout).toMatch(/HB-R1-02/);
+    let r = bash(`source "${LIB}"; selfqa_extract_finding_ids "${passFail}"`);
+    expect(r.stdout.trim()).toBe("HB-R1-02");
     expect(r.stdout).not.toMatch(/HB-R1-01/);
+
+    // Empty array → no open ids
+    const empty = join(root, "v-empty.json");
+    writeFileSync(empty, '{"verdict":"PASS","openFindings":[]}\n');
+    r = bash(`source "${LIB}"; selfqa_extract_finding_ids "${empty}"`);
+    expect(r.stdout.trim()).toBe("");
+
+    // True repeat across rounds via openFindings
     const a = join(root, "open-a.txt");
     const b = join(root, "open-b.txt");
+    const r1 = join(root, "v-r1.json");
+    const r2 = join(root, "v-r2.json");
+    writeFileSync(
+      r1,
+      JSON.stringify({
+        verdict: "FAIL",
+        openFindings: [
+          { id: "HB-R9-01", severity: "high", title: "Repeat me" },
+        ],
+      }) + "\n",
+    );
+    writeFileSync(
+      r2,
+      JSON.stringify({
+        verdict: "FAIL",
+        openFindings: [
+          { id: "HB-R9-01", severity: "high", title: "Still open" },
+          { id: "HB-R9-02", severity: "low", title: "New open" },
+        ],
+      }) + "\n",
+    );
+    bash(`source "${LIB}"; selfqa_extract_finding_ids "${r1}" > "${a}"`);
+    bash(`source "${LIB}"; selfqa_extract_finding_ids "${r2}" > "${b}"`);
+    const rep = bash(
+      `source "${LIB}"; selfqa_repeat_findings "${a}" "${b}"; echo rc=$?`,
+    );
+    expect(rep.stdout).toMatch(/HB-R9-01/);
+    expect(rep.stdout).toMatch(/rc=0/);
+
+    // Different ids → no repeat BLOCK
     writeFileSync(a, "HB-R1-01\n");
     writeFileSync(b, "HB-R1-02\n");
     const no = bash(
@@ -172,87 +243,40 @@ describe("selfqa lib helpers", () => {
     expect(no.stdout).toMatch(/rc=1/);
   });
 
-  test("HB-122-03: real QA format ID:/Result: per-block extract", () => {
-    const passFail = join(root, "real-pass-fail.md");
+  test("HB-122-03: report text is warning cross-check only", () => {
+    const verdict = join(root, "v-cross.json");
+    const report = join(root, "cross-report.md");
     writeFileSync(
-      passFail,
+      verdict,
+      JSON.stringify({
+        verdict: "FAIL",
+        openFindings: [
+          { id: "HB-R1-02", severity: "medium", title: "From verdict" },
+        ],
+      }) + "\n",
+    );
+    // Report mentions a different open id — must NOT change extract stdout
+    writeFileSync(
+      report,
       `# Self-QA cycle 2
 
-ID: HB-R1-01
+ID: HB-R9-99
 Severity: High
-Result: Pass (fixed this cycle)
+Result: Fail
 
 ID: HB-R1-02
 Severity: Medium
-Result: Fail
-`,
-    );
-    let r = bash(`source "${LIB}"; selfqa_extract_finding_ids "${passFail}"`);
-    expect(r.stdout.trim()).toBe("HB-R1-02");
-
-    const failPass = join(root, "real-fail-pass.md");
-    writeFileSync(
-      failPass,
-      `# Self-QA cycle 2
-
-ID: HB-R1-02
-Severity: Medium
-Result: Fail
-
-ID: HB-R1-01
-Severity: High
 Result: Pass (fixed this cycle)
 `,
     );
-    r = bash(`source "${LIB}"; selfqa_extract_finding_ids "${failPass}"`);
+    const warnFile = join(root, "cross-warn.txt");
+    const r = bash(
+      `source "${LIB}"; selfqa_extract_finding_ids "${verdict}" "${report}" 2>"${warnFile}"`,
+    );
     expect(r.stdout.trim()).toBe("HB-R1-02");
-
-    const onlyFail = join(root, "real-only-fail.md");
-    writeFileSync(
-      onlyFail,
-      `# Self-QA cycle 1
-
-ID: HB-R9-01
-Severity: High
-Result: Fail
-`,
-    );
-    r = bash(`source "${LIB}"; selfqa_extract_finding_ids "${onlyFail}"`);
-    expect(r.stdout.trim()).toBe("HB-R9-01");
-
-    const onlyPass = join(root, "real-only-pass.md");
-    writeFileSync(
-      onlyPass,
-      `# Self-QA cycle 2
-
-ID: HB-R1-01
-Severity: High
-Result: Pass (fixed this cycle)
-`,
-    );
-    r = bash(`source "${LIB}"; selfqa_extract_finding_ids "${onlyPass}"`);
-    expect(r.stdout.trim()).toBe("");
-
-    const a = join(root, "real-round1.txt");
-    const b = join(root, "real-round2.txt");
-    const round1 = join(root, "real-r1-report.md");
-    const round2 = join(root, "real-r2-report.md");
-    writeFileSync(
-      round1,
-      `# Self-QA cycle 1\n\nID: HB-R9-01\nSeverity: High\nResult: Fail\n`,
-    );
-    writeFileSync(
-      round2,
-      `# Self-QA cycle 2\n\nID: HB-R9-01\nSeverity: High\nResult: Fail\n\nID: HB-R9-02\nSeverity: Low\nResult: Pass (fixed this cycle)\n`,
-    );
-    bash(`source "${LIB}"; selfqa_extract_finding_ids "${round1}" > "${a}"`);
-    bash(`source "${LIB}"; selfqa_extract_finding_ids "${round2}" > "${b}"`);
-    const rep = bash(
-      `source "${LIB}"; selfqa_repeat_findings "${a}" "${b}"; echo rc=$?`,
-    );
-    expect(rep.stdout).toMatch(/HB-R9-01/);
-    expect(rep.stdout).toMatch(/rc=0/);
-    expect(bash(`cat "${b}"`).stdout.trim()).toBe("HB-R9-01");
+    expect(r.stdout).not.toMatch(/HB-R9-99/);
+    const warn = bash(`cat "${warnFile}"`).stdout;
+    expect(warn).toMatch(/cross-check differs/i);
   });
 
   test("HB-122-04: price/subscription phrasing detection", () => {
@@ -279,7 +303,7 @@ Result: Pass (fixed this cycle)
     }
   });
 
-  test("HB-122-05: callback fields populated from reports", () => {
+  test("HB-122-05: callback items/bugs from VERDICT openFindings", () => {
     const app = join(root, "cb-app");
     initRepo(app);
     mkdirSync(join(app, "docs/qa"), { recursive: true });
@@ -303,9 +327,6 @@ Result: Pass (fixed this cycle)
 Typecheck: pass
 Tests: expected: 10, passed: 9, failed: 1
 
-- [x] Login works
-- [ ] Billing page
-
 ID: HB-CB-01
 Severity: High
 Result: Fail
@@ -315,6 +336,20 @@ ID: HB-CB-02
 Severity: Low
 Result: Pass (fixed this cycle)
 `,
+    );
+    // openFindings is source of truth for bugs/items (Pass HB-CB-02 omitted)
+    writeFileSync(
+      join(app, "docs/selfqa/run1/VERDICT.json"),
+      JSON.stringify({
+        verdict: "FAIL",
+        openFindings: [
+          {
+            id: "HB-CB-01",
+            severity: "high",
+            title: "callback field missing",
+          },
+        ],
+      }) + "\n",
     );
     const r = bash(
       `
@@ -326,11 +361,12 @@ d=json.loads(sys.argv[1])
 assert d.get("docsCommit")==sys.argv[2], d.get("docsCommit")
 assert d.get("typecheck")=="pass", d.get("typecheck")
 assert d["tests"]["expected"]==10 and d["tests"]["passed"]==9 and d["tests"]["failed"]==1, d["tests"]
-assert any(i.get("status")=="pass" for i in d.get("items") or []), d.get("items")
 ids=[x["id"] for x in (d.get("bugs") or {}).get("high") or []]
 assert "HB-CB-01" in ids, d.get("bugs")
 low=[x["id"] for x in (d.get("bugs") or {}).get("low") or []]
 assert "HB-CB-02" not in low, d.get("bugs")
+assert any("HB-CB-01" in (i.get("text") or "") for i in d.get("items") or []), d.get("items")
+assert not any("HB-CB-02" in (i.get("text") or "") for i in d.get("items") or []), d.get("items")
 print("callback_meta_ok")
 ' "$meta" "${docsSha}"
       `,

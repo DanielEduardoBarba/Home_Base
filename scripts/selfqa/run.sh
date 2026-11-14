@@ -128,7 +128,7 @@ Orchestrator → Developer → QA Manager → $TESTERS tester(s) → Orchestrato
 ## Artifacts (when not dry-run)
 - Run dir: \`docs/selfqa/<runId>/\`
 - Cycle reports: \`docs/qa/selfqa-<runId>-cycleN.md\`
-- Verdict: \`docs/selfqa/<runId>/VERDICT.json\` — {"verdict":"PASS"|"FAIL"|"BLOCKED"}
+- Verdict: \`docs/selfqa/<runId>/VERDICT.json\` — {"verdict":"PASS"|"FAIL"|"BLOCKED","openFindings":[{"id","severity","title"},...]}
 - Final: \`SUMMARY.md\` + \`SUMMARY.json\` + \`callback.json\` (single callback payload)
 
 ## Guardrails
@@ -452,7 +452,7 @@ selfqa_on_die() {
   FINAL_VERDICT="${FINAL_VERDICT:-FAIL}"
   BLOCK_REASON="${BLOCK_REASON:-$msg}"
   cat >"$RUN_DIR/VERDICT.json" <<EOF
-{"verdict":"FAIL"}
+{"verdict":"FAIL","openFindings":[]}
 EOF
   refresh_callback_fields || true
   selfqa_emit_callback || true
@@ -502,7 +502,7 @@ abort_guardrail() {
   local why="$1"
   echo "GUARDRAIL ABORT: $why" | tee -a "$LOG_DIR/runner.log" >&2
   cat >"$RUN_DIR/VERDICT.json" <<EOF
-{"verdict":"BLOCKED"}
+{"verdict":"BLOCKED","openFindings":[]}
 EOF
   FINAL_VERDICT="BLOCKED"
   BLOCK_REASON="$why"
@@ -593,7 +593,7 @@ EOF
     FINAL_VERDICT="FAIL"
     BLOCK_REASON="agent role=$role exited $rc"
     cat >"$RUN_DIR/VERDICT.json" <<EOF
-{"verdict":"FAIL"}
+{"verdict":"FAIL","openFindings":[]}
 EOF
     write_summary
     CALLBACK_SENT=true
@@ -668,7 +668,7 @@ PY
   write_state "$CYCLE" "qa_manager_collect"
   run_agent "QA Manager" "$PROMPTS_DIR/qa_manager.md" \
     "$LOG_DIR/cycle${CYCLE}-qa-manager.log" \
-    "Phase: collect tester reports and write $REPORT_PATH. Also write $RUN_DIR/VERDICT.json as strict JSON {\"verdict\":\"PASS\"|\"FAIL\"|\"BLOCKED\"} — never rely on markdown PASS text alone. Update QA_MANAGER.md and docs/QA-PROGRESS.md. Cycle $CYCLE. run-id $RUN_ID."
+    "Phase: collect tester reports and write $REPORT_PATH. Also write $RUN_DIR/VERDICT.json as strict JSON {\"verdict\":\"PASS\"|\"FAIL\"|\"BLOCKED\",\"openFindings\":[{\"id\":\"…\",\"severity\":\"high|medium|low\",\"title\":\"…\"},…]} (openFindings required; empty array when none) — never rely on markdown PASS text alone. Update QA_MANAGER.md and docs/QA-PROGRESS.md. Cycle $CYCLE. run-id $RUN_ID."
 
   if [[ ! -f "$TARGET_ROOT/$REPORT_PATH" ]]; then
     mkdir -p "$(dirname "$TARGET_ROOT/$REPORT_PATH")"
@@ -680,23 +680,56 @@ EOF
   fi
 
   # Strict verdict JSON only — never grep markdown for PASS.
+  # Missing/malformed openFindings → fail closed BLOCKED + single callback.
   VERDICT="$(selfqa_read_verdict_json "$RUN_DIR/VERDICT.json")"
   if [[ -z "$VERDICT" ]]; then
-    VERDICT="FAIL"
+    echo "Invalid VERDICT.json (missing/malformed openFindings or verdict) — fail closed BLOCKED" \
+      | tee -a "$LOG_DIR/runner.log" >&2
+    VERDICT="BLOCKED"
     cat >"$RUN_DIR/VERDICT.json" <<EOF
-{"verdict":"FAIL"}
+{"verdict":"BLOCKED","reason":"invalid_verdict","openFindings":[]}
 EOF
+    FINAL_VERDICT="BLOCKED"
+    BLOCK_REASON="invalid_verdict"
+    OPEN_FINDINGS=1
+    write_state "$CYCLE" "blocked" "$VERDICT"
+    write_summary
+    CALLBACK_SENT=true
+    if [[ -n "$CALLBACK_URL" && -f "$RUN_DIR/callback.json" ]]; then
+      selfqa_post_callback "$CALLBACK_URL" "$CALLBACK_AUTH" "$RUN_DIR/callback.json" || true
+    fi
+    exit 2
   fi
 
   FINDINGS_CUR="$(mktemp)"
-  selfqa_extract_finding_ids "$TARGET_ROOT/$REPORT_PATH" >"$FINDINGS_CUR" || true
+  # Source of truth: VERDICT.json openFindings. Report text is warning cross-check only.
+  selfqa_extract_finding_ids "$RUN_DIR/VERDICT.json" "$TARGET_ROOT/$REPORT_PATH" \
+    >"$FINDINGS_CUR" 2>>"$LOG_DIR/runner.log" || true
   if [[ -n "$FINDINGS_PREV" && -f "$FINDINGS_PREV" ]]; then
     if common="$(selfqa_repeat_findings "$FINDINGS_PREV" "$FINDINGS_CUR")"; then
       echo "Repeat finding id(s) across consecutive cycles: $common" | tee -a "$LOG_DIR/runner.log"
       VERDICT="BLOCKED"
-      cat >"$RUN_DIR/VERDICT.json" <<EOF
-{"verdict":"BLOCKED","reason":"repeat_finding","ids":$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1].split()))' "$common")}
-EOF
+      # Preserve openFindings from the current cycle for callback bugs/items.
+      python3 - "$RUN_DIR/VERDICT.json" "$common" <<'PY'
+import json, sys
+path, common = sys.argv[1], sys.argv[2]
+try:
+    o = json.load(open(path, encoding="utf-8"))
+except Exception:
+    o = {}
+if not isinstance(o, dict):
+    o = {}
+of = o.get("openFindings") if isinstance(o.get("openFindings"), list) else []
+ids = [x for x in common.split() if x]
+# Ensure repeated ids appear in openFindings for callback meta
+have = {str(i.get("id") or "") for i in of if isinstance(i, dict)}
+for fid in ids:
+    if fid not in have:
+        of.append({"id": fid, "severity": "high", "title": "repeat finding"})
+        have.add(fid)
+out = {"verdict": "BLOCKED", "reason": "repeat_finding", "ids": ids, "openFindings": of}
+open(path, "w", encoding="utf-8").write(json.dumps(out) + "\n")
+PY
       FINAL_VERDICT="BLOCKED"
       BLOCK_REASON="repeat_finding:$common"
       OPEN_FINDINGS=1

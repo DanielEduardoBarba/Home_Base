@@ -14,7 +14,7 @@ This spec is implemented by `scripts/selfqa/` (not prompt-only). Apps should cal
 
 1. **Branch gate** — refuse (exit 1) unless the target repo’s current branch is exactly `development_grok`.
 2. **Localhost-only targets** — refuse (exit 1) if the goal / plan names non-localhost http(s) write targets.
-3. **Repeat finding block** — if the same finding id appears as **open** in **2 consecutive** cycles, stop early with verdict `BLOCKED` (exit 2). Pass/fixed/closed/verified ids do not count as open.
+3. **Repeat finding block** — if the same finding id appears in `VERDICT.json` `openFindings` in **2 consecutive** cycles, stop early with verdict `BLOCKED` (exit 2). Pass/fixed ids must not be listed in `openFindings`. Report markdown is a warning cross-check only, never the source of truth.
 4. **Guardrail abort** — enforce where commands run (pre-push hook + PATH shims + blank deploy credentials), then scan agent logs (normalized commands; skip prose negations) and abort (exit 1) on:
    - deploy / ship in every form (`./ship.sh`, `bash ./ship.sh`, absolute paths, `cd X && …`, env-prefixed, `deploy*.sh`, `ship-expo.sh`, `./build.sh --deploy|--ship|d|a|s|m`, `pnpm deploy*`, `firebase`/`eas`/`gcloud` deploy)
    - `git merge`
@@ -22,7 +22,7 @@ This spec is implemented by `scripts/selfqa/` (not prompt-only). Apps should cal
    - branch deletion or file deletion outside `docs/selfqa/` scratch
    - App Store Connect / price or subscription changes (incl. “change the subscription price”, increase/raise/lower/drop, “set price to”, “update pricing”, “new price tier”) / real payment keys
 5. **Agent CLI `--force`** — headless print mode keeps `--force` so the Cursor CLI does not prompt; documented in runner help. Prefer avoiding unrelated force flags.
-6. **Strict verdict** — PASS/FAIL/BLOCKED only from a JSON file `VERDICT.json` shaped as `{"verdict":"PASS"|"FAIL"|"BLOCKED"}`. Never decide PASS by grepping markdown.
+6. **Strict verdict** — PASS/FAIL/BLOCKED only from `VERDICT.json` shaped as `{"verdict":"PASS"|"FAIL"|"BLOCKED","openFindings":[{"id","severity","title"},…]}` (`openFindings` required; `[]` when none). Missing or malformed `openFindings` is invalid → fail closed `BLOCKED` (exit 2, single callback). Never decide PASS by grepping markdown.
 
 ## MEDIUM
 

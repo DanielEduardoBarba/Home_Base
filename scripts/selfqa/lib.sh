@@ -58,6 +58,8 @@ if bad:
 }
 
 # Parse strict verdict JSON file. Prints PASS|FAIL|BLOCKED or empty.
+# Required shape: {"verdict":"PASS"|"FAIL"|"BLOCKED","openFindings":[{"id","severity","title"},...]}
+# Missing/malformed openFindings → empty (invalid; caller fail-closes to BLOCKED).
 selfqa_read_verdict_json() {
   local path="$1"
   if [[ ! -f "$path" ]]; then
@@ -72,18 +74,35 @@ try:
 except Exception:
     print("")
     raise SystemExit(0)
-v = str((o or {}).get("verdict") or "").strip().upper()
-if v in ("PASS", "FAIL", "BLOCKED"):
-    print(v)
-else:
+if not isinstance(o, dict):
     print("")
+    raise SystemExit(0)
+v = str(o.get("verdict") or "").strip().upper()
+if v not in ("PASS", "FAIL", "BLOCKED"):
+    print("")
+    raise SystemExit(0)
+of = o.get("openFindings", None)
+if not isinstance(of, list):
+    print("")
+    raise SystemExit(0)
+for item in of:
+    if not isinstance(item, dict):
+        print("")
+        raise SystemExit(0)
+    for key in ("id", "severity", "title"):
+        if key not in item or not isinstance(item[key], str):
+            print("")
+            raise SystemExit(0)
+    if not item["id"].strip() or not item["severity"].strip():
+        print("")
+        raise SystemExit(0)
+print(v)
 PY
 }
 
-# Extract OPEN finding ids only. Pass/fixed/closed/verified/resolved do not count.
-# Parses per finding block so Pass on one ID never hides Fail on another in the
-# same report (canonical "ID:" / "Result:" format and ### heading sections).
-selfqa_extract_finding_ids() {
+# Flag-only: scan a cycle report markdown for open finding ids (never source of truth).
+# Prints one id per line. Used only as a cross-check warning against VERDICT.json.
+selfqa_scan_report_finding_ids() {
   local path="$1"
   if [[ ! -f "$path" ]]; then
     return 0
@@ -98,9 +117,7 @@ closed_re = re.compile(
 open_status_re = re.compile(
     r"(?i)\b(fail(?:ed)?|open|blocked|repro|regression)\b"
 )
-# Severity words are NOT open-status — they appear on Pass findings too.
 id_re = re.compile(r"\b([A-Z]{2,}-[A-Z0-9]+-\d+)\b")
-# Finding-block starts: "ID: …" / "Finding ID: …" or "### HB-R1-01" style headings.
 block_start_re = re.compile(
     r"(?im)^(?:"
     r"#{1,6}\s+(?:.*?\b)?([A-Z]{2,}-[A-Z0-9]+-\d+)\b"
@@ -121,7 +138,6 @@ def status_near(block: str) -> str:
     )
     if m:
         return m.group(1).strip()
-    # Same-line markers like "ID: HB-R1-01 — Pass" / "**Pass**"
     return block[:240]
 
 def is_closed(block: str) -> bool:
@@ -132,13 +148,10 @@ def is_closed(block: str) -> bool:
         r"(?i)\b(?:status|result|verdict)\b.{0,40}\b(?:pass(?:ed)?|fixed|closed|verified|resolved)\b",
         block,
     ):
-        # Fail/open on the same status line wins (e.g. "Result: Fail — was Pass")
         sm = re.search(
             r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?(?:status|result|verdict)(?:\*\*)?\s*[:=]\s*(.+)$",
             block,
         )
-        if sm and open_status_re.search(sm.group(1)) and not closed_re.search(sm.group(1)):
-            return False
         if sm and open_status_re.search(sm.group(1)):
             return False
         return True
@@ -147,7 +160,6 @@ def is_closed(block: str) -> bool:
     return False
 
 def finding_blocks(src: str):
-    """Yield (primary_id_or_None, block_text) per finding — never whole-report chunks."""
     markers = list(block_start_re.finditer(src))
     if markers:
         for i, m in enumerate(markers):
@@ -156,7 +168,6 @@ def finding_blocks(src: str):
             primary = m.group(1) or m.group(2)
             yield primary, src[start:end]
         return
-    # Fallback: blank-line paragraphs / generic headings (legacy fixtures).
     chunks = re.split(r"(?m)(?=^#{1,6}\s)", src)
     if len(chunks) <= 1:
         chunks = re.split(r"\n{2,}", src)
@@ -190,6 +201,56 @@ for primary, chunk in finding_blocks(text):
 for i in sorted(open_ids):
     print(i)
 PY
+}
+
+# Extract OPEN finding ids from VERDICT.json openFindings (source of truth).
+# Optional 2nd arg: cycle report — flag-only text scan; mismatch logs a warning.
+selfqa_extract_finding_ids() {
+  local verdict_path="$1"
+  local report_path="${2:-}"
+  if [[ ! -f "$verdict_path" ]]; then
+    return 0
+  fi
+  python3 - "$verdict_path" <<'PY'
+import json, sys
+p = sys.argv[1]
+try:
+    o = json.load(open(p, encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+of = (o or {}).get("openFindings")
+if not isinstance(of, list):
+    raise SystemExit(0)
+ids = []
+seen = set()
+for item in of:
+    if not isinstance(item, dict):
+        continue
+    fid = str(item.get("id") or "").strip()
+    if not fid or fid in seen:
+        continue
+    seen.add(fid)
+    ids.append(fid)
+for i in sorted(ids):
+    print(i)
+PY
+  if [[ -n "$report_path" && -f "$report_path" ]]; then
+    local from_verdict from_report
+    from_verdict="$(python3 - "$verdict_path" <<'PY'
+import json, sys
+o = json.load(open(sys.argv[1], encoding="utf-8"))
+of = o.get("openFindings") if isinstance(o, dict) else None
+ids = sorted({str(i.get("id") or "").strip() for i in (of or []) if isinstance(i, dict) and str(i.get("id") or "").strip()})
+print("\n".join(ids))
+PY
+)"
+    from_report="$(selfqa_scan_report_finding_ids "$report_path" 2>/dev/null || true)"
+    if [[ "$(printf '%s\n' "$from_verdict" | sort -u)" != "$(printf '%s\n' "$from_report" | sort -u)" ]]; then
+      echo "warn: report text open-ids cross-check differs from VERDICT.json openFindings (report is not source of truth)" >&2
+      echo "warn:   verdict: $(printf '%s' "$from_verdict" | tr '\n' ' ')" >&2
+      echo "warn:   report:  $(printf '%s' "$from_report" | tr '\n' ' ')" >&2
+    fi
+  fi
 }
 
 # Return 0 if the intersection of two id lists is non-empty (repeat block).
@@ -893,101 +954,136 @@ else:
             passed, failed = int(m.group(1)), int(m.group(2))
             tests = {"expected": passed + failed, "passed": passed, "failed": failed}
 
+# items/bugs: prefer VERDICT.json openFindings (source of truth); report text is fallback only
 items = []
-# Checklist / item lines: "- [x] Foo" / "Item: Foo — Pass" / "| Item | Status |"
-for m in re.finditer(
-    r"(?im)^\s*[-*]\s*\[([ xX])\]\s+(.+?)\s*$",
-    blob,
-):
-    items.append({
-        "text": m.group(2).strip()[:200],
-        "status": "pass" if m.group(1).lower() == "x" else "pending",
-    })
-for m in re.finditer(
-    r"(?im)^\s*[-*]?\s*(?:item|check(?:list)?)\s*[:=]\s*(.+?)\s*[—\-|:]\s*(pass|fail|pending|skip|blocked)\b",
-    blob,
-):
-    items.append({"text": m.group(1).strip()[:200], "status": m.group(2).lower()})
-# Cap
-items = items[:100]
+bugs = {"high": [], "medium": [], "low": []}
+verdict_path = run_dir / "VERDICT.json"
+used_open_findings = False
+if verdict_path.is_file():
+    try:
+        vo = json.loads(verdict_path.read_text(encoding="utf-8"))
+        of = vo.get("openFindings") if isinstance(vo, dict) else None
+        if isinstance(of, list):
+            used_open_findings = True
+            seen_ids = set()
+            for raw in of:
+                if not isinstance(raw, dict):
+                    continue
+                fid = str(raw.get("id") or "").strip()
+                if not fid or fid in seen_ids:
+                    continue
+                seen_ids.add(fid)
+                sev = str(raw.get("severity") or "medium").strip().lower()
+                if sev == "critical":
+                    sev = "high"
+                if sev not in bugs:
+                    sev = "medium"
+                title = str(raw.get("title") or "").strip()
+                entry = {"id": fid}
+                if title:
+                    entry["summary"] = title[:160]
+                bugs[sev].append(entry)
+                items.append({
+                    "text": (f"{fid}: {title}" if title else fid)[:200],
+                    "status": "fail",
+                })
+    except Exception:
+        used_open_findings = False
 
-# Bugs by severity from open findings in reports (reuse extract logic inline)
-closed_re = re.compile(
-    r"(?i)\b(pass(?:ed)?|fixed|closed|verified|resolved|done|wontfix|won'?t\s*fix|n/?a)\b"
-)
-open_status_re = re.compile(r"(?i)\b(fail(?:ed)?|open|blocked|repro|regression)\b")
-id_re = re.compile(r"\b([A-Z]{2,}-[A-Z0-9]+-\d+)\b")
-block_start_re = re.compile(
-    r"(?im)^(?:"
-    r"#{1,6}\s+(?:.*?\b)?([A-Z]{2,}-[A-Z0-9]+-\d+)\b"
-    r"|"
-    r"[ \t]*(?:[-*]\s*)?(?:\*\*)?(?:id|finding[\s_-]*id)(?:\*\*)?\s*[:=]\s*`?"
-    r"([A-Za-z0-9][A-Za-z0-9._/-]{1,64})`?"
-    r")"
-)
-sev_re = re.compile(r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?severity(?:\*\*)?\s*[:=]\s*(high|medium|low|critical)\b")
-
-def status_near(block: str) -> str:
-    m = re.search(
-        r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?(?:status|result|verdict)(?:\*\*)?\s*[:=]\s*(.+)$",
-        block,
-    )
-    return m.group(1).strip() if m else block[:240]
-
-def is_closed(block: str) -> bool:
-    st = status_near(block)
-    if closed_re.search(st) and not open_status_re.search(st):
-        return True
-    if re.search(
-        r"(?i)\b(?:status|result|verdict)\b.{0,40}\b(?:pass(?:ed)?|fixed|closed|verified|resolved)\b",
-        block,
+if not used_open_findings:
+    # Checklist / item lines from reports (legacy fallback)
+    for m in re.finditer(
+        r"(?im)^\s*[-*]\s*\[([ xX])\]\s+(.+?)\s*$",
+        blob,
     ):
-        sm = re.search(
+        items.append({
+            "text": m.group(2).strip()[:200],
+            "status": "pass" if m.group(1).lower() == "x" else "pending",
+        })
+    for m in re.finditer(
+        r"(?im)^\s*[-*]?\s*(?:item|check(?:list)?)\s*[:=]\s*(.+?)\s*[—\-|:]\s*(pass|fail|pending|skip|blocked)\b",
+        blob,
+    ):
+        items.append({"text": m.group(1).strip()[:200], "status": m.group(2).lower()})
+    closed_re = re.compile(
+        r"(?i)\b(pass(?:ed)?|fixed|closed|verified|resolved|done|wontfix|won'?t\s*fix|n/?a)\b"
+    )
+    open_status_re = re.compile(r"(?i)\b(fail(?:ed)?|open|blocked|repro|regression)\b")
+    id_re = re.compile(r"\b([A-Z]{2,}-[A-Z0-9]+-\d+)\b")
+    block_start_re = re.compile(
+        r"(?im)^(?:"
+        r"#{1,6}\s+(?:.*?\b)?([A-Z]{2,}-[A-Z0-9]+-\d+)\b"
+        r"|"
+        r"[ \t]*(?:[-*]\s*)?(?:\*\*)?(?:id|finding[\s_-]*id)(?:\*\*)?\s*[:=]\s*`?"
+        r"([A-Za-z0-9][A-Za-z0-9._/-]{1,64})`?"
+        r")"
+    )
+    sev_re = re.compile(
+        r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?severity(?:\*\*)?\s*[:=]\s*(high|medium|low|critical)\b"
+    )
+
+    def status_near(block: str) -> str:
+        m = re.search(
             r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?(?:status|result|verdict)(?:\*\*)?\s*[:=]\s*(.+)$",
             block,
         )
-        if sm and open_status_re.search(sm.group(1)):
-            return False
-        return True
-    return False
+        return m.group(1).strip() if m else block[:240]
 
-def blocks(src: str):
-    markers = list(block_start_re.finditer(src))
-    if not markers:
-        return
-    for i, m in enumerate(markers):
-        start = m.start()
-        end = markers[i + 1].start() if i + 1 < len(markers) else len(src)
-        yield (m.group(1) or m.group(2)), src[start:end]
+    def is_closed(block: str) -> bool:
+        st = status_near(block)
+        if closed_re.search(st) and not open_status_re.search(st):
+            return True
+        if re.search(
+            r"(?i)\b(?:status|result|verdict)\b.{0,40}\b(?:pass(?:ed)?|fixed|closed|verified|resolved)\b",
+            block,
+        ):
+            sm = re.search(
+                r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?(?:status|result|verdict)(?:\*\*)?\s*[:=]\s*(.+)$",
+                block,
+            )
+            if sm and open_status_re.search(sm.group(1)):
+                return False
+            return True
+        return False
 
-bugs = {"high": [], "medium": [], "low": []}
-seen_ids = set()
-for src in texts:
-    for primary, block in blocks(src):
-        if is_closed(block):
-            continue
-        fid = primary or (id_re.findall(block)[0] if id_re.findall(block) else None)
-        if not fid or fid in seen_ids:
-            continue
-        seen_ids.add(fid)
-        sev_m = sev_re.search(block)
-        sev = (sev_m.group(1).lower() if sev_m else "medium")
-        if sev == "critical":
-            sev = "high"
-        if sev not in bugs:
-            sev = "medium"
-        summary = ""
-        for line in block.splitlines()[1:6]:
-            if re.match(r"(?i)^\s*(?:severity|result|status|verdict|id)\b", line):
+    def blocks(src: str):
+        markers = list(block_start_re.finditer(src))
+        if not markers:
+            return
+        for i, m in enumerate(markers):
+            start = m.start()
+            end = markers[i + 1].start() if i + 1 < len(markers) else len(src)
+            yield (m.group(1) or m.group(2)), src[start:end]
+
+    seen_ids = set()
+    for src in texts:
+        for primary, block in blocks(src):
+            if is_closed(block):
                 continue
-            t = line.strip().lstrip("-* ").strip()
-            if t:
-                summary = t[:160]
-                break
-        entry = {"id": fid}
-        if summary:
-            entry["summary"] = summary
-        bugs[sev].append(entry)
+            fid = primary or (id_re.findall(block)[0] if id_re.findall(block) else None)
+            if not fid or fid in seen_ids:
+                continue
+            seen_ids.add(fid)
+            sev_m = sev_re.search(block)
+            sev = (sev_m.group(1).lower() if sev_m else "medium")
+            if sev == "critical":
+                sev = "high"
+            if sev not in bugs:
+                sev = "medium"
+            summary = ""
+            for line in block.splitlines()[1:6]:
+                if re.match(r"(?i)^\s*(?:severity|result|status|verdict|id)\b", line):
+                    continue
+                t = line.strip().lstrip("-* ").strip()
+                if t:
+                    summary = t[:160]
+                    break
+            entry = {"id": fid}
+            if summary:
+                entry["summary"] = summary
+            bugs[sev].append(entry)
+
+items = items[:100]
 
 print(json.dumps({
     "docsCommit": docs,

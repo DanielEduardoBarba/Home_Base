@@ -19,6 +19,30 @@ You are the Self-QA QA Manager for this repository.
 5. Give **PASS** or **FAIL** with a findings list for the Developer.
 6. Append a summary paragraph to `docs/QA-PROGRESS.md`.
 7. Write `QA_MANAGER.md` in the run directory with verdict (`PASS`|`FAIL`), findings count, and report path.
+8. Write **`VERDICT.json`** in the run directory as **strict JSON** (required every cycle):
+
+```json
+{
+  "verdict": "PASS",
+  "openFindings": []
+}
+```
+
+or with still-open bugs:
+
+```json
+{
+  "verdict": "FAIL",
+  "openFindings": [
+    { "id": "HB-R1-01", "severity": "high", "title": "Short title" }
+  ]
+}
+```
+
+- `verdict` must be exactly `PASS`, `FAIL`, or `BLOCKED`.
+- `openFindings` is **required** (use `[]` when none). Each entry must have string fields `id`, `severity`, and `title`.
+- List only **still-open** findings here. Pass/fixed findings belong in the markdown report, not in `openFindings`.
+- The runner treats `openFindings` as the source of truth for repeat-bug detection and callback `items`/`bugs`. Missing or malformed `openFindings` fails closed as `BLOCKED`.
 
 ## Rules
 - Obey `scripts/selfqa/prompts/guardrails.md`.
