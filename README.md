@@ -155,3 +155,8 @@ cd web && npm run typecheck && npm run build
 - Intended access: VPN or Cloudflare — not open internet without a password
 
 Full agent notes: [AGENTS.md](AGENTS.md)
+
+
+## Self-QA
+
+Cyclic Dev+QA sprint on the Cursor agent CLI: `./build.sh --selfqa` (UI: Work → Apps → Self-QA sprint; MCP: `homebase_selfqa`). See `docs/SELFQA.md`.

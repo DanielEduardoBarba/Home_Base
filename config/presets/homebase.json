@@ -44,6 +44,15 @@
       "type": "stop",
       "variant": "danger",
       "group": "main"
+    },
+    {
+      "id": "selfqa",
+      "label": "Self-QA",
+      "script": "./build.sh",
+      "args": ["--selfqa"],
+      "kind": "selfqa",
+      "group": "qa",
+      "hint": "Cyclic Dev+QA sprint via Cursor agent CLI (model auto)"
     }
   ]
 }

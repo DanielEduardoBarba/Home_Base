@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { RUNTIME_DIR, type ActionDef, type Project } from "./config";
+import { watchActionSessions } from "./action_callbacks";
 import { projectLanEnv } from "./network";
 import { homebaseListenPort, killPortListeners, isPortListening } from "./ports";
 import {
@@ -10,6 +11,26 @@ import {
   type SessionPublic,
 } from "./pty";
 import { appendTrace } from "./trace";
+import {
+  buildSelfQaArgs,
+  projectHasActiveSelfQa,
+  projectSupportsSelfQa,
+  startSelfQa,
+} from "./selfqa";
+
+export type RunActionOpts = {
+  extraArgs?: string[];
+  callbackUrl?: string;
+  callbackAuth?: string;
+  /** Self-QA options when actionId is selfqa (also accepted via MCP homebase_selfqa). */
+  selfqa?: {
+    goal?: string;
+    cycles?: number;
+    maxMinutes?: number;
+    testers?: number;
+    dryRun?: boolean;
+  };
+};
 
 function resolveScript(project: Project, script: string): string {
   const abs = resolve(project.path, script);
@@ -134,13 +155,47 @@ async function waitForComposeGate(
 export async function runAction(
   project: Project,
   actionId: string,
-  extraArgs: string[] = [],
+  extraArgsOrOpts: string[] | RunActionOpts = [],
 ): Promise<{
   type: string;
   session?: SessionPublic;
   sessions?: SessionPublic[];
   gate?: { ready: boolean; waited: boolean };
+  selfqa?: Record<string, unknown>;
+  callbackId?: string;
+  callbackUrl?: string;
 }> {
+  const opts: RunActionOpts = Array.isArray(extraArgsOrOpts)
+    ? { extraArgs: extraArgsOrOpts }
+    : extraArgsOrOpts || {};
+  const extraArgs = opts.extraArgs || [];
+
+  // Built-in Self-QA even when the project JSON lacks a selfqa action row.
+  if (actionId === "selfqa") {
+    const support = projectSupportsSelfQa(project);
+    if (!support.ok) {
+      throw new Error(support.message || "Self-QA not supported");
+    }
+    if (projectHasActiveSelfQa(project.id)) {
+      throw new Error(
+        "Project already has an active Self-QA session. Stop it before starting another.",
+      );
+    }
+    const started = await startSelfQa({
+      projectId: project.id,
+      goal: opts.selfqa?.goal,
+      cycles: opts.selfqa?.cycles,
+      maxMinutes: opts.selfqa?.maxMinutes,
+      testers: opts.selfqa?.testers,
+      dryRun: opts.selfqa?.dryRun,
+      callbackUrl: opts.callbackUrl,
+      callbackAuth: opts.callbackAuth,
+      source: "action",
+    });
+    const { session, ...selfqa } = started;
+    return { type: "selfqa", session, selfqa };
+  }
+
   const action = project.actions.find((a) => a.id === actionId);
   if (!action) throw new Error(`Unknown action: ${actionId}`);
 
@@ -155,7 +210,7 @@ export async function runAction(
   if (action.type === "restart") {
     stopProject(project);
     const target = action.restartAction || action.id;
-    return runAction(project, target, extraArgs);
+    return runAction(project, target, opts);
   }
 
   if (action.type === "compose") {
@@ -172,7 +227,9 @@ export async function runAction(
       if (target.type === "compose") {
         throw new Error("Nested compose actions are not supported");
       }
-      const r = await runAction(project, aid, extraArgs);
+      // Do not fan out callbacks to every compose step — only the outer call.
+      const stepOpts: RunActionOpts = { extraArgs: opts.extraArgs };
+      const r = await runAction(project, aid, stepOpts);
       if (r.session) sessions.push(r.session);
       if (r.sessions) sessions.push(...r.sessions);
       if (target.kind === "run" && i < ids.length - 1) {
@@ -186,10 +243,61 @@ export async function runAction(
         }
       }
     }
-    return { type: "compose", sessions, gate };
+    const watched = watchActionSessions({
+      projectId: project.id,
+      actionId,
+      sessionIds: sessions.map((s) => s.id),
+      callbackUrl: opts.callbackUrl,
+      callbackAuth: opts.callbackAuth,
+    });
+    return {
+      type: "compose",
+      sessions,
+      gate,
+      callbackId: watched.callbackId,
+      callbackUrl: watched.callbackUrl,
+    };
   }
 
-  return { type: "script", session: spawnActionPty(project, action, extraArgs) };
+  // Configured action id selfqa with kind selfqa / args --selfqa
+  if (
+    action.id === "selfqa" ||
+    action.kind === "selfqa" ||
+    action.args.includes("--selfqa")
+  ) {
+    const support = projectSupportsSelfQa(project);
+    if (!support.ok) {
+      throw new Error(support.message || "Self-QA not supported");
+    }
+    const started = await startSelfQa({
+      projectId: project.id,
+      goal: opts.selfqa?.goal,
+      cycles: opts.selfqa?.cycles,
+      maxMinutes: opts.selfqa?.maxMinutes,
+      testers: opts.selfqa?.testers,
+      dryRun: opts.selfqa?.dryRun,
+      callbackUrl: opts.callbackUrl,
+      callbackAuth: opts.callbackAuth,
+      source: "action",
+    });
+    const { session, ...selfqa } = started;
+    return { type: "selfqa", session, selfqa };
+  }
+
+  const session = spawnActionPty(project, action, extraArgs);
+  const watched = watchActionSessions({
+    projectId: project.id,
+    actionId,
+    sessionIds: [session.id],
+    callbackUrl: opts.callbackUrl,
+    callbackAuth: opts.callbackAuth,
+  });
+  return {
+    type: "script",
+    session,
+    callbackId: watched.callbackId,
+    callbackUrl: watched.callbackUrl,
+  };
 }
 
 function spawnActionPty(
@@ -201,16 +309,26 @@ function spawnActionPty(
     action.kind === "run" ||
     action.kind === "expo" ||
     action.kind === "ship" ||
+    action.kind === "selfqa" ||
     action.kind === "action"
       ? action.kind
       : "action";
   // Replace prior sessions of same kind so Start is idempotent.
-  if (kind === "run" || kind === "expo") {
+  if (kind === "run" || kind === "expo" || kind === "selfqa") {
+    if (kind === "selfqa" && projectHasActiveSelfQa(project.id)) {
+      throw new Error(
+        "Project already has an active Self-QA session. Stop it before starting another.",
+      );
+    }
     killByProject(project.id, new Set([kind]));
   }
 
   const script = resolveScript(project, action.script || "./script.sh");
-  const args = [...action.args, ...extraArgs];
+  let args = [...action.args, ...extraArgs];
+  // If the preset only has --selfqa, allow callers to pass structured opts via extraArgs only.
+  if (action.kind === "selfqa" && !args.some((a) => a === "--selfqa")) {
+    args = [...buildSelfQaArgs({}), ...extraArgs];
+  }
   const lan = advertiseEnv(project);
   const env = {
     ...lan,
@@ -237,11 +355,11 @@ function spawnActionPty(
   };
 }
 
-/** Stop managed run/expo/ship/action PTYs + pidfile + port listeners. Keep Shell tab PTYs. */
+/** Stop managed run/expo/ship/action/selfqa PTYs + pidfile + port listeners. Keep Shell tab PTYs. */
 export function stopProject(project: Project): string[] {
   const killed = killByProject(
     project.id,
-    new Set(["run", "expo", "ship", "action"]),
+    new Set(["run", "expo", "ship", "action", "selfqa"]),
   );
   const pidFile = project.stateDir
     ? join(project.path, project.stateDir, "devall.pids")

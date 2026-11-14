@@ -4,6 +4,10 @@ Generic control plane. **Production** port from `HOMEBASE_PORT` in `.env` (defau
 
 **Backend is Bun** (`server/`). **Frontend is Next.js** static export (`web/` → `web/dist`).
 
+## Self-QA
+
+`./build.sh --selfqa` · MCP `homebase_selfqa` · UI Self-QA sprint panel. Prompts in `scripts/selfqa/prompts/`. Docs: `docs/SELFQA.md`.
+
 ## Setup
 
 ```bash

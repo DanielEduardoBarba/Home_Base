@@ -1293,13 +1293,55 @@ export const api = {
       method: 'POST',
       body: '{}',
     }),
-  action: (id: string, actionId: string, extraArgs: string[] = []) =>
-    request<{ type?: string; session?: Session; sessions?: Session[] }>(
+  action: (
+    id: string,
+    actionId: string,
+    extraArgs: string[] = [],
+    opts: {
+      callbackUrl?: string
+      callbackAuth?: string
+      goal?: string
+      cycles?: number
+      maxMinutes?: number
+      testers?: number
+      dryRun?: boolean
+    } = {},
+  ) =>
+    request<{ type?: string; session?: Session; sessions?: Session[]; selfqa?: unknown }>(
       `/api/projects/${id}/action`,
       {
         method: 'POST',
-        body: JSON.stringify({ actionId, extraArgs }),
+        body: JSON.stringify({ actionId, extraArgs, ...opts }),
       },
+    ),
+  selfqaStatus: (id: string) =>
+    request<{
+      supported: { ok: boolean; message?: string }
+      active: Record<string, unknown> | null
+      latest: Record<string, unknown> | null
+      latestSummaryPath?: string
+      latestSummaryTail?: string
+      latestReportPath?: string
+      sessionOutput?: string
+    }>(`/api/projects/${id}/selfqa`),
+  selfqaStart: (
+    id: string,
+    body: {
+      goal?: string
+      cycles?: number
+      maxMinutes?: number
+      testers?: number
+      dryRun?: boolean
+    } = {},
+  ) =>
+    request<{ ok: boolean; selfqa?: Record<string, unknown>; status?: unknown; error?: string }>(
+      `/api/projects/${id}/selfqa`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  selfqaStop: (id: string) =>
+    request<{ ok: boolean; killed?: string[]; status?: unknown }>(
+      `/api/projects/${id}/selfqa/stop`,
+      { method: 'POST', body: '{}' },
     ),
   stop: (id: string) =>
     request<{ killedSessions: string[] }>(`/api/projects/${id}/stop`, { method: 'POST' }),

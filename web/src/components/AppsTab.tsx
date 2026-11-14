@@ -9,6 +9,7 @@ import { HoldButton } from './HoldButton'
 import { useAccessibleDialog } from '../lib/useAccessibleDialog'
 import { IconBtn } from './IconBtn'
 import { ProjectSelect } from './ProjectSelect'
+import { SelfQaPanel } from './SelfQaPanel'
 
 function Dot({ up }: { up?: boolean }) {
   return (
@@ -98,7 +99,10 @@ export function AppsTab({
   const hotkeys = project?.actions.filter((a) => a.group === 'hotkey') || []
   const other =
     project?.actions.filter(
-      (a) => !['main', 'ship', 'hotkey', ''].includes(a.group) && a.group,
+      (a) =>
+        !['main', 'ship', 'hotkey', 'qa', ''].includes(a.group) &&
+        a.group &&
+        a.id !== 'selfqa',
     ) || []
 
   const [runId, setRunId] = useState('')
@@ -423,6 +427,12 @@ export function AppsTab({
           </div>
         )}
       </section>
+
+      <SelfQaPanel
+        projectId={project.id}
+        onRefresh={onRefresh}
+        onOpenShell={(id) => onOpenShell(id)}
+      />
 
       {hotkeys.length > 0 && (
         <section className="hb-surface p-3.5 space-y-2">

@@ -93,6 +93,7 @@ describe("homebase tools AI deny + feature filter", () => {
     expect(mcpTools.homebase_propose_mode).toBeUndefined();
     expect(mcpTools.homebase_list_projects).toBeDefined();
     expect(mcpTools.homebase_run_action).toBeDefined();
+    expect(mcpTools.homebase_selfqa).toBeDefined();
   });
 
   test("buildMcpTools filters by features", () => {

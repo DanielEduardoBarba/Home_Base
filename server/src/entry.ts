@@ -120,6 +120,22 @@ try {
   );
 }
 
+try {
+  const { recoverInterruptedSelfQaCallbacks } = await import("./selfqa");
+  const rec = await recoverInterruptedSelfQaCallbacks();
+  if (rec.recovered || rec.expired || rec.lost) {
+    logInfo(
+      `selfqa callback recovery recovered=${rec.recovered} expired=${rec.expired} lost=${rec.lost}`,
+      "boot",
+    );
+  }
+} catch (e) {
+  logWarn(
+    `selfqa callback recovery failed: ${e instanceof Error ? e.message : String(e)}`,
+    "boot",
+  );
+}
+
 const hostname = bindHost();
 const port = bindPort();
 

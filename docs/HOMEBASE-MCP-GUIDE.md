@@ -74,6 +74,14 @@ Kill switches: MCP master Off; revoke token; password change revokes all MCP tok
 
 After success: Developer **pulls** on `~/APP_PROJECTS` before QA continues.
 
+
+## Self-QA sprint
+
+For a cyclic Dev+QA loop on the laptop Cursor CLI (not Grok tokens), call **`homebase_selfqa`** with `projectId` and optional `goal` / `cycles` / `maxMinutes` / `testers` / `dryRun`. Prefer `callbackUrl` (+ `callbackAuth`) over polling. One Self-QA session per project. Projects without `./build.sh --selfqa` return a clear error. See `docs/SELFQA.md`.
+
+`homebase_run_action` now accepts optional `callbackUrl` / `callbackAuth` (backlog): Home Base POSTs when the action's PTY session(s) exit.
+
+
 ---
 
 ---
@@ -248,6 +256,8 @@ Placeholders:
 | `homebase_github_list_repos` / `_clone_workspace` / `_connect_workspace` / `_create_repo` | **Allow MCP GitHub repo access**; clone also needs workspace-create; create/push needs git-write |
 | `homebase_git_status` / `_branches` / `_log` | Read-only git (when **Projects** feature is on) |
 | `homebase_git_fetch` / `_pull` / `_checkout` / `_create_branch` / `_merge` / `_commit` / `_push` / `_stash` | Non-destructive git writes (**Allow MCP git write actions**, default Off) |
+| `homebase_selfqa` | Start Self-QA sprint (`./build.sh --selfqa`); one per project; `callbackUrl` (+ optional `callbackAuth`) POSTs exit code + SUMMARY.md path/tail |
+| `homebase_run_action` | Run action; optional `callbackUrl`/`callbackAuth` when session(s) exit; `actionId: selfqa` starts Self-QA |
 | `homebase_cursor_job` | One job per project at a time; `callbackUrl` (+ optional `callbackAuth`) or `waitMs: 600000` |
 | `homebase_cursor_job_status` | Rare (≥5 min) |
 | `homebase_cursor_job_list` | See active/recent |

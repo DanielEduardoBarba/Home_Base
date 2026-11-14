@@ -56,6 +56,36 @@ type PtySession = {
 const sessions = new Map<string, PtySession>();
 const MAX_RING = 200_000;
 
+export type SessionExitListener = (
+  sessionId: string,
+  projectId: string,
+  exitCode: number,
+) => void;
+
+const exitListeners = new Set<SessionExitListener>();
+
+/** Register a listener for PTY/session process exit. Returns unsubscribe. */
+export function onSessionExit(fn: SessionExitListener): () => void {
+  exitListeners.add(fn);
+  return () => {
+    exitListeners.delete(fn);
+  };
+}
+
+function emitSessionExit(
+  sessionId: string,
+  projectId: string,
+  exitCode: number,
+): void {
+  for (const fn of exitListeners) {
+    try {
+      fn(sessionId, projectId, exitCode);
+    } catch {
+      /* ignore listener errors */
+    }
+  }
+}
+
 function pushRing(s: PtySession, chunk: string): void {
   s.ring += chunk;
   if (s.ring.length > MAX_RING) s.ring = s.ring.slice(-MAX_RING);
@@ -314,6 +344,7 @@ export function spawnShell(opts: {
         : `pty exit ${id} code=${exitCode}`,
       "pty",
     );
+    emitSessionExit(id, opts.projectId, exitCode ?? 0);
     // Keep the row so the SPA can show dead + dismiss (X); DELETE removes it.
   };
 

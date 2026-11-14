@@ -93,7 +93,7 @@ export const MCP_FEATURE_META: {
   {
     id: "projects",
     label: "Projects & actions",
-    hint: "List / upsert / delete projects, run actions, stop, Cursor job handoff, safe git",
+    hint: "List / upsert / delete projects, run actions, Self-QA, stop, Cursor job handoff, safe git",
     defaultOn: true,
   },
   {
@@ -137,6 +137,7 @@ export const MCP_TOOL_FEATURE: Record<string, McpFeatureId> = {
   homebase_create_mcp_workspace: "projects",
   homebase_project_delete: "projects",
   homebase_run_action: "projects",
+  homebase_selfqa: "projects",
   homebase_stop_project: "projects",
   homebase_cursor_job: "projects",
   homebase_cursor_job_status: "projects",
@@ -774,12 +775,25 @@ export function buildHomebaseTools(
       },
     };
     tools.homebase_run_action = {
-      description: "Run a configured project action (script/compose)",
+      description:
+        "Run a configured project action (script/compose). " +
+        "Optional callbackUrl (+ callbackAuth) POSTs JSON when the action's session(s) exit. " +
+        "actionId selfqa starts a Self-QA sprint (see homebase_selfqa).",
       parameters: {
         type: "object",
         properties: {
           projectId: { type: "string" },
           actionId: { type: "string" },
+          callbackUrl: {
+            type: "string",
+            description:
+              "Optional http(s) URL — Home Base POSTs JSON when the action session(s) exit",
+          },
+          callbackAuth: {
+            type: "string",
+            description:
+              'Optional Authorization header value (e.g. "Bearer abc"). Overrides Settings vault default.',
+          },
         },
         required: ["actionId"],
       },
@@ -788,7 +802,100 @@ export function buildHomebaseTools(
         const p = loadProjects().get(pid);
         if (!p) return json({ error: "project not found" });
         const actionId = String(args.actionId || "");
-        return json(await runAction(p, actionId));
+        try {
+          return json(
+            await runAction(p, actionId, {
+              callbackUrl:
+                args.callbackUrl != null ? String(args.callbackUrl) : undefined,
+              callbackAuth:
+                args.callbackAuth != null
+                  ? String(args.callbackAuth)
+                  : undefined,
+            }),
+          );
+        } catch (e) {
+          return json({
+            ok: false,
+            error: e instanceof Error ? e.message : String(e),
+          });
+        }
+      },
+    };
+    tools.homebase_selfqa = {
+      description:
+        "Start a Self-QA sprint for a project (./build.sh --selfqa as a managed session). " +
+        "One Self-QA session per projectId. Options: goal, cycles, maxMinutes, testers, dryRun. " +
+        "If the project lacks --selfqa, returns a clear error. " +
+        "Preferred: callbackUrl webhook (+ optional callbackAuth) — POSTs exit code + SUMMARY.md path/tail when the session ends. " +
+        "Auth never returned in status. Not for Vision.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: {
+            type: "string",
+            description: "Registered Home Base project id",
+          },
+          goal: { type: "string", description: "Sprint goal text" },
+          cycles: {
+            type: "number",
+            description: "Max Dev→QA cycles (default 3)",
+          },
+          maxMinutes: {
+            type: "number",
+            description: "Wall-clock cap in minutes (default 90)",
+          },
+          testers: {
+            type: "number",
+            description: "QA tester agents (default 3, max 6)",
+          },
+          dryRun: {
+            type: "boolean",
+            description: "Print plan only; do not call the agent CLI",
+          },
+          callbackUrl: {
+            type: "string",
+            description:
+              "Optional http(s) URL — POSTs when the Self-QA session ends",
+          },
+          callbackAuth: {
+            type: "string",
+            description:
+              'Optional Authorization header value (e.g. "Bearer abc")',
+          },
+        },
+        required: ["projectId"],
+      },
+      execute: async (args) => {
+        try {
+          const { startSelfQa, getSelfQa } = await import("./selfqa");
+          const projectId = resolvePid(args);
+          const started = await startSelfQa({
+            projectId,
+            goal: args.goal != null ? String(args.goal) : undefined,
+            cycles: args.cycles != null ? Number(args.cycles) : undefined,
+            maxMinutes:
+              args.maxMinutes != null ? Number(args.maxMinutes) : undefined,
+            testers: args.testers != null ? Number(args.testers) : undefined,
+            dryRun: Boolean(args.dryRun),
+            callbackUrl:
+              args.callbackUrl != null ? String(args.callbackUrl) : undefined,
+            callbackAuth:
+              args.callbackAuth != null
+                ? String(args.callbackAuth)
+                : undefined,
+            source: "mcp",
+          });
+          return json({
+            ok: true,
+            selfqa: started,
+            status: getSelfQa(projectId),
+          });
+        } catch (e) {
+          return json({
+            ok: false,
+            error: e instanceof Error ? e.message : String(e),
+          });
+        }
       },
     };
     tools.homebase_cursor_job = {

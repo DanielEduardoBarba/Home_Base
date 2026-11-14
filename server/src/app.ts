@@ -1123,9 +1123,84 @@ app.post("/api/projects/:projectId/action", async (c) => {
     .object({
       actionId: z.string(),
       extraArgs: z.array(z.string()).optional(),
+      callbackUrl: z.string().optional(),
+      callbackAuth: z.string().optional(),
+      goal: z.string().optional(),
+      cycles: z.number().optional(),
+      maxMinutes: z.number().optional(),
+      testers: z.number().optional(),
+      dryRun: z.boolean().optional(),
     })
     .parse(await readJson(c));
-  return c.json(await runAction(p, body.actionId, body.extraArgs || []));
+  return c.json(
+    await runAction(p, body.actionId, {
+      extraArgs: body.extraArgs || [],
+      callbackUrl: body.callbackUrl,
+      callbackAuth: body.callbackAuth,
+      selfqa: {
+        goal: body.goal,
+        cycles: body.cycles,
+        maxMinutes: body.maxMinutes,
+        testers: body.testers,
+        dryRun: body.dryRun,
+      },
+    }),
+  );
+});
+
+app.get("/api/projects/:projectId/selfqa", async (c) => {
+  await requireAuth(c);
+  const p = loadProjects().get(c.req.param("projectId"));
+  if (!p) throw new HttpError(404, "Project not found");
+  const { getSelfQa } = await import("./selfqa");
+  return c.json(getSelfQa(p.id));
+});
+
+app.post("/api/projects/:projectId/selfqa", async (c) => {
+  await requireAuth(c);
+  const p = loadProjects().get(c.req.param("projectId"));
+  if (!p) throw new HttpError(404, "Project not found");
+  const body = z
+    .object({
+      goal: z.string().optional(),
+      cycles: z.number().optional(),
+      maxMinutes: z.number().optional(),
+      testers: z.number().optional(),
+      dryRun: z.boolean().optional(),
+      callbackUrl: z.string().optional(),
+      callbackAuth: z.string().optional(),
+    })
+    .parse(await readJson(c).catch(() => ({})));
+  const { startSelfQa, getSelfQa } = await import("./selfqa");
+  try {
+    const started = await startSelfQa({
+      projectId: p.id,
+      goal: body.goal,
+      cycles: body.cycles,
+      maxMinutes: body.maxMinutes,
+      testers: body.testers,
+      dryRun: body.dryRun,
+      callbackUrl: body.callbackUrl,
+      callbackAuth: body.callbackAuth,
+      source: "web",
+    });
+    return c.json({ ok: true, selfqa: started, status: getSelfQa(p.id) });
+  } catch (e) {
+    throw new HttpError(400, e instanceof Error ? e.message : String(e));
+  }
+});
+
+app.post("/api/projects/:projectId/selfqa/stop", async (c) => {
+  await requireAuth(c);
+  const p = loadProjects().get(c.req.param("projectId"));
+  if (!p) throw new HttpError(404, "Project not found");
+  const { stopSelfQa, getSelfQa } = await import("./selfqa");
+  const stopped = stopSelfQa(p.id);
+  return c.json({
+    ok: true,
+    killed: stopped.killed,
+    status: getSelfQa(p.id),
+  });
 });
 
 app.post("/api/projects/:projectId/stop", async (c) => {
