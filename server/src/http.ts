@@ -180,6 +180,7 @@ export async function requireDoodleAuth(
 /** True when path is doodle-scoped (REST or cursor project). */
 export function isDoodleApiPath(pathname: string): boolean {
   if (pathname.startsWith("/api/doodle")) return true;
+  if (pathname.startsWith("/api/speech")) return true;
   if (pathname.startsWith(`/api/cursor/${DOODLE_PROJECT_ID}`)) return true;
   return false;
 }

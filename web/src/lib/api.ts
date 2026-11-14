@@ -1288,6 +1288,49 @@ export const api = {
         docs: string
       }
     }>('/api/cloudflare/status'),
+  /** Optional server Whisper transcription (HOMEBASE_TRANSCRIBE_API_KEY). */
+  speechStatus: () =>
+    request<{ configured: boolean; provider: string | null }>('/api/speech/status'),
+  speechTranscribe: async (blob: Blob, filename?: string) => {
+    const fd = new FormData()
+    const name =
+      filename ||
+      (blob.type.includes('mp4') || blob.type.includes('aac')
+        ? 'speech.m4a'
+        : blob.type.includes('ogg')
+          ? 'speech.ogg'
+          : 'speech.webm')
+    fd.append('file', blob, name)
+    fd.append('language', 'en')
+    const res = await fetch('/api/speech/transcribe', {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        ...authHeaders('POST'),
+      },
+      body: fd,
+    })
+    if (!res.ok) {
+      let detail: unknown = res.statusText
+      try {
+        detail = await res.json()
+      } catch {
+        /* ignore */
+      }
+      const payload =
+        typeof detail === 'object' && detail && 'detail' in detail
+          ? (detail as { detail: unknown }).detail
+          : detail
+      const message =
+        typeof payload === 'string'
+          ? payload
+          : payload != null
+            ? JSON.stringify(payload)
+            : String(detail)
+      throw new Error(message)
+    }
+    return (await res.json()) as { text: string; configured: true }
+  },
   cloudflareInstall: () =>
     request<Record<string, unknown>>('/api/cloudflare/install', {
       method: 'POST',

@@ -49,6 +49,10 @@ import {
   updateCloudflareHostname,
 } from "./cloudflare_tunnel";
 import {
+  speechTranscribeStatus,
+  transcribeAudio,
+} from "./speech_transcribe";
+import {
   acceptLegal,
   legalPublic,
   requireLegalAccepted,
@@ -1472,6 +1476,41 @@ app.post("/api/cloudflare/stop", async (c) => {
 app.post("/api/cloudflare/clear", async (c) => {
   await requireAuth(c);
   return c.json(clearCloudflareTunnel());
+});
+
+/** Optional Whisper transcription for iOS MediaRecorder fallback (session or Doodle). */
+app.get("/api/speech/status", async (c) => {
+  await requireDoodleAuth(c);
+  return c.json(speechTranscribeStatus());
+});
+
+app.post("/api/speech/transcribe", async (c) => {
+  await requireDoodleAuth(c);
+  let form: Awaited<ReturnType<typeof c.req.parseBody>>;
+  try {
+    form = await c.req.parseBody({ all: true });
+  } catch {
+    throw new HttpError(400, {
+      code: "bad_multipart",
+      message: "Expected multipart audio upload",
+    });
+  }
+  const file = form["file"] ?? form["audio"];
+  if (!file || typeof file === "string") {
+    throw new HttpError(400, {
+      code: "missing_audio",
+      message: "Missing audio file field (file)",
+    });
+  }
+  const blob = file as File;
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const result = await transcribeAudio({
+    bytes,
+    mime: blob.type || undefined,
+    filename: blob.name || undefined,
+    language: typeof form["language"] === "string" ? form["language"] : "en",
+  });
+  return c.json(result);
 });
 
 app.get("/api/projects/:projectId", async (c) => {

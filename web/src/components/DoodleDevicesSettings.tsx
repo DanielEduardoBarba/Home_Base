@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../lib/api'
 import { DoodleBlob } from './DoodleBlob'
+import { VoiceCheck } from './VoiceCheck'
 
 export type DoodleTabletRow = {
   deviceId: string
@@ -240,6 +241,8 @@ export function DoodleDevicesSettings({ onBack }: { onBack: () => void }) {
           <strong>Reset token</strong> keeps it listed but kills its month-long cookie until a
           grown-up re-remembers it from Doodle.
         </p>
+
+        <VoiceCheck kid className="hb-doodle-voice-check" />
       </div>
 
       {confirm ? (

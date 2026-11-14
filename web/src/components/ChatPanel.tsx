@@ -36,11 +36,16 @@ import {
   writeChatDraftScratch,
 } from '../lib/uiPrefs'
 import {
+  isSecureContext,
+  mediaRecorderSupported,
+  secureContextMessages,
   speakText,
   speechSupported,
   speechSynthesisSupported,
+  startMediaRecorderCapture,
   startSpeechDictation,
   stopSpeaking,
+  unlockSpeechSynthesis,
   type SpeechHandle,
 } from '../lib/speech'
 import {
@@ -2175,7 +2180,7 @@ export function ChatPanel({
                 category: 'cursor',
               })
             }
-            // Home Agent talk mode: speak the assistant reply (works without mic).
+            // Talk mode: speak the assistant reply (pause mic during TTS to avoid echo).
             if (!err && voiceModeRef.current && forActive) {
               const tab = tabsRef.current.find((t) => t.id === (chatId || activeIdRef.current))
               const lastAssistant = [...(tab?.messages || [])]
@@ -2183,7 +2188,19 @@ export function ChatPanel({
                 .find((m) => m.role === 'assistant' && (m.text || '').trim())
               if (lastAssistant?.text) {
                 try {
-                  speakText(lastAssistant.text)
+                  stopListening()
+                  speakText(lastAssistant.text, {
+                    onEnd: () => {
+                      if (
+                        voiceModeRef.current &&
+                        (speechSupported() || mediaRecorderSupported())
+                      ) {
+                        window.setTimeout(() => {
+                          if (voiceModeRef.current) beginListen('')
+                        }, 280)
+                      }
+                    },
+                  })
                 } catch (e) {
                   console.error('[home-agent] speak failed', e)
                 }
@@ -2581,10 +2598,10 @@ export function ChatPanel({
     }
     setDraftImages([])
     setDraftContext([])
-    // Voice mode: pause mic while sending, then resume listen if mic works.
-    if (isAgent && voiceModeRef.current) {
+    // Voice mode: pause mic while sending; resume after (TTS of the reply pauses again).
+    if ((isAgent || kid) && voiceModeRef.current) {
       stopListening()
-      if (canSpeak) {
+      if (canSpeak || mediaRecorderSupported()) {
         window.setTimeout(() => {
           if (voiceModeRef.current) beginListen('')
         }, 400)
@@ -2870,6 +2887,27 @@ export function ChatPanel({
     setListening(false)
     prev?.stop()
     notify?.unlockAudio()
+    void unlockSpeechSynthesis()
+
+    if (!isSecureContext()) {
+      const msg = secureContextMessages({ kid }).body
+      if (isAgent || kid) reportAgentIssue(msg)
+      else setError(msg)
+      void (async () => {
+        try {
+          const cf = await api.cloudflareStatus()
+          if (cf.publicUrl) {
+            const withUrl = secureContextMessages({ kid, httpsUrl: cf.publicUrl }).body
+            if (isAgent || kid) reportAgentIssue(withUrl)
+            else setError(withUrl)
+          }
+        } catch {
+          /* keep generic message */
+        }
+      })()
+      return
+    }
+
     // Freeze composer prefix for the whole listen session — speech.ts owns the
     // cumulative transcript so words append instead of overwriting / doubling.
     inputBeforeSpeech.current = (prefix ?? input).trim()
@@ -2878,26 +2916,92 @@ export function ChatPanel({
       const base = inputBeforeSpeech.current
       setComposerText(base ? `${base} ${text}` : text)
     }
+    const onSpeechError = (message: string) => {
+      if (gen !== listenGen.current) return
+      if (isAgent || kid) reportAgentIssue(message)
+      else setError(message)
+    }
     const handle = startSpeechDictation({
       onPartial: applySpeech,
       onFinal: applySpeech,
-      onError: (message) => {
-        if (gen !== listenGen.current) return
-        if (isAgent) reportAgentIssue(message)
-        else setError(message)
-      },
+      onError: onSpeechError,
       onEnd: () => {
         if (gen !== listenGen.current) return
         speechRef.current = null
         setListening(false)
-        // Home Agent voice mode: engine ended — keep mode on, restart if still armed.
-        if (voiceModeRef.current && isAgent) {
+        // Talk mode: engine ended — keep mode on, restart if still armed.
+        if (voiceModeRef.current && (isAgent || kid)) {
           window.setTimeout(() => {
             if (voiceModeRef.current && listenGen.current === gen) beginListen()
           }, 250)
         }
       },
       lang: 'en-US',
+      kid,
+    })
+    if (!handle) {
+      // Fallback: MediaRecorder → server Whisper when SpeechRecognition is missing.
+      if (mediaRecorderSupported() && (isAgent || kid) && voiceModeRef.current) {
+        beginRecordFallback(gen, prefix)
+      }
+      return
+    }
+    if (gen !== listenGen.current) {
+      handle.stop()
+      return
+    }
+    speechRef.current = handle
+    setListening(true)
+    setError('')
+  }
+
+  /** Push-to-talk MediaRecorder → /api/speech/transcribe when Web Speech API fails. */
+  function beginRecordFallback(gen: number, prefix?: string) {
+    inputBeforeSpeech.current = (prefix ?? input).trim()
+    const handle = startMediaRecorderCapture({
+      kid,
+      onError: (message) => {
+        if (gen !== listenGen.current) return
+        reportAgentIssue(
+          `${message} Tip: use the keyboard mic (dictation) or type — text chat always works.`,
+          'warn',
+        )
+      },
+      onBlob: (blob, mime) => {
+        if (gen !== listenGen.current) return
+        setListening(false)
+        speechRef.current = null
+        void (async () => {
+          try {
+            const st = await api.speechStatus()
+            if (!st.configured) {
+              reportAgentIssue(
+                kid
+                  ? 'Voice typing needs a grown-up to set up server listening, or use the keyboard mic. You can still type!'
+                  : 'SpeechRecognition unavailable and server transcription is not configured (set HOMEBASE_TRANSCRIBE_API_KEY). Use the keyboard mic / type instead.',
+                'warn',
+              )
+              return
+            }
+            const filename =
+              mime.includes('mp4') || mime.includes('aac') ? 'speech.m4a' : 'speech.webm'
+            const res = await api.speechTranscribe(blob, filename)
+            const text = (res.text || '').trim()
+            if (!text) {
+              reportAgentIssue(kid ? 'I could not catch that — try again!' : 'No speech transcribed', 'warn')
+              return
+            }
+            const base = inputBeforeSpeech.current
+            setComposerText(base ? `${base} ${text}` : text)
+            setError('')
+          } catch (e) {
+            reportAgentIssue(
+              e instanceof Error ? e.message : 'Transcription failed',
+              'warn',
+            )
+          }
+        })()
+      },
     })
     if (!handle) return
     if (gen !== listenGen.current) {
@@ -2907,6 +3011,12 @@ export function ChatPanel({
     speechRef.current = handle
     setListening(true)
     setError('')
+    if (isAgent || kid) {
+      reportAgentIssue(
+        kid ? 'Hold Talk — I am recording. Tap again when you finish.' : 'Recording… tap Talk again to send audio for transcription.',
+        'warn',
+      )
+    }
   }
 
   function reportAgentIssue(message: string, level: 'error' | 'warn' = 'error') {
@@ -2927,24 +3037,36 @@ export function ChatPanel({
   }
 
   function toggleListen() {
-    if (isAgent) {
+    if (isAgent || kid) {
       if (voiceMode) {
+        // If MediaRecorder fallback is mid-capture, stopping commits the clip.
+        const wasListening = listening
         setVoiceMode(false)
         voiceModeRef.current = false
         stopListening()
         stopSpeaking()
+        if (wasListening && !canSpeak) {
+          // stop() already triggered onBlob for MediaRecorder
+        }
         return
       }
       // Talk mode always arms TTS for replies. Mic listen is optional.
       setVoiceMode(true)
       voiceModeRef.current = true
       notify?.unlockAudio()
-      if (canSpeak) {
+      void unlockSpeechSynthesis()
+      if (!isSecureContext()) {
+        beginListen() // surfaces secure-context message
+        return
+      }
+      if (canSpeak || mediaRecorderSupported()) {
         beginListen()
       } else {
         stopListening()
         reportAgentIssue(
-          'Microphone dictation unavailable here — Talk will still speak AI replies.',
+          kid
+            ? 'I can still talk back out loud — type your words, or ask a grown-up to check Voice check in Settings.'
+            : 'Microphone dictation unavailable here — Talk will still speak AI replies. Use the keyboard mic if available.',
           'warn',
         )
       }
@@ -2954,6 +3076,7 @@ export function ChatPanel({
       stopListening()
       return
     }
+    void unlockSpeechSynthesis()
     beginListen()
   }
 

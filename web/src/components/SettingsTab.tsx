@@ -35,6 +35,7 @@ import { SecurityPanel } from './SecurityPanel'
 import { EmailAlertsPanel } from './EmailAlertsPanel'
 import { GitGithubPanel } from './GitGithubPanel'
 import { DoodleDevicesSettings } from './DoodleDevicesSettings'
+import { VoiceCheck } from './VoiceCheck'
 import type { PresentRequest } from '../lib/chatTypes'
 
 type SettingsScene =
@@ -60,6 +61,7 @@ type SettingsScene =
   | 'session'
   | 'share'
   | 'doodleDevices'
+  | 'voice'
   | 'about'
 
 type HubRow = {
@@ -577,6 +579,11 @@ export function SettingsTab({
               : emailReady
                 ? 'Configured · off'
                 : 'Resend or SMTP · humans only',
+          },
+          {
+            id: 'voice',
+            title: 'Voice check',
+            hint: 'Mic · speech · iPhone/iPad HTTPS',
           },
         ],
       },
@@ -1786,6 +1793,21 @@ export function SettingsTab({
             goHub()
           }}
         />
+        {modals}
+      </>
+    )
+  }
+
+  if (scene === 'voice') {
+    return (
+      <>
+        <SceneShell
+          title="Voice check"
+          hint="Diagnose Talk / mic blockers — especially on iPhone & iPad. See docs/VOICE-IOS.md."
+          onBack={goHub}
+        >
+          <VoiceCheck />
+        </SceneShell>
         {modals}
       </>
     )

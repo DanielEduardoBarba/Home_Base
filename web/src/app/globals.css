@@ -6456,3 +6456,83 @@ html.hb-view-max .hb-topbar {
   justify-content: center;
   margin-top: 0.35rem;
 }
+
+/* Voice check diagnostic (Settings + Doodle devices) */
+.hb-voice-check {
+  margin-top: 1rem;
+  padding: 0.9rem 1rem;
+  border-radius: 1rem;
+  border: 1px solid color-mix(in srgb, var(--hb-line) 85%, transparent);
+  background: color-mix(in srgb, var(--hb-panel-2) 88%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+.hb-voice-check-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 750;
+}
+.hb-voice-check-sub,
+.hb-voice-check-loading,
+.hb-voice-check-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--hb-mute);
+  line-height: 1.35;
+}
+.hb-voice-check-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.hb-voice-check-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.78rem;
+}
+.hb-voice-check-label {
+  color: var(--hb-mute);
+  flex-shrink: 0;
+}
+.hb-voice-check-value {
+  text-align: right;
+  font-weight: 650;
+  word-break: break-word;
+}
+.hb-voice-check-value--ok { color: var(--hb-ok); }
+.hb-voice-check-value--bad { color: var(--hb-danger); }
+.hb-voice-check-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+.hb-voice-check-btn {
+  appearance: none;
+  border: 1px solid var(--hb-line);
+  border-radius: 0.65rem;
+  background: var(--hb-panel);
+  color: var(--hb-text);
+  font-size: 0.78rem;
+  font-weight: 650;
+  padding: 0.4rem 0.7rem;
+  cursor: pointer;
+}
+.hb-voice-check-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.hb-doodle-voice-check {
+  margin-top: 1.1rem;
+  border-color: #f0e2ff;
+  background: #fff8ff;
+  color: #3b2a4a;
+}
+.hb-doodle-voice-check .hb-voice-check-sub,
+.hb-doodle-voice-check .hb-voice-check-label,
+.hb-doodle-voice-check .hb-voice-check-hint {
+  color: #7a6688;
+}
+.hb-doodle-voice-check .hb-voice-check-btn {
+  border-color: #f0e2ff;
+  background: #ffe8f6;
+  color: #3b2a4a;
+}
