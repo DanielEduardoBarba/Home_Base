@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api'
 import {
+  createServerSttSession,
   getServerTranscriptionConfigured,
   isIosBrowser,
   isSecureContext,
@@ -21,10 +22,10 @@ import {
   speakText,
   speechSupported,
   speechSynthesisSupported,
-  startMediaRecorderCapture,
   startSpeechDictation,
   stopSpeaking,
   unlockSpeechSynthesis,
+  type ServerSttSession,
   type SpeechHandle,
 } from './speech'
 
@@ -49,7 +50,7 @@ export type UseVoiceSession = {
   listening: boolean
   canSpeak: boolean
   canTts: boolean
-  /** True when this device prefers MediaRecorder → server Whisper (and it is configured). */
+  /** True when this device prefers MediaRecorder → server STT (and it is configured). */
   usesServerStt: boolean
   /** Show Ring/Silent switch hint (iOS). */
   showSilentSwitchHint: boolean
@@ -87,6 +88,7 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
   voiceModeRef.current = voiceMode
 
   const speechRef = useRef<SpeechHandle | null>(null)
+  const serverSttRef = useRef<ServerSttSession | null>(null)
   const listenGen = useRef(0)
   const inputBeforeSpeech = useRef('')
   const optsRef = useRef(opts)
@@ -116,66 +118,67 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
     }
   }, [])
 
+  /** Finish clip and allow server STT upload (HB-1246-01: do not bump gen before stop). */
   const stopListening = useCallback(() => {
-    listenGen.current += 1
+    const stt = serverSttRef.current
+    if (stt) {
+      stt.stop()
+      setListening(false)
+      return
+    }
     const handle = speechRef.current
     speechRef.current = null
     setListening(false)
     handle?.stop()
   }, [])
 
+  /** Discard active listen / in-flight STT without uploading. */
+  const cancelListening = useCallback(() => {
+    listenGen.current += 1
+    const stt = serverSttRef.current
+    if (stt) {
+      stt.cancel()
+      setListening(false)
+      return
+    }
+    const handle = speechRef.current
+    speechRef.current = null
+    setListening(false)
+    handle?.cancel()
+  }, [])
+
+  const ensureServerStt = useCallback(() => {
+    if (serverSttRef.current) return serverSttRef.current
+    const o = optsRef.current
+    serverSttRef.current = createServerSttSession({
+      kid: o.kid,
+      getComposerPrefix: () => inputBeforeSpeech.current || o.getComposerText(),
+      onText: (text) => o.onText(text),
+      onIssue: (message, level) => o.onIssue(message, level),
+      onListeningChange: (on) => setListening(on),
+      ensureConfigured: async () => {
+        const st = await api.speechStatus()
+        setServerTranscriptionConfigured(!!st.configured)
+        setServerConfigured(!!st.configured)
+        return !!st.configured
+      },
+      transcribe: async (blob, filename) => {
+        const res = await api.speechTranscribe(blob, filename)
+        return { text: res.text || '' }
+      },
+    })
+    return serverSttRef.current
+  }, [])
+
   const beginRecord = useCallback(
-    (gen: number, prefix?: string) => {
+    (prefix?: string) => {
       const o = optsRef.current
       inputBeforeSpeech.current = (prefix ?? o.getComposerText()).trim()
-      const handle = startMediaRecorderCapture({
-        kid: o.kid,
-        onError: (message) => {
-          if (gen !== listenGen.current) return
-          o.onIssue(
-            `${message} Tip: use the keyboard mic (dictation) or type — text chat always works.`,
-            'warn',
-          )
-        },
-        onBlob: (blob, mime) => {
-          if (gen !== listenGen.current) return
-          setListening(false)
-          speechRef.current = null
-          void (async () => {
-            try {
-              const st = await api.speechStatus()
-              setServerTranscriptionConfigured(!!st.configured)
-              setServerConfigured(!!st.configured)
-              if (!st.configured) {
-                o.onIssue(serverTranscriptionMissingMessages({ kid: o.kid }).body, 'warn')
-                return
-              }
-              const filename =
-                mime.includes('mp4') || mime.includes('aac') ? 'speech.m4a' : 'speech.webm'
-              const res = await api.speechTranscribe(blob, filename)
-              const text = (res.text || '').trim()
-              if (!text) {
-                o.onIssue(
-                  o.kid ? 'I could not catch that — try again!' : 'No speech transcribed',
-                  'warn',
-                )
-                return
-              }
-              const base = inputBeforeSpeech.current
-              o.onText(base ? `${base} ${text}` : text)
-            } catch (e) {
-              o.onIssue(e instanceof Error ? e.message : 'Transcription failed', 'warn')
-            }
-          })()
-        },
-      })
-      if (!handle) return
-      if (gen !== listenGen.current) {
-        handle.stop()
-        return
-      }
-      speechRef.current = handle
-      setListening(true)
+      // Browser recognition handle must not linger beside server STT.
+      speechRef.current?.cancel()
+      speechRef.current = null
+      const stt = ensureServerStt()
+      stt.start(prefix)
       if (enabled) {
         o.onIssue(
           o.kid
@@ -185,21 +188,24 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
         )
       }
     },
-    [enabled],
+    [enabled, ensureServerStt],
   )
 
   const beginListen = useCallback(
     (prefix?: string) => {
       const o = optsRef.current
       const gen = ++listenGen.current
+      // Supersede browser recognition; server STT cancel only if replacing mid-record
+      // (createServerSttSession.start handles active→new without killing a stop()'d upload).
       const prev = speechRef.current
       speechRef.current = null
       setListening(false)
-      prev?.stop()
+      prev?.cancel()
       o.unlockAudio?.()
       void unlockSpeechSynthesis()
 
       if (!isSecureContext()) {
+        serverSttRef.current?.cancel()
         const msg = secureContextMessages({ kid: o.kid }).body
         o.onIssue(msg)
         void (async () => {
@@ -248,9 +254,12 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
 
         // PRIMARY on iOS/WebKit when server STT is configured.
         if (useServer) {
-          beginRecord(gen, prefix)
+          beginRecord(prefix)
           return
         }
+
+        // Leaving server path — cancel any active STT recording (not a finished upload).
+        serverSttRef.current?.cancel()
 
         // Browser recognition: desktop fast path, or iOS webkitSpeechRecognition when not configured.
         const useBrowser =
@@ -288,7 +297,7 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
           })
           if (handle) {
             if (gen !== listenGen.current) {
-              handle.stop()
+              handle.cancel()
               return
             }
             speechRef.current = handle
@@ -297,7 +306,7 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
           }
           // Browser recognition failed to start.
           if (configured && mediaRecorderSupported() && enabled && voiceModeRef.current) {
-            beginRecord(gen, prefix)
+            beginRecord(prefix)
             return
           }
           o.onIssue(serverTranscriptionMissingMessages({ kid: o.kid }).body, 'warn')
@@ -306,7 +315,7 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
 
         // Fallback: server STT when browser recognition missing but key is set.
         if (configured && mediaRecorderSupported() && enabled && voiceModeRef.current) {
-          beginRecord(gen, prefix)
+          beginRecord(prefix)
           return
         }
 
@@ -341,7 +350,7 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
     (text: string) => {
       if (!text.trim()) return
       try {
-        stopListening()
+        cancelListening()
         speakText(text, {
           onEnd: () => {
             if (voiceModeRef.current && (speechSupported() || mediaRecorderSupported())) {
@@ -355,7 +364,7 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
         console.error('[home-agent] speak failed', e)
       }
     },
-    [beginListen, stopListening],
+    [beginListen, cancelListening],
   )
 
   const toggleTalk = useCallback(() => {
@@ -373,6 +382,7 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
     if (voiceMode) {
       setVoiceMode(false)
       voiceModeRef.current = false
+      // Tap Talk again → finish clip / stop recognition (upload server STT).
       stopListening()
       stopSpeaking()
       return
@@ -393,7 +403,7 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
     ) {
       beginListen()
     } else {
-      stopListening()
+      cancelListening()
       o.onIssue(
         o.kid
           ? 'I can still talk back out loud — type your words, or ask a grown-up to check Voice check in Settings.'
@@ -401,12 +411,22 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
         'warn',
       )
     }
-  }, [beginListen, canSpeak, enabled, listening, serverConfigured, stopListening, voiceMode])
+  }, [
+    beginListen,
+    canSpeak,
+    cancelListening,
+    enabled,
+    listening,
+    serverConfigured,
+    stopListening,
+    voiceMode,
+  ])
 
   useEffect(() => {
     return () => {
       listenGen.current += 1
-      speechRef.current?.stop()
+      speechRef.current?.cancel()
+      serverSttRef.current?.cancel()
       stopSpeaking()
     }
   }, [])

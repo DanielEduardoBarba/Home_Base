@@ -1,25 +1,32 @@
 /**
- * Server-side speech transcription (OpenAI Whisper-compatible).
+ * Server-side speech transcription (OpenAI audio transcriptions API).
  * PRIMARY Talk mic path on iOS / iPadOS / WebKit (MediaRecorder audio/mp4).
  * Desktop Chrome may still use on-device SpeechRecognition as a fast path.
  *
  * Env (never commit secrets):
  *   HOMEBASE_TRANSCRIBE_API_KEY — preferred dedicated key
  *   OPENAI_API_KEY              — fallback if the dedicated key is unset
+ *   HOMEBASE_TRANSCRIBE_MODEL   — default gpt-4o-mini-transcribe; override e.g. whisper-1
  *
- * When neither is set, /api/speech/status reports configured:false and the
+ * When neither key is set, /api/speech/status reports configured:false and the
  * UI shows a clear "not configured" message (keyboard mic / type still work).
  */
 import { HttpError } from "./auth";
 
 const OPENAI_TRANSCRIBE_URL = "https://api.openai.com/v1/audio/transcriptions";
 const MAX_BYTES = 12 * 1024 * 1024;
+export const DEFAULT_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe";
 
 export function transcribeApiKey(): string {
   return (
     (process.env.HOMEBASE_TRANSCRIBE_API_KEY || "").trim() ||
     (process.env.OPENAI_API_KEY || "").trim()
   );
+}
+
+/** Resolved model for OpenAI /v1/audio/transcriptions (empty → default). */
+export function transcribeModel(): string {
+  return (process.env.HOMEBASE_TRANSCRIBE_MODEL || "").trim() || DEFAULT_TRANSCRIBE_MODEL;
 }
 
 export function speechTranscribeConfigured(): boolean {
@@ -29,11 +36,13 @@ export function speechTranscribeConfigured(): boolean {
 export function speechTranscribeStatus(): {
   configured: boolean
   provider: string | null
+  model: string | null
 } {
   const configured = speechTranscribeConfigured();
   return {
     configured,
-    provider: configured ? "openai-whisper" : null,
+    provider: configured ? "openai" : null,
+    model: configured ? transcribeModel() : null,
   };
 }
 
@@ -47,14 +56,16 @@ function extForMime(mime: string): string {
 }
 
 /**
- * Transcribe an audio blob via OpenAI Whisper. Throws HttpError on failure.
+ * Transcribe an audio blob via OpenAI audio transcriptions. Throws HttpError on failure.
  */
 export async function transcribeAudio(input: {
   bytes: Uint8Array | ArrayBuffer
   mime?: string
   filename?: string
   language?: string
-}): Promise<{ text: string; configured: true }> {
+  /** Injected for unit tests (defaults to global fetch). */
+  fetchImpl?: (url: string, init?: RequestInit) => Promise<Response>
+}): Promise<{ text: string; configured: true; model: string }> {
   const key = transcribeApiKey();
   if (!key) {
     throw new HttpError(503, {
@@ -84,19 +95,21 @@ export async function transcribeAudio(input: {
   const mime = (input.mime || "audio/webm").split(";")[0]!.trim() || "audio/webm";
   const filename =
     (input.filename || "").trim() || `speech.${extForMime(mime)}`;
+  const model = transcribeModel();
   const form = new FormData();
   form.append(
     "file",
     new Blob([buf], { type: mime }),
     filename,
   );
-  form.append("model", (process.env.HOMEBASE_TRANSCRIBE_MODEL || "").trim() || "gpt-4o-mini-transcribe");
+  form.append("model", model);
   const lang = (input.language || "").trim();
   if (lang) form.append("language", lang.slice(0, 8));
 
+  const doFetch = input.fetchImpl || fetch;
   let res: Response;
   try {
-    res = await fetch(OPENAI_TRANSCRIBE_URL, {
+    res = await doFetch(OPENAI_TRANSCRIBE_URL, {
       method: "POST",
       headers: { Authorization: `Bearer ${key}` },
       body: form,
@@ -130,5 +143,5 @@ export async function transcribeAudio(input: {
   } catch {
     text = raw.trim();
   }
-  return { text, configured: true };
+  return { text, configured: true, model };
 }

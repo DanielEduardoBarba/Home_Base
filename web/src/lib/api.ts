@@ -1333,9 +1333,11 @@ export const api = {
         docs: string
       }
     }>('/api/cloudflare/status'),
-  /** Optional server Whisper transcription (HOMEBASE_TRANSCRIBE_API_KEY). */
+  /** Optional server OpenAI transcription (HOMEBASE_TRANSCRIBE_API_KEY). */
   speechStatus: () =>
-    request<{ configured: boolean; provider: string | null }>('/api/speech/status'),
+    request<{ configured: boolean; provider: string | null; model: string | null }>(
+      '/api/speech/status',
+    ),
   speechTranscribe: async (blob: Blob, filename?: string) => {
     const fd = new FormData()
     const name =

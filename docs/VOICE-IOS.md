@@ -41,7 +41,7 @@ Regenerate SANs after IP changes: Settings API `POST /api/tls/ensure` with `{ "f
 
 | Device | Server key | Recognition API | Mic path |
 | --- | --- | --- | --- |
-| iPhone / iPad / WebKit | configured | any | **Server STT** (MediaRecorder → Whisper) |
+| iPhone / iPad / WebKit | configured | any | **Server STT** (MediaRecorder → OpenAI transcribe) |
 | iPhone / iPad / WebKit | missing | present | **Browser** webkitSpeechRecognition (iOS-safe) |
 | iPhone / iPad / WebKit | missing | absent | Keyboard mic / type (+ not-configured message) |
 | Desktop Chrome / Edge | any | present | Browser SpeechRecognition (fast path) |
@@ -58,9 +58,12 @@ HOMEBASE_TRANSCRIBE_API_KEY=sk-...
 
 # Or fall back to a general OpenAI key
 OPENAI_API_KEY=sk-...
+
+# Optional model (default gpt-4o-mini-transcribe)
+# HOMEBASE_TRANSCRIBE_MODEL=whisper-1
 ```
 
-Uses OpenAI `gpt-4o-mini-transcribe` by default (about $0.003/min); set `HOMEBASE_TRANSCRIBE_MODEL=whisper-1` to switch. `/api/speech/status` reports `configured: false` when unset. The client caches that flag and picks the mic path above.
+Uses OpenAI `gpt-4o-mini-transcribe` by default (about $0.003/min); set `HOMEBASE_TRANSCRIBE_MODEL=whisper-1` to switch. `/api/speech/status` reports `provider: "openai"`, a `model` field when configured, and `configured: false` when unset. The client caches that flag and picks the mic path above.
 
 ## Hands-free flow
 

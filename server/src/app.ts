@@ -1527,7 +1527,7 @@ app.post("/api/tls/ensure", async (c) => {
   return c.json({ ...result, ...tlsStatusPublic() });
 });
 
-/** Server Whisper transcription — PRIMARY Talk mic path on iOS/WebKit. */
+/** Server OpenAI transcription — PRIMARY Talk mic path on iOS/WebKit. */
 app.get("/api/speech/status", async (c) => {
   await requireDoodleAuth(c);
   return c.json(speechTranscribeStatus());

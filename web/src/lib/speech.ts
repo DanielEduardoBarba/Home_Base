@@ -10,7 +10,10 @@
  */
 
 export type SpeechHandle = {
+  /** Finish: MediaRecorder delivers the blob; recognition commits finals. */
   stop: () => void
+  /** Abort without delivering a blob / without treating as a finished clip. */
+  cancel: () => void
 }
 
 export type VoiceDiagnostics = {
@@ -70,7 +73,7 @@ export function getLastSpeechError(): string | null {
   return lastSpeechError
 }
 
-/** Cached server Whisper configured flag (`null` until first status fetch). */
+/** Cached server transcription configured flag (`null` until first status fetch). */
 export function getServerTranscriptionConfigured(): boolean | null {
   return serverTranscriptionConfiguredCache
 }
@@ -135,7 +138,7 @@ export function isWebKitUserAgent(ua: string): boolean {
 }
 
 /**
- * Prefer MediaRecorder → Home Base server Whisper on iOS/WebKit when configured.
+ * Prefer MediaRecorder → Home Base server STT on iOS/WebKit when configured.
  * When `serverConfigured === false` (or cache says so), returns false so iOS can
  * fall back to webkitSpeechRecognition. Desktop Chrome keeps on-device as fast path.
  */
@@ -258,7 +261,7 @@ export function secureContextMessages(opts: {
   }
 }
 
-/** Clear message when server Whisper key is missing (and browser recognition unavailable/failed). */
+/** Clear message when server STT key is missing (and browser recognition unavailable/failed). */
 export function serverTranscriptionMissingMessages(opts: {
   kid?: boolean
 } = {}): { title: string; body: string } {
@@ -778,25 +781,31 @@ export function startSpeechDictation(opts: {
     return null
   }
 
-  return {
-    stop: () => {
-      stopped = true
-      clearRestart()
+  const finish = (commit: boolean) => {
+    stopped = true
+    clearRestart()
+    try {
+      rec.onend = null
+      if (commit) rec.stop()
+      else rec.abort()
+    } catch {
       try {
-        rec.onend = null
-        rec.stop()
+        rec.abort()
       } catch {
-        try {
-          rec.abort()
-        } catch {
-          /* ignore */
-        }
+        /* ignore */
       }
+    }
+    if (commit) {
       const finalText =
         joinSpeech(durable, sessionCommitted, sessionFinal, lastInterim) || lastLive
       if (finalText) opts.onFinal(finalText)
-      opts.onEnd?.()
-    },
+    }
+    opts.onEnd?.()
+  }
+
+  return {
+    stop: () => finish(true),
+    cancel: () => finish(false),
   }
 }
 
@@ -819,7 +828,7 @@ export function preferredRecordingMime(): string {
 
 /**
  * Push-to-talk MediaRecorder fallback when SpeechRecognition is missing/blocked.
- * Call stop() to finish; onBlob receives the recorded audio.
+ * Call stop() to finish (onBlob); cancel() discards without onBlob.
  */
 export function startMediaRecorderCapture(opts: {
   onBlob: (blob: Blob, mime: string) => void
@@ -842,10 +851,21 @@ export function startMediaRecorderCapture(opts: {
   }
 
   let stopped = false
+  let discarded = false
   let recorder: MediaRecorder | null = null
   let stream: MediaStream | null = null
   const chunks: BlobPart[] = []
   const mime = preferredRecordingMime()
+
+  const haltRecorder = () => {
+    stopped = true
+    try {
+      if (recorder && recorder.state !== 'inactive') recorder.stop()
+      else stream?.getTracks().forEach((t) => t.stop())
+    } catch {
+      stream?.getTracks().forEach((t) => t.stop())
+    }
+  }
 
   void (async () => {
     try {
@@ -859,9 +879,11 @@ export function startMediaRecorderCapture(opts: {
         : new MediaRecorder(stream)
       const usedMime = recorder.mimeType || mime || 'audio/webm'
       recorder.ondataavailable = (ev) => {
+        if (discarded) return
         if (ev.data && ev.data.size > 0) chunks.push(ev.data)
       }
       recorder.onerror = () => {
+        if (discarded) return
         const msg = 'Recording failed'
         setLastSpeechError(msg)
         opts.onError?.(msg)
@@ -869,6 +891,7 @@ export function startMediaRecorderCapture(opts: {
       recorder.onstop = () => {
         stream?.getTracks().forEach((t) => t.stop())
         stream = null
+        if (discarded) return
         const blob = new Blob(chunks, { type: usedMime })
         if (blob.size > 0) opts.onBlob(blob, usedMime)
       }
@@ -888,15 +911,131 @@ export function startMediaRecorderCapture(opts: {
 
   return {
     stop: () => {
-      stopped = true
-      try {
-        if (recorder && recorder.state !== 'inactive') recorder.stop()
-        else stream?.getTracks().forEach((t) => t.stop())
-      } catch {
-        stream?.getTracks().forEach((t) => t.stop())
-      }
+      haltRecorder()
+    },
+    cancel: () => {
+      discarded = true
+      chunks.length = 0
+      haltRecorder()
     },
   }
+}
+
+/**
+ * Push-to-talk server STT session (shared by Chat + Doodle via useVoiceSession).
+ * stop() finishes the clip and POSTs; cancel() discards with no fetch.
+ * Generation is only invalidated on cancel / a new start — not before MediaRecorder.stop().
+ */
+export type ServerSttSession = {
+  start: (prefix?: string) => void
+  stop: () => void
+  cancel: () => void
+}
+
+export function createServerSttSession(opts: {
+  onText: (text: string) => void
+  onIssue?: (message: string, level?: 'error' | 'warn') => void
+  getComposerPrefix?: () => string
+  kid?: boolean
+  /** Injected for unit tests; defaults to startMediaRecorderCapture. */
+  startCapture?: typeof startMediaRecorderCapture
+  /** POST /api/speech/transcribe (or fake). */
+  transcribe: (blob: Blob, filename: string) => Promise<{ text: string }>
+  /** Optional status check before upload (skip when already known configured). */
+  ensureConfigured?: () => Promise<boolean>
+  onListeningChange?: (listening: boolean) => void
+}): ServerSttSession {
+  let gen = 0
+  let handle: SpeechHandle | null = null
+  let prefix = ''
+  /** Gens at or below this value must not upload (cancel / superseded start). */
+  let discardThrough = 0
+  const startCapture = opts.startCapture || startMediaRecorderCapture
+
+  const cancel = () => {
+    // Explicit cancel: discard this gen (active clip and any in-flight upload).
+    discardThrough = Math.max(discardThrough, gen)
+    const h = handle
+    handle = null
+    opts.onListeningChange?.(false)
+    h?.cancel()
+  }
+
+  const start = (explicitPrefix?: string) => {
+    // Supersede only an *active* recorder. A stop()'d gen may still be uploading —
+    // do not bump discardThrough for it (HB-1246-01 rapid stop→start).
+    if (handle) {
+      discardThrough = Math.max(discardThrough, gen)
+      const prev = handle
+      handle = null
+      prev.cancel()
+    }
+    const myGen = ++gen
+    prefix = (explicitPrefix ?? opts.getComposerPrefix?.() ?? '').trim()
+    const h = startCapture({
+      kid: opts.kid,
+      onError: (message) => {
+        if (myGen <= discardThrough) return
+        opts.onIssue?.(
+          `${message} Tip: use the keyboard mic (dictation) or type — text chat always works.`,
+          'warn',
+        )
+      },
+      onBlob: (blob, mime) => {
+        // HB-1246-01: do not require gen === current; only skip cancelled gens.
+        if (myGen <= discardThrough) return
+        handle = null
+        opts.onListeningChange?.(false)
+        void (async () => {
+          try {
+            if (opts.ensureConfigured) {
+              const ok = await opts.ensureConfigured()
+              if (myGen <= discardThrough) return
+              if (!ok) {
+                opts.onIssue?.(serverTranscriptionMissingMessages({ kid: opts.kid }).body, 'warn')
+                return
+              }
+            }
+            if (myGen <= discardThrough) return
+            const filename =
+              mime.includes('mp4') || mime.includes('aac') ? 'speech.m4a' : 'speech.webm'
+            // Upload dispatched for this gen — new sessions may start; still accept this POST.
+            const res = await opts.transcribe(blob, filename)
+            if (myGen <= discardThrough) return
+            const text = (res.text || '').trim()
+            if (!text) {
+              opts.onIssue?.(
+                opts.kid ? 'I could not catch that — try again!' : 'No speech transcribed',
+                'warn',
+              )
+              return
+            }
+            opts.onText(prefix ? `${prefix} ${text}` : text)
+          } catch (e) {
+            if (myGen <= discardThrough) return
+            opts.onIssue?.(e instanceof Error ? e.message : 'Transcription failed', 'warn')
+          }
+        })()
+      },
+    })
+    if (!h) return
+    if (myGen <= discardThrough) {
+      h.cancel()
+      return
+    }
+    handle = h
+    opts.onListeningChange?.(true)
+  }
+
+  const stop = () => {
+    const h = handle
+    handle = null
+    opts.onListeningChange?.(false)
+    // Do NOT bump discardThrough / gen here — let onBlob POST for this session.
+    h?.stop()
+  }
+
+  return { start, stop, cancel }
 }
 
 export async function queryMicPermission(): Promise<VoiceDiagnostics['micPermission']> {
