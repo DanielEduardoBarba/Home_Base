@@ -4875,44 +4875,27 @@ html.hb-view-max .hb-topbar {
   opacity: 0.92;
 }
 
-.hb-contingency-script-btn {
+.hb-contingency-script-link {
   appearance: none;
-  border: 2px solid var(--hb-nuke-yellow);
-  background: var(--hb-nuke-yellow);
-  color: var(--hb-nuke-ink);
-  font-size: 0.72rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  padding: 0.45rem 0.65rem;
-  border-radius: 0.4rem;
-  min-height: 44px;
+  border: none;
+  background: transparent;
+  color: color-mix(in srgb, var(--hb-nuke-cream) 55%, transparent);
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  padding: 0.35rem 0.4rem;
+  min-height: 36px;
   cursor: pointer;
+  opacity: 0.75;
 }
 
-.hb-contingency-script-btn:active {
-  filter: brightness(1.08);
-}
-
-.hb-contingency-script-panel {
-  position: relative;
-  z-index: 2;
-  padding: 0.75rem;
-  border-bottom: 2px solid color-mix(in srgb, var(--hb-nuke-yellow) 65%, transparent);
-  background: var(--hb-nuke-panel);
-}
-
-.hb-contingency-script-hint {
-  font-size: 0.78rem;
-  line-height: 1.45;
+.hb-contingency-script-link:hover,
+.hb-contingency-script-link:focus-visible {
   color: var(--hb-nuke-cream);
-  margin-bottom: 0.5rem;
-}
-
-.hb-contingency-script-hint code {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  color: var(--hb-nuke-yellow);
-  font-weight: 700;
+  opacity: 1;
 }
 
 .hb-contingency-script-area {
@@ -4920,100 +4903,21 @@ html.hb-view-max .hb-topbar {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.82rem;
   line-height: 1.45;
-  color: #fff8dc;
-  background: #000;
-  border: 2px solid color-mix(in srgb, var(--hb-nuke-yellow) 55%, #444);
+  color: var(--hb-text);
+  background: color-mix(in srgb, var(--hb-bg) 88%, #000);
+  border: 1px solid var(--hb-line);
   border-radius: 0.5rem;
   padding: 0.65rem;
   resize: vertical;
-  min-height: 8rem;
-  caret-color: var(--hb-nuke-yellow);
+  min-height: 10rem;
 }
 
 .hb-contingency-script-area:read-only {
-  color: #f0e6b0;
-  border-style: solid;
-  opacity: 1;
+  opacity: 0.92;
 }
 
 .hb-contingency-script-area:not(:read-only) {
-  border-color: var(--hb-nuke-yellow);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--hb-nuke-yellow) 35%, transparent);
-}
-
-.hb-contingency-script-creds {
-  display: grid;
-  gap: 0.55rem;
-  margin-top: 0.65rem;
-}
-
-@media (min-width: 480px) {
-  .hb-contingency-script-creds {
-    grid-template-columns: 1fr 1fr;
-  }
-}
-
-.hb-contingency-field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--hb-nuke-yellow);
-}
-
-.hb-contingency-field input {
-  appearance: none;
-  min-height: 2.75rem;
-  border-radius: 0.45rem;
-  border: 2px solid color-mix(in srgb, var(--hb-nuke-yellow) 55%, #666);
-  background: #000;
-  color: #fff8dc;
-  font-size: 0.95rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  text-transform: none;
-  padding: 0.45rem 0.65rem;
-}
-
-.hb-contingency-field input::placeholder {
-  color: color-mix(in srgb, var(--hb-nuke-cream) 45%, transparent);
-}
-
-.hb-contingency-field input:focus {
-  outline: none;
-  border-color: var(--hb-nuke-yellow);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--hb-nuke-yellow) 35%, transparent);
-}
-
-.hb-contingency-script-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-top: 0.65rem;
-}
-
-.hb-contingency-script-panel .hb-btn {
-  border: 2px solid color-mix(in srgb, var(--hb-nuke-yellow) 70%, #888);
-  color: var(--hb-nuke-cream);
-  background: color-mix(in srgb, var(--hb-nuke-ink) 80%, #222);
-  font-weight: 650;
-}
-
-.hb-contingency-script-panel .hb-btn-primary {
-  background: var(--hb-nuke-yellow);
-  color: var(--hb-nuke-ink);
-  border-color: var(--hb-nuke-yellow);
-  font-weight: 800;
-}
-
-.hb-contingency-script-msg {
-  margin-top: 0.45rem;
-  font-size: 0.8rem;
-  font-weight: 650;
-  color: var(--hb-nuke-yellow-hot);
+  border-color: color-mix(in srgb, var(--hb-accent) 55%, var(--hb-line));
 }
 
 .hb-contingency-stage {
@@ -6218,4 +6122,337 @@ html.hb-view-max .hb-topbar {
   .hb-doodle-chat-overlay * {
     animation: none !important;
   }
+}
+
+/* —— Settings → Doodle hub + Devices scene —— */
+.hb-settings-doodle-group {
+  padding: 0.85rem 0.75rem 0.95rem;
+  border-radius: 1.4rem;
+  background:
+    radial-gradient(80% 70% at 0% 0%, #ffd6e8 0%, transparent 70%),
+    radial-gradient(70% 60% at 100% 100%, #c9f2ff 0%, transparent 70%),
+    #fff8f0;
+  box-shadow: 0 4px 0 #f0e2ff, 0 10px 24px rgba(59, 42, 74, 0.1);
+}
+
+.hb-settings-doodle-label {
+  color: #ff4d6d !important;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
+.hb-settings-doodle-rows {
+  background: #fff !important;
+  border: none !important;
+  box-shadow: 0 3px 0 #e8d9f5;
+  overflow: hidden;
+  border-radius: 1rem !important;
+}
+
+.hb-settings-doodle-rows .hb-settings-row {
+  color: #3b2a4a;
+}
+
+.hb-settings-doodle-rows .hb-settings-row:hover,
+.hb-settings-doodle-rows .hb-settings-row:focus-visible {
+  background: #fff4f8;
+}
+
+.hb-doodle-settings {
+  --kid-ink: #3b2a4a;
+  --kid-soft: #7a6690;
+  --kid-font: ui-rounded, 'SF Pro Rounded', 'Nunito', 'Varela Round', 'Trebuchet MS', system-ui, sans-serif;
+  color: var(--kid-ink);
+  font-family: var(--kid-font);
+  background:
+    radial-gradient(60% 45% at 0% 0%, #ffd6e8 0%, transparent 70%),
+    radial-gradient(55% 45% at 100% 5%, #c9f2ff 0%, transparent 70%),
+    radial-gradient(70% 50% at 50% 100%, #fff1b8 0%, transparent 70%),
+    #fff8f0;
+}
+
+.hb-doodle-settings-inner {
+  max-width: 28rem;
+  margin: 0 auto;
+  padding: 1rem 1rem 2.5rem;
+  padding-top: max(1rem, env(safe-area-inset-top));
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.hb-doodle-settings-back {
+  align-self: flex-start;
+  border: none;
+  border-radius: 999px;
+  padding: 0.45rem 0.9rem;
+  background: #fff;
+  color: var(--kid-ink);
+  font-family: inherit;
+  font-weight: 800;
+  font-size: 0.9rem;
+  box-shadow: 0 3px 0 #e8d9f5;
+}
+
+.hb-doodle-settings-back:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 #e8d9f5;
+}
+
+.hb-doodle-settings-hero {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+}
+
+.hb-doodle-settings-hero .hb-doodle-name {
+  display: none;
+}
+
+.hb-doodle-settings-eyebrow {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #ff4d6d;
+}
+
+.hb-doodle-settings-hero h1 {
+  margin: 0.1rem 0 0.25rem;
+  font-size: 1.85rem;
+  font-weight: 900;
+  line-height: 1.1;
+}
+
+.hb-doodle-settings-hero p {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--kid-soft);
+  line-height: 1.35;
+}
+
+.hb-doodle-settings-toast,
+.hb-doodle-settings-err {
+  margin: 0;
+  padding: 0.65rem 1rem;
+  border-radius: 999px;
+  text-align: center;
+  font-weight: 800;
+  font-size: 0.92rem;
+}
+
+.hb-doodle-settings-toast {
+  background: #fff;
+  box-shadow: 0 4px 0 #cdeefc;
+}
+
+.hb-doodle-settings-err {
+  background: #ffe3ea;
+  color: #c9184a;
+  box-shadow: 0 4px 0 #ffc2d1;
+}
+
+.hb-doodle-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.hb-doodle-settings-pill {
+  border: none;
+  border-radius: 999px;
+  padding: 0.55rem 1rem;
+  background: #fff;
+  color: var(--kid-ink);
+  font-family: inherit;
+  font-weight: 800;
+  font-size: 0.88rem;
+  box-shadow: 0 3px 0 #cdeefc;
+}
+
+.hb-doodle-settings-pill--warn {
+  box-shadow: 0 3px 0 #ffd6e8;
+  color: #c9184a;
+}
+
+.hb-doodle-settings-pill:disabled {
+  opacity: 0.45;
+}
+
+.hb-doodle-settings-pill:not(:disabled):active {
+  transform: translateY(2px);
+}
+
+.hb-doodle-settings-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.45rem;
+  padding: 1.4rem 1rem;
+  border-radius: 1.6rem;
+  background: #fff;
+  box-shadow: 0 5px 0 #f0e2ff;
+}
+
+.hb-doodle-settings-empty .hb-doodle-name {
+  display: none;
+}
+
+.hb-doodle-settings-empty-title {
+  margin: 0.3rem 0 0;
+  font-size: 1.2rem;
+  font-weight: 900;
+}
+
+.hb-doodle-settings-empty p {
+  margin: 0;
+  max-width: 18rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--kid-soft);
+  line-height: 1.35;
+}
+
+.hb-doodle-settings-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.hb-doodle-settings-card {
+  padding: 0.9rem;
+  border-radius: 1.4rem;
+  background: #fff;
+  box-shadow: 0 5px 0 #f0e2ff, 0 10px 22px rgba(59, 42, 74, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.hb-doodle-settings-card-top {
+  display: flex;
+  gap: 0.7rem;
+  align-items: flex-start;
+}
+
+.hb-doodle-settings-badge {
+  display: grid;
+  place-items: center;
+  width: 2.6rem;
+  height: 2.6rem;
+  border-radius: 999px;
+  background: #fff4f8;
+  font-size: 1.25rem;
+  flex-shrink: 0;
+}
+
+.hb-doodle-settings-name {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 900;
+}
+
+.hb-doodle-settings-meta {
+  margin: 0.15rem 0 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--kid-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hb-doodle-settings-card-actions,
+.hb-doodle-settings-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.hb-doodle-settings-btn {
+  border: none;
+  border-radius: 999px;
+  padding: 0.55rem 1rem;
+  background: #f6efff;
+  color: var(--kid-ink);
+  font-family: inherit;
+  font-weight: 800;
+  font-size: 0.88rem;
+  box-shadow: 0 3px 0 #e2d2f5;
+}
+
+.hb-doodle-settings-btn--warn {
+  background: #ffe3ea;
+  color: #c9184a;
+  box-shadow: 0 3px 0 #ffc2d1;
+}
+
+.hb-doodle-settings-btn:disabled {
+  opacity: 0.45;
+}
+
+.hb-doodle-settings-btn:not(:disabled):active {
+  transform: translateY(2px);
+}
+
+.hb-doodle-settings-footnote {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--kid-soft);
+  line-height: 1.4;
+}
+
+.hb-doodle-settings-confirm {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(255, 214, 232, 0.45);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.hb-doodle-settings-confirm-card {
+  width: min(22rem, 100%);
+  padding: 1.2rem;
+  border-radius: 1.6rem;
+  background: #fff;
+  box-shadow: 0 6px 0 #f0e2ff, 0 18px 40px rgba(59, 42, 74, 0.2);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.55rem;
+}
+
+.hb-doodle-settings-confirm-card .hb-doodle-name {
+  display: none;
+}
+
+.hb-doodle-settings-confirm-card h2 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 900;
+}
+
+.hb-doodle-settings-confirm-card p {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--kid-soft);
+  line-height: 1.35;
+}
+
+.hb-doodle-settings-confirm-actions {
+  justify-content: center;
+  margin-top: 0.35rem;
 }

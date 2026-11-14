@@ -184,6 +184,19 @@ function authScriptEdit(
   }
 }
 
+/** Verify password (+ PIN when enabled) before unlocking the script editor. */
+export function unlockContingencyScriptEdit(
+  creds: { password: string; pin?: string },
+  ip = "unknown",
+  ctx: AuthEventCtx = {},
+): { ok: true; pinRequired: boolean } {
+  authScriptEdit(creds.password, creds.pin, ip, {
+    ...ctx,
+    path: ctx.path || "/api/contingency/script/unlock",
+  });
+  return { ok: true, pinRequired: isAppPinEnabled() };
+}
+
 /**
  * Replace Contingency script. Requires Home Base password, and App PIN when enabled.
  * Persists AES-GCM ciphertext under `.runtime/contingency.script.enc`.

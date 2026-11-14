@@ -15,7 +15,10 @@ import {
   stopSiren,
   unlockContingencyAudio,
 } from '../lib/contingencyAudio'
+import { AccessibleDialog } from './AccessibleDialog'
 import { HomeIconButton } from './HomeGlyph'
+
+type ScriptAuthMode = 'unlock' | 'save' | null
 
 type Phase = 'pin' | 'ready' | 'spinning' | 'armed' | 'firing' | 'done'
 
@@ -42,11 +45,13 @@ export function ContingencyTab({ onHome }: Props) {
   const [isDefault, setIsDefault] = useState(true)
   const [scriptOpen, setScriptOpen] = useState(false)
   const [scriptEditing, setScriptEditing] = useState(false)
+  const [scriptAuthMode, setScriptAuthMode] = useState<ScriptAuthMode>(null)
   const [scriptDraft, setScriptDraft] = useState('')
   const [scriptPassword, setScriptPassword] = useState('')
   const [scriptPin, setScriptPin] = useState('')
   const [scriptBusy, setScriptBusy] = useState(false)
   const [scriptMsg, setScriptMsg] = useState('')
+  const [authMsg, setAuthMsg] = useState('')
   const [encryptedAtRest, setEncryptedAtRest] = useState(false)
   const [spinProgress, setSpinProgress] = useState(0)
   const [remainSec, setRemainSec] = useState(0)
@@ -268,36 +273,66 @@ export function ContingencyTab({ onHome }: Props) {
     }
   }
 
-  const closeScriptPanel = () => {
+  const closeScriptDialog = () => {
     setScriptOpen(false)
     setScriptEditing(false)
+    setScriptAuthMode(null)
     setScriptPassword('')
     setScriptPin('')
     setScriptMsg('')
+    setAuthMsg('')
     setScriptDraft(script)
   }
 
-  const saveScript = async () => {
+  const closeAuthDialog = () => {
+    setScriptAuthMode(null)
+    setScriptPassword('')
+    setScriptPin('')
+    setAuthMsg('')
+  }
+
+  const openScriptDialog = () => {
+    void unlockContingencyAudio()
+    setScriptDraft(script)
+    setScriptEditing(false)
+    setScriptAuthMode(null)
+    setScriptPassword('')
+    setScriptPin('')
+    setScriptMsg('')
+    setAuthMsg('')
+    setScriptOpen(true)
+  }
+
+  const submitScriptAuth = async () => {
     if (!scriptPassword.trim()) {
-      setScriptMsg('Enter your Home Base password to save')
+      setAuthMsg('Enter your Home Base password')
       return
     }
     if (pinRequired && scriptPin.replace(/\D/g, '').length !== 4) {
-      setScriptMsg('Enter your 4-digit App PIN to save')
+      setAuthMsg('Enter your 4-digit App PIN')
       return
     }
+    const pin = pinRequired ? scriptPin.replace(/\D/g, '').slice(0, 4) : undefined
     setScriptBusy(true)
-    setScriptMsg('')
+    setAuthMsg('')
     try {
-      const pin = pinRequired ? scriptPin.replace(/\D/g, '').slice(0, 4) : undefined
+      if (scriptAuthMode === 'unlock') {
+        await api.contingencyUnlockScript(scriptPassword, pin)
+        setScriptEditing(true)
+        setScriptDraft(script)
+        setScriptMsg('')
+        closeAuthDialog()
+        return
+      }
+      if (scriptAuthMode !== 'save') return
       const res = await api.contingencySetScript(scriptDraft, scriptPassword, pin)
       setScript(res.script)
+      setScriptDraft(res.script)
       setIsDefault(res.isDefault)
       setEncryptedAtRest(!!res.encryptedAtRest)
-      setScriptMsg('Saved · encrypted at rest')
       setScriptEditing(false)
-      setScriptPassword('')
-      setScriptPin('')
+      setScriptMsg('Saved · encrypted at rest')
+      closeAuthDialog()
       setTicket(null)
       setTicketExpiresAt(null)
       setPhase('pin')
@@ -305,7 +340,7 @@ export function ContingencyTab({ onHome }: Props) {
       stopSiren()
     } catch (e) {
       const parsed = parseAuthError(e, { surface: 'login' })
-      setScriptMsg(parsed.headline || (e instanceof Error ? e.message : String(e)))
+      setAuthMsg(parsed.headline || (e instanceof Error ? e.message : String(e)))
       if (parsed.retryAfter > 0) setRetryAfter(parsed.retryAfter)
     } finally {
       setScriptBusy(false)
@@ -363,125 +398,13 @@ export function ContingencyTab({ onHome }: Props) {
         </div>
         <button
           type="button"
-          className="hb-contingency-script-btn shrink-0"
-          onClick={() => {
-            void unlockContingencyAudio()
-            if (scriptOpen) {
-              closeScriptPanel()
-              return
-            }
-            setScriptDraft(script)
-            setScriptEditing(false)
-            setScriptPassword('')
-            setScriptPin('')
-            setScriptMsg('')
-            setScriptOpen(true)
-          }}
+          className="hb-contingency-script-link shrink-0"
+          onClick={openScriptDialog}
+          title="View contingency script"
         >
-          Script
+          script
         </button>
       </header>
-
-      {scriptOpen ? (
-        <div className="hb-contingency-script-panel">
-          <p className="hb-contingency-script-hint">
-            Bash run as homebased. Epilogue always attempts <code>reboot</code> after your script
-            {isDefault ? ' · currently default crash' : ''}.
-            {encryptedAtRest ? ' · vault encrypted' : ' · will encrypt on first save'}.
-            {' '}Readable here; edit needs password{pinRequired ? ' + PIN' : ''}.
-          </p>
-          <textarea
-            className="hb-contingency-script-area"
-            value={scriptEditing ? scriptDraft : script}
-            onChange={(e) => scriptEditing && setScriptDraft(e.target.value)}
-            readOnly={!scriptEditing}
-            rows={8}
-            spellCheck={false}
-            aria-label="Contingency script"
-            aria-readonly={!scriptEditing}
-          />
-          {scriptEditing ? (
-            <div className="hb-contingency-script-creds">
-              <label className="hb-contingency-field">
-                <span>Password</span>
-                <input
-                  type="password"
-                  autoComplete="current-password"
-                  value={scriptPassword}
-                  onChange={(e) => setScriptPassword(e.target.value)}
-                  placeholder="Home Base password"
-                />
-              </label>
-              {pinRequired ? (
-                <label className="hb-contingency-field">
-                  <span>PIN</span>
-                  <input
-                    type="password"
-                    inputMode="numeric"
-                    autoComplete="one-time-code"
-                    maxLength={4}
-                    value={scriptPin}
-                    onChange={(e) => setScriptPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
-                    placeholder="4-digit PIN"
-                  />
-                </label>
-              ) : null}
-            </div>
-          ) : null}
-          <div className="hb-contingency-script-actions">
-            {!scriptEditing ? (
-              <button
-                type="button"
-                className="hb-btn hb-btn-primary"
-                onClick={() => {
-                  setScriptDraft(script)
-                  setScriptEditing(true)
-                  setScriptMsg('')
-                }}
-              >
-                Unlock to edit
-              </button>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  className="hb-btn"
-                  disabled={scriptBusy}
-                  onClick={() => setScriptDraft(defaultScript)}
-                >
-                  Reset default
-                </button>
-                <button
-                  type="button"
-                  className="hb-btn hb-btn-primary"
-                  disabled={scriptBusy}
-                  onClick={() => void saveScript()}
-                >
-                  {scriptBusy ? 'Saving…' : 'Save'}
-                </button>
-                <button
-                  type="button"
-                  className="hb-btn"
-                  disabled={scriptBusy}
-                  onClick={() => {
-                    setScriptEditing(false)
-                    setScriptDraft(script)
-                    setScriptPassword('')
-                    setScriptPin('')
-                    setScriptMsg('')
-                  }}
-                >
-                  Cancel edit
-                </button>
-              </>
-            )}
-            <button type="button" className="hb-btn" onClick={closeScriptPanel}>
-              Close
-            </button>
-          </div>
-          {scriptMsg ? <p className="hb-contingency-script-msg">{scriptMsg}</p> : null}
-        </div>
-      ) : null}
 
       <main className="hb-contingency-stage flex-1 min-h-0">
         {error ? (
@@ -599,6 +522,177 @@ export function ContingencyTab({ onHome }: Props) {
           </div>
         )}
       </main>
+
+      <AccessibleDialog
+        open={scriptOpen}
+        onClose={closeScriptDialog}
+        title={scriptEditing ? 'Edit contingency script' : 'Contingency script'}
+        titleId="hb-contingency-script-title"
+        panelClassName="w-full max-w-lg hb-surface p-4 space-y-3 shadow-xl"
+        closeOnOverlay={!scriptEditing}
+      >
+        <p className="text-sm text-mute leading-snug">
+          Bash as homebased. Epilogue always attempts <code className="font-mono text-xs">reboot</code>
+          {isDefault ? ' · default crash script' : ''}.
+          {encryptedAtRest ? ' · encrypted at rest' : ''}.
+        </p>
+        <textarea
+          className="hb-contingency-script-area"
+          value={scriptEditing ? scriptDraft : script}
+          onChange={(e) => scriptEditing && setScriptDraft(e.target.value)}
+          readOnly={!scriptEditing}
+          rows={10}
+          spellCheck={false}
+          aria-label="Contingency script"
+          {...(scriptEditing ? { 'data-dialog-initial': true } : {})}
+        />
+        {scriptMsg ? <p className="text-sm text-ok">{scriptMsg}</p> : null}
+        <div className="flex flex-wrap gap-2">
+          {!scriptEditing ? (
+            <button
+              type="button"
+              className="hb-btn hb-btn-primary flex-1 !min-h-10"
+              onClick={() => {
+                setScriptPassword('')
+                setScriptPin('')
+                setAuthMsg('')
+                setScriptAuthMode('unlock')
+              }}
+            >
+              Unlock to edit
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="hb-btn hb-btn-ghost !min-h-10"
+                disabled={scriptBusy}
+                onClick={() => setScriptDraft(defaultScript)}
+              >
+                Reset default
+              </button>
+              <button
+                type="button"
+                className="hb-btn hb-btn-primary flex-1 !min-h-10"
+                disabled={scriptBusy}
+                onClick={() => {
+                  setScriptPassword('')
+                  setScriptPin('')
+                  setAuthMsg('')
+                  setScriptAuthMode('save')
+                }}
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                className="hb-btn hb-btn-ghost !min-h-10"
+                disabled={scriptBusy}
+                onClick={() => {
+                  setScriptEditing(false)
+                  setScriptDraft(script)
+                  setScriptMsg('')
+                }}
+              >
+                Cancel edit
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            className="hb-btn hb-btn-ghost !min-h-10"
+            data-dialog-cancel
+            onClick={closeScriptDialog}
+          >
+            Close
+          </button>
+        </div>
+      </AccessibleDialog>
+
+      <AccessibleDialog
+        open={scriptAuthMode != null}
+        onClose={closeAuthDialog}
+        confirm
+        title={scriptAuthMode === 'save' ? 'Confirm save' : 'Unlock script'}
+        titleId="hb-contingency-script-auth-title"
+        focusKey={scriptAuthMode || 'auth'}
+        closeOnOverlay={!scriptBusy}
+      >
+        <p className="text-sm text-mute leading-snug">
+          {scriptAuthMode === 'save'
+            ? `Enter your password${pinRequired ? ' and PIN' : ''} to save the contingency script.`
+            : `Enter your password${pinRequired ? ' and PIN' : ''} to edit the contingency script.`}
+        </p>
+        <label className="block space-y-1.5">
+          <span className="text-xs text-mute">Password</span>
+          <input
+            type="password"
+            className="w-full rounded-lg bg-panel-2 border border-line px-3 py-2.5 text-sm !min-h-11 outline-none focus:border-accent"
+            autoComplete="current-password"
+            data-dialog-initial
+            value={scriptPassword}
+            onChange={(e) => setScriptPassword(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                void submitScriptAuth()
+              }
+            }}
+            placeholder="Home Base password"
+          />
+        </label>
+        {pinRequired ? (
+          <label className="block space-y-1.5">
+            <span className="text-xs text-mute">PIN</span>
+            <input
+              type="password"
+              className="w-full rounded-lg bg-panel-2 border border-line px-3 py-2.5 text-sm !min-h-11 font-mono tracking-[0.35em] outline-none focus:border-accent"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={4}
+              value={scriptPin}
+              onChange={(e) => setScriptPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  void submitScriptAuth()
+                }
+              }}
+              placeholder="••••"
+            />
+          </label>
+        ) : null}
+        {authMsg ? (
+          <p className="text-sm text-danger" role="alert">
+            {authMsg}
+          </p>
+        ) : null}
+        <div className="flex gap-2">
+          <button
+            type="button"
+            className="hb-btn hb-btn-ghost flex-1 !min-h-10"
+            data-dialog-cancel
+            disabled={scriptBusy}
+            onClick={closeAuthDialog}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="hb-btn hb-btn-primary flex-1 !min-h-10"
+            disabled={scriptBusy}
+            onClick={() => void submitScriptAuth()}
+          >
+            {scriptBusy
+              ? scriptAuthMode === 'save'
+                ? 'Saving…'
+                : 'Checking…'
+              : scriptAuthMode === 'save'
+                ? 'Save'
+                : 'Unlock'}
+          </button>
+        </div>
+      </AccessibleDialog>
     </div>
   )
 }

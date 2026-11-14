@@ -34,6 +34,7 @@ import { ActivityHistoryPanel } from './ActivityHistoryPanel'
 import { SecurityPanel } from './SecurityPanel'
 import { EmailAlertsPanel } from './EmailAlertsPanel'
 import { GitGithubPanel } from './GitGithubPanel'
+import { DoodleDevicesSettings } from './DoodleDevicesSettings'
 import type { PresentRequest } from '../lib/chatTypes'
 
 type SettingsScene =
@@ -58,6 +59,7 @@ type SettingsScene =
   | 'storage'
   | 'session'
   | 'share'
+  | 'doodleDevices'
   | 'about'
 
 type HubRow = {
@@ -195,6 +197,7 @@ export function SettingsTab({
   const [mcpTokenCount, setMcpTokenCount] = useState(0)
   const [emailReady, setEmailReady] = useState(false)
   const [emailOn, setEmailOn] = useState(false)
+  const [doodleTabletCount, setDoodleTabletCount] = useState<number | null>(null)
 
   const refreshSudo = useCallback(() => {
     void api
@@ -247,6 +250,10 @@ export function SettingsTab({
         setEmailOn(!!s.enabled)
       })
       .catch(() => undefined)
+    void api
+      .doodleTablets()
+      .then((s) => setDoodleTabletCount(s.count ?? s.tablets?.length ?? 0))
+      .catch(() => setDoodleTabletCount(null))
   }, [refreshSudo])
 
   useEffect(() => {
@@ -589,6 +596,21 @@ export function SettingsTab({
         ],
       },
       {
+        label: 'Doodle',
+        rows: [
+          {
+            id: 'doodleDevices',
+            title: 'Devices',
+            hint:
+              doodleTabletCount === null
+                ? 'Trusted tablets · untrust · reset tokens'
+                : doodleTabletCount === 0
+                  ? 'No trusted tablets'
+                  : `${doodleTabletCount} trusted tablet${doodleTabletCount === 1 ? '' : 's'}`,
+          },
+        ],
+      },
+      {
         label: 'About',
         rows: [{ id: 'about', title: 'About & legal', hint: 'MIT · Terms · Privacy' }],
       },
@@ -620,6 +642,7 @@ export function SettingsTab({
     sessionHint,
     vpnUrl,
     lanUrl,
+    doodleTabletCount,
   ])
 
   const modals = (
@@ -1751,6 +1774,23 @@ export function SettingsTab({
     )
   }
 
+  if (scene === 'doodleDevices') {
+    return (
+      <>
+        <DoodleDevicesSettings
+          onBack={() => {
+            void api
+              .doodleTablets()
+              .then((s) => setDoodleTabletCount(s.count ?? s.tablets?.length ?? 0))
+              .catch(() => undefined)
+            goHub()
+          }}
+        />
+        {modals}
+      </>
+    )
+  }
+
   return (
     <>
       <div className="h-full overflow-y-auto">
@@ -1782,10 +1822,16 @@ export function SettingsTab({
           {hubGroups.map((group) => {
             const rows = group.rows.filter((r) => !r.localOnly || local)
             if (!rows.length) return null
+            const doodleGroup = group.label === 'Doodle'
             return (
-              <section key={group.label} className="space-y-2">
-                <h2 className="hb-label px-1">{group.label}</h2>
-                <div className="hb-settings-group">
+              <section
+                key={group.label}
+                className={doodleGroup ? 'hb-settings-doodle-group space-y-2' : 'space-y-2'}
+              >
+                <h2 className={`hb-label px-1${doodleGroup ? ' hb-settings-doodle-label' : ''}`}>
+                  {group.label}
+                </h2>
+                <div className={`hb-settings-group${doodleGroup ? ' hb-settings-doodle-rows' : ''}`}>
                   {rows.map((row) => (
                     <SettingsRow
                       key={row.id}

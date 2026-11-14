@@ -82,6 +82,11 @@ export type DoodleTablet = {
   enrolledAt: number;
   lastSeenAt: number;
   userAgent?: string;
+  /**
+   * Bumped when long-lived doodle JWTs for this tablet are revoked.
+   * Embedded in the JWT as `tr`; mismatch → token rejected until re-enroll.
+   */
+  tokenRev?: number;
 };
 
 type TabletsFile = { tablets: DoodleTablet[]; updatedAt?: number };
@@ -223,6 +228,58 @@ export function forgetDoodleTablet(deviceId: string): boolean {
   return true;
 }
 
+/** Remove every trusted Doodle tablet (invalidates all doodle JWTs). */
+export function forgetAllDoodleTablets(): number {
+  const file = loadTablets();
+  const n = file.tablets.length;
+  if (n === 0) return 0;
+  file.tablets = [];
+  saveTablets(file);
+  return n;
+}
+
+/**
+ * Invalidate long-lived doodle JWTs for one tablet (or every tablet) without
+ * untrusting the device record — tablet stays listed until forget.
+ * Returns how many tablets were bumped.
+ */
+export function revokeDoodleTabletTokens(deviceId?: string): number {
+  const file = loadTablets();
+  const id = String(deviceId || "").trim();
+  let n = 0;
+  for (const t of file.tablets) {
+    if (id && t.deviceId !== id) continue;
+    t.tokenRev = (Number(t.tokenRev) || 0) + 1;
+    n += 1;
+  }
+  if (n > 0) saveTablets(file);
+  return n;
+}
+
+export function doodleTabletTokenRev(deviceId: string): number {
+  const t = getDoodleTablet(deviceId);
+  return Number(t?.tokenRev) || 0;
+}
+
+/** Public row for Settings → Doodle → Devices (no secrets). */
+export function doodleTabletPublic(t: DoodleTablet): {
+  deviceId: string;
+  name: string;
+  enrolledAt: number;
+  lastSeenAt: number;
+  userAgent: string | null;
+  tokenRev: number;
+} {
+  return {
+    deviceId: t.deviceId,
+    name: t.name || "Doodle tablet",
+    enrolledAt: t.enrolledAt,
+    lastSeenAt: t.lastSeenAt,
+    userAgent: t.userAgent || null,
+    tokenRev: Number(t.tokenRev) || 0,
+  };
+}
+
 export function touchDoodleTablet(deviceId: string, userAgent?: string): void {
   const id = String(deviceId || "").trim();
   if (!id) return;
@@ -339,12 +396,14 @@ export async function enrollDoodleTablet(opts: {
       enrolledAt: now,
       lastSeenAt: now,
       userAgent: opts.userAgent?.slice(0, 180),
+      tokenRev: 0,
     };
     file.tablets.push(tablet);
   } else {
     tablet.lastSeenAt = now;
     if (opts.name) tablet.name = String(opts.name).trim().slice(0, 64) || tablet.name;
     if (opts.userAgent) tablet.userAgent = opts.userAgent.slice(0, 180);
+    if (tablet.tokenRev == null) tablet.tokenRev = 0;
   }
   saveTablets(file);
 
@@ -352,6 +411,7 @@ export async function enrollDoodleTablet(opts: {
     kind: DOODLE_JWT_KIND,
     ttl: DOODLE_TTL_SEC,
     did: deviceId,
+    tr: Number(tablet.tokenRev) || 0,
   });
   return {
     ...session,

@@ -286,6 +286,8 @@ export async function issueJwt(opts: {
   ttl?: number;
   /** Doodle tablet device id (embedded as `did` claim). */
   did?: string;
+  /** Doodle tablet token generation (embedded as `tr`; revoke bumps this). */
+  tr?: number;
 }): Promise<{
   token: string;
   expiresAt: number;
@@ -303,6 +305,9 @@ export async function issueJwt(opts: {
     ae: authEpoch(),
   };
   if (opts.did) claims.did = String(opts.did).slice(0, 64);
+  if (opts.tr != null && Number.isFinite(opts.tr)) {
+    claims.tr = Math.max(0, Math.floor(Number(opts.tr)));
+  }
   const token = await new SignJWT(claims)
     .setProtectedHeader({ alg: JWT_ALG })
     .setSubject(opts.subject ?? "homebase")
@@ -912,11 +917,19 @@ export async function verifyAccessToken(
         code: "invalid_doodle",
       });
     }
-    const { isDoodleTabletEnrolled } = require("./doodle") as typeof import("./doodle");
-    if (!isDoodleTabletEnrolled(did)) {
+    const doodle = require("./doodle") as typeof import("./doodle");
+    if (!doodle.isDoodleTabletEnrolled(did)) {
       throw new HttpError(401, {
         message: "Tablet no longer remembered — enroll again",
         code: "doodle_forgotten",
+      });
+    }
+    const tokenTr = Number(claims.tr ?? 0) || 0;
+    const liveTr = doodle.doodleTabletTokenRev(did);
+    if (tokenTr !== liveTr) {
+      throw new HttpError(401, {
+        message: "Doodle token revoked — enroll this tablet again",
+        code: "doodle_token_revoked",
       });
     }
   }

@@ -100,6 +100,7 @@ import {
   executeContingency,
   revokeContingencyTicket,
   setContingencyScript,
+  unlockContingencyScriptEdit,
 } from "./contingency";
 import {
   armVision,
@@ -139,12 +140,15 @@ import {
   enrollDoodleTablet,
   ensureDoodleProject,
   ensureDoodleWorkspace,
+  doodleTabletPublic,
+  forgetAllDoodleTablets,
   forgetDoodleTablet,
   getDoodleCanvas,
   getDoodleState,
   listDoodleTablets,
   planDoodleTravel,
   putDoodleCanvas,
+  revokeDoodleTabletTokens,
   setDoodleExpress,
   setDoodleTimer,
   setDoodleTravel,
@@ -758,24 +762,143 @@ app.post("/api/doodle/enroll", async (c) => {
 app.get("/api/doodle/tablet", async (c) => {
   const claims = await requireDoodleAuth(c);
   const deviceId = (c.req.query("deviceId") || "").trim();
-  const enrolled = deviceId ? Boolean(listDoodleTablets().find((t) => t.deviceId === deviceId)) : false;
+  const enrolled = deviceId
+    ? Boolean(listDoodleTablets().find((t) => t.deviceId === deviceId))
+    : false;
   return c.json({
     enrolled,
     deviceId: deviceId || (typeof claims.did === "string" ? claims.did : null),
     doodleScoped: claims.doodleScoped,
-    tablets: claims.doodleScoped ? undefined : listDoodleTablets(),
   });
+});
+
+/** Settings → Doodle → Devices: list trusted tablets (session only). */
+app.get("/api/doodle/tablets", async (c) => {
+  await requireAuth(c);
+  const tablets = listDoodleTablets().map(doodleTabletPublic);
+  return c.json({ tablets, count: tablets.length, ttlSec: 30 * 24 * 60 * 60 });
 });
 
 app.delete("/api/doodle/tablet", async (c) => {
   assertSameOrigin(c);
-  await requireDoodleAuth(c);
+  // Self-forget from a Doodle tablet cookie, or admin forget from a session.
+  const claims = await requireDoodleAuth(c);
   const body = z
     .object({ deviceId: z.string().min(8).max(64) })
-    .parse(await readJson(c).catch(() => ({ deviceId: c.req.query("deviceId") || "" })));
+    .parse(
+      await readJson(c).catch(() => ({
+        deviceId: c.req.query("deviceId") || "",
+      })),
+    );
+  const did = typeof claims.did === "string" ? claims.did : "";
+  // Doodle-scoped tokens may only forget themselves.
+  if (claims.doodleScoped && body.deviceId !== did) {
+    throw new HttpError(403, {
+      code: "doodle_scope",
+      message: "Doodle tablet can only forget itself",
+    });
+  }
   const ok = forgetDoodleTablet(body.deviceId);
-  clearDoodleCookies(c);
+  if (ok && (!did || body.deviceId === did)) clearDoodleCookies(c);
+  try {
+    const { recordActivity } = await import("./activity_audit");
+    recordActivity({
+      source: "web",
+      kind: "doodle_tablet_forget",
+      summary: ok
+        ? `Forgot Doodle tablet ${body.deviceId.slice(0, 12)}…`
+        : `Forget miss ${body.deviceId.slice(0, 12)}…`,
+      detail: { deviceId: body.deviceId, forgotten: ok },
+    });
+  } catch {
+    /* ignore */
+  }
   return c.json({ ok, forgotten: ok });
+});
+
+/** Session-only: untrust one or every tablet. */
+app.post("/api/doodle/tablets/forget", async (c) => {
+  assertSameOrigin(c);
+  await requireAuth(c);
+  const body = z
+    .object({
+      deviceId: z.string().min(8).max(64).optional(),
+      all: z.boolean().optional(),
+    })
+    .parse(await readJson(c));
+  let forgotten = 0;
+  if (body.all) {
+    forgotten = forgetAllDoodleTablets();
+    clearDoodleCookies(c);
+  } else if (body.deviceId) {
+    forgotten = forgetDoodleTablet(body.deviceId) ? 1 : 0;
+  } else {
+    throw new HttpError(400, {
+      code: "bad_request",
+      message: "deviceId or all required",
+    });
+  }
+  try {
+    const { recordActivity } = await import("./activity_audit");
+    recordActivity({
+      source: "web",
+      kind: body.all ? "doodle_tablets_forget_all" : "doodle_tablet_forget",
+      summary: body.all
+        ? `Forgot all Doodle tablets (${forgotten})`
+        : `Forgot Doodle tablet ${(body.deviceId || "").slice(0, 12)}…`,
+      detail: { deviceId: body.deviceId || null, forgotten },
+    });
+  } catch {
+    /* ignore */
+  }
+  return c.json({
+    ok: true,
+    forgotten,
+    tablets: listDoodleTablets().map(doodleTabletPublic),
+  });
+});
+
+/**
+ * Session-only: revoke long-lived doodle JWTs (bump tokenRev).
+ * Device stays trusted; tablet must re-enroll for a fresh cookie.
+ */
+app.post("/api/doodle/tablets/revoke", async (c) => {
+  assertSameOrigin(c);
+  await requireAuth(c);
+  const body = z
+    .object({
+      deviceId: z.string().min(8).max(64).optional(),
+      all: z.boolean().optional(),
+    })
+    .parse(await readJson(c));
+  if (!body.all && !body.deviceId) {
+    throw new HttpError(400, {
+      code: "bad_request",
+      message: "deviceId or all required",
+    });
+  }
+  const revoked = body.all
+    ? revokeDoodleTabletTokens()
+    : revokeDoodleTabletTokens(body.deviceId);
+  if (body.all || revoked > 0) clearDoodleCookies(c);
+  try {
+    const { recordActivity } = await import("./activity_audit");
+    recordActivity({
+      source: "web",
+      kind: body.all ? "doodle_tokens_revoke_all" : "doodle_token_revoke",
+      summary: body.all
+        ? `Revoked Doodle tokens on ${revoked} tablet(s)`
+        : `Revoked Doodle tokens for ${(body.deviceId || "").slice(0, 12)}…`,
+      detail: { deviceId: body.deviceId || null, revoked },
+    });
+  } catch {
+    /* ignore */
+  }
+  return c.json({
+    ok: true,
+    revoked,
+    tablets: listDoodleTablets().map(doodleTabletPublic),
+  });
 });
 
 app.get("/api/doodle/canvas", async (c) => {
@@ -2408,6 +2531,25 @@ app.post("/api/home-access/widgets/:id/invoke", async (c) => {
 app.get("/api/contingency", async (c) => {
   await requireAuth(c);
   return c.json(contingencyStatus());
+});
+
+app.post("/api/contingency/script/unlock", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({
+      password: z.string().min(1),
+      pin: z.string().optional(),
+    })
+    .parse(await readJson(c));
+  const result = unlockContingencyScriptEdit(
+    { password: body.password, pin: body.pin },
+    clientIp(c),
+    {
+      userAgent: clientUserAgent(c),
+      path: "/api/contingency/script/unlock",
+    },
+  );
+  return c.json(result);
 });
 
 app.put("/api/contingency/script", async (c) => {

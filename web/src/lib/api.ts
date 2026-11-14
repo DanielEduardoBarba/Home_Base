@@ -1708,6 +1708,52 @@ export const api = {
       method: 'DELETE',
       body: JSON.stringify({ deviceId }),
     }),
+  /** Settings → Doodle → Devices (session JWT). */
+  doodleTablets: () =>
+    request<{
+      tablets: Array<{
+        deviceId: string
+        name: string
+        enrolledAt: number
+        lastSeenAt: number
+        userAgent: string | null
+        tokenRev: number
+      }>
+      count: number
+      ttlSec: number
+    }>('/api/doodle/tablets'),
+  doodleTabletsForget: (opts: { deviceId?: string; all?: boolean }) =>
+    request<{
+      ok: boolean
+      forgotten: number
+      tablets: Array<{
+        deviceId: string
+        name: string
+        enrolledAt: number
+        lastSeenAt: number
+        userAgent: string | null
+        tokenRev: number
+      }>
+    }>('/api/doodle/tablets/forget', {
+      method: 'POST',
+      body: JSON.stringify(opts),
+    }),
+  doodleTabletsRevoke: (opts: { deviceId?: string; all?: boolean }) =>
+    request<{
+      ok: boolean
+      revoked: number
+      tablets: Array<{
+        deviceId: string
+        name: string
+        enrolledAt: number
+        lastSeenAt: number
+        userAgent: string | null
+        tokenRev: number
+      }>
+    }>('/api/doodle/tablets/revoke', {
+      method: 'POST',
+      body: JSON.stringify(opts),
+    }),
   doodleCanvas: () =>
     request<{ strokes: unknown[]; updatedAt: number }>('/api/doodle/canvas'),
   doodlePutCanvas: (strokes: unknown[]) =>
@@ -1797,6 +1843,14 @@ export const api = {
       ticketActive: boolean
       ticketExpiresAt: number | null
     }>('/api/contingency'),
+  contingencyUnlockScript: (password: string, pin?: string) =>
+    request<{ ok: boolean; pinRequired: boolean }>('/api/contingency/script/unlock', {
+      method: 'POST',
+      body: JSON.stringify({
+        password,
+        ...(pin != null && pin !== '' ? { pin } : {}),
+      }),
+    }),
   contingencySetScript: (script: string, password: string, pin?: string) =>
     request<{
       ok: boolean
