@@ -30,6 +30,8 @@ type WsData = {
   sessionId?: string;
   kind?: string;
   projectId?: string;
+  /** Auth kind from ticket/JWT — doodle skips PIN gate for cursor. */
+  authKind?: string;
   sub?: { send: (payload: string | Buffer) => void };
   unsubCursor?: () => void;
 };
@@ -254,7 +256,8 @@ const server = Bun.serve<WsData>({
     sendPings: true,
     async open(ws) {
       const data = ws.data;
-      const ok = await authenticateWsToken(data.url, data.headers);
+      const auth = await authenticateWsToken(data.url, data.headers);
+      const ok = auth === true || (typeof auth === "object" && auth.ok);
       if (!ok) {
         logWarn("websocket auth rejected", {
           source: "ws",
@@ -262,6 +265,9 @@ const server = Bun.serve<WsData>({
         });
         ws.close(4401, "missing_token:Unauthorized");
         return;
+      }
+      if (typeof auth === "object" && auth.ok) {
+        data.authKind = auth.kind;
       }
 
       if (data.url.pathname === "/ws/pty") {
@@ -373,7 +379,12 @@ const server = Bun.serve<WsData>({
       const data = ws.data;
       // App PIN lock: keep sessions/workers alive; reject commands until unlock
       // (clients must not hang waiting for delete/create acks).
-      if (isAppPinLocked()) {
+      // Doodle tablet cursor is exempt (scene-scoped long-lived token).
+      const doodleExempt =
+        data.authKind === "doodle" &&
+        data.kind === "cursor" &&
+        data.projectId === "doodle";
+      if (isAppPinLocked() && !doodleExempt) {
         try {
           let reqType = "";
           try {

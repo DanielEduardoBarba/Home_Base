@@ -3,7 +3,8 @@ import { ZodError } from "zod";
 import { isAppPinLocked } from "./app_pin";
 import { HttpError, bearerFromHeader, verifyAccessToken } from "./auth";
 import { trustedProxyList } from "./config";
-import { readSessionCookie } from "./session_cookie";
+import { readDoodleCookie, readSessionCookie } from "./session_cookie";
+import { DOODLE_PROJECT_ID, touchDoodleTablet } from "./doodle";
 import { logError, logWarn } from "./console_log";
 import { formatGeo, geoCached, normalizeIp, warmGeo } from "./geo";
 
@@ -130,11 +131,14 @@ export async function requireAuth(
 ): Promise<Record<string, unknown>> {
   // Prefer Authorization Bearer (MCP / presence / CLI). Otherwise the
   // HttpOnly session cookie. Query-string JWTs are no longer accepted.
+  // Doodle cookies are rejected here (session-only) — use requireDoodleAuth.
   const token =
     bearerFromHeader(c.req.header("authorization")) ||
     readSessionCookie(c) ||
     undefined;
-  const claims = await verifyAccessToken(token, clientIp(c));
+  const claims = await verifyAccessToken(token, clientIp(c), {
+    allowKinds: ["session"],
+  });
   if (!opts?.allowPinLocked && isAppPinLocked()) {
     throw new HttpError(423, {
       code: "pin_locked",
@@ -143,6 +147,44 @@ export async function requireAuth(
   }
   return claims;
 }
+
+/**
+ * Auth for Doodle scene APIs + cursor project=doodle.
+ * Accepts session OR doodle JWT; doodle tokens skip the App PIN gate.
+ */
+export async function requireDoodleAuth(
+  c: Context,
+): Promise<Record<string, unknown> & { doodleScoped: boolean }> {
+  const bearer = bearerFromHeader(c.req.header("authorization"));
+  const doodleTok = readDoodleCookie(c);
+  const sessionTok = readSessionCookie(c);
+  // Prefer doodle cookie when present so tablet mode works while PIN locked.
+  const token = bearer || doodleTok || sessionTok || undefined;
+  const claims = await verifyAccessToken(token, clientIp(c), {
+    allowKinds: ["session", "doodle"],
+  });
+  const doodleScoped = claims.kind === "doodle";
+  if (!doodleScoped && isAppPinLocked()) {
+    throw new HttpError(423, {
+      code: "pin_locked",
+      message: "App PIN required",
+    });
+  }
+  if (doodleScoped) {
+    const did = typeof claims.did === "string" ? claims.did : "";
+    if (did) touchDoodleTablet(did, c.req.header("user-agent") || undefined);
+  }
+  return { ...claims, doodleScoped };
+}
+
+/** True when path is doodle-scoped (REST or cursor project). */
+export function isDoodleApiPath(pathname: string): boolean {
+  if (pathname.startsWith("/api/doodle")) return true;
+  if (pathname.startsWith(`/api/cursor/${DOODLE_PROJECT_ID}`)) return true;
+  return false;
+}
+
+export { DOODLE_PROJECT_ID };
 
 export function jsonError(c: Context, err: unknown): Response {
   const ipFields = (() => {

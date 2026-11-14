@@ -14,6 +14,8 @@ type Props = {
   onOpenAccess: () => void
   onOpenAgent: () => void
   onOpenVision: () => void
+  onOpenDoodle: () => void
+  onOpenContingency: () => void
   onOpenSettings: () => void
 }
 
@@ -25,7 +27,7 @@ function HomeCard({
   icon,
   onClick,
 }: {
-  tone: 'work' | 'agent' | 'vision' | 'settings' | 'access'
+  tone: 'work' | 'agent' | 'vision' | 'doodle' | 'settings' | 'access' | 'contingency' | 'contingency'
   label: string
   desc: string
   badge?: string
@@ -68,6 +70,8 @@ export function HomeDashboard({
   onOpenAccess,
   onOpenAgent,
   onOpenVision,
+  onOpenDoodle,
+  onOpenContingency,
   onOpenSettings,
 }: Props) {
   const { displayName } = useServerIdentity()
@@ -142,6 +146,20 @@ export function HomeDashboard({
             }
           />
           <HomeCard
+            tone="doodle"
+            label="Doodle"
+            desc="Kid-friendly mascot, doodle pad, and chat — timers and travel helpers."
+            onClick={onOpenDoodle}
+            icon={
+              <>
+                <circle cx="12" cy="11" r="6.5" />
+                <path d="M9.2 14.2 Q12 17 14.8 14.2" />
+                <circle cx="10" cy="10" r="0.9" fill="currentColor" stroke="none" />
+                <circle cx="14" cy="10" r="0.9" fill="currentColor" stroke="none" />
+              </>
+            }
+          />
+          <HomeCard
             tone="settings"
             label="Settings"
             desc="Theme, PIN, Cursor key, AI usage, VPN, tunnel, storage."
@@ -150,6 +168,20 @@ export function HomeDashboard({
               <>
                 <circle cx="12" cy="12" r="3" />
                 <path d="M12 2.75v2.5M12 18.75v2.5M2.75 12h2.5M18.75 12h2.5M5.46 5.46l1.77 1.77M16.77 16.77l1.77 1.77M5.46 18.54l1.77-1.77M16.77 7.23l1.77-1.77" />
+              </>
+            }
+          />
+          <HomeCard
+            tone="contingency"
+            label="Contingency"
+            badge="Hazard"
+            desc="PIN · press · spin · execute. Host script + reboot. Humans only."
+            onClick={onOpenContingency}
+            icon={
+              <>
+                <path d="M12 3.5 21 20.5H3L12 3.5z" />
+                <path d="M12 10v4.5" />
+                <circle cx="12" cy="17.25" r="0.9" fill="currentColor" stroke="none" />
               </>
             }
           />

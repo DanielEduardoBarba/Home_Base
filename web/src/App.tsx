@@ -80,6 +80,10 @@ const HomeAgentTab = dynamic(
   () => import('./components/HomeAgentTab').then((m) => m.HomeAgentTab),
   { ssr: false, loading: tabFallback },
 )
+const ContingencyTab = dynamic(
+  () => import('./components/ContingencyTab').then((m) => m.ContingencyTab),
+  { ssr: false, loading: tabFallback },
+)
 const PinLock = dynamic(() => import('./components/PinLock').then((m) => m.PinLock), {
   ssr: false,
 })
@@ -696,6 +700,10 @@ function AuthedApp() {
               unlockAudio()
               goArea('vision')
             }}
+            onOpenContingency={() => {
+              unlockAudio()
+              goArea('contingency')
+            }}
             onOpenSettings={() => {
               unlockAudio()
               goArea('settings')
@@ -795,6 +803,24 @@ function AuthedApp() {
             onSelect={selectProject}
             onHome={() => goArea('home')}
           />
+        </main>
+        <ToastStack />
+        <NotificationCenter />
+      </div>
+    )
+  }
+
+  if (area === 'contingency') {
+    return (
+      <div className="hb-app-shell h-full flex flex-col">
+        <PullToRefresh onRefresh={refresh} />
+        {refreshing && (
+          <div className="hb-refresh-overlay" role="status" aria-live="polite" aria-label="Refreshing">
+            <div className="hb-spinner" />
+          </div>
+        )}
+        <main className="flex-1 min-h-0 overflow-hidden">
+          <ContingencyTab onHome={() => goArea('home')} />
         </main>
         <ToastStack />
         <NotificationCenter />

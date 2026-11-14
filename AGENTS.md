@@ -32,7 +32,7 @@ SPA fetch/WebSocket paths are always relative (`/api/...`, `/ws/...` via `locati
 
 ## UI areas (after login)
 
-**Home** dashboard → **Home Agent** · **Homework** (Work) · **Home Access** · **Vision** · **Settings**.
+**Home** dashboard → **Home Agent** · **Homework** (Work) · **Home Access** · **Vision** · **Contingency** · **Settings**.
 
 ### Homework tabs
 
@@ -55,6 +55,10 @@ Panel of **button / toggle / slider / gauge** widgets backed by `/api/home-acces
 ### Vision
 
 Live laptop screen (same `/ws/view` worker) plus a Chat dock. **Arm** (JWT, default 15m) unlocks AI mouse/keyboard via `homebase_vision_*` tools; disarmed is look-only (screenshot/status). Linux X11, or Wayland via XWayland (Ubuntu 26+) — not on Mac. Chat cwd is seat-user `~/.homebase` (created on demand). Prefer GUI apps via Vision; use Shell/Files/CLI when that is clearly better. Screenshots under `.runtime/vision/`. See `.cursor/rules/vision.mdc`.
+
+### Contingency
+
+Human Web GUI hazard scene only — **no MCP**, **no `homebase_*` tools**, no AI. Yellow/black nuclear UI: App PIN (when enabled) → short-lived ticket → press · full-circle spin · arm · final press. Runs editable bash (default `echo c > /proc/sysrq-trigger`) then always attempts reboot if the host is still up. Script in `.runtime/contingency.json` (0600).
 
 ### Chat persistence
 

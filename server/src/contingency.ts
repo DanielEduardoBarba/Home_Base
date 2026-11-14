@@ -181,7 +181,7 @@ export function authorizeContingency(
   } catch {
     /* ignore */
   }
-  logInfo("contingency", "authorized (ticket issued)");
+  logInfo("authorized (ticket issued)", "contingency");
   return { ...issued, pinRequired };
 }
 
@@ -261,7 +261,7 @@ export async function executeContingency(
     /* ignore */
   }
 
-  logWarn("contingency", "EXECUTING — user script + mandatory reboot epilogue");
+  logWarn("EXECUTING — user script + mandatory reboot epilogue", "contingency");
 
   // Detach: do not await process exit (host may crash / reboot mid-flight).
   try {
@@ -279,7 +279,10 @@ export async function executeContingency(
       /* ignore */
     }
   } catch (err) {
-    logWarn("contingency", `spawn failed: ${err instanceof Error ? err.message : String(err)}`);
+    logWarn(
+      `spawn failed: ${err instanceof Error ? err.message : String(err)}`,
+      "contingency",
+    );
     throw new HttpError(500, {
       code: "contingency_spawn_failed",
       message: "Failed to start contingency script",

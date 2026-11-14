@@ -9,6 +9,8 @@ type TicketRec = {
   ae: number;
   sub: string;
   jti: string;
+  kind: string;
+  did?: string;
 };
 
 const store = new Map<string, TicketRec>();
@@ -50,6 +52,8 @@ export function mintWsTicket(
     ae: Number(claims.ae ?? authEpoch()) || 0,
     sub: String(claims.sub ?? "homebase"),
     jti: String(claims.jti ?? ""),
+    kind: String(claims.kind ?? "session"),
+    did: typeof claims.did === "string" ? claims.did : undefined,
   });
   return {
     ticket,

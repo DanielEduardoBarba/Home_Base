@@ -5,6 +5,8 @@ import { HttpError } from "./auth";
 
 /** HttpOnly session JWT. Not readable by JavaScript. */
 export const SESSION_COOKIE = "hb_session";
+/** HttpOnly Doodle tablet JWT (30d, kind doodle). Scene-scoped only. */
+export const DOODLE_COOKIE = "hb_doodle";
 /** Readable CSRF cookie for double-submit (header must match). */
 export const CSRF_COOKIE = "hb_csrf";
 export const CSRF_HEADER = "x-csrf-token";
@@ -25,6 +27,11 @@ export function mintCsrfToken(): string {
 
 export function readSessionCookie(c: Context): string | undefined {
   const v = getCookie(c, SESSION_COOKIE);
+  return v && v.trim() ? v.trim() : undefined;
+}
+
+export function readDoodleCookie(c: Context): string | undefined {
+  const v = getCookie(c, DOODLE_COOKIE);
   return v && v.trim() ? v.trim() : undefined;
 }
 
@@ -56,6 +63,23 @@ export function clearSessionCookies(c: Context): void {
     expireCookie(c, SESSION_COOKIE, true, secure);
     expireCookie(c, CSRF_COOKIE, false, secure);
   }
+}
+
+/** Clear doodle tablet cookie (both Secure variants). */
+export function clearDoodleCookies(c: Context): void {
+  for (const secure of [true, false]) {
+    expireCookie(c, DOODLE_COOKIE, true, secure);
+  }
+}
+
+export function applyDoodleCookies(
+  c: Context,
+  token: string,
+  expiresAt: number,
+  secure: boolean,
+): void {
+  const ttl = Math.max(0, expiresAt - Math.floor(Date.now() / 1000));
+  setCookie(c, DOODLE_COOKIE, token, cookieBase(secure, true, ttl));
 }
 
 export function applySessionCookies(
@@ -122,5 +146,5 @@ export function csrfRequired(c: Context, hasBearer: boolean): boolean {
     /* keep path */
   }
   if (CSRF_EXEMPT_PATHS.has(path)) return false;
-  return Boolean(readSessionCookie(c));
+  return Boolean(readSessionCookie(c) || readDoodleCookie(c));
 }

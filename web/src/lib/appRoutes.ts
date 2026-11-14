@@ -32,7 +32,15 @@ export function parseAppPath(pathname: string): ParseResult {
   }
 
   const head = parts[0] || ''
-  if (parts.length === 1 && (head === 'access' || head === 'agent' || head === 'vision' || head === 'settings')) {
+  if (
+    parts.length === 1 &&
+    (head === 'access' ||
+      head === 'agent' ||
+      head === 'vision' ||
+      head === 'doodle' ||
+      head === 'contingency' ||
+      head === 'settings')
+  ) {
     return { kind: 'ok', loc: { area: head, tab: 'work', workItem: 'apps' } }
   }
   if (parts.length === 1 && head === 'view') {
@@ -65,6 +73,8 @@ export function serializeAppPath(loc: AppLocation): string {
   if (loc.area === 'access') return '/access'
   if (loc.area === 'agent') return '/agent'
   if (loc.area === 'vision') return '/vision'
+  if (loc.area === 'doodle') return '/doodle'
+  if (loc.area === 'contingency') return '/contingency'
   if (loc.area === 'settings') return '/settings'
   if (loc.tab === 'view') return '/view'
   if (loc.tab === 'logs') return '/logs'
