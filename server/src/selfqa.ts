@@ -46,7 +46,9 @@ export type SelfQaStatus =
   | "running"
   | "done"
   | "error"
-  | "interrupted";
+  | "blocked"
+  | "interrupted"
+  | "cancelled";
 
 export type SelfQaRecord = {
   id: string;
@@ -329,10 +331,26 @@ function findLatestCycleReport(
   }
 }
 
+function readSummaryJson(projectPath: string, summaryMdPath?: string): unknown {
+  if (!summaryMdPath) return undefined;
+  try {
+    const dir = summaryMdPath.replace(/\/SUMMARY\.md$/i, "");
+    const jsonPath = join(dir, "SUMMARY.json");
+    if (!existsSync(jsonPath)) return undefined;
+    return JSON.parse(readFileSync(jsonPath, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
 async function deliverWebhook(rec: SelfQaRecord): Promise<void> {
   const url = rec.callbackUrl;
   if (!url) return;
   const auth = authById.get(rec.id);
+  const project = deps.getProject(rec.projectId);
+  const summaryJson = project
+    ? readSummaryJson(project.path, rec.summaryPath)
+    : undefined;
   try {
     const headers: Record<string, string> = {
       "content-type": "application/json",
@@ -345,6 +363,8 @@ async function deliverWebhook(rec: SelfQaRecord): Promise<void> {
       headers,
       body: JSON.stringify({
         type: "homebase.selfqa",
+        // Single final summary JSON is the preferred callback payload.
+        summary: summaryJson,
         selfqa: {
           id: rec.id,
           projectId: rec.projectId,
@@ -353,6 +373,7 @@ async function deliverWebhook(rec: SelfQaRecord): Promise<void> {
           exitCode: rec.exitCode,
           summaryPath: rec.summaryPath,
           summaryTail: rec.summaryTail,
+          summaryJson,
           latestReportPath: rec.latestReportPath,
           error: rec.error,
           goal: rec.goal,
@@ -427,12 +448,20 @@ function ensureExitHook(): void {
     const rec = runs.get(runId);
     if (!rec || rec.sessionId !== sessionId || rec.status !== "running") return;
     const status: SelfQaStatus =
-      exitCode === 0 ? "done" : exitCode === 2 ? "done" : "error";
+      exitCode === 0
+        ? "done"
+        : exitCode === 2
+          ? "blocked"
+          : "error";
     finishRun(
       rec,
       status,
       exitCode,
-      exitCode === 1 ? "Self-QA exited with error" : undefined,
+      exitCode === 1
+        ? "Self-QA exited with error"
+        : exitCode === 2
+          ? "Self-QA blocked (caps / repeat finding / guardrail)"
+          : undefined,
     );
   });
 }
@@ -554,20 +583,49 @@ export async function startSelfQa(
   return { ...publicRun(rec), session };
 }
 
+/**
+ * Cancel a running Self-QA session: kill the PTY process tree, mark
+ * cancelled, fire webhook if set, and release the per-project lock.
+ */
+export function cancelSelfQa(
+  projectId: string,
+  opts?: { runId?: string },
+): {
+  ok: boolean;
+  killed: string[];
+  selfqa?: SelfQaRecord | null;
+} {
+  const pid = String(projectId || "").trim();
+  const wantId = String(opts?.runId || "").trim();
+  const runId = wantId || byProject.get(pid);
+  if (wantId) {
+    const rec = runs.get(wantId);
+    if (!rec) throw new Error(`selfqa run not found: ${wantId}`);
+    if (rec.projectId !== pid) {
+      throw new Error(`selfqa ${wantId} does not belong to project ${pid}`);
+    }
+  }
+  const killed = killByProject(pid, new Set(["selfqa"]));
+  let out: SelfQaRecord | null = null;
+  if (runId) {
+    const rec = runs.get(runId);
+    if (rec && rec.status === "running") {
+      finishRun(rec, "cancelled", undefined, "Cancelled by operator");
+      out = publicRun(rec);
+    } else if (rec) {
+      out = publicRun(rec);
+    }
+  }
+  return { ok: true, killed, selfqa: out };
+}
+
+/** @deprecated Prefer cancelSelfQa — same kill + cancelled webhook. */
 export function stopSelfQa(projectId: string): {
   ok: boolean;
   killed: string[];
 } {
-  const pid = String(projectId || "").trim();
-  const killed = killByProject(pid, new Set(["selfqa"]));
-  const runId = byProject.get(pid);
-  if (runId) {
-    const rec = runs.get(runId);
-    if (rec && rec.status === "running") {
-      finishRun(rec, "interrupted", undefined, "Stopped by operator");
-    }
-  }
-  return { ok: true, killed };
+  const r = cancelSelfQa(projectId);
+  return { ok: r.ok, killed: r.killed };
 }
 
 export function getSelfQa(projectId: string): {

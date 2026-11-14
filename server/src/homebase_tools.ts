@@ -142,6 +142,7 @@ export const MCP_TOOL_FEATURE: Record<string, McpFeatureId> = {
   homebase_cursor_job: "projects",
   homebase_cursor_job_status: "projects",
   homebase_cursor_job_list: "projects",
+  homebase_cursor_job_cancel: "projects",
   homebase_git_status: "projects",
   homebase_git_branches: "projects",
   homebase_git_log: "projects",
@@ -1012,6 +1013,94 @@ export function buildHomebaseTools(
           ok: true,
           jobs: listCursorJobs(args.limit != null ? Number(args.limit) : 20),
         });
+      },
+    };
+    tools.homebase_cursor_job_cancel = {
+      description:
+        "Cancel a queued/running homebase_cursor_job: kill the agent process tree, " +
+        "mark status cancelled, POST callback (status cancelled) if set, and release " +
+        "the per-project git/job lock. For Self-QA sessions, pass the selfqa run id as jobId " +
+        "(or omit jobId to cancel the active Self-QA on projectId).",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: {
+            type: "string",
+            description: "Registered Home Base project id",
+          },
+          jobId: {
+            type: "string",
+            description:
+              "Cursor job id, or Self-QA run id. Optional when cancelling the active Self-QA for projectId.",
+          },
+        },
+        required: ["projectId"],
+      },
+      execute: async (args) => {
+        try {
+          const projectId = resolvePid(args);
+          const jobId = String(args.jobId || "").trim();
+          const { cancelCursorJob, getCursorJob } = await import(
+            "./cursor_jobs"
+          );
+          const { cancelSelfQa, getSelfQa, listSelfQa } = await import(
+            "./selfqa"
+          );
+
+          if (jobId) {
+            const asJob = getCursorJob(jobId);
+            if (asJob) {
+              const job = await cancelCursorJob({ projectId, jobId });
+              return json({ ok: true, kind: "cursor_job", job });
+            }
+            const asSelf = listSelfQa(50).find((r) => r.id === jobId);
+            if (asSelf) {
+              const stopped = cancelSelfQa(projectId, { runId: jobId });
+              return json({
+                ok: true,
+                kind: "selfqa",
+                selfqa: stopped.selfqa,
+                killed: stopped.killed,
+                status: getSelfQa(projectId),
+              });
+            }
+            return json({
+              ok: false,
+              error: `job not found: ${jobId}`,
+            });
+          }
+
+          // No jobId: cancel active Self-QA if any, else active cursor job.
+          const sq = getSelfQa(projectId);
+          if (sq.active) {
+            const stopped = cancelSelfQa(projectId);
+            return json({
+              ok: true,
+              kind: "selfqa",
+              selfqa: stopped.selfqa,
+              killed: stopped.killed,
+              status: getSelfQa(projectId),
+            });
+          }
+          const { projectHasActiveCursorJob } = await import("./cursor_jobs");
+          const active = projectHasActiveCursorJob(projectId);
+          if (!active) {
+            return json({
+              ok: false,
+              error: "no active cursor job or Self-QA for this project",
+            });
+          }
+          const job = await cancelCursorJob({
+            projectId,
+            jobId: active.id,
+          });
+          return json({ ok: true, kind: "cursor_job", job });
+        } catch (e) {
+          return json({
+            ok: false,
+            error: e instanceof Error ? e.message : String(e),
+          });
+        }
       },
     };
     tools.homebase_stop_project = {

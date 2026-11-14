@@ -577,7 +577,7 @@ function grokHookupGuide(url: string | null): string {
     "",
     "## 5. Operating rules for bots",
     "- Paste docs/GROK_MCP.md Bot brief; fill URL/token.",
-    "- Prefer homebase_cursor_job handoff: whole job → Cursor on laptop → short summary + git tip (saves Grok tokens).",
+    "- Prefer homebase_cursor_job handoff: whole job → Cursor on laptop → short summary + git tip (saves Grok tokens). Cancel with homebase_cursor_job_cancel.",
     "- Use homebase_ping for liveness (never open a test chat). GitHub hookup: homebase_github_* / homebase_git_env_check (Settings → Git & GitHub login env).",
     "- Use homebase_* tools for control-plane work; do not ask for VPN/auth/restart — those stay human-only in Settings.",
     "- Presence (VPN/LAN only): call homebase_presence_express on arrive + state changes.",

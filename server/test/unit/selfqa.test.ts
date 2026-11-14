@@ -164,6 +164,32 @@ describe("action callbacks", () => {
   });
 });
 
+describe("cancelSelfQa", () => {
+  test("kills running session and marks cancelled", async () => {
+    const pdir = join(root, "proj-cancel");
+    mkdirSync(pdir, { recursive: true });
+    writeFileSync(
+      join(pdir, "build.sh"),
+      "#!/usr/bin/env bash\n# --selfqa\nsleep 120\nexit 0\n",
+    );
+    chmodSync(join(pdir, "build.sh"), 0o755);
+    const proj = makeProject("cancelme", pdir);
+    _setSelfQaDepsForTests({
+      getProject: (id) => (id === "cancelme" ? proj : undefined),
+    });
+    const first = await selfqa.startSelfQa({
+      projectId: "cancelme",
+      dryRun: true,
+      goal: "cancel test",
+    });
+    expect(first.status).toBe("running");
+    const stopped = selfqa.cancelSelfQa("cancelme");
+    expect(stopped.ok).toBe(true);
+    expect(stopped.selfqa?.status).toBe("cancelled");
+    expect(selfqa.projectHasActiveSelfQa("cancelme")).toBeNull();
+  });
+});
+
 describe("mcp tool registration", () => {
   test("homebase_selfqa is registered under projects", () => {
     expect(tools.MCP_TOOL_FEATURE.homebase_selfqa).toBe("projects");
@@ -179,5 +205,14 @@ describe("mcp tool registration", () => {
     };
     expect(schema.properties?.callbackUrl).toBeDefined();
     expect(schema.properties?.callbackAuth).toBeDefined();
+  });
+
+  test("homebase_cursor_job_cancel is registered", () => {
+    expect(tools.MCP_TOOL_FEATURE.homebase_cursor_job_cancel).toBe("projects");
+    const mcp = tools.buildMcpTools({
+      ...tools.MCP_FEATURE_DEFAULTS,
+      projects: true,
+    });
+    expect(mcp.homebase_cursor_job_cancel).toBeDefined();
   });
 });

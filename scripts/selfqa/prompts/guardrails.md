@@ -6,7 +6,7 @@ Follow these rules on every turn. Violations fail the sprint.
 - **No App Store Connect / Play Console** actions.
 - **No real payments** — sandbox / test / demo flags only.
 - **No real customer data** — use clearly labeled QA/demo accounts only.
-- **Local / emulator only for writes** — localhost, local emulators, or in-repo fixtures.
+- **Local / emulator only for writes** — localhost, local emulators, or in-repo fixtures. The runner refuses non-localhost http(s) targets in the goal and aborts on forbidden deploy/push/merge patterns in logs.
 - **No emails / messages to real people**.
 - **No force-push** — never `git push --force` / `--force-with-lease` unless the human explicitly required it in writing (default: refuse).
 - **Never merge into `development` or `main`** — work only on `development_grok` (or the branch named in the run state).

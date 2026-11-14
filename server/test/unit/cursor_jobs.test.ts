@@ -7,6 +7,7 @@ import {
 import {
   _resetCursorJobsForTests,
   _setCursorJobDepsForTests,
+  cancelCursorJob,
   evaluateIdleJobOutcome,
   getCursorJob,
   listCursorJobs,
@@ -429,6 +430,65 @@ describe("cursor job model / error helpers", () => {
     expect(out).not.toContain(secret);
     expect(out).toMatch(/\[redacted\]|Authorization=\*\*\*|Bearer \*\*\*/i);
   });
+});
+
+describe("homebase_cursor_job_cancel", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test("cancels running job, fires callback, releases project lock", async () => {
+    const h = makeHarness();
+    const calls: Array<{ url: string; body: string }> = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(input), body: String(init?.body || "") });
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    const job = await startCursorJob({
+      projectId: "demo",
+      prompt: "long running",
+      waitMs: 0,
+      callbackUrl: "http://127.0.0.1:9/cancel-hook",
+      callbackAuth: "Bearer cancel-secret",
+    });
+    expect(job.status).toBe("running");
+    expect(projectHasActiveCursorJob("demo")?.id).toBe(job.id);
+
+    const cancelled = await cancelCursorJob({
+      projectId: "demo",
+      jobId: job.id,
+    });
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.finishedAt).toBeGreaterThan(0);
+    expect(projectHasActiveCursorJob("demo")).toBeNull();
+    expect(getCursorJob(job.id)?.status).toBe("cancelled");
+
+    await waitUntil(() => calls.length >= 1, 4_000, "cancel webhook");
+    expect(calls[0]?.body).toContain('"status":"cancelled"');
+    expect(calls[0]?.body).not.toContain("cancel-secret");
+
+    // Lock released — a new job can start.
+    const second = await startCursorJob({
+      projectId: "demo",
+      prompt: "after cancel",
+      waitMs: 0,
+    });
+    expect(second.status).toBe("running");
+    expect(second.id).not.toBe(job.id);
+
+    // Drain harness runners.
+    void h.release(job.chatId).catch(() => {});
+    h.release(second.chatId);
+    await waitUntil(
+      () => getCursorJob(second.id)?.status === "done",
+      4_000,
+      "second done",
+    );
+  });
+
 });
 
 describe("homebase_cursor_job webhook auth", () => {

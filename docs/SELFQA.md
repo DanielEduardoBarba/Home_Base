@@ -1,11 +1,14 @@
 # Self-QA sprint
 
-Automated cyclic **Dev + QA** loop that mirrors DevCon1’s bot team (Developer, QA Manager, tester personas), running on the **Cursor agent CLI** (`cursor-agent` / `agent`, headless print mode, model **auto**) so it uses the laptop Cursor pool instead of Grok Bot.
+Automated cyclic **Dev + QA** loop that mirrors DevCon1’s bot team (Developer, QA Manager, tester personas), running on the **Cursor agent CLI** (`cursor-agent` / verified `agent`, headless print mode, model **auto**) so it uses the laptop Cursor pool instead of Grok Bot.
+
+Enforced rules: `docs/qa/selfqa-qa-spec.md`.
 
 ## Requirements
 
-- Cursor CLI on `PATH` (`agent` or `cursor-agent`). Install: [Cursor headless CLI](https://cursor.com/docs/cli/headless).
-- Project `./build.sh --selfqa` (Home Base ships this; other apps must add the flag or copy `scripts/selfqa/`).
+- Cursor CLI on `PATH` (`cursor-agent` preferred; bare `agent` only if `--help` identifies Cursor). Not required for `--dry-run`.
+- Current git branch must be **`development_grok`** (live runs refuse otherwise).
+- Project `./build.sh --selfqa` (Home Base ships this; other apps use a thin wrapper — below).
 
 ## CLI
 
@@ -16,13 +19,41 @@ Automated cyclic **Dev + QA** loop that mirrors DevCon1’s bot team (Developer,
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--goal` / `--goal-file` | backlog stub | Sprint goal |
+| `--goal` / `--goal-file` | backlog stub | Sprint goal (**mutually exclusive**) |
 | `--cycles N` | 3 | Max Dev→QA cycles |
 | `--max-minutes M` | 90 | Wall-clock cap |
-| `--testers K` | 3 (max 6) | Tester agents |
-| `--dry-run` | off | Print plan; no agent calls |
+| `--testers K` | 3 (max 6) | Tester agents (warns when capped) |
+| `--dry-run` | off | Print full plan; **write nothing**; exit 0 even without CLI |
 
-**Exit codes:** `0` PASS · `2` caps with open findings · `1` error (missing CLI, bad args, …).
+**Exit codes:** `0` PASS · `2` BLOCKED / caps with open findings · `1` error (wrong branch, bad args, agent/guardrail failure).
+
+**Agent flag:** headless runs keep Cursor CLI `--force` so print mode does not prompt (documented in runner `--help`).
+
+## Using the shared runner from another app
+
+Apps should **not** copy the full Self-QA kit. Keep a thin `build.sh` wrapper that points at Home Base:
+
+```bash
+# In your app's build.sh — example thin wrapper
+--selfqa)
+  shift
+  HOMEBASE_ROOT="${HOMEBASE_ROOT:-$HOME/APP_PROJECTS/GENERAL/home_base}"
+  SELFQA_RUNNER="${SELFQA_RUNNER:-$HOMEBASE_ROOT/scripts/selfqa/run.sh}"
+  if [[ ! -x "$SELFQA_RUNNER" && ! -f "$SELFQA_RUNNER" ]]; then
+    echo "Self-QA runner not found: $SELFQA_RUNNER (set HOMEBASE_ROOT or SELFQA_RUNNER)" >&2
+    exit 1
+  fi
+  exec env SELFQA_TARGET_ROOT="$ROOT" bash "$SELFQA_RUNNER" "$@"
+  ;;
+```
+
+| Env | Meaning |
+|---|---|
+| `SELFQA_TARGET_ROOT` | App repo under test (set by the wrapper to `$ROOT`) |
+| `HOMEBASE_ROOT` / `SELFQA_RUNNER` | Where the shared `scripts/selfqa/run.sh` lives |
+| `SELFQA_AGENT_TIMEOUT_SEC` | Per-agent timeout (default 900) |
+
+Prompts stay under Home Base `scripts/selfqa/prompts/`. Run artifacts are written into the **target** app’s `docs/selfqa/` and `docs/qa/`.
 
 ## Roles (per cycle)
 
@@ -30,36 +61,19 @@ Each role is a separate headless agent run; state is shared under `docs/selfqa/<
 
 1. **Orchestrator** — goal + `docs/QA-PROGRESS.md` + open `docs/qa/` findings → plan.
 2. **Developer** — fix on `development_grok`, typecheck + tests, commit/push (no force).
-3. **QA Manager** — test plan, spawn testers, write `docs/qa/selfqa-<run-id>-cycleN.md`, PASS/FAIL.
-4. **Testers** — persona workflows against localhost/emulators only.
-
-Prompts: `scripts/selfqa/prompts/*.md` (editable). Runner: `scripts/selfqa/run.sh`.
+3. **QA Manager** — test plan, spawn testers, write cycle report + strict `VERDICT.json`.
+4. **Testers** — persona workflows against localhost only; personas get `qa+personaN@example.test` emails.
 
 ## Home Base UI
 
-Work → Apps → **Self-QA sprint**: goal, cycles/minutes/testers, dry-run, Start/Stop, live session output, latest report path.
+Work → Apps → **Cursor jobs** (Cancel on running MCP jobs) and **Self-QA sprint** (Cancel on running sprints).
 
 ## MCP
 
-```json
-{
-  "projectId": "homebase",
-  "goal": "…",
-  "cycles": 3,
-  "maxMinutes": 90,
-  "testers": 3,
-  "dryRun": false,
-  "callbackUrl": "__JOB_DONE_WEBHOOK__",
-  "callbackAuth": "Bearer …"
-}
-```
+Tool: **`homebase_selfqa`**. Cancel: **`homebase_cursor_job_cancel`** `{projectId, jobId?}` (also cancels Self-QA).
 
-Tool: **`homebase_selfqa`**. One Self-QA session per `projectId`. When the session ends, Home Base POSTs `type: "homebase.selfqa"` with `exitCode`, `summaryPath`, and `summaryTail`.
+When the session ends, Home Base POSTs `type: "homebase.selfqa"` with a single `summary` JSON (`SUMMARY.json`: runId, rounds, verdict, commits, reportPaths, …).
 
-`homebase_run_action` also accepts `callbackUrl` / `callbackAuth` (fires when the action’s PTY session(s) exit). `actionId: "selfqa"` starts the same sprint.
+## Guardrails (code-enforced)
 
-If `build.sh` lacks `--selfqa`, the tool/UI returns a clear error.
-
-## Guardrails
-
-No deploys/ship, no App Store/Play, no real payments or customer data, local/emulator only, no force-push, never merge to `development`/`main`, no secrets in logs/commits. Full list in `scripts/selfqa/prompts/guardrails.md`.
+Branch gate, localhost-only targets, repeat finding id → BLOCKED (exit 2), deploy/ship/firebase/eas/merge/force-push/wrong-branch push/deletes outside `docs/selfqa`/App Store/payment keys abort (exit 1). PASS only from `VERDICT.json` `{"verdict":"PASS"|"FAIL"|"BLOCKED"}`. See `scripts/selfqa/prompts/guardrails.md` and `docs/qa/selfqa-qa-spec.md`.

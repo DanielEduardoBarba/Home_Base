@@ -1339,8 +1339,27 @@ export const api = {
       { method: 'POST', body: JSON.stringify(body) },
     ),
   selfqaStop: (id: string) =>
-    request<{ ok: boolean; killed?: string[]; status?: unknown }>(
+    request<{ ok: boolean; killed?: string[]; selfqa?: unknown; status?: unknown }>(
       `/api/projects/${id}/selfqa/stop`,
+      { method: 'POST', body: '{}' },
+    ),
+  cursorJobs: (id: string) =>
+    request<{
+      jobs: Array<{
+        id: string
+        projectId: string
+        chatId: string
+        status: string
+        prompt: string
+        startedAt: number
+        finishedAt?: number
+        summary?: string
+        error?: string
+      }>
+    }>(`/api/projects/${id}/cursor-jobs`),
+  cancelCursorJob: (id: string, jobId: string) =>
+    request<{ ok: boolean; job?: Record<string, unknown>; error?: string }>(
+      `/api/projects/${id}/cursor-jobs/${encodeURIComponent(jobId)}/cancel`,
       { method: 'POST', body: '{}' },
     ),
   stop: (id: string) =>

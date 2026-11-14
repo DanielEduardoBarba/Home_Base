@@ -2247,9 +2247,16 @@ export async function handleCursorMessage(
   if (type === "cancel") {
     const chatId = String(msg.chatId || "");
     promptQueues.delete(sessionKey(projectId, chatId));
-    void cancelRun(projectId, chatId).then((ok) =>
-      send({ type: "cancelled", ok, chatId }),
-    );
+    void (async () => {
+      const ok = await cancelRun(projectId, chatId);
+      try {
+        const { cancelCursorJobByChat } = await import("./cursor_jobs");
+        await cancelCursorJobByChat(projectId, chatId);
+      } catch {
+        /* ignore — job may not exist */
+      }
+      send({ type: "cancelled", ok, chatId });
+    })();
     return;
   }
 
@@ -3110,7 +3117,8 @@ async function startRun(
   if (failJobRun && jobRunFailure) throw jobRunFailure;
 }
 
-async function cancelRun(
+/** Cancel a live Cursor chat run (agent process / AbortController). */
+export async function cancelRun(
   projectId: string,
   chatId: string,
   invalidate = false,

@@ -256,11 +256,12 @@ Placeholders:
 | `homebase_github_list_repos` / `_clone_workspace` / `_connect_workspace` / `_create_repo` | **Allow MCP GitHub repo access**; clone also needs workspace-create; create/push needs git-write |
 | `homebase_git_status` / `_branches` / `_log` | Read-only git (when **Projects** feature is on) |
 | `homebase_git_fetch` / `_pull` / `_checkout` / `_create_branch` / `_merge` / `_commit` / `_push` / `_stash` | Non-destructive git writes (**Allow MCP git write actions**, default Off) |
-| `homebase_selfqa` | Start Self-QA sprint (`./build.sh --selfqa`); one per project; `callbackUrl` (+ optional `callbackAuth`) POSTs exit code + SUMMARY.md path/tail |
+| `homebase_selfqa` | Start Self-QA sprint (`./build.sh --selfqa`); one per project; `callbackUrl` (+ optional `callbackAuth`) POSTs `SUMMARY.json` |
 | `homebase_run_action` | Run action; optional `callbackUrl`/`callbackAuth` when session(s) exit; `actionId: selfqa` starts Self-QA |
 | `homebase_cursor_job` | One job per project at a time; `callbackUrl` (+ optional `callbackAuth`) or `waitMs: 600000` |
 | `homebase_cursor_job_status` | Rare (≥5 min) |
 | `homebase_cursor_job_list` | See active/recent |
+| `homebase_cursor_job_cancel` | Cancel queued/running job or Self-QA (`projectId`, optional `jobId`); status `cancelled` + webhook |
 | `homebase_session_output` | Read-only tail of a PTY/session (`projectId`, `sessionId`, `lines` ≤ 500). Secrets (tokens, Bearer, keys, passwords) are redacted. Requires MCP auth. |
 | `homebase_presence_express` | Blob on laptop: `mood` / `form` / `color` / `energy` / `bubble` / `name` |
 | `homebase_presence_status` | Who is remoted in + guidance |

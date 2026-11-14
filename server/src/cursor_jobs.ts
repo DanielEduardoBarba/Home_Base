@@ -27,6 +27,7 @@ import { loadCallbackAuthFromVault } from "./secrets_vault";
 import { redactSecrets } from "./redact";
 import {
   assertKnownCursorModel,
+  cancelRun,
   createChat,
   cursorConfigured,
   defaultModel,
@@ -43,7 +44,8 @@ export type CursorJobStatus =
   | "done"
   | "error"
   | "timeout"
-  | "interrupted";
+  | "interrupted"
+  | "cancelled";
 
 export type CursorJobCommit = {
   hash: string;
@@ -198,7 +200,8 @@ function trimJobs(): void {
       (old.status === "done" ||
         old.status === "error" ||
         old.status === "timeout" ||
-        old.status === "interrupted")
+        old.status === "interrupted" ||
+        old.status === "cancelled")
     ) {
       forgetCallbackAuth(old.id);
       jobs.delete(old.id);
@@ -404,16 +407,21 @@ async function awaitChatIdle(
   return chatRunning(projectId, chatId) ? "timeout" : "done";
 }
 
+const TERMINAL_STATUSES: ReadonlySet<CursorJobStatus> = new Set([
+  "done",
+  "error",
+  "timeout",
+  "interrupted",
+  "cancelled",
+]);
+
 async function finishJob(
   job: CursorJob,
   status: CursorJobStatus,
   error?: string,
 ): Promise<CursorJob> {
-  if (
-    job.finishedAt &&
-    (job.status === "done" || job.status === "error" || job.status === "timeout")
-  ) {
-    return { ...job };
+  if (job.finishedAt && TERMINAL_STATUSES.has(job.status)) {
+    return publicJob(job);
   }
   job.status = status;
   job.finishedAt = Date.now();
@@ -694,6 +702,58 @@ export async function startCursorJob(opts: {
   }
 
   return watchUntilSettled(job, waitMs);
+}
+
+/**
+ * Cancel a queued/running cursor job: abort the agent chat run, mark
+ * status cancelled, fire webhook if set, and release the per-project lock.
+ */
+export async function cancelCursorJob(opts: {
+  projectId: string;
+  jobId: string;
+}): Promise<CursorJob> {
+  const projectId = String(opts.projectId || "").trim();
+  const jobId = String(opts.jobId || "").trim();
+  if (!projectId) throw new Error("projectId required");
+  if (!jobId) throw new Error("jobId required");
+  const job = jobs.get(jobId);
+  if (!job) throw new Error(`job not found: ${jobId}`);
+  if (job.projectId !== projectId) {
+    throw new Error(`job ${jobId} does not belong to project ${projectId}`);
+  }
+  if (TERMINAL_STATUSES.has(job.status)) {
+    return publicJob(job);
+  }
+  if (job.chatId) {
+    try {
+      await cancelRun(projectId, job.chatId, true);
+    } catch (e) {
+      appendTrace(
+        "warn",
+        `cursor job ${job.id} cancelRun: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+        "cursor-job",
+      );
+    }
+  }
+  return finishJob(job, "cancelled", "Cancelled by operator");
+}
+
+/** Cancel active job for a chat (used when the UI stops a job chat). */
+export async function cancelCursorJobByChat(
+  projectId: string,
+  chatId: string,
+): Promise<CursorJob | null> {
+  const pid = String(projectId || "").trim();
+  const cid = String(chatId || "").trim();
+  if (!pid || !cid) return null;
+  for (const j of jobs.values()) {
+    if (j.projectId !== pid || j.chatId !== cid) continue;
+    if (j.status !== "queued" && j.status !== "running") continue;
+    return cancelCursorJob({ projectId: pid, jobId: j.id });
+  }
+  return null;
 }
 
 export function getCursorJob(id: string): CursorJob | null {

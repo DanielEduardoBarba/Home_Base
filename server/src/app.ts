@@ -1194,13 +1194,37 @@ app.post("/api/projects/:projectId/selfqa/stop", async (c) => {
   await requireAuth(c);
   const p = loadProjects().get(c.req.param("projectId"));
   if (!p) throw new HttpError(404, "Project not found");
-  const { stopSelfQa, getSelfQa } = await import("./selfqa");
-  const stopped = stopSelfQa(p.id);
+  const { cancelSelfQa, getSelfQa } = await import("./selfqa");
+  const stopped = cancelSelfQa(p.id);
   return c.json({
     ok: true,
     killed: stopped.killed,
+    selfqa: stopped.selfqa,
     status: getSelfQa(p.id),
   });
+});
+
+app.get("/api/projects/:projectId/cursor-jobs", async (c) => {
+  await requireAuth(c);
+  const p = loadProjects().get(c.req.param("projectId"));
+  if (!p) throw new HttpError(404, "Project not found");
+  const { listCursorJobs } = await import("./cursor_jobs");
+  const jobs = listCursorJobs(50).filter((j) => j.projectId === p.id);
+  return c.json({ jobs });
+});
+
+app.post("/api/projects/:projectId/cursor-jobs/:jobId/cancel", async (c) => {
+  await requireAuth(c);
+  const p = loadProjects().get(c.req.param("projectId"));
+  if (!p) throw new HttpError(404, "Project not found");
+  const jobId = c.req.param("jobId");
+  const { cancelCursorJob } = await import("./cursor_jobs");
+  try {
+    const job = await cancelCursorJob({ projectId: p.id, jobId });
+    return c.json({ ok: true, job });
+  } catch (e) {
+    throw new HttpError(400, e instanceof Error ? e.message : String(e));
+  }
 });
 
 app.post("/api/projects/:projectId/stop", async (c) => {

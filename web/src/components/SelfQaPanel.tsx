@@ -85,13 +85,13 @@ export function SelfQaPanel({
     }
   }
 
-  async function stop() {
-    setBusy('Stop')
+  async function cancel() {
+    setBusy('Cancel')
     setMsg('')
     setError('')
     try {
       await api.selfqaStop(projectId)
-      setMsg('Self-QA stopped')
+      setMsg('Self-QA cancelled')
       await load()
       await onRefresh?.()
     } catch (e) {
@@ -190,13 +190,13 @@ export function SelfQaPanel({
           <div className="flex gap-2">
             {running ? (
               <HoldButton
-                label={busy ? '…' : 'Stop'}
+                label={busy ? '…' : 'Cancel'}
                 holdLabel="Hold…"
                 holdMs={1000}
                 tone="danger"
                 disabled={!!busy}
                 className="!min-h-10 !px-4 text-sm"
-                onConfirm={() => void stop()}
+                onConfirm={() => void cancel()}
               />
             ) : (
               <button

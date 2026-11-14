@@ -9,6 +9,7 @@ import { HoldButton } from './HoldButton'
 import { useAccessibleDialog } from '../lib/useAccessibleDialog'
 import { IconBtn } from './IconBtn'
 import { ProjectSelect } from './ProjectSelect'
+import { CursorJobsPanel } from './CursorJobsPanel'
 import { SelfQaPanel } from './SelfQaPanel'
 
 function Dot({ up }: { up?: boolean }) {
@@ -427,6 +428,8 @@ export function AppsTab({
           </div>
         )}
       </section>
+
+      <CursorJobsPanel projectId={project.id} onRefresh={onRefresh} />
 
       <SelfQaPanel
         projectId={project.id}
