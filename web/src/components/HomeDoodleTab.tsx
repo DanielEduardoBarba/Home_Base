@@ -95,6 +95,7 @@ export function HomeDoodleTab({
       path: workspace,
       ports: [],
       actions: [],
+      exists: true,
     }),
     [workspace],
   )
@@ -115,6 +116,14 @@ export function HomeDoodleTab({
       }
       setTimer(st.timer?.active ? st.timer : st.timer)
       setTravel(st.travel?.active ? st.travel : st.travel)
+      try {
+        if (st.enrolled) {
+          localStorage.setItem('hb-doodle-enrolled', '1')
+          window.dispatchEvent(new Event('hb-doodle-enrolled'))
+        }
+      } catch {
+        /* ignore */
+      }
       if (!enrolled && st.pinRequiredForEnroll) {
         try {
           if (localStorage.getItem(ENROLL_SKIP_KEY) !== '1') setShowEnroll(true)
@@ -159,6 +168,8 @@ export function HomeDoodleTab({
       setStatusMsg('This tablet is remembered for Doodle — no PIN here for a month.')
       try {
         localStorage.removeItem(ENROLL_SKIP_KEY)
+        localStorage.setItem('hb-doodle-enrolled', '1')
+        window.dispatchEvent(new Event('hb-doodle-enrolled'))
       } catch {
         /* ignore */
       }

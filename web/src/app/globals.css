@@ -5295,3 +5295,313 @@ html.hb-view-max .hb-topbar {
     ),
     #fff;
 }
+
+/* —— Doodle scene —— */
+.hb-home-card--doodle .hb-home-card-icon {
+  color: #2bb8ae;
+  background: color-mix(in srgb, #4ecdc4 18%, transparent);
+}
+
+.hb-doodle {
+  background:
+    radial-gradient(120% 80% at 10% 0%, color-mix(in srgb, #4ecdc4 16%, transparent), transparent 55%),
+    radial-gradient(90% 70% at 100% 10%, color-mix(in srgb, #f1c40f 12%, transparent), transparent 50%),
+    var(--hb-panel);
+}
+
+.hb-doodle-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  padding-top: max(0.55rem, env(safe-area-inset-top));
+  border-bottom: 1px solid var(--hb-line);
+  background: color-mix(in srgb, var(--hb-panel) 88%, transparent);
+  backdrop-filter: blur(10px);
+}
+
+.hb-doodle-title {
+  font-family: var(--font-display), Syne, sans-serif;
+  font-size: 1.15rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.hb-doodle-sub {
+  font-size: 0.72rem;
+  color: var(--hb-mute);
+  margin-top: 0.1rem;
+}
+
+.hb-doodle-banner {
+  margin: 0;
+  padding: 0.4rem 0.85rem;
+  font-size: 0.78rem;
+  border-bottom: 1px solid var(--hb-line);
+}
+
+.hb-doodle-body {
+  position: relative;
+}
+
+.hb-doodle-stage {
+  max-width: 56rem;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.hb-doodle-name {
+  margin-top: 0.25rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--hb-ink);
+}
+
+.hb-doodle-bubble {
+  max-width: 11rem;
+  margin-bottom: 0.35rem;
+  padding: 0.4rem 0.55rem;
+  border-radius: 0.85rem;
+  background: color-mix(in srgb, var(--hb-panel) 92%, #fff);
+  border: 1px solid var(--hb-line);
+  font-size: 0.78rem;
+  line-height: 1.25;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+}
+
+.hb-doodle-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.1rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--hb-panel) 90%, transparent);
+  border: 1px solid var(--hb-line);
+  min-width: 6.5rem;
+}
+
+.hb-doodle-chip-label {
+  font-size: 0.65rem;
+  color: var(--hb-mute);
+  text-align: right;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hb-doodle-chip-value {
+  font-family: var(--font-mono), 'IBM Plex Mono', monospace;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.hb-doodle-chip--timer {
+  border-color: color-mix(in srgb, #f1c40f 45%, var(--hb-line));
+}
+
+.hb-doodle-chip--travel {
+  border-color: color-mix(in srgb, #3498db 45%, var(--hb-line));
+}
+
+.hb-doodle-pad {
+  display: flex;
+  flex-direction: column;
+  min-height: 12rem;
+  height: 100%;
+  border-radius: 1rem;
+  overflow: hidden;
+  border: 1px solid var(--hb-line);
+  background: #f7f4ee;
+  touch-action: none;
+}
+
+.hb-doodle-palette {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.55rem;
+  background: color-mix(in srgb, #fff 70%, #f7f4ee);
+  border-bottom: 1px solid color-mix(in srgb, #000 8%, transparent);
+}
+
+.hb-doodle-swatch {
+  width: 1.55rem;
+  height: 1.55rem;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+
+.hb-doodle-swatch[data-on='1'] {
+  outline: 2px solid #2bb8ae;
+  outline-offset: 1px;
+}
+
+.hb-doodle-width input {
+  width: 5rem;
+  vertical-align: middle;
+}
+
+.hb-doodle-canvas {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: block;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.hb-doodle-talk {
+  position: absolute;
+  right: max(0.85rem, env(safe-area-inset-right));
+  bottom: max(0.85rem, env(safe-area-inset-bottom));
+  z-index: 5;
+  min-width: 3.4rem;
+  height: 3.4rem;
+  padding: 0 0.85rem;
+  border-radius: 999px;
+  border: none;
+  background: #2bb8ae;
+  color: #062a28;
+  font-weight: 700;
+  font-size: 0.85rem;
+  box-shadow: 0 8px 22px rgba(43, 184, 174, 0.45);
+}
+
+.hb-doodle-chat-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.hb-doodle-chat-backdrop {
+  position: absolute;
+  inset: 0;
+  border: none;
+  background: rgba(8, 12, 20, 0.35);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.hb-doodle-chat-panel {
+  position: relative;
+  z-index: 1;
+  width: min(28rem, 100%);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--hb-panel) 94%, transparent);
+  border-left: 1px solid var(--hb-line);
+  box-shadow: -12px 0 40px rgba(0, 0, 0, 0.28);
+  animation: hb-doodle-slide-in 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+@keyframes hb-doodle-slide-in {
+  from {
+    transform: translateX(100%);
+    opacity: 0.6;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.hb-doodle-chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.75rem 0.85rem;
+  padding-top: max(0.75rem, env(safe-area-inset-top));
+  border-bottom: 1px solid var(--hb-line);
+}
+
+.hb-doodle-chat-head h2 {
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.hb-doodle-chat-body {
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.hb-doodle-enroll {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(8, 12, 20, 0.45);
+  backdrop-filter: blur(8px);
+}
+
+.hb-doodle-enroll-card {
+  width: min(22rem, 100%);
+  padding: 1.15rem 1.2rem;
+  border-radius: 1rem;
+  background: var(--hb-panel);
+  border: 1px solid var(--hb-line);
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.hb-doodle-enroll-card h2 {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.hb-doodle-enroll-card p {
+  font-size: 0.85rem;
+  color: var(--hb-mute);
+  line-height: 1.4;
+}
+
+.hb-doodle-enroll-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.hb-doodle-bob-happy {
+  animation: hb-doodle-bob 1.6s ease-in-out infinite;
+}
+.hb-doodle-bob-think {
+  animation: hb-doodle-bob 2.4s ease-in-out infinite;
+}
+.hb-doodle-bob-sad {
+  animation: hb-doodle-bob 3s ease-in-out infinite;
+  filter: saturate(0.85);
+}
+.hb-doodle-bob-frozen {
+  animation: none;
+}
+
+@keyframes hb-doodle-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+@media (min-width: 768px) {
+  .hb-doodle-blob-lg {
+    /* reserved */
+  }
+  .hb-doodle-stage {
+    padding: 0.75rem 1rem;
+  }
+}

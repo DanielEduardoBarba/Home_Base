@@ -37,8 +37,17 @@ function writeCachedGate(enabled: boolean, locked: boolean): void {
  * App PIN gate — idle / tab-return lock. Hash + locked flag live on the server
  * so a refresh cannot clear the lock. homebased keeps running; only this client
  * is covered and HTTP/WS commands are refused until the PIN unlocks.
+ *
+ * `bypass` — Doodle tablet scene only: enrolled device skips the overlay while
+ * other scenes still require PIN.
  */
-export function PinLock({ children }: { children: ReactNode }) {
+export function PinLock({
+  children,
+  bypass = false,
+}: {
+  children: ReactNode
+  bypass?: boolean
+}) {
   const cached = readCachedGate()
   const [enabled, setEnabled] = useState(cached.enabled)
   const [locked, setLocked] = useState(cached.locked)
@@ -296,7 +305,7 @@ export function PinLock({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [enabled, locked, press, backspace, retryAfter])
 
-  if (!enabled || !locked) return <>{children}</>
+  if (bypass || !enabled || !locked) return <>{children}</>
 
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', '⌫']
 

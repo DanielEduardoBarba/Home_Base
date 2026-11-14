@@ -8,6 +8,7 @@ describe('parseAppPath / serializeAppPath', () => {
     ['/access', { area: 'access', tab: 'work', workItem: 'apps' }],
     ['/agent', { area: 'agent', tab: 'work', workItem: 'apps' }],
     ['/vision', { area: 'vision', tab: 'work', workItem: 'apps' }],
+    ['/doodle', { area: 'doodle', tab: 'work', workItem: 'apps' }],
     ['/settings', { area: 'settings', tab: 'work', workItem: 'apps' }],
     ['/work', { area: 'homework', tab: 'work', workItem: 'apps' }],
     ['/homework', { area: 'homework', tab: 'work', workItem: 'apps' }],
@@ -45,6 +46,7 @@ describe('parseAppPath / serializeAppPath', () => {
       { area: 'homework', tab: 'view', workItem: 'apps' },
       { area: 'homework', tab: 'logs', workItem: 'shell' },
       { area: 'settings', tab: 'work', workItem: 'apps' },
+      { area: 'doodle', tab: 'work', workItem: 'apps' },
     ]
     for (const loc of locs) {
       const path = serializeAppPath(loc)

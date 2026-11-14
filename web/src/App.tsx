@@ -8,6 +8,7 @@ import { HomeAccessTab } from './components/HomeAccessTab'
 import { HomeDashboard } from './components/HomeDashboard'
 import { HomeGlyph } from './components/HomeGlyph'
 import { HomeVisionTab } from './components/HomeVisionTab'
+import { HomeDoodleTab } from './components/HomeDoodleTab'
 import { IconBtn } from './components/IconBtn'
 import { LegalConnectionError, LegalGate } from './components/LegalGate'
 import { Login } from './components/Login'
@@ -208,9 +209,8 @@ function NotFoundView({ path, onHome }: { path: string; onHome: () => void }) {
   )
 }
 
-function AuthedApp() {
-
-  const [area, setArea] = useState<AppArea>('home')
+function AuthedApp({ doodleOnly = false }: { doodleOnly?: boolean }) {
+  const [area, setArea] = useState<AppArea>(doodleOnly ? 'doodle' : 'home')
   const [tab, setTab] = useState<Tab>('work')
   const [notFoundPath, setNotFoundPath] = useState<string | null>(null)
   const [routesReady, setRoutesReady] = useState(false)
@@ -305,6 +305,10 @@ function AuthedApp() {
   }, [])
 
   const goArea = useCallback(async (next: AppArea) => {
+    if (doodleOnly && next !== 'doodle') {
+      clearSession('signed_out')
+      return
+    }
     if (next === area && !notFoundPath) return
     if (!(await confirmNavigation())) return
     const target = coerceArea(next)
@@ -315,7 +319,11 @@ function AuthedApp() {
     closeInbox()
     logActivity('nav', `Area → ${target}`, { area: target })
     presenceHeartbeat({ area: target, tab })
-  }, [area, closeInbox, notFoundPath, tab])
+  }, [area, closeInbox, doodleOnly, notFoundPath, tab])
+
+  useEffect(() => {
+    if (doodleOnly && area !== 'doodle') setArea('doodle')
+  }, [doodleOnly, area])
 
   useEffect(() => {
     if (tab === 'view') setViewVisited(true)
@@ -700,6 +708,10 @@ function AuthedApp() {
               unlockAudio()
               goArea('vision')
             }}
+            onOpenDoodle={() => {
+              unlockAudio()
+              goArea('doodle')
+            }}
             onOpenContingency={() => {
               unlockAudio()
               goArea('contingency')
@@ -802,6 +814,33 @@ function AuthedApp() {
             selectedId={selectedId}
             onSelect={selectProject}
             onHome={() => goArea('home')}
+          />
+        </main>
+        <ToastStack />
+        <NotificationCenter />
+      </div>
+    )
+  }
+
+  if (area === 'doodle') {
+    return (
+      <div className="hb-app-shell h-full flex flex-col">
+        <PullToRefresh onRefresh={refresh} />
+        {refreshing && (
+          <div className="hb-refresh-overlay" role="status" aria-live="polite" aria-label="Refreshing">
+            <div className="hb-spinner" />
+          </div>
+        )}
+        <main className="flex-1 min-h-0 overflow-hidden">
+          <HomeDoodleTab
+            doodleOnly={doodleOnly}
+            onHome={() => {
+              if (doodleOnly) {
+                clearSession('signed_out')
+                return
+              }
+              goArea('home')
+            }}
           />
         </main>
         <ToastStack />
@@ -978,6 +1017,8 @@ function AuthedApp() {
 
 export default function App() {
   const [authed, setAuthed] = useState(false)
+  const [doodleOnly, setDoodleOnly] = useState(false)
+  const [pinBypass, setPinBypass] = useState(false)
   const [authReady, setAuthReady] = useState(false)
   const [legalOk, setLegalOk] = useState<boolean | null>(null)
   const [legalError, setLegalError] = useState(false)
@@ -995,8 +1036,22 @@ export default function App() {
         if (s.authenticated && s.csrfToken && s.expiresAt) {
           setSession({ expiresAt: s.expiresAt, csrfToken: s.csrfToken })
           setAuthed(true)
+          const only = s.scope === 'doodle'
+          setDoodleOnly(only)
+          if (only) {
+            try {
+              localStorage.setItem('hb-doodle-enrolled', '1')
+            } catch {
+              /* ignore */
+            }
+            setPinBypass(true)
+            if (!window.location.pathname.startsWith('/doodle')) {
+              window.history.replaceState({ hb: true }, '', '/doodle')
+            }
+          }
         } else {
           setAuthed(false)
+          setDoodleOnly(false)
         }
         setAuthReady(true)
       })
@@ -1009,6 +1064,28 @@ export default function App() {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    const syncBypass = () => {
+      let enrolled = false
+      try {
+        enrolled = localStorage.getItem('hb-doodle-enrolled') === '1'
+      } catch {
+        /* ignore */
+      }
+      const onDoodle = window.location.pathname.startsWith('/doodle')
+      setPinBypass(doodleOnly || (onDoodle && enrolled))
+    }
+    syncBypass()
+    window.addEventListener('popstate', syncBypass)
+    window.addEventListener('hb-doodle-enrolled', syncBypass)
+    const t = window.setInterval(syncBypass, 2000)
+    return () => {
+      window.removeEventListener('popstate', syncBypass)
+      window.removeEventListener('hb-doodle-enrolled', syncBypass)
+      window.clearInterval(t)
+    }
+  }, [doodleOnly])
 
   useEffect(() => {
     const onLost = () => setAuthed(false)
@@ -1091,8 +1168,8 @@ export default function App() {
 
   return (
     <NotifyProvider>
-      <PinLock>
-        <AuthedApp />
+      <PinLock bypass={pinBypass}>
+        <AuthedApp doodleOnly={doodleOnly} />
       </PinLock>
     </NotifyProvider>
   )

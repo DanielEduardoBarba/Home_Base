@@ -32,7 +32,7 @@ SPA fetch/WebSocket paths are always relative (`/api/...`, `/ws/...` via `locati
 
 ## UI areas (after login)
 
-**Home** dashboard → **Home Agent** · **Homework** (Work) · **Home Access** · **Vision** · **Contingency** · **Settings**.
+**Home** dashboard → **Home Agent** · **Homework** (Work) · **Home Access** · **Vision** · **Doodle** · **Contingency** · **Settings**.
 
 ### Homework tabs
 
@@ -55,6 +55,10 @@ Panel of **button / toggle / slider / gauge** widgets backed by `/api/home-acces
 ### Vision
 
 Live laptop screen (same `/ws/view` worker) plus a Chat dock. **Arm** (JWT, default 15m) unlocks AI mouse/keyboard via `homebase_vision_*` tools; disarmed is look-only (screenshot/status). Linux X11, or Wayland via XWayland (Ubuntu 26+) — not on Mac. Chat cwd is seat-user `~/.homebase` (created on demand). Prefer GUI apps via Vision; use Shell/Files/CLI when that is clearly better. Screenshots under `.runtime/vision/`. See `.cursor/rules/vision.mdc`.
+
+### Doodle
+
+Kid-friendly AI mascot + doodle pad + floating chat (`/doodle`). Cursor chat sandboxed at `/opt/homebase-doodle` (project id `doodle`, hidden from Work). Tablet enroll (PIN) issues a 30-day `kind: doodle` cookie that skips App PIN **only** on this scene; other areas keep normal session/PIN. Tools: `homebase_doodle_express` · `_canvas` · `_timer` · `_travel` (Nominatim+OSRM). Tap Clear = chats; hold Clear = chats + workspace wipe. See `.cursor/rules/doodle.mdc`.
 
 ### Contingency
 

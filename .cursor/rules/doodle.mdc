@@ -1,0 +1,34 @@
+# Doodle
+
+Home dashboard area **Doodle** (`/doodle`): kid-friendly AI mascot + doodle pad + floating chat.
+
+## Character
+
+Grok-style circle blob (`DoodleBlob`) with mouth glyphs:
+
+| Mood | Mouth |
+|------|-------|
+| happy (default) | D |
+| curious | . |
+| blank | - |
+| sad | C |
+| frozen / confounded | none |
+
+Update via `homebase_doodle_express` or `POST /api/doodle/express`.
+
+## Security
+
+- Sandbox cwd: `/opt/homebase-doodle` (`ensureDoodleWorkspace()`). Synthetic project id `doodle` (hidden from Work Apps).
+- Tablet enroll: PIN + device id → JWT `kind: "doodle"`, 30d cookie `hb_doodle`. Skips App PIN **only** on this scene.
+- Other areas still need normal 24h session + PIN. Password change / logout / forget tablet revoke doodle access (`ae` / `jti` / enroll list).
+- Doodle JWT rejected on non-doodle APIs. Cursor WS for `project=doodle` accepts doodle tickets even while PIN locked.
+
+## Agent
+
+- Same Cursor SDK + API key as other chats; tools limited to `homebase_doodle_*` (express, canvas, timer, travel).
+- Personality + content policy injected by `wrapPrompt` when project/cwd is doodle — bubbly, Christian, kid-appropriate; refuse Halloween/evil/demonic/sexual/immodest/LGBTQ framing.
+- Clear: tap = wipe chats; hold ≈900ms = wipe chats + empty sandbox (keep dir).
+
+## Leave the scene alone
+
+Prefer applets/tools and widgets over rewriting the Doodle shell. Travel uses Nominatim + OSRM (free) by default.
