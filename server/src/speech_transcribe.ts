@@ -90,7 +90,7 @@ export async function transcribeAudio(input: {
     new Blob([buf], { type: mime }),
     filename,
   );
-  form.append("model", "whisper-1");
+  form.append("model", (process.env.HOMEBASE_TRANSCRIBE_MODEL || "").trim() || "gpt-4o-mini-transcribe");
   const lang = (input.language || "").trim();
   if (lang) form.append("language", lang.slice(0, 8));
 

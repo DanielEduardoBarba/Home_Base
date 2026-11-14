@@ -60,7 +60,7 @@ HOMEBASE_TRANSCRIBE_API_KEY=sk-...
 OPENAI_API_KEY=sk-...
 ```
 
-Uses OpenAI Whisper (`whisper-1`). `/api/speech/status` reports `configured: false` when unset. The client caches that flag and picks the mic path above.
+Uses OpenAI `gpt-4o-mini-transcribe` by default (about $0.003/min); set `HOMEBASE_TRANSCRIBE_MODEL=whisper-1` to switch. `/api/speech/status` reports `configured: false` when unset. The client caches that flag and picks the mic path above.
 
 ## Hands-free flow
 
