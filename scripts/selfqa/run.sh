@@ -195,6 +195,7 @@ BLOCK_REASON=""
 # Runtime enforcement dirs
 HOOKS_DIR="$RUN_DIR/hooks"
 HOOKS_STATE="$RUN_DIR/hooks-state.txt"
+SCRIPT_GUARDS_STATE="$RUN_DIR/script-guards-state.txt"
 SHIM_DIR="$RUN_DIR/shims"
 AGENT_HOME="$RUN_DIR/agent-home"
 REAL_HOME="${HOME:-/tmp}"
@@ -228,8 +229,43 @@ write_state() {
 EOF
 }
 
+refresh_callback_fields() {
+  # Best-effort: docsCommit + typecheck/tests/items/bugs from reports/logs.
+  local meta_file
+  meta_file="$(mktemp)"
+  if ! selfqa_refresh_callback_meta "$TARGET_ROOT" "$RUN_DIR" \
+    "${REPORT_PATHS[@]+"${REPORT_PATHS[@]}"}" >"$meta_file" 2>/dev/null; then
+    DOCS_COMMIT="$(git -C "$TARGET_ROOT" rev-parse HEAD 2>/dev/null || echo "${DOCS_COMMIT:-unknown}")"
+    rm -f "$meta_file"
+    return 0
+  fi
+  if [[ ! -s "$meta_file" ]]; then
+    DOCS_COMMIT="$(git -C "$TARGET_ROOT" rev-parse HEAD 2>/dev/null || echo "${DOCS_COMMIT:-unknown}")"
+    rm -f "$meta_file"
+    return 0
+  fi
+  eval "$(python3 - "$meta_file" <<'PY'
+import json, shlex, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+docs = d.get("docsCommit") or ""
+tc = d.get("typecheck") or "not_run"
+tests = json.dumps(d.get("tests") or {"expected": None, "passed": None, "failed": None})
+items = json.dumps(d.get("items") or [])
+bugs = json.dumps(d.get("bugs") or {"high": [], "medium": [], "low": []})
+print(f"DOCS_COMMIT={shlex.quote(docs)}")
+print(f"TYPECHECK_STATUS={shlex.quote(tc)}")
+print(f"TESTS_JSON={shlex.quote(tests)}")
+print(f"ITEMS_JSON={shlex.quote(items)}")
+print(f"BUGS_JSON={shlex.quote(bugs)}")
+PY
+)" || true
+  [[ -n "${DOCS_COMMIT:-}" ]] || DOCS_COMMIT="$(git -C "$TARGET_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+  rm -f "$meta_file"
+}
+
 write_callback_json() {
   local path="$1"
+  refresh_callback_fields || true
   local shortsha fullsha
   shortsha="$(git -C "$TARGET_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
   fullsha="$(git -C "$TARGET_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
@@ -298,6 +334,7 @@ PY
 }
 
 write_summary() {
+  refresh_callback_fields || true
   local elapsed=$(( ($(date +%s) - START_EPOCH) / 60 ))
   local reports_file="$RUN_DIR/report_paths.txt"
   : >"$reports_file"
@@ -406,6 +443,7 @@ selfqa_post_callback() {
 }
 
 selfqa_restore_runtime_guards() {
+  selfqa_restore_script_guards "$SCRIPT_GUARDS_STATE" || true
   selfqa_restore_hooks_path "$HOOKS_STATE" || true
 }
 
@@ -416,6 +454,7 @@ selfqa_on_die() {
   cat >"$RUN_DIR/VERDICT.json" <<EOF
 {"verdict":"FAIL"}
 EOF
+  refresh_callback_fields || true
   selfqa_emit_callback || true
   selfqa_restore_runtime_guards || true
 }
@@ -423,6 +462,7 @@ EOF
 trap 'selfqa_restore_runtime_guards' EXIT
 
 selfqa_install_pre_push_hook "$HOOKS_DIR" "$HOOKS_STATE" "$BRANCH"
+selfqa_install_script_guards "$TARGET_ROOT" "$SCRIPT_GUARDS_STATE"
 selfqa_create_path_shims "$SHIM_DIR" "$TARGET_ROOT"
 selfqa_prepare_agent_home "$AGENT_HOME" "$REAL_HOME"
 
@@ -433,7 +473,7 @@ print_plan "$AGENT_BIN" >"$RUN_DIR/PLAN.md"
 echo "==> Self-QA run $RUN_ID"
 echo "    goal: $GOAL"
 echo "    cycles=$CYCLES max-minutes=$MAX_MINUTES testers=$TESTERS agent=$AGENT_BIN"
-echo "    guards: hooksPath + PATH shims + blank deploy env"
+echo "    guards: hooksPath + script guards + PATH shims + blank deploy env"
 echo "    dir: $RUN_DIR"
 
 if [[ ! -f "$TARGET_ROOT/docs/QA-PROGRESS.md" ]]; then

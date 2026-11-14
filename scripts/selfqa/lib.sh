@@ -81,6 +81,8 @@ PY
 }
 
 # Extract OPEN finding ids only. Pass/fixed/closed/verified/resolved do not count.
+# Parses per finding block so Pass on one ID never hides Fail on another in the
+# same report (canonical "ID:" / "Result:" format and ### heading sections).
 selfqa_extract_finding_ids() {
   local path="$1"
   if [[ ! -f "$path" ]]; then
@@ -93,16 +95,30 @@ text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 closed_re = re.compile(
     r"(?i)\b(pass(?:ed)?|fixed|closed|verified|resolved|done|wontfix|won'?t\s*fix|n/?a)\b"
 )
-open_re = re.compile(
-    r"(?i)\b(fail(?:ed)?|open|blocked|repro|high|medium|low|critical|bug|regression)\b"
+open_status_re = re.compile(
+    r"(?i)\b(fail(?:ed)?|open|blocked|repro|regression)\b"
 )
+# Severity words are NOT open-status — they appear on Pass findings too.
 id_re = re.compile(r"\b([A-Z]{2,}-[A-Z0-9]+-\d+)\b")
+# Finding-block starts: "ID: …" / "Finding ID: …" or "### HB-R1-01" style headings.
+block_start_re = re.compile(
+    r"(?im)^(?:"
+    r"#{1,6}\s+(?:.*?\b)?([A-Z]{2,}-[A-Z0-9]+-\d+)\b"
+    r"|"
+    r"[ \t]*(?:[-*]\s*)?(?:\*\*)?(?:id|finding[\s_-]*id)(?:\*\*)?\s*[:=]\s*`?"
+    r"([A-Za-z0-9][A-Za-z0-9._/-]{1,64})`?"
+    r")"
+)
 line_id_re = re.compile(
-    r"(?im)^\s*(?:[-*]\s*)?(?:id|finding[\s_-]*id)\s*[:=]\s*`?([A-Za-z0-9][A-Za-z0-9._/-]{1,64})`?"
+    r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?(?:id|finding[\s_-]*id)(?:\*\*)?\s*[:=]\s*`?"
+    r"([A-Za-z0-9][A-Za-z0-9._/-]{1,64})`?"
 )
 
 def status_near(block: str) -> str:
-    m = re.search(r"(?im)^\s*(?:[-*]\s*)?(?:status|result|verdict)\s*[:=]\s*(.+)$", block)
+    m = re.search(
+        r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?(?:status|result|verdict)(?:\*\*)?\s*[:=]\s*(.+)$",
+        block,
+    )
     if m:
         return m.group(1).strip()
     # Same-line markers like "ID: HB-R1-01 — Pass" / "**Pass**"
@@ -110,37 +126,60 @@ def status_near(block: str) -> str:
 
 def is_closed(block: str) -> bool:
     st = status_near(block)
-    if closed_re.search(st) and not open_re.search(st):
+    if closed_re.search(st) and not open_status_re.search(st):
         return True
-    # Explicit markdown table cells / badges near the id
-    if re.search(r"(?i)\b(?:status|result)\b.{0,40}\b(?:pass|fixed|closed|verified)\b", block):
+    if re.search(
+        r"(?i)\b(?:status|result|verdict)\b.{0,40}\b(?:pass(?:ed)?|fixed|closed|verified|resolved)\b",
+        block,
+    ):
+        # Fail/open on the same status line wins (e.g. "Result: Fail — was Pass")
+        sm = re.search(
+            r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?(?:status|result|verdict)(?:\*\*)?\s*[:=]\s*(.+)$",
+            block,
+        )
+        if sm and open_status_re.search(sm.group(1)) and not closed_re.search(sm.group(1)):
+            return False
+        if sm and open_status_re.search(sm.group(1)):
+            return False
         return True
     if re.search(r"(?i)\bas\s+(?:pass|fixed|closed|verified)\b", block):
         return True
     return False
 
-open_ids = set()
-# Section-oriented: split on headings / blank-line gaps that introduce an ID.
-chunks = re.split(r"(?m)(?=^#{1,6}\s|\n(?=[-*]\s*(?:\*\*)?(?:id|finding)))", text)
-if len(chunks) <= 1:
-    chunks = re.split(r"\n{2,}", text)
+def finding_blocks(src: str):
+    """Yield (primary_id_or_None, block_text) per finding — never whole-report chunks."""
+    markers = list(block_start_re.finditer(src))
+    if markers:
+        for i, m in enumerate(markers):
+            start = m.start()
+            end = markers[i + 1].start() if i + 1 < len(markers) else len(src)
+            primary = m.group(1) or m.group(2)
+            yield primary, src[start:end]
+        return
+    # Fallback: blank-line paragraphs / generic headings (legacy fixtures).
+    chunks = re.split(r"(?m)(?=^#{1,6}\s)", src)
+    if len(chunks) <= 1:
+        chunks = re.split(r"\n{2,}", src)
+    for chunk in chunks:
+        yield None, chunk
 
-for chunk in chunks:
-    ids = set(id_re.findall(chunk))
+open_ids = set()
+for primary, chunk in finding_blocks(text):
+    ids = set()
+    if primary:
+        ids.add(primary)
+    ids.update(id_re.findall(chunk))
     for m in line_id_re.finditer(chunk):
         ids.add(m.group(1))
     if not ids:
         continue
     if is_closed(chunk):
         continue
-    # If the chunk only restates a closed id in a Pass table row, skip.
-    # Default: treat as open when status is missing or open-flavored.
     for i in ids:
-        # Per-id line scan
         for line in chunk.splitlines():
             if i not in line:
                 continue
-            if closed_re.search(line) and not open_re.search(line):
+            if closed_re.search(line) and not open_status_re.search(line):
                 break
             open_ids.add(i)
             break
@@ -206,6 +245,8 @@ PRICE = re.compile(
     r"(?:subscription\s+)?(?:price|pricing)\b|"
     r"(?:subscription\s+)?(?:price|pricing)\s+(?:change|update|increase|raise|lower|drop)\b|"
     r"set\s+(?:the\s+)?price\s+to\b|"
+    # "set the subscription to 9.99" — subscription + numeric amount, no "price" word
+    r"set\s+(?:the\s+)?subscription\s+to\s+\$?\d+(?:[.,]\d+)?\b|"
     r"update\s+pricing\b|"
     r"new\s+price\s+tier\b|"
     r"change\s+the\s+subscription\s+price\b|"
@@ -647,6 +688,320 @@ selfqa_restore_hooks_path() {
   return 0
 }
 
+# Inject SELFQA_RUN=1 refuse guards into in-repo ship/deploy scripts so
+# absolute-path / `bash ./ship.sh` invocations refuse at runtime (not only PATH shims).
+# Args: repo_root  state_file
+# State file lists "path<TAB>backup_path" lines for restore.
+selfqa_install_script_guards() {
+  local repo_root="${1:?}"
+  local state_file="${2:?}"
+  local guard_marker="# Self-QA runtime refuse (injected)"
+  local names=(
+    ship.sh deploy.sh deploy-api.sh deploy-web.sh ship-expo.sh build-expo.sh
+  )
+  local -a candidates=()
+  local n p
+  for n in "${names[@]}"; do
+    candidates+=("$repo_root/$n" "$repo_root/scripts/$n")
+  done
+  # Also pick up scripts/* variants that match the basename set.
+  if [[ -d "$repo_root/scripts" ]]; then
+    while IFS= read -r -d '' p; do
+      candidates+=("$p")
+    done < <(find "$repo_root/scripts" -maxdepth 2 -type f \( \
+      -name 'ship.sh' -o -name 'deploy.sh' -o -name 'deploy-api.sh' -o \
+      -name 'deploy-web.sh' -o -name 'ship-expo.sh' -o -name 'build-expo.sh' \
+    \) -print0 2>/dev/null)
+  fi
+
+  : >"$state_file"
+  local seen=""
+  for p in "${candidates[@]}"; do
+    [[ -f "$p" && -r "$p" ]] || continue
+    case " $seen " in
+      *" $p "*) continue ;;
+    esac
+    seen+=" $p"
+    # Already guarded (re-entrant / prior install)
+    if grep -qF "$guard_marker" "$p" 2>/dev/null; then
+      continue
+    fi
+    local bak="${p}.selfqa-bak.$$"
+    cp -a "$p" "$bak" || continue
+    printf '%s\t%s\n' "$p" "$bak" >>"$state_file"
+    python3 - "$p" "$guard_marker" <<'PY'
+import sys
+path, marker = sys.argv[1], sys.argv[2]
+# POSIX [ ] so `sh ship.sh` (ignores shebang) still refuses.
+guard = (
+    marker + "\n"
+    + 'if [ "${SELFQA_RUN:-}" = "1" ]; then\n'
+    + '  echo "error: Self-QA refuses $(basename "$0") while SELFQA_RUN=1" >&2\n'
+    + "  exit 1\n"
+    + "fi\n"
+)
+text = open(path, encoding="utf-8", errors="replace").read()
+if marker in text:
+    raise SystemExit(0)
+lines = text.splitlines(keepends=True)
+out = []
+i = 0
+if lines and lines[0].startswith("#!"):
+    out.append(lines[0])
+    i = 1
+    # Keep an immediate encoding/shell directive comment if present
+    if i < len(lines) and lines[i].startswith("#") and "Self-QA" not in lines[i]:
+        # only keep classic shellcheck / coding lines; still inject ASAP
+        pass
+out.append(guard)
+if not guard.endswith("\n"):
+    pass
+out.extend(lines[i:])
+open(path, "w", encoding="utf-8").write("".join(out))
+PY
+  done
+  return 0
+}
+
+selfqa_restore_script_guards() {
+  local state_file="${1:?}"
+  [[ -f "$state_file" ]] || return 0
+  local path bak
+  while IFS=$'\t' read -r path bak; do
+    [[ -n "$path" && -n "$bak" ]] || continue
+    if [[ -f "$bak" ]]; then
+      mv -f "$bak" "$path" || true
+    fi
+  done <"$state_file"
+  : >"$state_file"
+  return 0
+}
+
+# Best-effort populate callback meta from git + cycle reports/logs.
+# Args: target_root  run_dir  [report_path ...]
+# Prints JSON: {docsCommit,typecheck,tests,items,bugs}
+selfqa_refresh_callback_meta() {
+  local target_root="${1:?}"
+  local run_dir="${2:?}"
+  shift 2
+  local reports_file
+  reports_file="$(mktemp)"
+  local r
+  for r in "$@"; do
+    [[ -n "$r" ]] && printf '%s\n' "$r" >>"$reports_file"
+  done
+  # Also discover reports under docs/qa for this run if run_dir has a runId suffix.
+  local run_id
+  run_id="$(basename "$run_dir")"
+  if [[ -d "$target_root/docs/qa" ]]; then
+    find "$target_root/docs/qa" -maxdepth 1 -type f -name "selfqa-${run_id}-cycle*.md" 2>/dev/null \
+      | while read -r p; do printf '%s\n' "${p#"$target_root"/}" >>"$reports_file"; done || true
+  fi
+  python3 - "$target_root" "$run_dir" "$reports_file" <<'PY'
+import json, os, re, subprocess, sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+run_dir = Path(sys.argv[2])
+reports_file = Path(sys.argv[3])
+
+def git(*args):
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(root), *args],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return ""
+
+# docsCommit: latest commit touching docs/qa or docs/selfqa, else HEAD
+docs = git("log", "-1", "--format=%H", "--", "docs/qa", "docs/selfqa")
+if not docs:
+    docs = git("rev-parse", "HEAD") or "unknown"
+
+report_paths = []
+try:
+    report_paths = [ln.strip() for ln in reports_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+except Exception:
+    pass
+# Dedupe preserve order
+seen = set()
+uniq = []
+for p in report_paths:
+    if p in seen:
+        continue
+    seen.add(p)
+    uniq.append(p)
+report_paths = uniq
+
+texts = []
+for rp in report_paths:
+    p = root / rp if not os.path.isabs(rp) else Path(rp)
+    if p.is_file():
+        try:
+            texts.append(p.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            pass
+log_dir = run_dir / "logs"
+if log_dir.is_dir():
+    for p in sorted(log_dir.glob("*.log")):
+        try:
+            texts.append(p.read_text(encoding="utf-8", errors="replace")[-80000:])
+        except Exception:
+            pass
+blob = "\n".join(texts)
+
+typecheck = "not_run"
+tc_pass = re.search(r"(?i)\btypecheck\b.{0,40}\b(pass(?:ed)?|ok|success)\b", blob)
+tc_fail = re.search(r"(?i)\btypecheck\b.{0,40}\b(fail(?:ed)?|error)\b", blob)
+tc_line = re.search(r"(?im)^\s*[-*]?\s*typecheck\s*[:=]\s*(\w+)", blob)
+if tc_line:
+    v = tc_line.group(1).lower()
+    if v in ("pass", "passed", "ok", "success"):
+        typecheck = "pass"
+    elif v in ("fail", "failed", "error"):
+        typecheck = "fail"
+    elif v in ("not_run", "skipped", "skip"):
+        typecheck = "not_run"
+elif tc_fail and not tc_pass:
+    typecheck = "fail"
+elif tc_pass:
+    typecheck = "pass"
+
+tests = {"expected": None, "passed": None, "failed": None}
+# Patterns: "tests: 10 passed, 2 failed" / "expected: 12, passed: 10, failed: 2" / bun style
+m = re.search(
+    r"(?i)\bexpected\s*[:=]\s*(\d+).{0,40}\bpassed\s*[:=]\s*(\d+).{0,40}\bfailed\s*[:=]\s*(\d+)",
+    blob,
+)
+if m:
+    tests = {"expected": int(m.group(1)), "passed": int(m.group(2)), "failed": int(m.group(3))}
+else:
+    m = re.search(
+        r"(?i)\b(\d+)\s+pass(?:ed)?\b.{0,20}\b(\d+)\s+fail(?:ed)?\b",
+        blob,
+    )
+    if m:
+        passed, failed = int(m.group(1)), int(m.group(2))
+        tests = {"expected": passed + failed, "passed": passed, "failed": failed}
+    else:
+        m = re.search(
+            r"(?im)^\s*[-*]?\s*tests?\s*[:=]\s*.*?\b(\d+)\s+passed\b.*?\b(\d+)\s+failed\b",
+            blob,
+        )
+        if m:
+            passed, failed = int(m.group(1)), int(m.group(2))
+            tests = {"expected": passed + failed, "passed": passed, "failed": failed}
+
+items = []
+# Checklist / item lines: "- [x] Foo" / "Item: Foo — Pass" / "| Item | Status |"
+for m in re.finditer(
+    r"(?im)^\s*[-*]\s*\[([ xX])\]\s+(.+?)\s*$",
+    blob,
+):
+    items.append({
+        "text": m.group(2).strip()[:200],
+        "status": "pass" if m.group(1).lower() == "x" else "pending",
+    })
+for m in re.finditer(
+    r"(?im)^\s*[-*]?\s*(?:item|check(?:list)?)\s*[:=]\s*(.+?)\s*[—\-|:]\s*(pass|fail|pending|skip|blocked)\b",
+    blob,
+):
+    items.append({"text": m.group(1).strip()[:200], "status": m.group(2).lower()})
+# Cap
+items = items[:100]
+
+# Bugs by severity from open findings in reports (reuse extract logic inline)
+closed_re = re.compile(
+    r"(?i)\b(pass(?:ed)?|fixed|closed|verified|resolved|done|wontfix|won'?t\s*fix|n/?a)\b"
+)
+open_status_re = re.compile(r"(?i)\b(fail(?:ed)?|open|blocked|repro|regression)\b")
+id_re = re.compile(r"\b([A-Z]{2,}-[A-Z0-9]+-\d+)\b")
+block_start_re = re.compile(
+    r"(?im)^(?:"
+    r"#{1,6}\s+(?:.*?\b)?([A-Z]{2,}-[A-Z0-9]+-\d+)\b"
+    r"|"
+    r"[ \t]*(?:[-*]\s*)?(?:\*\*)?(?:id|finding[\s_-]*id)(?:\*\*)?\s*[:=]\s*`?"
+    r"([A-Za-z0-9][A-Za-z0-9._/-]{1,64})`?"
+    r")"
+)
+sev_re = re.compile(r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?severity(?:\*\*)?\s*[:=]\s*(high|medium|low|critical)\b")
+
+def status_near(block: str) -> str:
+    m = re.search(
+        r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?(?:status|result|verdict)(?:\*\*)?\s*[:=]\s*(.+)$",
+        block,
+    )
+    return m.group(1).strip() if m else block[:240]
+
+def is_closed(block: str) -> bool:
+    st = status_near(block)
+    if closed_re.search(st) and not open_status_re.search(st):
+        return True
+    if re.search(
+        r"(?i)\b(?:status|result|verdict)\b.{0,40}\b(?:pass(?:ed)?|fixed|closed|verified|resolved)\b",
+        block,
+    ):
+        sm = re.search(
+            r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?(?:status|result|verdict)(?:\*\*)?\s*[:=]\s*(.+)$",
+            block,
+        )
+        if sm and open_status_re.search(sm.group(1)):
+            return False
+        return True
+    return False
+
+def blocks(src: str):
+    markers = list(block_start_re.finditer(src))
+    if not markers:
+        return
+    for i, m in enumerate(markers):
+        start = m.start()
+        end = markers[i + 1].start() if i + 1 < len(markers) else len(src)
+        yield (m.group(1) or m.group(2)), src[start:end]
+
+bugs = {"high": [], "medium": [], "low": []}
+seen_ids = set()
+for src in texts:
+    for primary, block in blocks(src):
+        if is_closed(block):
+            continue
+        fid = primary or (id_re.findall(block)[0] if id_re.findall(block) else None)
+        if not fid or fid in seen_ids:
+            continue
+        seen_ids.add(fid)
+        sev_m = sev_re.search(block)
+        sev = (sev_m.group(1).lower() if sev_m else "medium")
+        if sev == "critical":
+            sev = "high"
+        if sev not in bugs:
+            sev = "medium"
+        summary = ""
+        for line in block.splitlines()[1:6]:
+            if re.match(r"(?i)^\s*(?:severity|result|status|verdict|id)\b", line):
+                continue
+            t = line.strip().lstrip("-* ").strip()
+            if t:
+                summary = t[:160]
+                break
+        entry = {"id": fid}
+        if summary:
+            entry["summary"] = summary
+        bugs[sev].append(entry)
+
+print(json.dumps({
+    "docsCommit": docs,
+    "typecheck": typecheck,
+    "tests": tests,
+    "items": items,
+    "bugs": bugs,
+}))
+PY
+  local rc=$?
+  rm -f "$reports_file"
+  return "$rc"
+}
+
 # Create PATH shims that refuse deploy/ship entry points when SELFQA_RUN is set.
 # Args: shim_dir  repo_root
 selfqa_create_path_shims() {
@@ -702,6 +1057,32 @@ if [[ "${SELFQA_RUN:-}" == "1" ]]; then
     echo "error: Self-QA refuses 'pnpm run $2' while SELFQA_RUN=1" >&2
     exit 1
   fi
+  # pnpm exec firebase deploy / pnpm exec eas submit|deploy|build --profile production
+  if [[ "${1:-}" == "exec" ]]; then
+    tool="${2:-}"
+    shift 2 || true
+    joined="$*"
+    case "$tool" in
+      firebase)
+        if [[ "$joined" =~ (^|[[:space:]])deploy([[:space:]]|$) ]]; then
+          echo "error: Self-QA refuses 'pnpm exec firebase deploy' while SELFQA_RUN=1" >&2
+          exit 1
+        fi
+        ;;
+      eas)
+        if [[ "$joined" =~ (^|[[:space:]])(submit|deploy)([[:space:]]|$) ]]; then
+          echo "error: Self-QA refuses 'pnpm exec eas submit/deploy' while SELFQA_RUN=1" >&2
+          exit 1
+        fi
+        if [[ "$joined" =~ (^|[[:space:]])build([[:space:]]|$) ]] && [[ "$joined" =~ --profile[[:space:]]+production ]]; then
+          echo "error: Self-QA refuses 'pnpm exec eas build --profile production' while SELFQA_RUN=1" >&2
+          exit 1
+        fi
+        ;;
+    esac
+    # Rebuild argv for passthrough when not refused
+    set -- exec "$tool" "$@"
+  fi
 fi
 SHIM_DIR="$(cd "$(dirname "$0")" && pwd)"
 NEW_PATH=""
@@ -714,6 +1095,40 @@ export PATH="$NEW_PATH"
 exec pnpm "$@"
 EOF
   chmod +x "$shim_dir/pnpm"
+
+  cat >"$shim_dir/npx" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${SELFQA_RUN:-}" == "1" ]]; then
+  # npx firebase deploy / npx -y firebase-tools deploy / npx eas-cli submit
+  joined="$*"
+  low="$(printf '%s' "$joined" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$low" =~ firebase ]] && [[ "$low" =~ (^|[[:space:]])deploy([[:space:]]|$) ]]; then
+    echo "error: Self-QA refuses 'npx firebase deploy' while SELFQA_RUN=1" >&2
+    exit 1
+  fi
+  if [[ "$low" =~ (^|[[:space:]])(eas|eas-cli)([[:space:]]|$) ]]; then
+    if [[ "$low" =~ (^|[[:space:]])(submit|deploy)([[:space:]]|$) ]]; then
+      echo "error: Self-QA refuses 'npx eas submit/deploy' while SELFQA_RUN=1" >&2
+      exit 1
+    fi
+    if [[ "$low" =~ (^|[[:space:]])build([[:space:]]|$) ]] && [[ "$low" =~ --profile[[:space:]]+production ]]; then
+      echo "error: Self-QA refuses 'npx eas build --profile production' while SELFQA_RUN=1" >&2
+      exit 1
+    fi
+  fi
+fi
+SHIM_DIR="$(cd "$(dirname "$0")" && pwd)"
+NEW_PATH=""
+IFS=':' read -ra _parts <<<"${PATH:-}"
+for p in "${_parts[@]}"; do
+  [[ "$p" == "$SHIM_DIR" ]] && continue
+  if [[ -z "$NEW_PATH" ]]; then NEW_PATH="$p"; else NEW_PATH="$NEW_PATH:$p"; fi
+done
+export PATH="$NEW_PATH"
+exec npx "$@"
+EOF
+  chmod +x "$shim_dir/npx"
 
   for name in firebase eas gcloud xcrun; do
     cat >"$shim_dir/$name" <<EOF

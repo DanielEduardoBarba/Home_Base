@@ -172,12 +172,95 @@ describe("selfqa lib helpers", () => {
     expect(no.stdout).toMatch(/rc=1/);
   });
 
+  test("HB-122-03: real QA format ID:/Result: per-block extract", () => {
+    const passFail = join(root, "real-pass-fail.md");
+    writeFileSync(
+      passFail,
+      `# Self-QA cycle 2
+
+ID: HB-R1-01
+Severity: High
+Result: Pass (fixed this cycle)
+
+ID: HB-R1-02
+Severity: Medium
+Result: Fail
+`,
+    );
+    let r = bash(`source "${LIB}"; selfqa_extract_finding_ids "${passFail}"`);
+    expect(r.stdout.trim()).toBe("HB-R1-02");
+
+    const failPass = join(root, "real-fail-pass.md");
+    writeFileSync(
+      failPass,
+      `# Self-QA cycle 2
+
+ID: HB-R1-02
+Severity: Medium
+Result: Fail
+
+ID: HB-R1-01
+Severity: High
+Result: Pass (fixed this cycle)
+`,
+    );
+    r = bash(`source "${LIB}"; selfqa_extract_finding_ids "${failPass}"`);
+    expect(r.stdout.trim()).toBe("HB-R1-02");
+
+    const onlyFail = join(root, "real-only-fail.md");
+    writeFileSync(
+      onlyFail,
+      `# Self-QA cycle 1
+
+ID: HB-R9-01
+Severity: High
+Result: Fail
+`,
+    );
+    r = bash(`source "${LIB}"; selfqa_extract_finding_ids "${onlyFail}"`);
+    expect(r.stdout.trim()).toBe("HB-R9-01");
+
+    const onlyPass = join(root, "real-only-pass.md");
+    writeFileSync(
+      onlyPass,
+      `# Self-QA cycle 2
+
+ID: HB-R1-01
+Severity: High
+Result: Pass (fixed this cycle)
+`,
+    );
+    r = bash(`source "${LIB}"; selfqa_extract_finding_ids "${onlyPass}"`);
+    expect(r.stdout.trim()).toBe("");
+
+    const a = join(root, "real-round1.txt");
+    const b = join(root, "real-round2.txt");
+    const round1 = join(root, "real-r1-report.md");
+    const round2 = join(root, "real-r2-report.md");
+    writeFileSync(
+      round1,
+      `# Self-QA cycle 1\n\nID: HB-R9-01\nSeverity: High\nResult: Fail\n`,
+    );
+    writeFileSync(
+      round2,
+      `# Self-QA cycle 2\n\nID: HB-R9-01\nSeverity: High\nResult: Fail\n\nID: HB-R9-02\nSeverity: Low\nResult: Pass (fixed this cycle)\n`,
+    );
+    bash(`source "${LIB}"; selfqa_extract_finding_ids "${round1}" > "${a}"`);
+    bash(`source "${LIB}"; selfqa_extract_finding_ids "${round2}" > "${b}"`);
+    const rep = bash(
+      `source "${LIB}"; selfqa_repeat_findings "${a}" "${b}"; echo rc=$?`,
+    );
+    expect(rep.stdout).toMatch(/HB-R9-01/);
+    expect(rep.stdout).toMatch(/rc=0/);
+    expect(bash(`cat "${b}"`).stdout.trim()).toBe("HB-R9-01");
+  });
+
   test("HB-122-04: price/subscription phrasing detection", () => {
     const f = join(root, "price.log");
     const hits = [
       "we will change the subscription price tonight",
       "change the price of the plan",
-      "set the subscription to 9.99", // may miss — require set price to
+      "set the subscription to 9.99",
       "set price to 9.99",
       "increase the price",
       "raise the price",
@@ -188,13 +271,73 @@ describe("selfqa lib helpers", () => {
       "CHANGE THE SUBSCRIPTION PRICE",
     ];
     for (const line of hits) {
-      if (line.includes("set the subscription to")) continue; // not required by QA
       writeFileSync(f, `${line}\n`);
       const r = bash(
         `source "${LIB}"; selfqa_scan_guardrails "${f}"; echo rc=$?`,
       );
       expect(r.stdout).toMatch(/rc=1/);
     }
+  });
+
+  test("HB-122-05: callback fields populated from reports", () => {
+    const app = join(root, "cb-app");
+    initRepo(app);
+    mkdirSync(join(app, "docs/qa"), { recursive: true });
+    mkdirSync(join(app, "docs/selfqa/run1/logs"), { recursive: true });
+    // Docs commit
+    writeFileSync(join(app, "docs/qa/note.md"), "qa note\n");
+    spawnSync(
+      "bash",
+      ["-c", "git add docs/qa/note.md && git commit -q -m 'docs qa note'"],
+      { cwd: app, encoding: "utf8" },
+    );
+    const docsSha = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: app,
+      encoding: "utf8",
+    }).stdout.trim();
+    const report = join(app, "docs/qa/selfqa-run1-cycle1.md");
+    writeFileSync(
+      report,
+      `# Self-QA cycle 1
+
+Typecheck: pass
+Tests: expected: 10, passed: 9, failed: 1
+
+- [x] Login works
+- [ ] Billing page
+
+ID: HB-CB-01
+Severity: High
+Result: Fail
+Summary: callback field missing
+
+ID: HB-CB-02
+Severity: Low
+Result: Pass (fixed this cycle)
+`,
+    );
+    const r = bash(
+      `
+      source "${LIB}"
+      meta="$(selfqa_refresh_callback_meta "${app}" "${app}/docs/selfqa/run1" "docs/qa/selfqa-run1-cycle1.md")"
+      python3 -c '
+import json,sys
+d=json.loads(sys.argv[1])
+assert d.get("docsCommit")==sys.argv[2], d.get("docsCommit")
+assert d.get("typecheck")=="pass", d.get("typecheck")
+assert d["tests"]["expected"]==10 and d["tests"]["passed"]==9 and d["tests"]["failed"]==1, d["tests"]
+assert any(i.get("status")=="pass" for i in d.get("items") or []), d.get("items")
+ids=[x["id"] for x in (d.get("bugs") or {}).get("high") or []]
+assert "HB-CB-01" in ids, d.get("bugs")
+low=[x["id"] for x in (d.get("bugs") or {}).get("low") or []]
+assert "HB-CB-02" not in low, d.get("bugs")
+print("callback_meta_ok")
+' "$meta" "${docsSha}"
+      `,
+      { cwd: app },
+    );
+    expect(r.stdout).toMatch(/callback_meta_ok/);
+    expect(r.status).toBe(0);
   });
 
   test("pre-push hook install/restore + PATH shim refuse", () => {
@@ -221,6 +364,60 @@ describe("selfqa lib helpers", () => {
     expect(r.stdout).toMatch(/ship_rc=1/);
     expect(r.stdout).toMatch(/build_rc=1/);
     expect(r.stdout).toMatch(/hooks_cleared/);
+  });
+
+  test("SW-SQ-10: script guards + pnpm/npx exec firebase/eas refuse", () => {
+    const app = join(root, "guard-app");
+    initRepo(app);
+    writeFileSync(
+      join(app, "ship.sh"),
+      "#!/usr/bin/env bash\necho REAL_SHIP_RAN\nexit 0\n",
+    );
+    chmodSync(join(app, "ship.sh"), 0o755);
+    mkdirSync(join(app, "scripts"), { recursive: true });
+    writeFileSync(
+      join(app, "scripts/deploy-api.sh"),
+      "#!/usr/bin/env bash\necho REAL_DEPLOY\nexit 0\n",
+    );
+    chmodSync(join(app, "scripts/deploy-api.sh"), 0o755);
+    const guardsState = join(app, "guards-state.txt");
+    const shims = join(app, "shims");
+    const r = bash(
+      `
+      source "${LIB}"
+      cd "${app}"
+      selfqa_install_script_guards "${app}" "${guardsState}"
+      selfqa_create_path_shims "${shims}" "${app}"
+      # Absolute path + bash ./ must refuse under SELFQA_RUN=1
+      SELFQA_RUN=1 "${app}/ship.sh"; echo abs_rc=$?
+      SELFQA_RUN=1 bash ./ship.sh; echo bash_dot_rc=$?
+      SELFQA_RUN=1 sh ship.sh; echo sh_rc=$?
+      SELFQA_RUN=1 bash "${app}/scripts/deploy-api.sh"; echo deploy_rc=$?
+      # Without SELFQA_RUN the original body still runs after restore
+      selfqa_restore_script_guards "${guardsState}"
+      unset SELFQA_RUN
+      out="$("${app}/ship.sh")"
+      echo "restored:$out"
+      # Re-install for shim tests
+      selfqa_install_script_guards "${app}" "${guardsState}"
+      SELFQA_RUN=1 "${shims}/pnpm" exec firebase deploy; echo pnpm_firebase_rc=$?
+      SELFQA_RUN=1 "${shims}/pnpm" exec eas submit; echo pnpm_eas_rc=$?
+      SELFQA_RUN=1 "${shims}/npx" firebase deploy; echo npx_firebase_rc=$?
+      SELFQA_RUN=1 "${shims}/npx" eas-cli submit; echo npx_eas_rc=$?
+      selfqa_restore_script_guards "${guardsState}"
+      `,
+      { cwd: app },
+    );
+    expect(r.stdout).toMatch(/abs_rc=1/);
+    expect(r.stdout).toMatch(/bash_dot_rc=1/);
+    expect(r.stdout).toMatch(/sh_rc=1/);
+    expect(r.stdout).toMatch(/deploy_rc=1/);
+    expect(r.stdout).toMatch(/restored:REAL_SHIP_RAN/);
+    expect(r.stdout).toMatch(/pnpm_firebase_rc=1/);
+    expect(r.stdout).toMatch(/pnpm_eas_rc=1/);
+    expect(r.stdout).toMatch(/npx_firebase_rc=1/);
+    expect(r.stdout).toMatch(/npx_eas_rc=1/);
+    expect(r.stdout).not.toMatch(/REAL_SHIP_RAN\n.*abs_rc/);
   });
 
   test("repeat findings detection", () => {
