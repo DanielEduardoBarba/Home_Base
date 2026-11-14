@@ -63,7 +63,9 @@ type AgentHandleLike = {
 function resolveSdkWorkerCmd(): string[] {
   const exec = process.execPath;
   const base = basename(exec).toLowerCase();
-  const isBun = base === "bun" || base.startsWith("bun-");
+  // pnpm/npm installs of bun expose execPath as ".../bun/bin/bun.exe" even on Linux.
+  const isBun =
+    base === "bun" || base === "bun.exe" || base.startsWith("bun-");
   if (isBun) {
     // Direct worker module — avoid loading entry.ts (ensureAskpass / app boot).
     const worker = join(import.meta.dir, "cursor_sdk_worker.ts");
