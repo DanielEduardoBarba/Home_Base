@@ -147,3 +147,16 @@ Follow-up to Self-QA 1.22.0 (9620fb8). Spec: `docs/qa/selfqa-qa-spec.md`.
 - **C:** `./build.sh --setup` / `--onboarding` install Cursor `agent` CLI if missing (official installer) and verify `agent --version`; never `agent login`.
 
 Version **1.22.1**. **Not deployed** from this change.
+
+
+## 2026-11-13 (America/New_York) — QA review of Home Base 1.22.1 (`d6f4da3`)
+
+See `docs/qa/home-base-1.22.1-d6f4da3-review.md`.
+
+**Fail** — not ready for Dan’s self-deploy; keep 1.20.3 as the rollback.
+
+- **Pass:** branch gate, localhost-only goals, repeat-finding BLOCKED (exit 2, true positives), strict `VERDICT.json`, agent exit/timeout propagate (exit 1), dry-run without the CLI (exit 0, no run dir), cancel MCP/GUI + cancelled callback + lock release, setup `agent --version` with no auto-login, `tsc` clean, unit tests 0 fail.
+- **High:** HB-122-01 — `selfqa_scan_guardrails` misses the usual `./ship.sh` form (`bash ./ship.sh`, absolute path, `cd … && ./ship.sh` also miss).
+- **Medium:** HB-122-02 push to branches other than main/master/development is not blocked; HB-122-03 finding-id extract treats Pass/fixed ids as still open (false BLOCKED); HB-122-04 price/subscription regex is order-sensitive.
+- **Pending (separate job):** `homebased.service` is still `User=root`. Cursor SDK jobs only apply seat env; uid stays 0. `.git` ownership after jobs/MCP commits is not fixed in this SHA.
+
