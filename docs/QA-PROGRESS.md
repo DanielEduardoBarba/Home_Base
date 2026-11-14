@@ -160,3 +160,13 @@ See `docs/qa/home-base-1.22.1-d6f4da3-review.md`.
 - **Medium:** HB-122-02 push to branches other than main/master/development is not blocked; HB-122-03 finding-id extract treats Pass/fixed ids as still open (false BLOCKED); HB-122-04 price/subscription regex is order-sensitive.
 - **Pending (separate job):** `homebased.service` is still `User=root`. Cursor SDK jobs only apply seat env; uid stays 0. `.git` ownership after jobs/MCP commits is not fixed in this SHA.
 
+
+
+## 2026-11-13 (America/New_York) — QA review of Home Base 1.22.2 HB-OWN-01 (`119d8d2`)
+
+See `docs/qa/home-base-1.22.2-119d8d2-ownership-review.md`.
+
+- **Item 1 partial:** git / run_action / Self-QA PTY spawns `setpriv` as the checkout owner. Cursor SDK jobs still run as uid 0 (env only); **HB-OWN-02** (Medium). After-job / boot / MCP / GUI repair covers leftovers.
+- **Items 2–5 pass:** planted root `.git/COMMIT_EDITMSG` repaired (`find .git ! -user box` empty); project status reports ownership health; owner `git commit` works without sudo after repair; setup/boot `repairAllRegisteredProjects` works (full `./build.sh --setup` not run).
+- Unit tests 0 fail; `tsc` clean. **HB-122-01..04 still open** (expected). Not a Self-QA or deploy pass; keep 1.20.3 as the rollback.
+
