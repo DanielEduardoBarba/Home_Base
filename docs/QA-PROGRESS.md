@@ -136,3 +136,14 @@ Follow-up on 1.20.3 before deploy. **VERSION stays 1.20.3.** See `docs/qa/homeba
 
 Not deployed from this change.
 
+
+
+## 2026-11-13 (America/New_York) — v1.22.1 Self-QA harden + job cancel + agent CLI
+
+Follow-up to Self-QA 1.22.0 (9620fb8). Spec: `docs/qa/selfqa-qa-spec.md`.
+
+- **A:** MCP `homebase_cursor_job_cancel` + Apps Cancel for running cursor jobs and Self-QA; kills process tree, status `cancelled`, callback, releases per-project lock.
+- **B:** Shared runner enforces branch=`development_grok`, localhost-only, repeat-finding BLOCKED (exit 2), guardrail abort, strict `VERDICT.json`, dry-run without CLI, per-agent timeout, `SUMMARY.json` callback; thin-wrapper docs for apps.
+- **C:** `./build.sh --setup` / `--onboarding` install Cursor `agent` CLI if missing (official installer) and verify `agent --version`; never `agent login`.
+
+Version **1.22.1**. **Not deployed** from this change.

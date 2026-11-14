@@ -171,7 +171,8 @@ USAGE
   ./build.sh --onboarding         Recommended: setup + seed Home Base project + deploy (Linux)
                                   On Mac: setup + seed, then use --run
   ./build.sh --setup              Install Bun server + web (Next) + presence-app deps,
-                                  JWT secret, seed project; build Tauri presence binary when possible
+                                  JWT secret, seed project; install Cursor agent CLI if missing;
+                                  build Tauri presence binary when possible
   ./build.sh --clean              Remove Python/Nuitka leftovers, .runtime, build + setup caches
   ./build.sh --run                Dev: Bun API + Next (hotkeys r/a/w/q/h)
   ./build.sh --add-project --preset NAME --path /abs/or/rel/path
@@ -722,6 +723,64 @@ setup_presence_app() {
   fi
 }
 
+# Install Cursor Agent CLI if missing; verify with `agent --version`.
+# Never runs `agent login` — the operator signs in interactively.
+ensure_cursor_agent_cli() {
+  export PATH="${HOME:+$HOME/.local/bin:}${PATH:-/usr/bin:/bin}"
+  # shellcheck source=scripts/selfqa/lib.sh
+  # Prefer shared Self-QA detector when available.
+  local lib="$ROOT/scripts/selfqa/lib.sh"
+  if [[ -f "$lib" ]]; then
+    # shellcheck disable=SC1090
+    source "$lib"
+    if AGENT_BIN="$(selfqa_detect_agent 2>/dev/null)"; then
+      local ver
+      ver="$("$AGENT_BIN" --version 2>&1 | head -1 || true)"
+      hb_ok "Cursor agent CLI ready ($AGENT_BIN ${ver})"
+      return 0
+    fi
+  elif command -v cursor-agent >/dev/null 2>&1 || command -v agent >/dev/null 2>&1; then
+    local bin="agent"
+    command -v cursor-agent >/dev/null 2>&1 && bin="cursor-agent"
+    if "$bin" --version >/dev/null 2>&1; then
+      hb_ok "Cursor agent CLI ready ($bin)"
+      return 0
+    fi
+  fi
+
+  hb_step "Cursor agent CLI (official installer)"
+  if ! command -v curl >/dev/null 2>&1; then
+    hb_warn "curl missing — install Cursor agent manually: https://cursor.com/docs/cli/installation"
+    return 1
+  fi
+  if ! curl https://cursor.com/install -fsS | bash; then
+    hb_warn "Cursor agent install failed — Self-QA / headless agent will not work until fixed"
+    hb_dim "  curl https://cursor.com/install -fsS | bash"
+    hb_dim "  export PATH=\"\$HOME/.local/bin:\$PATH\" && agent --version"
+    return 1
+  fi
+  export PATH="${HOME:+$HOME/.local/bin:}${PATH:-/usr/bin:/bin}"
+  if [[ -f "$lib" ]]; then
+    # shellcheck disable=SC1090
+    source "$lib"
+    if AGENT_BIN="$(selfqa_detect_agent 2>/dev/null)"; then
+      local ver
+      ver="$("$AGENT_BIN" --version 2>&1 | head -1 || true)"
+      hb_ok "Cursor agent CLI installed ($AGENT_BIN ${ver})"
+      hb_dim "Sign-in is manual: run \`agent login\` yourself (setup never auto-logins)."
+      return 0
+    fi
+  fi
+  if command -v agent >/dev/null 2>&1 && agent --version >/dev/null 2>&1; then
+    hb_ok "Cursor agent CLI installed ($(agent --version 2>&1 | head -1))"
+    hb_dim "Sign-in is manual: run \`agent login\` yourself (setup never auto-logins)."
+    return 0
+  fi
+  hb_warn "Cursor agent installed but agent --version did not verify as Cursor's CLI"
+  hb_dim "  export PATH=\"\$HOME/.local/bin:\$PATH\" && agent --version"
+  return 1
+}
+
 cmd_setup() {
   local quiet_banner="${1:-}"
   [[ "$quiet_banner" != "nobanner" ]] && hb_banner "Setup"
@@ -769,6 +828,9 @@ cmd_setup() {
     sed_inplace '/^HOMEBASE_TOKEN=/d' .env
     hb_warn "removed legacy HOMEBASE_TOKEN from .env"
   fi
+
+  hb_step "Cursor agent CLI"
+  ensure_cursor_agent_cli || true
 
   seed_homebase_project
   hb_ok "setup complete"

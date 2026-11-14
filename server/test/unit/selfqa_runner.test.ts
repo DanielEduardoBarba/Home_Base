@@ -93,6 +93,50 @@ describe("selfqa lib helpers", () => {
     );
     expect(ok.stdout).toMatch(/rc=0/);
   });
+
+  test("agent --version must look like Cursor CLI", () => {
+    const fakeBin = join(root, "fake-agent-bin");
+    mkdirSync(fakeBin, { recursive: true });
+    const good = join(fakeBin, "good-agent");
+    const bad = join(fakeBin, "bad-agent");
+    writeFileSync(good, "#!/bin/sh\necho '2026.11.10-deadbeef'\n");
+    writeFileSync(bad, "#!/bin/sh\necho 'other-agent 1.0'\n");
+    chmodSync(good, 0o755);
+    chmodSync(bad, 0o755);
+    const ok = bash(
+      `source "${LIB}"; selfqa_is_cursor_agent_bin "${good}"; echo rc=$?`,
+    );
+    expect(ok.stdout).toMatch(/rc=0/);
+    const no = bash(
+      `source "${LIB}"; selfqa_is_cursor_agent_bin "${bad}"; echo rc=$?`,
+    );
+    expect(no.stdout).toMatch(/rc=1/);
+  });
+
+  test("refuse non-Cursor bare agent on PATH", () => {
+    const fakeBin = join(root, "not-cursor-path");
+    mkdirSync(fakeBin, { recursive: true });
+    writeFileSync(
+      join(fakeBin, "agent"),
+      "#!/bin/sh\necho 'totally-not-cursor'\n",
+    );
+    chmodSync(join(fakeBin, "agent"), 0o755);
+    // Keep /usr/bin:/bin so spawn can find bash; fakeBin first so `agent` is ours.
+    const r = bash(
+      `source "${LIB}"; selfqa_detect_agent; echo rc=$?`,
+      {
+        env: {
+          PATH: `${fakeBin}:/usr/bin:/bin`,
+          HOME: join(root, "empty-home"),
+          SELFQA_IGNORE_LOCAL_BIN: "1",
+        },
+      },
+    );
+    expect(String(r.stdout || "")).toMatch(/rc=1/);
+    expect(String(r.stderr || "") + String(r.stdout || "")).toMatch(
+      /not the Cursor CLI/i,
+    );
+  });
 });
 
 describe("selfqa run.sh", () => {
@@ -111,6 +155,8 @@ describe("selfqa run.sh", () => {
           ...process.env,
           SELFQA_TARGET_ROOT: app,
           PATH: "/usr/bin:/bin", // no cursor-agent
+          HOME: join(root, "empty-home-dry"),
+          SELFQA_IGNORE_LOCAL_BIN: "1",
         },
         encoding: "utf8",
       },
@@ -122,6 +168,35 @@ describe("selfqa run.sh", () => {
       ? readdirSync(join(app, "docs/selfqa")).length
       : 0;
     expect(after).toBe(before);
+  });
+
+  test("live run refuses missing CLI with install hint", () => {
+    const app = join(root, "no-cli");
+    initRepo(app);
+    const r = spawnSync("bash", [RUNNER, "--goal", "need cli"], {
+      cwd: app,
+      env: {
+        ...process.env,
+        SELFQA_TARGET_ROOT: app,
+        PATH: "/usr/bin:/bin",
+        HOME: join(root, "empty-home-nocli"),
+        SELFQA_IGNORE_LOCAL_BIN: "1",
+      },
+      encoding: "utf8",
+    });
+    expect(r.status).toBe(1);
+    expect(r.stderr + r.stdout).toMatch(/cursor\.com\/install/i);
+  });
+
+  test("repeat finding ids across consecutive cycles → BLOCKED path helper", () => {
+    const a = join(root, "rep-a.txt");
+    const b = join(root, "rep-b.txt");
+    writeFileSync(a, "HB-R9-01\n");
+    writeFileSync(b, "HB-R9-01\nHB-R9-02\n");
+    const r = bash(
+      `source "${LIB}"; common="$(selfqa_repeat_findings "${a}" "${b}")" && echo BLOCKED:"$common" && echo rc=0 || echo rc=$?`,
+    );
+    expect(r.stdout).toMatch(/BLOCKED:HB-R9-01/);
   });
 
   test("branch refusal when not on development_grok", () => {

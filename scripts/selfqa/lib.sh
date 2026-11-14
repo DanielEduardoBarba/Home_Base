@@ -163,23 +163,65 @@ selfqa_scan_deletions() {
   return 0
 }
 
-# Detect Cursor agent CLI. Prefer cursor-agent; verify bare `agent`.
+# True when `bin --version` looks like the Cursor Agent CLI (never run login).
+selfqa_is_cursor_agent_bin() {
+  local bin="$1"
+  [[ -n "$bin" ]] || return 1
+  command -v "$bin" >/dev/null 2>&1 || [[ -x "$bin" ]] || return 1
+  local ver
+  ver="$("$bin" --version 2>&1 || true)"
+  # Official builds print e.g. 2026.11.10-731fb78
+  if printf '%s' "$ver" | grep -qE '[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[A-Za-z0-9]+'; then
+    return 0
+  fi
+  if printf '%s' "$ver" | grep -qiE 'cursor[[:space:]]+(agent|cli)|agent[[:space:]]+cli'; then
+    return 0
+  fi
+  local help
+  help="$("$bin" --help 2>&1 || true)"
+  # Require Cursor product wording — do not match incidental "cursor" substrings.
+  if printf '%s' "$help" | grep -qiE 'Cursor Agent|Agent CLI|cursor\.com|--print'; then
+    return 0
+  fi
+  return 1
+}
+
+# Detect Cursor agent CLI. Prefer cursor-agent; verify bare `agent` via --version.
+# Never runs `agent login` — the human signs in separately.
 selfqa_detect_agent() {
-  if command -v cursor-agent >/dev/null 2>&1; then
+  # Official installer puts binaries in ~/.local/bin (skip when SELFQA_IGNORE_LOCAL_BIN=1 for tests).
+  if [[ "${SELFQA_IGNORE_LOCAL_BIN:-}" != "1" && -n "${HOME:-}" && -d "$HOME/.local/bin" ]]; then
+    case ":${PATH:-}:" in
+      *":$HOME/.local/bin:"*) ;;
+      *) export PATH="$HOME/.local/bin:${PATH:-/usr/bin:/bin}" ;;
+    esac
+  fi
+  if command -v cursor-agent >/dev/null 2>&1 && selfqa_is_cursor_agent_bin cursor-agent; then
     echo "cursor-agent"
     return 0
   fi
   if command -v agent >/dev/null 2>&1; then
-    local help
-    help="$(agent --help 2>&1 || true)"
-    if printf '%s' "$help" | grep -qiE 'cursor|Agent CLI|print mode|-p.*prompt'; then
+    if selfqa_is_cursor_agent_bin agent; then
       echo "agent"
       return 0
     fi
-    echo "Error: 'agent' on PATH is not the Cursor CLI" >&2
+    echo "Error: 'agent' on PATH is not the Cursor CLI (agent --version check failed)." >&2
+    echo "Install: curl https://cursor.com/install -fsS | bash" >&2
+    echo "Then verify: agent --version  (Dan signs in with agent login himself — never auto-login)." >&2
     return 1
   fi
   return 1
+}
+
+selfqa_agent_install_hint() {
+  cat <<'EOF'
+Install the Cursor Agent CLI, then verify it is Cursor's binary:
+  curl https://cursor.com/install -fsS | bash
+  export PATH="$HOME/.local/bin:$PATH"
+  agent --version
+Do NOT run agent login from automation — the operator signs in interactively.
+Docs: https://cursor.com/docs/cli/installation
+EOF
 }
 
 selfqa_run_with_timeout() {

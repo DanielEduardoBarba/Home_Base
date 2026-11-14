@@ -6,7 +6,8 @@ Enforced rules: `docs/qa/selfqa-qa-spec.md`.
 
 ## Requirements
 
-- Cursor CLI on `PATH` (`cursor-agent` preferred; bare `agent` only if `--help` identifies Cursor). Not required for `--dry-run`.
+- Cursor CLI on `PATH` (`cursor-agent` preferred; bare `agent` only after `agent --version` verifies it is Cursor’s). Not required for `--dry-run`.
+- `./build.sh --setup` / `--onboarding` install the official Cursor Agent CLI if missing (`curl https://cursor.com/install -fsS | bash`) and verify with `agent --version`. Setup never runs `agent login` — Dan signs in interactively.
 - Current git branch must be **`development_grok`** (live runs refuse otherwise).
 - Project `./build.sh --selfqa` (Home Base ships this; other apps use a thin wrapper — below).
 

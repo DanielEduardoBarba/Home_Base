@@ -157,12 +157,8 @@ fi
 
 AGENT_BIN=""
 if ! AGENT_BIN="$(selfqa_detect_agent)"; then
-  cat >&2 <<EOF
-Error: Cursor agent CLI not found (tried: cursor-agent, verified agent).
-
-Install the Cursor CLI, then ensure \`cursor-agent\` or \`agent\` is on PATH.
-Docs: https://cursor.com/docs/cli/headless
-EOF
+  echo "Error: Cursor agent CLI not found or failed agent --version verification." >&2
+  selfqa_agent_install_hint >&2
   exit 1
 fi
 

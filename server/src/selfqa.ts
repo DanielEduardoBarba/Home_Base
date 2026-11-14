@@ -605,14 +605,25 @@ export function cancelSelfQa(
       throw new Error(`selfqa ${wantId} does not belong to project ${pid}`);
     }
   }
-  const killed = killByProject(pid, new Set(["selfqa"]));
+  // Mark cancelled before kill so the PTY exit hook cannot overwrite with error/done.
   let out: SelfQaRecord | null = null;
+  let shouldFinish = false;
   if (runId) {
     const rec = runs.get(runId);
     if (rec && rec.status === "running") {
-      finishRun(rec, "cancelled", undefined, "Cancelled by operator");
-      out = publicRun(rec);
+      rec.status = "cancelled";
+      rec.error = "Cancelled by operator";
+      runs.set(rec.id, rec);
+      shouldFinish = true;
     } else if (rec) {
+      out = publicRun(rec);
+    }
+  }
+  const killed = killByProject(pid, new Set(["selfqa"]));
+  if (shouldFinish && runId) {
+    const rec = runs.get(runId);
+    if (rec) {
+      finishRun(rec, "cancelled", undefined, rec.error || "Cancelled by operator");
       out = publicRun(rec);
     }
   }
