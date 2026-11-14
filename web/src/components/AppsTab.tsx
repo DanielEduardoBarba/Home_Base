@@ -314,6 +314,55 @@ export function AppsTab({
           </div>
         )}
 
+        {project.ownership && (
+          <div
+            className={`rounded-md border px-3 py-2 space-y-1.5 ${
+              project.ownership.ok
+                ? 'border-line/50'
+                : 'border-warn/40 bg-warn/5'
+            }`}
+          >
+            <p className="text-xs text-mute">
+              {project.ownership.ok
+                ? `Ownership OK (${project.ownership.owner?.name || 'owner'})`
+                : `Ownership: ${project.ownership.foreignCount} file${
+                    project.ownership.foreignCount === 1 ? '' : 's'
+                  } not owned by ${project.ownership.owner?.name || 'repo owner'}${
+                    project.ownership.samples?.[0]
+                      ? ` (e.g. ${project.ownership.samples[0]})`
+                      : ''
+                  }`}
+            </p>
+            <button
+              type="button"
+              disabled={!!busy}
+              className="hb-btn !min-h-9 !px-3 text-xs"
+              title="Chown root-owned files back to the repo owner"
+              onClick={() => {
+                void (async () => {
+                  setBusy('Fix ownership')
+                  setMsg('')
+                  try {
+                    const r = await api.fixOwnership(project.id)
+                    setMsg(
+                      r.ok
+                        ? `Ownership OK (repaired ${r.repair?.repaired || 0})`
+                        : `Still foreign: ${r.ownership?.foreignCount || '?'}`,
+                    )
+                    await onRefresh()
+                  } catch (e) {
+                    setMsg(e instanceof Error ? e.message : String(e))
+                  } finally {
+                    setBusy('')
+                  }
+                })()
+              }}
+            >
+              {busy === 'Fix ownership' ? '…' : 'Fix ownership'}
+            </button>
+          </div>
+        )}
+
         {!!portCount && (
           <div
             className={`grid gap-1.5 ${

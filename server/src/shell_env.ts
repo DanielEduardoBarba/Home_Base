@@ -28,6 +28,12 @@ function passwdByKey(key: string): SeatUser | null {
   }
 }
 
+/** Resolve passwd entry by numeric uid (project-dir owner). */
+export function passwdByUid(uid: number): SeatUser | null {
+  if (!Number.isFinite(uid) || uid < 0) return null;
+  return passwdByKey(String(uid));
+}
+
 export function detectSeatUser(): SeatUser {
   const override = (process.env.HOMEBASE_VIEW_UID || "").trim();
   if (override && /^\d+$/.test(override)) {
@@ -92,7 +98,7 @@ export function detectSeatUser(): SeatUser {
   };
 }
 
-function setprivPrefix(seat: SeatUser): string[] | null {
+export function setprivPrefix(seat: SeatUser): string[] | null {
   if (process.getuid?.() !== 0 || seat.uid === 0) return null;
   const setpriv = spawnSync("which", ["setpriv"], { encoding: "utf8" });
   if (setpriv.status === 0 && setpriv.stdout?.trim()) {
@@ -113,10 +119,15 @@ function setprivPrefix(seat: SeatUser): string[] | null {
   return null;
 }
 
-export function wrapArgvForSeat(argv: string[]): string[] {
-  const prefix = setprivPrefix(detectSeatUser());
+/** Drop to an arbitrary user (project owner or seat) via setpriv/runuser. */
+export function wrapArgvForUser(seat: SeatUser, argv: string[]): string[] {
+  const prefix = setprivPrefix(seat);
   if (!prefix) return argv;
   return [...prefix, ...argv];
+}
+
+export function wrapArgvForSeat(argv: string[]): string[] {
+  return wrapArgvForUser(detectSeatUser(), argv);
 }
 
 /**
@@ -127,17 +138,17 @@ export function wrapArgvForSeat(argv: string[]): string[] {
  * Also injects a one-shot `safe.directory=*` via GIT_CONFIG_* so root can read
  * seat-owned worktrees without writing git config. Idempotent.
  */
-export function applySeatEnvForAgents(): {
+export function applySeatEnvForAgents(owner?: SeatUser): {
   applied: boolean;
   seat?: SeatUser;
 } {
   if (typeof process.getuid === "function" && process.getuid() !== 0) {
     return { applied: false };
   }
-  const seat = detectSeatUser();
+  const seat = owner && owner.uid > 0 ? owner : detectSeatUser();
   if (!seat.uid || seat.uid === 0) return { applied: false };
 
-  const login = loginEnvForSeat();
+  const login = loginEnvForUser(seat);
   process.env.HOME = seat.home;
   process.env.USER = seat.name;
   process.env.LOGNAME = seat.name;
@@ -292,8 +303,7 @@ export function clearLoginEnvCache(): void {
   loginEnvCache = null;
 }
 
-export function loginEnvForSeat(): Record<string, string> {
-  const seat = detectSeatUser();
+export function loginEnvForUser(seat: SeatUser): Record<string, string> {
   const cacheKey = `${seat.uid}:${seat.home}`;
   const now = Date.now();
   if (
@@ -346,6 +356,10 @@ export function loginEnvForSeat(): Record<string, string> {
   const out = enrichPtyEnv(env);
   loginEnvCache = { key: cacheKey, at: now, env: out };
   return { ...out };
+}
+
+export function loginEnvForSeat(): Record<string, string> {
+  return loginEnvForUser(detectSeatUser());
 }
 
 /** True when the seat user's PATH can see node and pnpm (Run/Expo). */

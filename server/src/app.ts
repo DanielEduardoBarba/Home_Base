@@ -1115,6 +1115,18 @@ app.get("/api/projects/:projectId", async (c) => {
   return c.json(await projectPublic(p));
 });
 
+app.post("/api/projects/:projectId/fix-ownership", async (c) => {
+  await requireAuth(c);
+  const p = loadProjects().get(c.req.param("projectId"));
+  if (!p) throw new HttpError(404, "Project not found");
+  const { repairProjectOwnership, projectOwnershipHealth } = await import(
+    "./project_owner"
+  );
+  const repair = repairProjectOwnership(p.path);
+  const ownership = projectOwnershipHealth(p.path);
+  return c.json({ ok: ownership.ok, repair, ownership });
+});
+
 app.post("/api/projects/:projectId/action", async (c) => {
   await requireAuth(c);
   const p = loadProjects().get(c.req.param("projectId"));

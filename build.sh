@@ -833,6 +833,17 @@ cmd_setup() {
   ensure_cursor_agent_cli || true
 
   seed_homebase_project
+
+  hb_step "Repair project checkout ownership (HB-OWN-01)"
+  (
+    cd "$(bun_server_dir)"
+    bun -e '
+      import { loadProjects } from "./src/config.ts";
+      import { repairAllRegisteredProjects } from "./src/project_owner.ts";
+      const r = repairAllRegisteredProjects(loadProjects().values());
+      console.log(`ownership repair projects=${r.projects} files=${r.repairedFiles}`);
+    '
+  ) || hb_warn "ownership repair skipped"
   hb_ok "setup complete"
 }
 

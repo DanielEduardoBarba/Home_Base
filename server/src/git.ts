@@ -9,6 +9,10 @@ import { projectHasActiveCursorJob } from "./cursor_jobs";
 import { pushNotification } from "./notifications";
 import { appendTrace } from "./trace";
 import { runOperatorCmd } from "./operator_git_env";
+import {
+  ensureProjectOwnership,
+  ownershipQaAfterGitOp,
+} from "./project_owner";
 
 export type GitSurface = "gui" | "mcp";
 
@@ -203,11 +207,18 @@ export function gitSpawnEnv(
 function runGitRaw(
   cwd: string,
   args: string[],
-  opts: { timeoutMs?: number } = {},
+  opts: { timeoutMs?: number; skipOwnershipRepair?: boolean } = {},
 ): { code: number | null; stdout: string; stderr: string } {
   const bad = assertSafeGitArgv(args);
   if (bad) {
     return { code: 1, stdout: "", stderr: bad };
+  }
+  if (!opts.skipOwnershipRepair) {
+    try {
+      ensureProjectOwnership(cwd);
+    } catch {
+      /* best-effort */
+    }
   }
   const r = runOperatorCmd("git", args, {
     cwd,
@@ -790,6 +801,30 @@ export function runGitAction(
       const r = runGitRaw(cwd, ["commit", "-m", msg]);
       const ok =
         r.code === 0 || /nothing to commit/i.test(r.stdout + r.stderr);
+      let ownershipQa: Record<string, unknown> | undefined;
+      if (r.code === 0) {
+        try {
+          const qa = ownershipQaAfterGitOp(cwd);
+          ownershipQa = {
+            ok: qa.ok,
+            foreignCount: qa.health.foreignCount,
+            samples: qa.health.samples,
+            error: qa.error,
+          };
+          if (!qa.ok) {
+            appendTrace(
+              "warn",
+              `${project.id}: ownership QA after commit: ${qa.error}`,
+              "ownership",
+            );
+          }
+        } catch (e) {
+          ownershipQa = {
+            ok: false,
+            error: e instanceof Error ? e.message : String(e),
+          };
+        }
+      }
       return finishWrite(
         project,
         "commit",
@@ -804,7 +839,10 @@ export function runGitAction(
           stdout: r.stdout,
           stderr: r.stderr,
           code: r.code,
-          data: { nothingToCommit: ok && r.code !== 0 },
+          data: {
+            nothingToCommit: ok && r.code !== 0,
+            ownershipQa,
+          },
         },
         msg.slice(0, 72),
       );

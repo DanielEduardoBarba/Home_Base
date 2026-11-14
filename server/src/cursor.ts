@@ -25,6 +25,7 @@ import {
 import { listDir, readFile } from "./files";
 import { buildHomebaseTools, wrapPrompt } from "./homebase_tools";
 import { applySeatEnvForAgents } from "./shell_env";
+import { resolveProjectOwner } from "./project_owner";
 import { recordUsageFromUpdate } from "./usage_stats";
 import {
   allowSudoUse,
@@ -1356,17 +1357,20 @@ async function clearStuckAgentRuns(agentId: string, cwd: string): Promise<number
   return cleared;
 }
 
-let seatAgentEnvReady = false;
-function ensureSeatAgentEnv(): void {
-  if (seatAgentEnvReady) return;
-  const seat = applySeatEnvForAgents();
-  seatAgentEnvReady = true;
+let seatAgentEnvUid: number | null = null;
+function ensureSeatAgentEnv(cwd?: string): void {
+  // HB-OWN-01: prefer checkout owner HOME/USER so agent-written git files match.
+  const owner = cwd ? resolveProjectOwner(cwd) : undefined;
+  const seat = applySeatEnvForAgents(owner);
   if (seat.applied && seat.seat) {
-    appendTrace(
-      "info",
-      `agent env seat=${seat.seat.name} home=${seat.seat.home}`,
-      "cursor",
-    );
+    if (seatAgentEnvUid !== seat.seat.uid) {
+      appendTrace(
+        "info",
+        `agent env seat=${seat.seat.name} home=${seat.seat.home}`,
+        "cursor",
+      );
+    }
+    seatAgentEnvUid = seat.seat.uid;
   }
 }
 
@@ -1400,9 +1404,9 @@ async function createAgentHandle(opts: {
   };
 }> {
   // Cursor SDK shells inherit process.env. Under systemd root that means
-  // /root + dubious ownership on seat worktrees — apply seat HOME/PATH/git
-  // once so field prompts (git fetch, gh, etc.) match a laptop terminal.
-  ensureSeatAgentEnv();
+  // /root + dubious ownership on seat worktrees — apply checkout-owner
+  // HOME/PATH/git so field prompts (git fetch, gh, etc.) match a laptop terminal.
+  ensureSeatAgentEnv(opts.cwd);
 
   const { Agent } = await import("@cursor/sdk");
   const apiKey = loadCursorApiKey() || (process.env.CURSOR_API_KEY || "").trim();

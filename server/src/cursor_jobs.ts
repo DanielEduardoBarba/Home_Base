@@ -9,10 +9,14 @@
  * the transport cannot cancel it. Status helpers must not treat "chat not
  * running yet" as "job done".
  */
-import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { loadProjects } from "./config";
+import { runOperatorCmd } from "./operator_git_env";
+import {
+  ownershipQaAfterGitOp,
+  repairProjectOwnership,
+} from "./project_owner";
 import {
   INTERRUPTED_SUMMARY,
   PENDING_MAX_AGE_MS,
@@ -76,6 +80,13 @@ export type CursorJob = {
   webhookError?: string;
   /** True when a webhook auth value was set for this job (never the value itself). */
   callbackAuthExpected?: boolean;
+  /** HB-OWN-01: .git ownership probe after the job settles. */
+  ownershipQa?: {
+    ok: boolean;
+    foreignCount?: number;
+    samples?: string[];
+    error?: string;
+  };
 };
 
 export type CursorJobRunOpts = {
@@ -214,27 +225,26 @@ function trimJobs(): void {
 export function gitTip(cwd: string): CursorJobCommit | null {
   if (!cwd || !existsSync(cwd)) return null;
   try {
-    const hash = spawnSync("git", ["-C", cwd, "rev-parse", "HEAD"], {
-      encoding: "utf8",
-      timeout: 8_000,
+    // Never run git as root in a user checkout (HB-OWN-01).
+    const hash = runOperatorCmd("git", ["rev-parse", "HEAD"], {
+      cwd,
+      timeoutMs: 8_000,
     });
-    if (hash.status !== 0) return null;
+    if (hash.code !== 0) return null;
     const h = String(hash.stdout || "").trim();
     if (!/^[0-9a-f]{7,40}$/i.test(h)) return null;
-    const subj = spawnSync(
-      "git",
-      ["-C", cwd, "log", "-1", "--pretty=%s"],
-      { encoding: "utf8", timeout: 8_000 },
-    );
-    const dirty = spawnSync("git", ["-C", cwd, "status", "--porcelain"], {
-      encoding: "utf8",
-      timeout: 8_000,
+    const subj = runOperatorCmd("git", ["log", "-1", "--pretty=%s"], {
+      cwd,
+      timeoutMs: 8_000,
     });
-    const branch = spawnSync(
-      "git",
-      ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
-      { encoding: "utf8", timeout: 8_000 },
-    );
+    const dirty = runOperatorCmd("git", ["status", "--porcelain"], {
+      cwd,
+      timeoutMs: 8_000,
+    });
+    const branch = runOperatorCmd("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd,
+      timeoutMs: 8_000,
+    });
     return {
       hash: h,
       short: h.slice(0, 7),
@@ -434,6 +444,25 @@ async function finishJob(
     );
   }
   job.summary = lastAssistantSummary(job.projectId, job.chatId) || job.summary;
+  try {
+    repairProjectOwnership(job.cwd);
+    const qa = ownershipQaAfterGitOp(job.cwd);
+    if (!qa.ok) {
+      appendTrace(
+        "warn",
+        `cursor_job ${job.id} ownership QA: ${qa.error}`,
+        "ownership",
+      );
+    }
+    job.ownershipQa = {
+      ok: qa.ok,
+      foreignCount: qa.health.foreignCount,
+      samples: qa.health.samples,
+      error: qa.error,
+    };
+  } catch {
+    /* best-effort */
+  }
   job.commit = gitTip(job.cwd);
   jobs.set(job.id, job);
   await deliverWebhook(job);

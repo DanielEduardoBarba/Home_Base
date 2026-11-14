@@ -136,6 +136,22 @@ try {
   );
 }
 
+try {
+  const { repairAllRegisteredProjects } = await import("./project_owner");
+  const own = repairAllRegisteredProjects(loadProjects().values());
+  if (own.repairedFiles > 0) {
+    logInfo(
+      `ownership repair projects=${own.projects} files=${own.repairedFiles}`,
+      "boot",
+    );
+  }
+} catch (e) {
+  logWarn(
+    `ownership repair at boot failed: ${e instanceof Error ? e.message : String(e)}`,
+    "boot",
+  );
+}
+
 const hostname = bindHost();
 const port = bindPort();
 

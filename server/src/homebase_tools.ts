@@ -132,6 +132,7 @@ export const MCP_TOOL_FEATURE: Record<string, McpFeatureId> = {
   homebase_list_projects: "projects",
   homebase_list_presets: "projects",
   homebase_project_status: "projects",
+  homebase_fix_ownership: "projects",
   homebase_session_output: "projects",
   homebase_project_upsert: "projects",
   homebase_create_mcp_workspace: "projects",
@@ -374,7 +375,8 @@ export function buildHomebaseTools(
     execute: async () => json({ presets: listPresets() }),
   };
   tools.homebase_project_status = {
-    description: "Status for one project (ports, sessions, recent logs)",
+    description:
+      "Status for one project (ports, sessions, recent logs, .git ownership health)",
     parameters: {
       type: "object",
       properties: {
@@ -389,6 +391,32 @@ export function buildHomebaseTools(
       return json({
         ...(await projectPublic(p)),
         logs: tailLogs(p, Number(args.logLines || 40)),
+      });
+    },
+  };
+  tools.homebase_fix_ownership = {
+    description:
+      "Chown root-owned files under a project checkout back to the repo owner " +
+      "(HB-OWN-01). Use when Dan's git commit hits Permission denied on .git.",
+    parameters: {
+      type: "object",
+      properties: { projectId: { type: "string" } },
+      required: ["projectId"],
+    },
+    execute: async (args) => {
+      const pid = resolvePid(args);
+      const p = loadProjects().get(pid);
+      if (!p) return json({ error: "project not found" });
+      const { repairProjectOwnership, projectOwnershipHealth } = await import(
+        "./project_owner"
+      );
+      const repair = repairProjectOwnership(p.path);
+      const health = projectOwnershipHealth(p.path);
+      return json({
+        ok: health.ok,
+        projectId: p.id,
+        repair,
+        ownership: health,
       });
     },
   };

@@ -1364,6 +1364,17 @@ export const api = {
     ),
   stop: (id: string) =>
     request<{ killedSessions: string[] }>(`/api/projects/${id}/stop`, { method: 'POST' }),
+  fixOwnership: (id: string) =>
+    request<{
+      ok: boolean
+      repair: { repaired: number; samples: string[]; skipped?: string }
+      ownership: {
+        ok: boolean
+        foreignCount: number
+        samples: string[]
+        owner?: { uid: number; name: string }
+      }
+    }>(`/api/projects/${id}/fix-ownership`, { method: 'POST', body: '{}' }),
   sessions: (project?: string) =>
     request<{ sessions: Session[] }>(
       project ? `/api/sessions?project=${project}` : '/api/sessions',

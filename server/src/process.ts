@@ -84,6 +84,19 @@ export async function portsStatus(
 export async function projectPublic(
   project: Project,
 ): Promise<Record<string, unknown>> {
+  let ownership: Record<string, unknown> | undefined;
+  try {
+    const { projectOwnershipHealth } = await import("./project_owner");
+    const h = projectOwnershipHealth(project.path);
+    ownership = {
+      ok: h.ok,
+      owner: h.owner,
+      foreignCount: h.foreignCount,
+      samples: h.samples,
+    };
+  } catch {
+    ownership = undefined;
+  }
   return {
     id: project.id,
     name: project.name,
@@ -95,6 +108,7 @@ export async function projectPublic(
     sessions: listSessions(project.id),
     logs: tailLogs(project, 40),
     cursor: { configured: Boolean(process.env.CURSOR_API_KEY) },
+    ownership,
   };
 }
 

@@ -29,6 +29,7 @@ import {
 } from "./workspace";
 import { validateBranchName } from "./git";
 import { gitEnvCheck, runOperatorCmd } from "./operator_git_env";
+import { repairProjectOwnership } from "./project_owner";
 
 export type CmdResult = {
   code: number | null;
@@ -529,6 +530,12 @@ export function cloneGithubWorkspace(opts: {
   const grok = ensureDevelopmentGrok(target);
   if (!grok.ok) {
     // Keep the clone; surface the branch issue.
+  }
+
+  try {
+    repairProjectOwnership(target);
+  } catch {
+    /* best-effort */
   }
 
   let project: Project;

@@ -110,6 +110,13 @@ export interface Session {
   createdAt: number
 }
 
+export interface OwnershipHealth {
+  ok: boolean
+  owner?: { uid: number; gid: number; name: string; home: string }
+  foreignCount: number
+  samples: string[]
+}
+
 export interface Project {
   id: string
   name: string
@@ -130,6 +137,8 @@ export interface Project {
     defaultModel?: string
   }
   logs?: { path: string; exists: boolean; text: string }
+  /** HB-OWN-01: files under the checkout not owned by the repo owner. */
+  ownership?: OwnershipHealth
 }
 
 export interface CursorModel {

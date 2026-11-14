@@ -6,12 +6,8 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { Subprocess, Terminal } from "bun";
-import {
-  detectSeatUser,
-  enrichPtyEnv,
-  loginEnvForSeat,
-  wrapArgvForSeat,
-} from "./shell_env";
+import { enrichPtyEnv, loginEnvForUser, wrapArgvForUser } from "./shell_env";
+import { resolveProjectOwner } from "./project_owner";
 import { appendTrace } from "./trace";
 
 export type SessionInfo = {
@@ -309,17 +305,18 @@ export function spawnShell(opts: {
   env?: Record<string, string>;
 }): SessionInfo {
   const id = randomBytes(8).toString("hex");
-  const seat = detectSeatUser();
-  const baseEnv = enrichPtyEnv({ ...loginEnvForSeat(), ...(opts.env || {}) });
+  // HB-OWN-01: run as checkout owner (fallback seat), never root in user repos.
+  const seat = resolveProjectOwner(opts.cwd);
+  const baseEnv = enrichPtyEnv({ ...loginEnvForUser(seat), ...(opts.env || {}) });
   const shell = seat.shell || "/bin/bash";
   let file = shell;
   let args = ["-l"];
   if (opts.command?.length) {
-    const wrapped = wrapArgvForSeat(opts.command);
+    const wrapped = wrapArgvForUser(seat, opts.command);
     file = wrapped[0]!;
     args = wrapped.slice(1);
   } else {
-    const wrapped = wrapArgvForSeat([shell, "-l"]);
+    const wrapped = wrapArgvForUser(seat, [shell, "-l"]);
     file = wrapped[0]!;
     args = wrapped.slice(1);
   }

@@ -18,10 +18,11 @@ import { spawnSync } from "node:child_process";
 import { RUNTIME_DIR, ensureRuntimeDirs, loadProjects } from "./config";
 import {
   detectSeatUser,
-  loginEnvForSeat,
-  wrapArgvForSeat,
+  loginEnvForUser,
+  wrapArgvForUser,
   type SeatUser,
 } from "./shell_env";
+import { resolveProjectOwner } from "./project_owner";
 
 const STATE_PATH = join(RUNTIME_DIR, "git_github.json");
 
@@ -128,12 +129,13 @@ export type BuiltOperatorCmd = {
 
 /**
  * Build spawn argv + env for git/gh. Never joins into a shell string.
+ * When `cwd` is set, drop privileges to that checkout's owner (HB-OWN-01).
  * Exported for unit tests.
  */
 export function buildOperatorCmd(
   cmd: string,
   args: string[],
-  opts: { forceLoginEnv?: boolean } = {},
+  opts: { forceLoginEnv?: boolean; cwd?: string } = {},
 ): BuiltOperatorCmd | { error: string } {
   if (!ALLOWED_BINS.has(cmd)) {
     return { error: `binary not allow-listed: ${cmd}` };
@@ -145,11 +147,14 @@ export function buildOperatorCmd(
     typeof opts.forceLoginEnv === "boolean"
       ? opts.forceLoginEnv
       : operatorLoginEnvEnabled();
-  const seat = detectSeatUser();
+  const seat =
+    opts.cwd && String(opts.cwd).trim()
+      ? resolveProjectOwner(opts.cwd)
+      : detectSeatUser();
 
   let env: NodeJS.ProcessEnv;
   if (useLogin) {
-    const login = loginEnvForSeat();
+    const login = loginEnvForUser(seat);
     env = {
       ...login,
       GIT_TERMINAL_PROMPT: "0",
@@ -189,7 +194,7 @@ export function buildOperatorCmd(
   let argv = [bin, ...args];
   let wrappedForSeat = false;
   if (useLogin) {
-    const wrapped = wrapArgvForSeat(argv);
+    const wrapped = wrapArgvForUser(seat, argv);
     if (wrapped.length !== argv.length || wrapped[0] !== argv[0]) {
       wrappedForSeat = true;
       argv = wrapped;
@@ -220,6 +225,7 @@ function defaultOperatorRunner(
 ): OperatorCmdResult {
   const built = buildOperatorCmd(cmd, args, {
     forceLoginEnv: opts.forceLoginEnv,
+    cwd: opts.cwd,
   });
   if ("error" in built) {
     return { code: 1, stdout: "", stderr: built.error, argv: [cmd, ...args] };
