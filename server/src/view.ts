@@ -68,6 +68,104 @@ export function x11AuthorityKind(xauthority: string): string {
   return "other";
 }
 
+export type DesktopSessionType = "x11" | "wayland" | "unknown";
+
+/** Detect seat graphical session: Wayland (Ubuntu 26+) vs classic X11. */
+export function discoverSessionType(uid?: number): DesktopSessionType {
+  const fromEnv = (process.env.XDG_SESSION_TYPE || "").toLowerCase().trim();
+  if (fromEnv === "wayland" || fromEnv === "x11") return fromEnv;
+  const seat = detectSeatUser();
+  const id = uid ?? seat.uid;
+  const runtime = `/run/user/${id}`;
+  const waylandDisplay = (
+    process.env.HOMEBASE_WAYLAND_DISPLAY ||
+    process.env.WAYLAND_DISPLAY ||
+    ""
+  ).trim();
+  if (waylandDisplay) {
+    const sock = join(runtime, waylandDisplay);
+    if (existsSync(sock) || existsSync(join(runtime, "wayland-0"))) {
+      return "wayland";
+    }
+  }
+  if (existsSync(join(runtime, "wayland-0"))) return "wayland";
+  // loginctl Type when available
+  try {
+    const list = Bun.spawnSync(["loginctl", "list-sessions", "--no-legend"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (list.exitCode === 0) {
+      const lines = list.stdout.toString().trim().split("\n").filter(Boolean);
+      for (const line of lines) {
+        const sid = line.trim().split(/\s+/)[0];
+        if (!sid) continue;
+        const show = Bun.spawnSync(
+          ["loginctl", "show-session", sid, "-p", "Type", "-p", "User"],
+          { stdout: "pipe", stderr: "pipe" },
+        );
+        if (show.exitCode !== 0) continue;
+        const props: Record<string, string> = {};
+        for (const p of show.stdout.toString().split("\n")) {
+          const i = p.indexOf("=");
+          if (i > 0) props[p.slice(0, i)] = p.slice(i + 1).trim();
+        }
+        const user = props.User || "";
+        if (user && user !== String(id) && user !== seat.name) continue;
+        const typ = (props.Type || "").toLowerCase();
+        if (typ === "wayland" || typ === "x11") return typ;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  const display = (process.env.HOMEBASE_DISPLAY || process.env.DISPLAY || "").trim();
+  if (display) {
+    const name = display.replace(/^:/, "").split(".")[0] || "0";
+    if (existsSync(`/tmp/.X11-unix/X${name}`)) return "x11";
+  }
+  if (existsSync("/tmp/.X11-unix/X0")) return "x11";
+  return "unknown";
+}
+
+export function discoverWaylandEnv(uid?: number): {
+  waylandDisplay: string;
+  runtimeDir: string;
+} {
+  const seat = detectSeatUser();
+  const id = uid ?? seat.uid;
+  const runtimeDir = (
+    process.env.XDG_RUNTIME_DIR ||
+    `/run/user/${id}`
+  ).trim();
+  let waylandDisplay = (
+    process.env.HOMEBASE_WAYLAND_DISPLAY ||
+    process.env.WAYLAND_DISPLAY ||
+    ""
+  ).trim();
+  if (!waylandDisplay) {
+    if (existsSync(join(runtimeDir, "wayland-0"))) waylandDisplay = "wayland-0";
+    else if (existsSync(join(runtimeDir, "wayland-1"))) {
+      waylandDisplay = "wayland-1";
+    }
+  }
+  return { waylandDisplay, runtimeDir };
+}
+
+/** True when an X11 or XWayland display socket looks reachable for the seat. */
+export function displayAvailableForView(): boolean {
+  const { display, xauthority } = discoverX11Env();
+  const name = display.replace(/^:/, "").split(".")[0] || "0";
+  const sock = `/tmp/.X11-unix/X${name}`;
+  if (!existsSync(sock)) return false;
+  if (!xauthority || !existsSync(xauthority)) {
+    // Wayland hosts still need a Mutter/Xwayland cookie; missing auth → skip self-test
+    const session = discoverSessionType();
+    if (session === "wayland") return false;
+  }
+  return true;
+}
+
 export function discoverX11Env(): { display: string; xauthority: string } {
   let display = (
     process.env.HOMEBASE_DISPLAY ||
@@ -80,13 +178,28 @@ export function discoverX11Env(): { display: string; xauthority: string } {
     process.env.HOMEBASE_XAUTHORITY || "",
     process.env.XAUTHORITY || "",
   ];
-  const xauth = pickNewestExisting(
-    x11AuthorityCandidates({
-      uid: seat.uid,
-      home: seat.home,
-      envPaths,
-    }),
-  );
+  const candidates = x11AuthorityCandidates({
+    uid: seat.uid,
+    home: seat.home,
+    envPaths,
+  });
+  const sessionType = discoverSessionType(seat.uid);
+  // On Wayland, always prefer a live Mutter/GDM Xwayland cookie over ~/.Xauthority
+  // (home cookie is often stale and yields Invalid MIT-MAGIC-COOKIE-1).
+  if (sessionType === "wayland") {
+    const waylandPrefs = candidates.filter((p) => {
+      const kind = x11AuthorityKind(p);
+      return kind === "mutter" || kind === "gdm" || kind === "other";
+    });
+    const live = pickNewestExisting(waylandPrefs);
+    if (live) return { display, xauthority: live };
+    // Explicit env XAUTHORITY next (may be the mutter path already)
+    const envAuth = pickNewestExisting(envPaths.filter(Boolean));
+    if (envAuth && x11AuthorityKind(envAuth) !== "home") {
+      return { display, xauthority: envAuth };
+    }
+  }
+  const xauth = pickNewestExisting(candidates);
   return { display, xauthority: xauth };
 }
 
@@ -226,6 +339,8 @@ class X11Bridge {
         }
       }
 
+      const sessionType = discoverSessionType(uid);
+      const { waylandDisplay, runtimeDir } = discoverWaylandEnv(uid);
       const env: Record<string, string> = {
         ...(process.env as Record<string, string>),
         DISPLAY: display,
@@ -233,11 +348,21 @@ class X11Bridge {
         HOME: seat.home,
         USER: seat.name,
         LOGNAME: seat.name,
+        XDG_RUNTIME_DIR: runtimeDir,
         HOMEBASE_VIEW_WORKER: "1",
         HOMEBASE_HOME: scratch,
         HOMEBASE_RUNTIME: join(scratch, ".runtime"),
         TMPDIR: scratch,
+        HOMEBASE_SESSION_TYPE: sessionType,
       };
+      if (waylandDisplay) {
+        env.WAYLAND_DISPLAY = waylandDisplay;
+      }
+      // Session bus helps XWayland + portal-adjacent tooling under setpriv
+      const bus = `unix:path=${runtimeDir}/bus`;
+      if (existsSync(join(runtimeDir, "bus"))) {
+        env.DBUS_SESSION_BUS_ADDRESS = bus;
+      }
       delete env.HOMEBASE_SELF_TEST;
 
       const proc = spawn(cmd, {
@@ -275,7 +400,7 @@ class X11Bridge {
 
       appendTrace(
         "info",
-        `view worker started uid=${uid} display=${display} cmd=${cmd.join(" ")}`,
+        `view worker started uid=${uid} display=${display} session=${sessionType} xauth=${x11AuthorityKind(xauthority)} cmd=${cmd.join(" ")}`,
         "view",
       );
     } catch (e) {
@@ -424,10 +549,13 @@ class ViewHub {
     } catch (e) {
       err = e instanceof Error ? e.message : String(e);
     }
+    const sessionType = discoverSessionType(uid);
     return {
       ok,
       display,
       xauthority: Boolean(xauthority && existsSync(xauthority)),
+      x11Auth: x11AuthorityKind(xauthority),
+      sessionType,
       screenW: this.bridge.screenW || sw,
       screenH: this.bridge.screenH || sh,
       monitors: this.bridge.monitors,
@@ -437,12 +565,14 @@ class ViewHub {
       ...this.stats,
       clients: this.clients.size,
       worker: "bun-x11-ffi",
+      capture: sessionType === "wayland" ? "xwayland" : "x11",
     };
   }
 
   async statusAsync(): Promise<Record<string, unknown>> {
     const { display, xauthority } = discoverX11Env();
     const { uid, gid } = displayOwnerIds(display);
+    const sessionType = discoverSessionType(uid);
     let ok = false;
     let err = "";
     let sw = 0;
@@ -470,6 +600,8 @@ class ViewHub {
       ok,
       display,
       xauthority: Boolean(xauthority && existsSync(xauthority)),
+      x11Auth: x11AuthorityKind(xauthority),
+      sessionType,
       screenW: sw,
       screenH: sh,
       monitors: this.bridge.monitors,
@@ -479,8 +611,61 @@ class ViewHub {
       ...this.stats,
       clients: this.clients.size,
       worker: "bun-x11-ffi",
+      capture: sessionType === "wayland" ? "xwayland" : "x11",
       agentHold: this.isAgentHeld(),
     };
+  }
+
+  /**
+   * One-shot ping (+ optional grab) for HOMEBASE_SELF_TEST.
+   * Returns { ok, skipped?, error? }.
+   */
+  async selfTestProbe(): Promise<{
+    ok: boolean;
+    skipped?: boolean;
+    error?: string;
+    sessionType?: DesktopSessionType;
+  }> {
+    if (!displayAvailableForView()) {
+      return {
+        ok: true,
+        skipped: true,
+        sessionType: discoverSessionType(),
+        error: "no display socket / Xauthority — skipped",
+      };
+    }
+    const sessionType = discoverSessionType();
+    try {
+      this.bridge.start();
+      const ping = await this.bridge.call({ cmd: "ping" }, 5);
+      if (!ping.ok) {
+        return {
+          ok: false,
+          sessionType,
+          error: String(ping.error || this.bridge.lastError || "ping failed"),
+        };
+      }
+      const grab = await this.bridge.call(
+        { cmd: "grab", maxWidth: 320, quality: 40, monitor: 0 },
+        8,
+      );
+      this.releaseBridgeIfIdle();
+      if (!grab.ok && !grab.packet) {
+        return {
+          ok: false,
+          sessionType,
+          error: String(grab.error || "grab failed"),
+        };
+      }
+      return { ok: true, sessionType };
+    } catch (e) {
+      this.releaseBridgeIfIdle();
+      return {
+        ok: false,
+        sessionType,
+        error: e instanceof Error ? e.message : String(e),
+      };
+    }
   }
 
   /** Keep the X11 worker up for Vision tool calls (no View WS required). */

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from '../lib/api'
 import type { Project } from '../lib/types'
 import { ChatPanel, writeDockOpen } from './ChatPanel'
+import { HomeIconButton } from './HomeGlyph'
 
 const ViewTab = dynamic(() => import('./ViewTab').then((m) => m.ViewTab), {
   ssr: false,
@@ -123,14 +124,12 @@ export function HomeVisionTab({
   return (
     <div className="hb-vision h-full min-h-0 flex flex-col">
       <header className="hb-vision-bar shrink-0">
-        <button type="button" className="hb-status-home shrink-0" onClick={onHome} title="Home">
-          Home
-        </button>
+        <HomeIconButton onClick={onHome} className="hb-topbar-home shrink-0" />
         <div className="hb-vision-bar-title min-w-0">
           <h1 className="hb-vision-title">Vision</h1>
           <p className="hb-vision-sub truncate">
             {!linux ? (
-              <span className="text-amber">Desktop control needs Linux X11</span>
+              <span className="text-amber">Desktop control needs Linux X11 / Wayland</span>
             ) : arm.armed ? (
               <>
                 <span className="text-ok">Armed</span>
@@ -187,7 +186,7 @@ export function HomeVisionTab({
                 ? arm.armed
                   ? 'Stop AI mouse/keyboard control'
                   : 'Allow AI to control mouse and keyboard for 15 minutes'
-                : 'Vision requires Linux X11'
+                : 'Vision requires Linux X11 / Wayland'
             }
           >
             {arm.armed ? 'Disarm' : 'Arm'}
@@ -209,8 +208,9 @@ export function HomeVisionTab({
             <div className="hb-vision-unavailable">
               <p className="text-sm font-medium">Vision is Linux-only</p>
               <p className="text-xs text-mute mt-2 max-w-sm text-center">
-                Live desktop control uses X11 / XWayland on the Ubuntu host. Chat still works for
-                project work; Arm and mouse/keyboard tools stay disabled on this platform.
+                Live desktop control uses X11 on older Ubuntu hosts, or Wayland via XWayland on
+                Ubuntu 26+. Chat still works for project work; Arm and mouse/keyboard stay disabled
+                on this platform.
               </p>
             </div>
           )}

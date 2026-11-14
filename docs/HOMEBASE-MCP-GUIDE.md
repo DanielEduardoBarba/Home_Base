@@ -332,7 +332,7 @@ GUI: **New workspace → From GitHub**; each project’s **Git** panel has **Con
 
 ## Related
 
-Settings → **MCP Server** · `presence-app/` · `AGENTS.md`
+Settings → **MCP Server** · `homevisitor/` · `AGENTS.md`
 
 ---
 

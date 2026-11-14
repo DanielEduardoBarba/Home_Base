@@ -585,7 +585,7 @@ describe("selfqa run.sh", () => {
     expect(r.stdout).toMatch(/BLOCKED:HB-R9-01/);
   });
 
-  test("branch refusal when not on development_grok", () => {
+  test("branch refusal when on main", () => {
     const app = join(root, "wrong-branch");
     initRepo(app, "main");
     const r = spawnSync(
@@ -596,15 +596,30 @@ describe("selfqa run.sh", () => {
         env: {
           ...process.env,
           SELFQA_TARGET_ROOT: app,
-          // Provide a fake agent so we don't fail for missing CLI first
           PATH: `${join(root, "fake-bin")}:${process.env.PATH || ""}`,
         },
         encoding: "utf8",
       },
     );
-    // Create fake cursor-agent so branch check is what fails (branch runs before agent detect... actually agent is after branch)
     expect(r.status).toBe(1);
-    expect(r.stderr + r.stdout).toMatch(/requires branch 'development_grok'/i);
+    expect(r.stderr + r.stdout).toMatch(/refuses branch 'main'/i);
+  });
+
+  test("branch allowed on non-main feature branch (dry-run)", () => {
+    const app = join(root, "feature-branch");
+    initRepo(app, "feature/selfqa");
+    const r = spawnSync(
+      "bash",
+      [RUNNER, "--dry-run", "--goal", "preview on feature"],
+      {
+        cwd: app,
+        env: { ...process.env, SELFQA_TARGET_ROOT: app },
+        encoding: "utf8",
+      },
+    );
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/feature\/selfqa/);
+    expect(r.stdout).toMatch(/Dry-run complete/);
   });
 
   test("--goal and --goal-file are mutually exclusive", () => {

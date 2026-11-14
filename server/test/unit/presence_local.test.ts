@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
   actorDrivesPresenceWindow,
+  effectivePresenceMood,
   isLocalPeerIp,
   isRemotePeerIp,
+  PRESENCE_ACTIVE_MS,
   type PresenceActor,
 } from "../../src/presence";
 import { listHostIpv4Addresses } from "../../src/network";
@@ -14,6 +16,7 @@ function actor(
     name: "t",
     label: "t",
     mood: "idle",
+    moodExplicit: false,
     bubble: "",
     form: "pill",
     color: "#fff",
@@ -78,5 +81,43 @@ describe("presence seat-local detection", () => {
         actor({ id: "h", kind: "human", peerIp: "unknown" }),
       ),
     ).toBe(false);
+  });
+});
+
+describe("presence effective mood", () => {
+  test("recent activity without expression → active", () => {
+    const now = Date.now();
+    const a = actor({
+      id: "ai1",
+      kind: "ai",
+      mood: "idle",
+      moodExplicit: false,
+      lastSeen: now - 5_000,
+    });
+    expect(effectivePresenceMood(a, now)).toBe("active");
+  });
+
+  test("stale activity without expression → idle", () => {
+    const now = Date.now();
+    const a = actor({
+      id: "ai1",
+      kind: "ai",
+      mood: "idle",
+      moodExplicit: false,
+      lastSeen: now - PRESENCE_ACTIVE_MS - 1,
+    });
+    expect(effectivePresenceMood(a, now)).toBe("idle");
+  });
+
+  test("explicit expression wins over activity window", () => {
+    const now = Date.now();
+    const a = actor({
+      id: "ai1",
+      kind: "ai",
+      mood: "thinking",
+      moodExplicit: true,
+      lastSeen: now,
+    });
+    expect(effectivePresenceMood(a, now)).toBe("thinking");
   });
 });

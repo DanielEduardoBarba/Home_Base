@@ -29,7 +29,7 @@ export function resolveColor(actor: PresenceActor): string {
 }
 
 function eyes(mood: PresenceMood, energy: number) {
-  const blink = mood === "idle" && energy < 0.35;
+  const blink = mood === "idle" && energy < 0.35; // active never blinks as idle
   const think = mood === "thinking" || mood === "working";
   const alert = mood === "alert";
   const happy = mood === "happy";
@@ -115,7 +115,7 @@ export function GrokBlob({
         ? "hb-bob-think"
         : mood === "alert"
           ? "hb-bob-alert"
-          : energy > 0.55
+          : mood === "active" || energy > 0.55
             ? "hb-bob-soft"
             : "";
 

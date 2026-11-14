@@ -20,11 +20,15 @@ const CHAT_CAP = 80;
 export type PresenceKind = "human" | "ai";
 export type PresenceMood =
   | "idle"
+  | "active"
   | "thinking"
   | "happy"
   | "alert"
   | "working"
   | "listening";
+
+/** Without an explicit expression, recent activity (20s) shows as active — not idle. */
+export const PRESENCE_ACTIVE_MS = 20_000;
 
 /** Grok-style blob silhouette the desktop Presence window renders. */
 export type PresenceForm =
@@ -43,6 +47,8 @@ export type PresenceActor = {
   name: string;
   label: string;
   mood: PresenceMood;
+  /** True once homebase_presence_express set a mood (or upsert passed mood). */
+  moodExplicit: boolean;
   bubble: string;
   /** Cartoon form (AI-controllable). */
   form: PresenceForm;
@@ -308,6 +314,7 @@ export function upsertPresence(opts: {
   const now = Date.now();
   const prev = state.actors.get(opts.id);
   const isNew = !prev;
+  const moodExplicit = Boolean(opts.mood != null || prev?.moodExplicit);
   const actor: PresenceActor = {
     id: opts.id,
     kind: opts.kind,
@@ -321,6 +328,7 @@ export function upsertPresence(opts: {
       64,
     ),
     mood: opts.mood || prev?.mood || "idle",
+    moodExplicit,
     bubble: opts.bubble != null ? String(opts.bubble).slice(0, 160) : prev?.bubble || "",
     form: opts.form || prev?.form || defaultFormFor(opts.id, opts.kind),
     color: opts.color || prev?.color || defaultColorFor(opts.id, opts.kind),
@@ -376,7 +384,10 @@ export function expressPresence(
 ): PresenceActor | null {
   const a = state.actors.get(id);
   if (!a) return null;
-  if (patch.mood) a.mood = patch.mood;
+  if (patch.mood) {
+    a.mood = patch.mood;
+    a.moodExplicit = true;
+  }
   if (patch.bubble != null) a.bubble = String(patch.bubble).slice(0, 160);
   if (patch.name) a.name = String(patch.name).slice(0, 48);
   if (patch.form) a.form = patch.form;
@@ -386,6 +397,16 @@ export function expressPresence(
   state.actors.set(id, a);
   emitChange();
   return a;
+}
+
+/** Display mood: explicit expression wins; else active within 20s of activity, else idle. */
+export function effectivePresenceMood(
+  a: PresenceActor,
+  now = Date.now(),
+): PresenceMood {
+  if (a.moodExplicit) return a.mood;
+  if (now - a.lastSeen <= PRESENCE_ACTIVE_MS) return "active";
+  return "idle";
 }
 
 export function dropPresence(id: string): boolean {
@@ -400,7 +421,10 @@ export function dropPresence(id: string): boolean {
 
 export function listPresence(): PresenceActor[] {
   pruneExpired();
-  return [...state.actors.values()].sort((a, b) => b.lastSeen - a.lastSeen);
+  const now = Date.now();
+  return [...state.actors.values()]
+    .map((a) => ({ ...a, mood: effectivePresenceMood(a, now) }))
+    .sort((a, b) => b.lastSeen - a.lastSeen);
 }
 
 export function presenceWindowWanted(): boolean {
@@ -448,15 +472,17 @@ export function presencePublic(): {
     windowWanted: presenceWindowWanted(),
     guidance:
       "When remoted in via MCP from VPN/LAN (not localhost), call homebase_presence_express so the operator " +
-      "desktop Presence card shows your Grok-style blob: mood, form (pill|cloud|drop|circle|hex|diamond|soft|cluster), " +
-      "color (#hex), energy (0..1), bubble, name. Front = character; back = details+chat. " +
-      "Use homebase_presence_chat_send / _read sparingly. Window appears only for remote peers — you cannot hide it. " +
-      "Vision Arm stays human-only.",
+      "Home Visitor desktop card shows your Grok-style blob: mood (idle|active|thinking|happy|alert|working|listening), " +
+      "form (pill|cloud|drop|circle|hex|diamond|soft|cluster), color (#hex), energy (0..1), bubble, name. " +
+      "Without an expression, recent MCP activity shows as active for 20s (not idle). " +
+      "Front = character; back = details+chat. Use homebase_presence_chat_send / _read sparingly. " +
+      "Window appears only for remote peers — you cannot hide it. Vision Arm stays human-only.",
   };
 }
 
 const MOODS: PresenceMood[] = [
   "idle",
+  "active",
   "thinking",
   "happy",
   "alert",

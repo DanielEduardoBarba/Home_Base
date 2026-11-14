@@ -12,13 +12,13 @@ This spec is implemented by `scripts/selfqa/` (not prompt-only). Apps should cal
 
 ## HIGH (must enforce in code)
 
-1. **Branch gate** — refuse (exit 1) unless the target repo’s current branch is exactly `development_grok`.
+1. **Branch gate** — refuse (exit 1) if the target repo’s current branch is `main`/`master` or detached `HEAD`; any other named branch is allowed.
 2. **Localhost-only targets** — refuse (exit 1) if the goal / plan names non-localhost http(s) write targets.
 3. **Repeat finding block** — if the same finding id appears in `VERDICT.json` `openFindings` in **2 consecutive** cycles, stop early with verdict `BLOCKED` (exit 2). Pass/fixed ids must not be listed in `openFindings`. Report markdown is a warning cross-check only, never the source of truth.
 4. **Guardrail abort** — enforce where commands run (pre-push hook + PATH shims + blank deploy credentials), then scan agent logs (normalized commands; skip prose negations) and abort (exit 1) on:
    - deploy / ship in every form (`./ship.sh`, `bash ./ship.sh`, absolute paths, `cd X && …`, env-prefixed, `deploy*.sh`, `ship-expo.sh`, `./build.sh --deploy|--ship|d|a|s|m`, `pnpm deploy*`, `firebase`/`eas`/`gcloud` deploy)
    - `git merge`
-   - `git push` to any ref other than `development_grok`; bare `git push` unless branch+upstream are `development_grok` / `origin/development_grok`; `--force` / `--force-with-lease` / `-f` / `--delete` / `--all` / `--mirror` / `HEAD:main`-style refspecs
+   - `git push` to any ref other than the sprint branch; push to `main`/`master`; bare `git push` unless branch+upstream match the sprint branch / `origin/<branch>`; `--force` / `--force-with-lease` / `-f` / `--delete` / `--all` / `--mirror` / `HEAD:main`-style refspecs
    - branch deletion or file deletion outside `docs/selfqa/` scratch
    - App Store Connect / price or subscription changes (incl. “change the subscription price”, increase/raise/lower/drop, “set price to”, “update pricing”, “new price tier”) / real payment keys
 5. **Agent CLI `--force`** — headless print mode keeps `--force` so the Cursor CLI does not prompt; documented in runner help. Prefer avoiding unrelated force flags.
@@ -36,7 +36,7 @@ This spec is implemented by `scripts/selfqa/` (not prompt-only). Apps should cal
 
 1. Prefer `cursor-agent`; use `agent` only after verifying it is the Cursor CLI (`--help` mentions Cursor).
 2. `--goal` and `--goal-file` are mutually exclusive.
-3. Warn when `--testers` is capped at 6.
+3. Warn when `--testers` is capped at 6. Accept `--testers any` so QA Manager chooses K∈[1,6].
 4. Tester personas get labeled QA emails (`qa+personaN@example.test`).
 
 ## App integration (thin wrapper)

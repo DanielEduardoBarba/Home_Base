@@ -93,7 +93,7 @@ Registry: `config/projects.json` (gitignored). Presets live in `config/presets/`
 - Cursor API key stored **encrypted** in `.runtime/` (set in the app)
 - Share QR: one-time redeem (20s) → JWT — never embeds the password
 - Same-origin API only (`/api`, `/ws`)
-- **MCP Server** (Settings → Remote access, master default On): Streamable HTTP at `/mcp` for AI clients on VPN/LAN (e.g. Grok bots). Mint revocable Bearer tokens — session JWTs are not accepted on `/mcp`; MCP tokens are rejected on `/api` (Web GUI is humans-only via password + optional PIN). Feature toggles include presence (On) and vision (Off by default). Native **Tauri** presence mini-app (`presence-app/`) pops up when remotes are active (`./scripts/build-presence.sh`). Activity history (Settings → Security) audits Web + MCP for humans only.
+- **MCP Server** (Settings → Remote access, master default On): Streamable HTTP at `/mcp` for AI clients on VPN/LAN (e.g. Grok bots). Mint revocable Bearer tokens — session JWTs are not accepted on `/mcp`; MCP tokens are rejected on `/api` (Web GUI is humans-only via password + optional PIN). Feature toggles include presence (On) and vision (Off by default). Native **Tauri** Home Visitor mini-app (`homevisitor/`, binary `homevisitor`) pops up when remotes are active (`./scripts/build-homevisitor.sh`). Activity history (Settings → Security) audits Web + MCP for humans only.
 - **Git & GitHub** (Settings): git/gh for MCP and the web GUI run in the operator’s login-shell env by default (seat user + HOME/PATH/keyring via `setpriv`), so pushes match your own terminal. Guided install / `gh auth login` / `gh auth setup-git` / connection test — Home Base never stores GitHub tokens.
 
 ---
@@ -151,7 +151,7 @@ cd web && npm run typecheck && npm run build
 ## Known limits
 
 - Production / WireGuard host / View (X11) are **Linux-first**
-- Wayland-native capture not supported
+- View/Vision: X11 on older Ubuntu; Ubuntu 26+ Wayland via XWayland (same worker)
 - Intended access: VPN or Cloudflare — not open internet without a password
 
 Full agent notes: [AGENTS.md](AGENTS.md)

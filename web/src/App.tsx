@@ -6,6 +6,7 @@ import { AddProjectWizard, type AddProjectResult } from './components/AddProject
 import { AppsTab } from './components/AppsTab'
 import { HomeAccessTab } from './components/HomeAccessTab'
 import { HomeDashboard } from './components/HomeDashboard'
+import { HomeGlyph } from './components/HomeGlyph'
 import { HomeVisionTab } from './components/HomeVisionTab'
 import { IconBtn } from './components/IconBtn'
 import { LegalConnectionError, LegalGate } from './components/LegalGate'
@@ -121,13 +122,7 @@ function TabIcon({ id }: { id: NavId | 'more' | 'home' }) {
   const common = { className: 'hb-nav-icon', viewBox: '0 0 24 24', 'aria-hidden': true as const }
   switch (id) {
     case 'home':
-      return (
-        <svg {...common}>
-          <path d="M4 11.5 12 5l8 6.5" />
-          <path d="M6.5 10v9.5h11V10" />
-          <path d="M10 19.5v-5h4v5" />
-        </svg>
-      )
+      return <HomeGlyph />
     case 'git':
       return (
         <svg {...common}>
@@ -826,7 +821,7 @@ function AuthedApp() {
           aria-label="Home dashboard"
           title="Home"
         >
-          <TabIcon id="home" />
+          <HomeGlyph />
         </button>
         <div className="hb-topbar-center">
           {showWorkspacePicker ? (

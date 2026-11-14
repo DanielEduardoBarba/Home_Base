@@ -10,14 +10,14 @@ globs:
 
 # Vision
 
-Home dashboard area **Vision**: live View stream + Chat dock. Agent drives the Ubuntu GNOME desktop via the same seat-user X11 worker as View (`homebase_vision_*`).
+Home dashboard area **Vision**: live View stream + Chat dock. Agent drives the Ubuntu GNOME desktop via the same seat-user view-worker as View (`homebase_vision_*`).
 
 ## Security
 
 - Mutating input (click / type / key / hotkey) requires **Arm** (JWT `POST /api/vision/arm`, default 15m TTL). Disarm clears hold.
 - Screenshot + status work while disarmed (look-only).
 - Ask mode: status + screenshot only (no pointer/keyboard tools).
-- Linux / X11 (or XWayland) only — Mac and non-X hosts get a clear error; Arm stays disabled in the UI.
+- Linux only — **X11** on older hosts; **Wayland (Ubuntu 26+)** via **XWayland** (same libX11 worker + Mutter auth cookie). Mac / non-Linux get a clear error; Arm stays disabled in the UI.
 - Actions are traced under source `vision`. Screenshots land in `HOMEBASE_HOME/.runtime/vision/` (mode 0600, pruned).
 - Vision chat cwd is the seat-user `~/.homebase` (created on demand via `ensureVisionWorkspace()`).
 
@@ -28,6 +28,6 @@ Home dashboard area **Vision**: live View stream + Chat dock. Agent drives the U
 - Do **not** mouse-drive GNOME Terminal or a GUI editor for routine terminal/file work.
 - Prefer `homebase_vision_hotkey` (e.g. Super+a) over hunting OS chrome when possible.
 
-## Leave the X11 path alone
+## Leave the single capture stack alone
 
-Reuse `viewHub.agentCall` / view-worker IPC. Do not add a second capture stack. Extend `homebase_vision_*` and the Vision UI rather than forking View.
+Reuse `viewHub.agentCall` / view-worker IPC. Do not add a second capture stack (no separate PipeWire portal fork). Extend discovery/env for Wayland+XWayland inside the existing worker.

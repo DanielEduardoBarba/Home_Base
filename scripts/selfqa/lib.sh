@@ -4,8 +4,11 @@
 # second layer that normalizes commands and skips prose negations.
 # shellcheck disable=SC2034
 
-SELFQA_REQUIRED_BRANCH="${SELFQA_REQUIRED_BRANCH:-development_grok}"
+# Legacy env kept for older wrappers; ignored for the gate (any branch except main).
+SELFQA_REQUIRED_BRANCH="${SELFQA_REQUIRED_BRANCH:-}"
 SELFQA_AGENT_TIMEOUT_SEC="${SELFQA_AGENT_TIMEOUT_SEC:-900}"
+# Forbidden branch names for live Self-QA (push destination + checkout).
+SELFQA_FORBIDDEN_BRANCHES="${SELFQA_FORBIDDEN_BRANCHES:-main master}"
 
 selfqa_die() {
   echo "Error: $*" >&2
@@ -20,21 +23,37 @@ selfqa_current_branch() {
   git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null || true
 }
 
-# Exit 0 if branch ok; prints reason to stderr and returns 1 otherwise.
-selfqa_require_branch() {
+selfqa_branch_forbidden() {
+  local got="${1:-}"
+  local b
+  for b in $SELFQA_FORBIDDEN_BRANCHES; do
+    if [[ "$got" == "$b" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Exit 0 if branch ok for Self-QA; prints reason to stderr and returns 1 otherwise.
+# Allows any named branch except main/master (and refuses detached HEAD).
+selfqa_refuse_main() {
   local root="${1:-.}"
-  local want="${2:-$SELFQA_REQUIRED_BRANCH}"
   local got
   got="$(selfqa_current_branch "$root")"
   if [[ -z "$got" || "$got" == "HEAD" ]]; then
-    echo "Error: not a git repo (or no HEAD): $root" >&2
+    echo "Error: not a git repo (or detached HEAD): $root" >&2
     return 1
   fi
-  if [[ "$got" != "$want" ]]; then
-    echo "Error: Self-QA requires branch '$want' (current: '$got')" >&2
+  if selfqa_branch_forbidden "$got"; then
+    echo "Error: Self-QA refuses branch '$got' (use any non-main branch)" >&2
     return 1
   fi
   return 0
+}
+
+# Back-compat alias (older tests / wrappers).
+selfqa_require_branch() {
+  selfqa_refuse_main "$@"
 }
 
 # Refuse non-localhost http(s) targets in free text (goal/plan).
@@ -286,7 +305,19 @@ from pathlib import Path
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8", errors="replace")
 repo = os.environ.get("SELFQA_SCAN_REPO") or "."
-branch_want = os.environ.get("SELFQA_REQUIRED_BRANCH") or "development_grok"
+# Allowed working branch for this run (current branch). Falls back to HEAD.
+branch_want = (os.environ.get("SELFQA_ALLOWED_BRANCH") or "").strip()
+if not branch_want:
+    try:
+        branch_want = subprocess.check_output(
+            ["git", "-C", repo, "rev-parse", "--abbrev-ref", "HEAD"],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        branch_want = ""
+forbidden = set(
+    (os.environ.get("SELFQA_FORBIDDEN_BRANCHES") or "main master").split()
+)
 
 NEG = re.compile(
     r"(?i)\b("
@@ -381,6 +412,8 @@ def basename_tok(t: str) -> str:
     return t
 
 def git_upstream_ok() -> bool:
+    if not branch_want or branch_want in forbidden or branch_want == "HEAD":
+        return False
     try:
         br = subprocess.check_output(
             ["git", "-C", repo, "rev-parse", "--abbrev-ref", "HEAD"],
@@ -402,7 +435,6 @@ def analyze_git_push(tokens) -> str | None:
     if not args or args[0] != "push":
         return None
     rest = args[1:]
-    joined = " ".join(rest)
     # Force / delete / mirror / all
     for i, a in enumerate(rest):
         if a in ("-f", "--force", "--force-with-lease", "--delete", "-d", "--all", "--mirror"):
@@ -412,19 +444,14 @@ def analyze_git_push(tokens) -> str | None:
         if a == "--" and i + 1 < len(rest):
             # refspecs after --
             pass
-    # Bare `git push` (no remote/ref): only OK if upstream is origin/development_grok
-    # Treat options-only as bare-ish.
+    # Bare `git push`: only OK if upstream is origin/<allowed branch>
     positionals = [a for a in rest if not a.startswith("-")]
     if not positionals:
         if git_upstream_ok():
             return None
-        return "bare git push without origin/development_grok upstream"
+        return f"bare git push without origin/{branch_want or '<branch>'} upstream"
     remote = positionals[0]
     refs = positionals[1:]
-    # git push <refspec> (no remote) is unusual; still inspect
-    if remote in ("origin",) or remote.startswith("http") or ":" not in remote:
-        pass
-    # Block refspecs that target non-development_grok
     candidates = refs if refs else ([] if remote == "origin" and not refs else [remote] if ":" in remote else refs)
     if remote != "origin" and not remote.startswith("http") and ":" in remote:
         candidates = [remote] + refs
@@ -441,7 +468,7 @@ def analyze_git_push(tokens) -> str | None:
         # `git push origin` with no ref → current branch upstream on that remote
         if remote == "origin" and git_upstream_ok():
             return None
-        return "git push origin without explicit development_grok ref"
+        return f"git push origin without explicit {branch_want or 'working-branch'} ref"
 
     for ref in candidates:
         local, _, remote_ref = ref.partition(":")
@@ -449,7 +476,9 @@ def analyze_git_push(tokens) -> str | None:
         target = target.replace("refs/heads/", "")
         if target in ("HEAD",):
             return "git push refspec uses HEAD destination"
-        if target != branch_want:
+        if target in forbidden:
+            return f"git push to forbidden branch: {ref}"
+        if branch_want and target != branch_want:
             return f"git push to non-{branch_want} ref: {ref}"
     return None
 

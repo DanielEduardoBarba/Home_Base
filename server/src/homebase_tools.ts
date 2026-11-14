@@ -853,7 +853,9 @@ export function buildHomebaseTools(
     tools.homebase_selfqa = {
       description:
         "Start a Self-QA sprint for a project (./build.sh --selfqa as a managed session). " +
-        "One Self-QA session per projectId. Options: goal, cycles, maxMinutes, testers, dryRun. " +
+        "One Self-QA session per projectId. Runs on the project's current git branch " +
+        "(refuses main/master). Options: goal, cycles, maxMinutes, testers (1–6 or \"any\"), dryRun. " +
+        "testers=\"any\" lets the QA Manager choose how many tester agents (1–6) to deploy. " +
         "If the project lacks --selfqa, returns a clear error. " +
         "Preferred: callbackUrl webhook (+ optional callbackAuth) — POSTs exit code + SUMMARY.md path/tail when the session ends. " +
         "Auth never returned in status. Not for Vision.",
@@ -874,8 +876,9 @@ export function buildHomebaseTools(
             description: "Wall-clock cap in minutes (default 90)",
           },
           testers: {
-            type: "number",
-            description: "QA tester agents (default 3, max 6)",
+            description:
+              'QA tester agents: number 1–6 (default 3), or string "any" so the AI chooses K∈[1,6]',
+            oneOf: [{ type: "number" }, { type: "string", enum: ["any"] }],
           },
           dryRun: {
             type: "boolean",
@@ -896,15 +899,19 @@ export function buildHomebaseTools(
       },
       execute: async (args) => {
         try {
-          const { startSelfQa, getSelfQa } = await import("./selfqa");
+          const { startSelfQa, getSelfQa, normalizeSelfQaTesters } =
+            await import("./selfqa");
           const projectId = resolvePid(args);
+          const testersRaw = args.testers;
+          const testers =
+            testersRaw != null ? normalizeSelfQaTesters(testersRaw) : undefined;
           const started = await startSelfQa({
             projectId,
             goal: args.goal != null ? String(args.goal) : undefined,
             cycles: args.cycles != null ? Number(args.cycles) : undefined,
             maxMinutes:
               args.maxMinutes != null ? Number(args.maxMinutes) : undefined,
-            testers: args.testers != null ? Number(args.testers) : undefined,
+            testers,
             dryRun: Boolean(args.dryRun),
             callbackUrl:
               args.callbackUrl != null ? String(args.callbackUrl) : undefined,
@@ -1450,7 +1457,8 @@ export function buildHomebaseTools(
       description:
         "Update your cartoon on the operator Presence window (Grok-style blob on the front of the card). " +
         "Call when you arrive over VPN/LAN and whenever state changes. " +
-        "mood: idle|thinking|happy|alert|working|listening. " +
+        "mood: idle|active|thinking|happy|alert|working|listening. " +
+        "Without an expression, recent activity shows as active for 20s (not idle). " +
         "form: pill|cloud|drop|circle|hex|diamond|soft|cluster. " +
         "color: #hex. energy: 0..1 expressiveness. bubble: ≤160 chars. name: display name. " +
         "Prefer this over presence chat for status. Does not Arm Vision or bypass security.",

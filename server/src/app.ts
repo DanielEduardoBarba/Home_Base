@@ -158,7 +158,12 @@ import {
   systemStatus,
 } from "./system";
 import { appendTrace, listTrace } from "./trace";
-import { discoverX11Env, viewStatusAsync, x11AuthorityKind } from "./view";
+import {
+  discoverSessionType,
+  discoverX11Env,
+  viewStatusAsync,
+  x11AuthorityKind,
+} from "./view";
 import {
   addWireguardClient,
   adoptWireguard,
@@ -266,6 +271,7 @@ app.get("/api/health", (c) => {
     wireguard: wireguardHealthSummary(),
     tools: seatToolHealth(),
     x11Auth: x11AuthorityKind(discoverX11Env().xauthority),
+    sessionType: discoverSessionType(),
     /** Boolean only: HOMEBASE_CALLBACK_AUTH is still set in the environment. */
     callbackAuthEnvSet: callbackAuthEnvSet(),
     ...access,
@@ -1140,7 +1146,7 @@ app.post("/api/projects/:projectId/action", async (c) => {
       goal: z.string().optional(),
       cycles: z.number().optional(),
       maxMinutes: z.number().optional(),
-      testers: z.number().optional(),
+      testers: z.union([z.number(), z.literal("any")]).optional(),
       dryRun: z.boolean().optional(),
     })
     .parse(await readJson(c));
@@ -1177,7 +1183,7 @@ app.post("/api/projects/:projectId/selfqa", async (c) => {
       goal: z.string().optional(),
       cycles: z.number().optional(),
       maxMinutes: z.number().optional(),
-      testers: z.number().optional(),
+      testers: z.union([z.number(), z.literal("any")]).optional(),
       dryRun: z.boolean().optional(),
       callbackUrl: z.string().optional(),
       callbackAuth: z.string().optional(),

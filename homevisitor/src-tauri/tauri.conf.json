@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Home Base Presence",
+  "productName": "Home Visitor",
   "version": "1.16.0",
-  "identifier": "com.devcon1.homebase.presence",
+  "identifier": "com.devcon1.homebase.homevisitor",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Home Base · Presence",
+        "title": "Home Visitor",
         "width": 340,
         "height": 540,
         "minWidth": 280,
@@ -27,7 +27,6 @@
         "x": 48,
         "y": 64,
         "focus": true
-
       }
     ],
     "security": {

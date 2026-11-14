@@ -15,10 +15,10 @@ Generic control plane: systemd **`homebased`**, binary **`homebase`**. Productio
 - Never commit `.env`, `config/projects.json`, `.runtime/`, or personal presets under `config/presets/` (only `example.json` is committed).
 - Cursor integration: **local** `cursor-sdk` agents only. Chat agents get Home Base identity context and in-process `homebase_*` custom tools.
 - **Network MCP** (optional, master default ON): Streamable HTTP at `/mcp` for VPN/LAN AI clients. Fine-tunable feature groups (projects / notifications / status / homeAccess / presence default ON; **vision default OFF**). Gated by Settings toggles + revocable MCP Bearer tokens (not session JWTs). MCP tokens are **rejected on `/api`** (Web GUI is humans-only: password + optional PIN). VPN control, auth/vaults, restart, MCP toggles, Vision Arm, activity audit stay **Settings / GUI only**.
-- **Presence window**: when a Web GUI human or MCP AI is remoted in, seat-user **Tauri** mini-app (`presence-app/`, React+Tailwind) pops up (characters + chat). Falls back to Chromium `--app` if binary missing. Build via `./scripts/build-presence.sh`.
+- **Home Visitor window**: when a Web GUI human or MCP AI is remoted in, seat-user **Tauri** mini-app (`homevisitor/`, React+Tailwind, binary `homevisitor`) pops up (characters + chat). Falls back to Chromium `--app` if binary missing. Build via `./scripts/build-homevisitor.sh`. Child of homebased (no separate systemd unit).
 - **Activity history**: `.runtime/activity/*.jsonl` (0600) — Web nav + MCP tools + auth; human Settings only; never MCP-readable.
 - View (remote screen) is JWT-gated like PTY; capture must stop when no subscribers remain (Vision agent hold may keep the worker warm while Armed).
-- Vision desktop control (Linux X11) requires an explicit Arm; never expose pointer/keyboard tools without JWT + Arm.
+- Vision desktop control (Linux X11, or Wayland via XWayland) requires an explicit Arm; never expose pointer/keyboard tools without JWT + Arm.
 - Actions are config-driven (button → script + args). Do not hardcode project names or paths into the server.
 - Scripts must resolve inside the project directory.
 - Notification history is capped; prefer pagination over loading all rows into memory.
@@ -26,7 +26,7 @@ Generic control plane: systemd **`homebased`**, binary **`homebase`**. Productio
 - Client API/WS must stay same-origin relative paths (`/api`, `/ws`) — no hardcoded host/port in the SPA.
 - Always bump the repo `VERSION` file (semver patch by default; minor/major when the change warrants it) whenever you make code or behavior changes. Do this in the same turn as the change — before finishing.
 - **Chat durability:** workspaces under `.runtime/chats/` must flush mid-stream (debounced) and on SIGTERM/SIGINT so `--deploy` does not drop assistant/tool history. Only delete a chat when the user deletes that tab.
-- **UI areas:** post-login **Home** dashboard → **Agent** · **Homework** · **Home Access** · **Vision** (X11 desktop + chat). See `home-access.mdc` / `vision.mdc`.
+- **UI areas:** post-login **Home** dashboard → **Agent** · **Homework** · **Home Access** · **Vision** (desktop + chat). See `home-access.mdc` / `vision.mdc`.
 - **Cursor API key:** prefer in-app encrypted vault (`.runtime/cursor_api_key.enc`); env `CURSOR_API_KEY` is an override only.
 - **First install:** `./build.sh --onboarding` (or `--setup`) seeds this repo as the `homebase` project. Apps **+** / `homebase_project_upsert` add more.
 

@@ -5,6 +5,7 @@ import { api } from '../lib/api'
 import type { AccessHook, AccessHookType, AccessWidget, AccessWidgetKind, Project } from '../lib/types'
 import { ChatPanel, readDockOpen, writeDockOpen } from './ChatPanel'
 import { AccessibleDialog } from './AccessibleDialog'
+import { HomeIconButton } from './HomeGlyph'
 
 const KINDS: { id: AccessWidgetKind; label: string }[] = [
   { id: 'button', label: 'Button' },
@@ -322,9 +323,7 @@ export function HomeAccessTab({
     <div className="hb-access h-full flex flex-col min-h-0">
       <div className="hb-chrome shrink-0">
         <div className="hb-chrome-inner hb-access-chrome">
-          <button type="button" className="hb-btn hb-btn-ghost text-sm" onClick={onHome}>
-            ← Home
-          </button>
+          <HomeIconButton onClick={onHome} className="hb-topbar-home shrink-0" />
           <div className="min-w-0 flex-1">
             <h1 className="hb-access-title truncate">Access</h1>
             <p className="text-mute text-xs truncate">House controls · durable on the server</p>

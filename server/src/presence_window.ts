@@ -1,6 +1,7 @@
 /**
- * Seat-user native presence window (Tauri mini-app).
+ * Seat-user Home Visitor window (Tauri mini-app).
  * Falls back to Chromium --app if the Tauri binary is not installed yet.
+ * No separate systemd unit — child of homebased.
  */
 import { existsSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -8,7 +9,7 @@ import { join } from "node:path";
 import { BUNDLE_ROOT, bindHost, bindPort } from "./config";
 import { detectSeatUser } from "./shell_env";
 import { appendTrace } from "./trace";
-import { discoverX11Env } from "./view";
+import { discoverSessionType, discoverWaylandEnv, discoverX11Env } from "./view";
 import {
   presenceUiToken,
   presenceWindowWanted,
@@ -36,26 +37,46 @@ function presenceUrl(): string {
   return `${presenceBaseUrl()}/presence?k=${k}`;
 }
 
-/** Prefer built Tauri binary locations. */
+/** Prefer built Tauri binary locations (homevisitor; legacy homebase-presence). */
 function findPresenceBinary(): string | null {
-  const env = (process.env.HOMEBASE_PRESENCE_BIN || "").trim();
+  const env = (
+    process.env.HOMEBASE_VISITOR_BIN ||
+    process.env.HOMEBASE_PRESENCE_BIN ||
+    ""
+  ).trim();
   if (env && existsSync(env)) return env;
   const candidates = [
-    // Prefer packaged/dist + system install over possibly stale cargo target.
+    join(BUNDLE_ROOT, "dist", "homevisitor"),
+    "/usr/share/homebased/homevisitor",
+    "/usr/local/bin/homevisitor",
+    join(process.env.HOME || "", ".local/share/homebase/homevisitor"),
+    join(BUNDLE_ROOT, "homevisitor", "src-tauri", "target", "release", "homevisitor"),
+    // Legacy names
     join(BUNDLE_ROOT, "dist", "homebase-presence"),
     "/usr/share/homebased/homebase-presence",
     "/usr/local/bin/homebase-presence",
+    join(process.env.HOME || "", ".local/share/homebase/homebase-presence"),
     join(
-      process.env.HOME || "",
-      ".local/share/homebase/homebase-presence",
+      BUNDLE_ROOT,
+      "homevisitor",
+      "src-tauri",
+      "target",
+      "release",
+      "homebase-presence",
     ),
-    join(BUNDLE_ROOT, "presence-app", "src-tauri", "target", "release", "homebase-presence"),
+    join(
+      BUNDLE_ROOT,
+      "presence-app",
+      "src-tauri",
+      "target",
+      "release",
+      "homebase-presence",
+    ),
   ];
   for (const p of candidates) {
     if (p && existsSync(p)) return p;
   }
-  const which = Bun.which("homebase-presence");
-  return which || null;
+  return Bun.which("homevisitor") || Bun.which("homebase-presence") || null;
 }
 
 function findBrowser(): string | null {
@@ -77,6 +98,8 @@ function wrapSeat(cmd: string[]): { cmd: string[]; env: Record<string, string> }
   const seat = detectSeatUser();
   const uid = seat.uid;
   const gid = seat.gid;
+  const { waylandDisplay, runtimeDir } = discoverWaylandEnv(uid);
+  const sessionType = discoverSessionType(uid);
   let out = cmd;
   if (typeof process.getuid === "function" && process.getuid() === 0 && uid !== 0) {
     const setpriv = Bun.which("setpriv");
@@ -91,10 +114,12 @@ function wrapSeat(cmd: string[]): { cmd: string[]; env: Record<string, string> }
       ];
     } else {
       const runuser = Bun.which("runuser");
-      if (!runuser) throw new Error("setpriv/runuser required for presence as root");
+      if (!runuser) throw new Error("setpriv/runuser required for Home Visitor as root");
       out = [runuser, "-u", seat.name, "--", ...cmd];
     }
   }
+  const token = presenceUiToken();
+  const base = presenceBaseUrl();
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
     DISPLAY: display,
@@ -102,13 +127,19 @@ function wrapSeat(cmd: string[]): { cmd: string[]; env: Record<string, string> }
     HOME: seat.home,
     USER: seat.name,
     LOGNAME: seat.name,
+    XDG_RUNTIME_DIR: runtimeDir,
+    XDG_SESSION_TYPE: sessionType === "unknown" ? "wayland" : sessionType,
     DBUS_SESSION_BUS_ADDRESS:
       process.env.DBUS_SESSION_BUS_ADDRESS ||
-      `unix:path=/run/user/${uid}/bus`,
-    HOMEBASE_PRESENCE_BASE: presenceBaseUrl(),
-    HOMEBASE_PRESENCE_TOKEN: presenceUiToken(),
-    HOMEBASE_URL: presenceBaseUrl(),
+      `unix:path=${runtimeDir}/bus`,
+    HOMEBASE_VISITOR_BASE: base,
+    HOMEBASE_VISITOR_TOKEN: token,
+    // Legacy env names (one release)
+    HOMEBASE_PRESENCE_BASE: base,
+    HOMEBASE_PRESENCE_TOKEN: token,
+    HOMEBASE_URL: base,
   };
+  if (waylandDisplay) env.WAYLAND_DISPLAY = waylandDisplay;
   return { cmd: out, env };
 }
 
@@ -120,7 +151,7 @@ function stopWindow(reason: string): void {
     /* ignore */
   }
   proc = null;
-  appendTrace("info", `presence window stopped (${reason})`, "presence");
+  appendTrace("info", `homevisitor window stopped (${reason})`, "presence");
 }
 
 function startWindow(): void {
@@ -139,7 +170,7 @@ function startWindow(): void {
       if (!browser) {
         appendTrace(
           "warn",
-          "presence window: build presence-app (Tauri) or install Chromium",
+          "homevisitor: build homevisitor (Tauri) or install Chromium",
           "presence",
         );
         starting = false;
@@ -151,8 +182,8 @@ function startWindow(): void {
         `--app=${presenceUrl()}`,
         "--new-window",
         "--window-size=400,620",
-        "--class=HomeBasePresence",
-        "--name=Home Base Presence",
+        "--class=HomeVisitor",
+        "--name=Home Visitor",
         "--disable-extensions",
         "--no-first-run",
       ];
@@ -171,13 +202,13 @@ function startWindow(): void {
     });
     appendTrace(
       "info",
-      `presence window started mode=${mode} uid=${seat.uid}`,
+      `homevisitor window started mode=${mode} uid=${seat.uid}`,
       "presence",
     );
   } catch (e) {
     appendTrace(
       "warn",
-      `presence window failed: ${e instanceof Error ? e.message : String(e)}`,
+      `homevisitor window failed: ${e instanceof Error ? e.message : String(e)}`,
       "presence",
     );
   } finally {
@@ -191,7 +222,7 @@ function syncWindow(): void {
   if (!wanted && proc) stopWindow("idle");
 }
 
-function scheduleSync(ms = 200): void {
+function scheduleSync(ms: number): void {
   if (syncTimer) clearTimeout(syncTimer);
   syncTimer = setTimeout(() => {
     syncTimer = null;
@@ -202,9 +233,4 @@ function scheduleSync(ms = 200): void {
 export function startPresenceWindowManager(): void {
   setPresenceChangeHandler(() => scheduleSync(100));
   scheduleSync(500);
-}
-
-export function stopPresenceWindowManager(): void {
-  setPresenceChangeHandler(null);
-  stopWindow("shutdown");
 }

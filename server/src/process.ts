@@ -27,7 +27,7 @@ export type RunActionOpts = {
     goal?: string;
     cycles?: number;
     maxMinutes?: number;
-    testers?: number;
+    testers?: number | "any";
     dryRun?: boolean;
   };
 };

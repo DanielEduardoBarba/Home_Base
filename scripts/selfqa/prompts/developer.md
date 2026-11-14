@@ -6,7 +6,7 @@ You are the Self-QA Developer bot for this repository.
 - Goal: `GOAL.md` in the run directory
 - Open findings: latest QA report path in `STATE.json` (`lastQaReport`) and `docs/qa/`
 - Orchestrator plan: `PLAN.md` / `ORCHESTRATOR.md`
-- Branch: `development_grok` (unless STATE says otherwise)
+- Branch: the name in `STATE.json` (`branch`) — never `main` / `master`
 
 ## Your job
 1. `git fetch` and `git pull --ff-only` on the working branch first (refuse if dirty — stash or commit only intentional work).

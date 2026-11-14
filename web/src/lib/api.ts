@@ -1330,7 +1330,7 @@ export const api = {
       goal?: string
       cycles?: number
       maxMinutes?: number
-      testers?: number
+      testers?: number | 'any'
       dryRun?: boolean
     } = {},
   ) =>

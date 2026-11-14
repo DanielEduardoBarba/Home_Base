@@ -75,11 +75,33 @@ try {
   /* presence window optional at boot */
 }
 
-function selfTest(): number {
+async function selfTest(): Promise<number> {
   try {
     const v = readVersion();
     loadProjects();
-    logInfo(`self-test ok version=${v} runtime=bun`, "boot");
+    let viewNote = "view=skipped";
+    try {
+      const { viewHub } = await import("./view");
+      const probe = await viewHub.selfTestProbe();
+      if (probe.skipped) {
+        viewNote = `view=skipped session=${probe.sessionType || "?"} (${probe.error || "no display"})`;
+      } else if (!probe.ok) {
+        logError(
+          `self-test view failed session=${probe.sessionType || "?"} err=${probe.error || "?"}`,
+          { source: "boot" },
+        );
+        return 1;
+      } else {
+        viewNote = `view=ok session=${probe.sessionType || "?"} capture=${probe.sessionType === "wayland" ? "xwayland" : "x11"}`;
+      }
+    } catch (e) {
+      logError(
+        `self-test view probe error: ${e instanceof Error ? e.message : String(e)}`,
+        { source: "boot" },
+      );
+      return 1;
+    }
+    logInfo(`self-test ok version=${v} runtime=bun ${viewNote}`, "boot");
     return 0;
   } catch (e) {
     logError(`self-test failed: ${e instanceof Error ? e.message : String(e)}`, {
@@ -93,7 +115,7 @@ if (
   process.env.HOMEBASE_SELF_TEST === "1" ||
   process.argv.includes("--self-test")
 ) {
-  process.exit(selfTest());
+  process.exit(await selfTest());
 }
 
 if (process.argv.includes("unlock")) {

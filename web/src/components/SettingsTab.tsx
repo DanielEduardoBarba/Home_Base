@@ -20,6 +20,7 @@ import {
   writeShowAccess,
 } from '../lib/uiPrefs'
 import { AccessibleDialog } from './AccessibleDialog'
+import { HomeIconButton } from './HomeGlyph'
 import { HoldButton } from './HoldButton'
 import { SharingTab } from './SharingTab'
 import { refreshServerIdentity, useServerIdentity } from '../lib/serverIdentity'
@@ -1750,13 +1751,7 @@ export function SettingsTab({
         <div className="hb-page hb-page--no-nav space-y-5 hb-enter !max-w-lg">
           <header className="space-y-3">
             {onHome ? (
-              <button
-                type="button"
-                className="hb-btn hb-btn-ghost text-sm !min-h-9 !px-2.5 -ml-1"
-                onClick={onHome}
-              >
-                ← Home
-              </button>
+              <HomeIconButton onClick={onHome} className="hb-topbar-home shrink-0 -ml-1" />
             ) : null}
             <div>
               <div className="hb-brand-rule" />

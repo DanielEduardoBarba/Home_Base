@@ -18,9 +18,9 @@ Grok Bot tokens are burned when you read files, edit, run tests, and retry **ste
 
 ---
 
-## Presence (expressive desktop character)
+## Home Visitor (expressive desktop character)
 
-When you connect over **VPN/LAN** (not localhost), Home Base pops a small **Presence** window on the operator’s laptop:
+When you connect over **VPN/LAN** (not localhost), Home Base pops a small **Home Visitor** window (`homevisitor` binary) on the operator’s laptop:
 
 - **Front:** your **Grok-style blob** — silhouette (`form`), `color`, `mood` face, `energy` (0..1 motion), and a short `bubble`.
 - **Back:** details list + chat (operator can flip the card).
@@ -77,7 +77,7 @@ After success: Developer **pulls** on `~/APP_PROJECTS` before QA continues.
 
 ## Self-QA sprint
 
-For a cyclic Dev+QA loop on the laptop Cursor CLI (not Grok tokens), call **`homebase_selfqa`** with `projectId` and optional `goal` / `cycles` / `maxMinutes` / `testers` / `dryRun`. Prefer `callbackUrl` (+ `callbackAuth`) over polling. One Self-QA session per project. Projects without `./build.sh --selfqa` return a clear error. See `docs/SELFQA.md`.
+For a cyclic Dev+QA loop on the laptop Cursor CLI (not Grok tokens), call **`homebase_selfqa`** with `projectId` and optional `goal` / `cycles` / `maxMinutes` / `testers` / `dryRun`. `testers` may be `1`–`6` or `"any"` (QA Manager chooses K). Runs on the project’s **current git branch** (refuses `main`/`master`). Prefer `callbackUrl` (+ `callbackAuth`) over polling. One Self-QA session per project. Projects without `./build.sh --selfqa` return a clear error. See `docs/SELFQA.md`.
 
 `homebase_run_action` now accepts optional `callbackUrl` / `callbackAuth` (backlog): Home Base POSTs when the action's PTY session(s) exit.
 
@@ -132,7 +132,7 @@ If `job.webhookError` appears on status, the laptop couldn’t reach the URL —
 
 Report the ≤10-line summary + short hash **once** in the **Development Team** room.
 
-Do **not** also paste the same result into presence chat. Presence = short mood bubble only (“working” / “done”).
+Do **not** also paste the same result into presence chat. Home Visitor = short mood bubble only (“working” / “done”). Without an expression, recent MCP activity shows as **active** for 20s (not idle).
 
 ---
 
@@ -255,7 +255,7 @@ Placeholders:
 | `homebase_github_list_repos` / `_clone_workspace` / `_connect_workspace` / `_create_repo` | Need **Allow MCP GitHub repo access**; clone also needs workspace-create; create/push needs git-write |
 | `homebase_git_status` / `_branches` / `_log` | Read-only git (Projects feature on) |
 | `homebase_git_fetch` / `_pull` / `_checkout` / `_create_branch` / `_merge` / `_commit` / `_push` / `_stash` | Writes need **Allow MCP git write actions** (default Off) |
-| `homebase_selfqa` | Start Self-QA sprint (`./build.sh --selfqa`); one per project; `callbackUrl` (+ optional `callbackAuth`) POSTs `SUMMARY.json` |
+| `homebase_selfqa` | Start Self-QA sprint (`./build.sh --selfqa`); current branch except main; `testers` 1–6 or `"any"`; one per project; `callbackUrl` (+ optional `callbackAuth`) POSTs `SUMMARY.json` |
 | `homebase_run_action` | Run action; optional `callbackUrl`/`callbackAuth` when session(s) exit; `actionId: selfqa` starts Self-QA |
 | `homebase_cursor_job` | One job per project at a time; `callbackUrl` (+ optional `callbackAuth`) or `waitMs: 600000` |
 | `homebase_cursor_job_status` | Rare (≥5 min) |
@@ -300,4 +300,4 @@ Call `homebase_git_status` with that body. For writes, the operator must enable 
 
 ## Related
 
-Settings → **MCP Server** · `presence-app/` · `AGENTS.md`
+Settings → **MCP Server** · `homevisitor/` · `AGENTS.md`

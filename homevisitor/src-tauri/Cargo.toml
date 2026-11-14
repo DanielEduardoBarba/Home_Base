@@ -1,12 +1,12 @@
 [package]
-name = "homebase-presence"
+name = "homevisitor"
 version = "1.16.0"
-description = "Home Base remote presence desktop window"
+description = "Home Visitor — remote presence desktop window for Home Base"
 authors = ["DevCon1 Solutions"]
 edition = "2021"
 
 [lib]
-name = "homebase_presence_lib"
+name = "homevisitor_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

@@ -9,7 +9,7 @@ Follow these rules on every turn. Violations fail the sprint.
 - **Local / emulator only for writes** — localhost, local emulators, or in-repo fixtures. The runner refuses non-localhost http(s) targets in the goal and aborts on forbidden deploy/push/merge patterns in logs.
 - **No emails / messages to real people**.
 - **No force-push** — never `git push --force` / `--force-with-lease` unless the human explicitly required it in writing (default: refuse).
-- **Never merge into `development` or `main`** — work only on `development_grok` (or the branch named in the run state).
+- **Never merge into `development` or `main`/`master`** — work only on the branch named in `STATE.json` (any non-main branch the sprint started on).
 - **No secrets in logs or commits** — never commit `.env`, credentials, tokens, keys, or vault material.
 - **No Halloween / pagan-holiday content**.
 - **Never mention** Spot Zero, Elite Marine, or Southern Marine Supply.

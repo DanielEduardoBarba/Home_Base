@@ -50,6 +50,8 @@ export type SelfQaStatus =
   | "interrupted"
   | "cancelled";
 
+export type SelfQaTesters = number | "any";
+
 export type SelfQaRecord = {
   id: string;
   projectId: string;
@@ -58,7 +60,7 @@ export type SelfQaRecord = {
   goal?: string;
   cycles: number;
   maxMinutes: number;
-  testers: number;
+  testers: SelfQaTesters;
   dryRun: boolean;
   startedAt: number;
   finishedAt?: number;
@@ -78,12 +80,19 @@ export type SelfQaStartOpts = {
   goal?: string;
   cycles?: number;
   maxMinutes?: number;
-  testers?: number;
+  testers?: SelfQaTesters;
   dryRun?: boolean;
   callbackUrl?: string;
   callbackAuth?: string;
   source?: string;
 };
+
+export function normalizeSelfQaTesters(raw: unknown): SelfQaTesters {
+  if (typeof raw === "string" && raw.trim().toLowerCase() === "any") {
+    return "any";
+  }
+  return clampInt(raw, 3, 1, 6);
+}
 
 const runs = new Map<string, SelfQaRecord>();
 const byProject = new Map<string, string>();
@@ -470,7 +479,7 @@ export function buildSelfQaArgs(opts: {
   goal?: string;
   cycles?: number;
   maxMinutes?: number;
-  testers?: number;
+  testers?: SelfQaTesters;
   dryRun?: boolean;
 }): string[] {
   const args = ["--selfqa"];
@@ -478,7 +487,8 @@ export function buildSelfQaArgs(opts: {
   if (goal) args.push("--goal", goal);
   args.push("--cycles", String(clampInt(opts.cycles, 3, 1, 20)));
   args.push("--max-minutes", String(clampInt(opts.maxMinutes, 90, 1, 24 * 60)));
-  args.push("--testers", String(clampInt(opts.testers, 3, 1, 6)));
+  const testers = normalizeSelfQaTesters(opts.testers);
+  args.push("--testers", testers === "any" ? "any" : String(testers));
   if (opts.dryRun) args.push("--dry-run");
   return args;
 }
@@ -508,7 +518,7 @@ export async function startSelfQa(
 
   const cycles = clampInt(opts.cycles, 3, 1, 20);
   const maxMinutes = clampInt(opts.maxMinutes, 90, 1, 24 * 60);
-  const testers = clampInt(opts.testers, 3, 1, 6);
+  const testers = normalizeSelfQaTesters(opts.testers);
   const dryRun = Boolean(opts.dryRun);
   const goal = String(opts.goal || "").trim() || undefined;
   const callbackUrl = normalizeCallbackUrl(opts.callbackUrl);

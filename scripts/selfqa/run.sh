@@ -35,22 +35,24 @@ OPTIONS
   --goal-file PATH       Read goal from file (mutually exclusive with --goal)
   --cycles N             Max cycles (default 3)
   --max-minutes M        Wall-clock cap (default 90)
-  --testers K            QA tester agents (default 3, max 6)
+  --testers K|any        QA tester agents (default 3, max 6; \`any\` = AI chooses 1–6)
   --dry-run              Print full plan only; write nothing; exit 0 (CLI optional)
   -h, --help             This help
 
 ENV
   SELFQA_TARGET_ROOT     App repo path (default: cwd)
   SELFQA_AGENT_TIMEOUT_SEC  Per-agent timeout seconds (default 900)
-  SELFQA_REQUIRED_BRANCH Branch gate (default development_grok)
+  SELFQA_FORBIDDEN_BRANCHES  Space-separated refuse list (default: main master)
   SELFQA_CALLBACK_URL    Optional POST target for final callback.json
   SELFQA_CALLBACK_AUTH   Optional Authorization header for callback
 
 NOTES
+  Live runs refuse \`main\`/\`master\` and detached HEAD; any other branch is OK.
   Headless agent invocations use \`--force\` so the Cursor CLI does not prompt
   in print mode. No other force flags are used.
-  Runtime guards (real runs): run-scoped pre-push hook, PATH deploy shims,
-  blank deploy credentials / temp HOME. Text scan is a second layer only.
+  Runtime guards (real runs): run-scoped pre-push hook (current branch only),
+  PATH deploy shims, blank deploy credentials / temp HOME. Text scan is a
+  second layer only.
 
 EXIT
   0  PASS
@@ -101,13 +103,22 @@ if ! [[ "$MAX_MINUTES" =~ ^[0-9]+$ ]] || [[ "$MAX_MINUTES" -lt 1 ]]; then
   echo "Error: --max-minutes must be a positive integer" >&2
   exit 1
 fi
-if ! [[ "$TESTERS" =~ ^[0-9]+$ ]] || [[ "$TESTERS" -lt 1 ]]; then
-  echo "Error: --testers must be a positive integer" >&2
+TESTERS_ANY=false
+if [[ "$TESTERS" == "any" || "$TESTERS" == "Any" || "$TESTERS" == "ANY" ]]; then
+  TESTERS_ANY=true
+  TESTERS=0
+elif ! [[ "$TESTERS" =~ ^[0-9]+$ ]] || [[ "$TESTERS" -lt 1 ]]; then
+  echo "Error: --testers must be a positive integer or 'any'" >&2
   exit 1
-fi
-if [[ "$TESTERS" -gt 6 ]]; then
+elif [[ "$TESTERS" -gt 6 ]]; then
   echo "warn: --testers capped at 6 (requested $TESTERS)" >&2
   TESTERS=6
+fi
+
+CURRENT_BRANCH="$(selfqa_current_branch "$TARGET_ROOT")"
+TESTERS_LABEL="$TESTERS"
+if [[ "$TESTERS_ANY" == true ]]; then
+  TESTERS_LABEL="any (AI chooses 1–6)"
 fi
 
 print_plan() {
@@ -116,14 +127,14 @@ print_plan() {
 # Self-QA plan
 
 - target: \`$TARGET_ROOT\`
-- branch required: \`$SELFQA_REQUIRED_BRANCH\`
-- cycles: $CYCLES · max-minutes: $MAX_MINUTES · testers: $TESTERS
+- branch: \`${CURRENT_BRANCH:-unknown}\` (refuses main/master / detached HEAD)
+- cycles: $CYCLES · max-minutes: $MAX_MINUTES · testers: $TESTERS_LABEL
 - agent timeout: ${SELFQA_AGENT_TIMEOUT_SEC}s
 - agent: \`$agent_label\` (model auto, print mode; keeps --force for non-interactive)
 - goal: $GOAL
 
 ## Loop
-Orchestrator → Developer → QA Manager → $TESTERS tester(s) → Orchestrator … until PASS or caps.
+Orchestrator → Developer → QA Manager → tester(s) → Orchestrator … until PASS or caps.
 
 ## Artifacts (when not dry-run)
 - Run dir: \`docs/selfqa/<runId>/\`
@@ -132,7 +143,7 @@ Orchestrator → Developer → QA Manager → $TESTERS tester(s) → Orchestrato
 - Final: \`SUMMARY.md\` + \`SUMMARY.json\` + \`callback.json\` (single callback payload)
 
 ## Guardrails
-Runtime: pre-push hook (development_grok→origin/development_grok only), PATH shims for
+Runtime: pre-push hook (current branch → origin/<branch> only; never main), PATH shims for
 ship/deploy/firebase/eas/gcloud, blank deploy credentials. Text scan (normalized
 commands) is a second layer; prose like "I will not run ./ship.sh" is ignored.
 EOF
@@ -152,9 +163,12 @@ if [[ "$DRY_RUN" == true ]]; then
 fi
 
 # --- live run gates ---
-if ! selfqa_require_branch "$TARGET_ROOT"; then
+if ! selfqa_refuse_main "$TARGET_ROOT"; then
   exit 1
 fi
+CURRENT_BRANCH="$(selfqa_current_branch "$TARGET_ROOT")"
+BRANCH="$CURRENT_BRANCH"
+export SELFQA_ALLOWED_BRANCH="$BRANCH"
 if ! selfqa_localhost_only_text "$GOAL"; then
   exit 1
 fi
@@ -172,7 +186,6 @@ LOG_DIR="$RUN_DIR/logs"
 mkdir -p "$LOG_DIR" "$RUN_DIR/testers" "$TARGET_ROOT/docs/qa"
 START_EPOCH="$(date +%s)"
 DEADLINE=$((START_EPOCH + MAX_MINUTES * 60))
-BRANCH="$SELFQA_REQUIRED_BRANCH"
 COMMITS_FILE="$RUN_DIR/commits.txt"
 : >"$COMMITS_FILE"
 FINDINGS_PREV=""
@@ -211,6 +224,14 @@ PERSONAS=(
 
 write_state() {
   local cycle="$1" phase="$2" verdict="${3:-}"
+  local testers_json="$TESTERS"
+  local testers_mode="fixed"
+  if [[ "$TESTERS_ANY" == true ]]; then
+    testers_mode="any"
+    if [[ "$TESTERS" -lt 1 ]]; then
+      testers_json="null"
+    fi
+  fi
   cat >"$RUN_DIR/STATE.json" <<EOF
 {
   "runId": "$RUN_ID",
@@ -218,7 +239,8 @@ write_state() {
   "cycle": $cycle,
   "cycles": $CYCLES,
   "maxMinutes": $MAX_MINUTES,
-  "testers": $TESTERS,
+  "testers": $testers_json,
+  "testersMode": "$testers_mode",
   "phase": "$phase",
   "verdict": "$verdict",
   "startedAt": $START_EPOCH,
@@ -472,7 +494,7 @@ print_plan "$AGENT_BIN" >"$RUN_DIR/PLAN.md"
 
 echo "==> Self-QA run $RUN_ID"
 echo "    goal: $GOAL"
-echo "    cycles=$CYCLES max-minutes=$MAX_MINUTES testers=$TESTERS agent=$AGENT_BIN"
+echo "    cycles=$CYCLES max-minutes=$MAX_MINUTES testers=$TESTERS_LABEL agent=$AGENT_BIN"
 echo "    guards: hooksPath + script guards + PATH shims + blank deploy env"
 echo "    dir: $RUN_DIR"
 
@@ -627,7 +649,69 @@ for ((CYCLE = 1; CYCLE <= CYCLES; CYCLE++)); do
     "$LOG_DIR/cycle${CYCLE}-developer.log" \
     "Current cycle: $CYCLE. Fix findings then typecheck + tests; commit and push $BRANCH only (no force)."
 
-  python3 - <<PY
+  if [[ "$TESTERS_ANY" == true ]]; then
+    # Seed an empty TESTERS.json; QA Manager chooses K∈[1,6] and fills personas.
+    printf '%s\n' '[]' >"$RUN_DIR/TESTERS.json"
+    write_state "$CYCLE" "qa_manager_plan"
+    if time_up; then break; fi
+    run_agent "QA Manager" "$PROMPTS_DIR/qa_manager.md" \
+      "$LOG_DIR/cycle${CYCLE}-qa-manager-plan.log" \
+      "Phase: choose how many testers (integer K from 1 to 6 — you decide based on goal/risk), write TESTERS.json as [{\"id\":1,\"persona\":\"…\",\"email\":\"qa+persona1@example.test\"},…] with exactly K entries, write testers/tester-N.md for each, and write TEST_PLAN.md. Testers will run next. Cycle $CYCLE. run-id $RUN_ID. testersMode=any."
+    TESTERS="$(python3 - <<'PY'
+import json
+from pathlib import Path
+p = Path("'"$RUN_DIR"'/TESTERS.json")
+try:
+    rows = json.loads(p.read_text(encoding="utf-8"))
+except Exception:
+    rows = []
+if not isinstance(rows, list):
+    rows = []
+k = len(rows)
+if k < 1:
+    k = 3
+if k > 6:
+    k = 6
+print(k)
+PY
+)"
+    # Ensure tester prompt files exist for the chosen K.
+    python3 - <<PY
+import json
+from pathlib import Path
+run = Path("$RUN_DIR")
+personas = """$(printf '%s\n' "${PERSONAS[@]}")""".strip().splitlines()
+k = int("$TESTERS")
+try:
+    rows = json.loads((run / "TESTERS.json").read_text(encoding="utf-8"))
+except Exception:
+    rows = []
+if not isinstance(rows, list):
+    rows = []
+while len(rows) < k:
+    i = len(rows)
+    p = personas[i % len(personas)]
+    rows.append({"id": i + 1, "persona": p, "email": f"qa+persona{i+1}@example.test"})
+rows = rows[:k]
+for i, row in enumerate(rows):
+    persona = str(row.get("persona") or personas[i % len(personas)])
+    email = str(row.get("email") or f"qa+persona{i+1}@example.test")
+    row["id"] = i + 1
+    row["persona"] = persona
+    row["email"] = email
+    path = run / "testers" / f"tester-{i+1}.md"
+    if not path.exists():
+        path.write_text(
+            f"# Tester {i+1}\n\nPersona: {persona}\nQA email: {email}\n\n"
+            f"Focus on realistic workflows for this persona.\n"
+            f"Write your report to testers/report-{i+1}.md.\n",
+            encoding="utf-8",
+        )
+(run / "TESTERS.json").write_text(json.dumps(rows, indent=2) + "\n", encoding="utf-8")
+PY
+    write_state "$CYCLE" "qa_manager_plan"
+  else
+    python3 - <<PY
 import json
 from pathlib import Path
 run = Path("$RUN_DIR")
@@ -647,11 +731,12 @@ for i in range(k):
 (run / "TESTERS.json").write_text(json.dumps(rows, indent=2) + "\n", encoding="utf-8")
 PY
 
-  if time_up; then break; fi
-  write_state "$CYCLE" "qa_manager_plan"
-  run_agent "QA Manager" "$PROMPTS_DIR/qa_manager.md" \
-    "$LOG_DIR/cycle${CYCLE}-qa-manager-plan.log" \
-    "Phase: write TEST_PLAN.md and refine tester prompts. Testers will run next. Cycle $CYCLE. run-id $RUN_ID."
+    if time_up; then break; fi
+    write_state "$CYCLE" "qa_manager_plan"
+    run_agent "QA Manager" "$PROMPTS_DIR/qa_manager.md" \
+      "$LOG_DIR/cycle${CYCLE}-qa-manager-plan.log" \
+      "Phase: write TEST_PLAN.md and refine tester prompts. Testers will run next. Cycle $CYCLE. run-id $RUN_ID."
+  fi
 
   for ((t = 1; t <= TESTERS; t++)); do
     if time_up; then break 2; fi

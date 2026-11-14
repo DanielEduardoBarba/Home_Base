@@ -75,7 +75,7 @@ function platformOk(): { ok: boolean; error?: string } {
     return {
       ok: false,
       error:
-        "Vision desktop control requires Linux X11/XWayland (not available on this host).",
+        "Vision desktop control requires Linux with X11 or Wayland (XWayland) — not available on this host.",
     };
   }
   return { ok: true };

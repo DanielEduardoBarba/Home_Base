@@ -71,6 +71,12 @@ describe("buildSelfQaArgs", () => {
     expect(args).toContain("6");
     expect(args).toContain("--dry-run");
   });
+
+  test("passes testers any", () => {
+    const args = buildSelfQaArgs({ testers: "any" });
+    expect(args).toContain("--testers");
+    expect(args).toContain("any");
+  });
 });
 
 describe("projectSupportsSelfQa", () => {

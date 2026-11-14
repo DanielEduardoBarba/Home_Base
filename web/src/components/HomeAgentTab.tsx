@@ -19,6 +19,7 @@ import {
   type AgentRecentAbs,
   type AgentScenePref,
 } from '../lib/uiPrefs'
+import { HomeIconButton } from './HomeGlyph'
 import { SwipeDeleteRow } from './SwipeDeleteRow'
 
 const ChatPanel = dynamic(() => import('./ChatPanel').then((m) => m.ChatPanel), { ssr: false })
@@ -552,21 +553,20 @@ export function HomeAgentTab({
         </div>
       )}
       <div className="hb-agent-bar">
-        <button
-          type="button"
-          className="hb-btn hb-btn-ghost text-sm"
-          onClick={() => {
-            if (scene.kind === 'chats' || scene.kind === 'all') {
+        {scene.kind === 'setup' ? (
+          <HomeIconButton onClick={onHome} className="hb-topbar-home shrink-0" />
+        ) : (
+          <button
+            type="button"
+            className="hb-btn hb-btn-ghost text-sm"
+            onClick={() => {
               setHeldChat(null)
               setScene({ kind: 'setup' })
-            } else {
-              setHeldChat(null)
-              onHome()
-            }
-          }}
-        >
-          ← {scene.kind === 'setup' ? 'Home' : 'Back'}
-        </button>
+            }}
+          >
+            ← Back
+          </button>
+        )}
         <div className="min-w-0 flex-1">
           <h1 className="hb-agent-bar-title truncate">Agent</h1>
           <p className="text-mute text-xs truncate">

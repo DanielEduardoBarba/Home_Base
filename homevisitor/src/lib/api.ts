@@ -3,6 +3,7 @@ import { loadConfig, type PresenceConfig } from "./config";
 
 export type PresenceMood =
   | "idle"
+  | "active"
   | "thinking"
   | "happy"
   | "alert"

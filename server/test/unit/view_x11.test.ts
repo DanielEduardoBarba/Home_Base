@@ -11,7 +11,13 @@ import {
   packFrameHeader,
   resizeRgba,
 } from "../../src/view_x11";
-import { pickNewestExisting, resolveViewWorkerCmd, x11AuthorityKind } from "../../src/view";
+import {
+  discoverSessionType,
+  discoverWaylandEnv,
+  pickNewestExisting,
+  resolveViewWorkerCmd,
+  x11AuthorityKind,
+} from "../../src/view";
 
 describe("view_x11 helpers", () => {
   test("browserToKeysym maps common codes", () => {
@@ -72,5 +78,32 @@ describe("view_x11 helpers", () => {
     const cmd = resolveViewWorkerCmd();
     expect(cmd.length).toBeGreaterThanOrEqual(2);
     expect(cmd.at(-1)).toBe("--view-worker");
+  });
+
+  test("discoverSessionType respects XDG_SESSION_TYPE", () => {
+    const prev = process.env.XDG_SESSION_TYPE;
+    try {
+      process.env.XDG_SESSION_TYPE = "wayland";
+      expect(discoverSessionType()).toBe("wayland");
+      process.env.XDG_SESSION_TYPE = "x11";
+      expect(discoverSessionType()).toBe("x11");
+    } finally {
+      if (prev == null) delete process.env.XDG_SESSION_TYPE;
+      else process.env.XDG_SESSION_TYPE = prev;
+    }
+  });
+
+  test("discoverWaylandEnv defaults runtime dir", () => {
+    const prev = process.env.XDG_RUNTIME_DIR;
+    try {
+      delete process.env.XDG_RUNTIME_DIR;
+      delete process.env.WAYLAND_DISPLAY;
+      delete process.env.HOMEBASE_WAYLAND_DISPLAY;
+      const env = discoverWaylandEnv(1000);
+      expect(env.runtimeDir).toBe("/run/user/1000");
+    } finally {
+      if (prev == null) delete process.env.XDG_RUNTIME_DIR;
+      else process.env.XDG_RUNTIME_DIR = prev;
+    }
   });
 });

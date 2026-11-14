@@ -2,7 +2,14 @@
  * Bun FFI bindings for X11 capture (XGetImage) + XTest input.
  * Runs inside the seat-user view worker (not the root API process).
  */
-import { dlopen, ptr, read, toArrayBuffer, type Pointer } from "bun:ffi";
+import {
+  JSCallback,
+  dlopen,
+  ptr,
+  read,
+  toArrayBuffer,
+  type Pointer,
+} from "bun:ffi";
 
 const ZPixmap = 2;
 const AllPlanes = 0xffffffffn;
@@ -11,6 +18,8 @@ type LibX11 = {
   XOpenDisplay: (name: Pointer | null) => Pointer | null;
   XCloseDisplay: (dpy: Pointer) => number;
   XDefaultScreen: (dpy: Pointer) => number;
+  XDefaultDepth: (dpy: Pointer, screen: number) => number;
+  XDefaultGC: (dpy: Pointer, screen: number) => bigint;
   XDisplayWidth: (dpy: Pointer, screen: number) => number;
   XDisplayHeight: (dpy: Pointer, screen: number) => number;
   XDefaultRootWindow: (dpy: Pointer) => bigint;
@@ -26,6 +35,28 @@ type LibX11 = {
   ) => Pointer | null;
   XDestroyImage: (img: Pointer) => number;
   XFlush: (dpy: Pointer) => number;
+  XSync: (dpy: Pointer, discard: number) => number;
+  XCreatePixmap: (
+    dpy: Pointer,
+    drawable: bigint,
+    w: number,
+    h: number,
+    depth: number,
+  ) => bigint;
+  XFreePixmap: (dpy: Pointer, pixmap: bigint) => number;
+  XCopyArea: (
+    dpy: Pointer,
+    src: bigint,
+    dest: bigint,
+    gc: bigint,
+    src_x: number,
+    src_y: number,
+    w: number,
+    h: number,
+    dest_x: number,
+    dest_y: number,
+  ) => number;
+  XSetErrorHandler: (handler: Pointer | null) => Pointer | null;
   XWarpPointer: (
     dpy: Pointer,
     src_w: bigint,
@@ -107,6 +138,24 @@ export type GrabPixels = {
 let x11: LibX11 | null = null;
 let xtst: LibXtst | null = null;
 let xinerama: LibXinerama | null = null;
+let xErrorHandlerInstalled = false;
+let xErrorCallback: InstanceType<typeof JSCallback> | null = null;
+
+/** Swallow X11 errors so BadMatch on root XGetImage (XWayland) does not abort the worker. */
+function installXErrorHandler(X: LibX11): void {
+  if (xErrorHandlerInstalled) return;
+  try {
+    xErrorCallback = new JSCallback(() => 0, {
+      args: ["ptr", "ptr"],
+      returns: "i32",
+      threadsafe: false,
+    });
+    X.XSetErrorHandler(xErrorCallback.ptr);
+    xErrorHandlerInstalled = true;
+  } catch {
+    /* pixmap path is the primary Wayland capture route */
+  }
+}
 
 function loadLibs(): void {
   if (x11) return;
@@ -114,6 +163,8 @@ function loadLibs(): void {
     XOpenDisplay: { args: ["ptr"], returns: "ptr" },
     XCloseDisplay: { args: ["ptr"], returns: "i32" },
     XDefaultScreen: { args: ["ptr"], returns: "i32" },
+    XDefaultDepth: { args: ["ptr", "i32"], returns: "i32" },
+    XDefaultGC: { args: ["ptr", "i32"], returns: "u64" },
     XDisplayWidth: { args: ["ptr", "i32"], returns: "i32" },
     XDisplayHeight: { args: ["ptr", "i32"], returns: "i32" },
     XDefaultRootWindow: { args: ["ptr"], returns: "u64" },
@@ -123,6 +174,28 @@ function loadLibs(): void {
     },
     XDestroyImage: { args: ["ptr"], returns: "i32" },
     XFlush: { args: ["ptr"], returns: "i32" },
+    XSync: { args: ["ptr", "i32"], returns: "i32" },
+    XCreatePixmap: {
+      args: ["ptr", "u64", "u32", "u32", "u32"],
+      returns: "u64",
+    },
+    XFreePixmap: { args: ["ptr", "u64"], returns: "i32" },
+    XCopyArea: {
+      args: [
+        "ptr",
+        "u64",
+        "u64",
+        "u64",
+        "i32",
+        "i32",
+        "u32",
+        "u32",
+        "i32",
+        "i32",
+      ],
+      returns: "i32",
+    },
+    XSetErrorHandler: { args: ["ptr"], returns: "ptr" },
     XWarpPointer: {
       args: ["ptr", "u64", "u64", "i32", "i32", "u32", "u32", "i32", "i32"],
       returns: "i32",
@@ -135,6 +208,7 @@ function loadLibs(): void {
     },
     XFree: { args: ["ptr"], returns: "i32" },
   }).symbols as unknown as LibX11;
+  installXErrorHandler(x);
   const t = dlopen("libXtst.so.6", {
     XTestFakeMotionEvent: {
       args: ["ptr", "i32", "i32", "i32", "u64"],
@@ -392,6 +466,41 @@ export class X11Session {
     );
   }
 
+  /**
+   * Capture via pixmap: XWayland/Mutter often BadMatchs XGetImage on the root;
+   * XCopyArea → pixmap → XGetImage works on both classic X11 and XWayland.
+   */
+  private getImageDrawable(
+    X: LibX11,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+  ): Pointer {
+    const depth = X.XDefaultDepth(this.dpy!, this.screen) || 24;
+    const pixmap = X.XCreatePixmap(this.dpy!, this.root, w, h, depth);
+    if (!pixmap) throw new Error("XCreatePixmap failed");
+    try {
+      const gc = X.XDefaultGC(this.dpy!, this.screen);
+      X.XCopyArea(this.dpy!, this.root, pixmap, gc, x, y, w, h, 0, 0);
+      X.XSync(this.dpy!, 0);
+      const img = X.XGetImage(
+        this.dpy!,
+        pixmap,
+        0,
+        0,
+        w,
+        h,
+        AllPlanes,
+        ZPixmap,
+      );
+      if (!img) throw new Error("XGetImage failed (pixmap)");
+      return img;
+    } finally {
+      X.XFreePixmap(this.dpy!, pixmap);
+    }
+  }
+
   grabRgba(monitor: number): GrabPixels {
     if (!this.dpy && !this.open()) {
       throw new Error(this.lastError || "display closed");
@@ -402,17 +511,7 @@ export class X11Session {
     const sh = rect.height;
     if (sw <= 0 || sh <= 0) throw new Error("no monitors");
 
-    const img = X.XGetImage(
-      this.dpy!,
-      this.root,
-      rect.left,
-      rect.top,
-      sw,
-      sh,
-      AllPlanes,
-      ZPixmap,
-    );
-    if (!img) throw new Error("XGetImage failed");
+    const img = this.getImageDrawable(X, rect.left, rect.top, sw, sh);
 
     try {
       const width = read.i32(img, XI.width);
