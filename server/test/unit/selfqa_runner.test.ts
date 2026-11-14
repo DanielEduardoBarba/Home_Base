@@ -70,6 +70,159 @@ describe("selfqa lib helpers", () => {
     expect(r.stdout).toMatch(/rc=1/);
   });
 
+  test("HB-122-01: normalized ship/deploy forms all hit", () => {
+    const f = join(root, "ship-forms.log");
+    const hits = [
+      "./ship.sh --all",
+      "bash ./ship.sh",
+      "sh ship.sh",
+      "/home/dan/app/ship.sh",
+      "cd foo && ./ship.sh",
+      "FOO=1 ./ship.sh",
+      "(./ship.sh)",
+      "env FOO=1 bash /tmp/x/ship.sh",
+      "./build.sh --deploy",
+      "./build.sh --ship",
+      "bash scripts/deploy-api.sh",
+      "scripts/deploy-web.sh",
+      "scripts/deploy.sh",
+      "scripts/ship-expo.sh",
+      "./build.sh d",
+      "pnpm deploy",
+      "pnpm run deploy-web",
+      "firebase deploy",
+      "eas submit",
+      "gcloud run deploy",
+    ];
+    for (const line of hits) {
+      writeFileSync(f, `${line}\n`);
+      const r = bash(
+        `source "${LIB}"; selfqa_scan_guardrails "${f}"; echo rc=$?`,
+      );
+      expect(r.stdout).toMatch(/rc=1/);
+    }
+    // Prose negation must not abort
+    const prose = [
+      "I will not run ./ship.sh",
+      "Do not run ./ship.sh or firebase deploy.",
+      "Never git push --force",
+    ];
+    for (const line of prose) {
+      writeFileSync(f, `${line}\n`);
+      const r = bash(
+        `source "${LIB}"; selfqa_scan_guardrails "${f}"; echo rc=$?`,
+      );
+      expect(r.stdout).toMatch(/rc=0/);
+    }
+  });
+
+  test("HB-122-02: git push destination / force / bare rules", () => {
+    const f = join(root, "push.log");
+    const app = join(root, "push-app");
+    initRepo(app);
+    // No upstream → bare git push blocked
+    writeFileSync(f, "git push\n");
+    let r = bash(
+      `source "${LIB}"; selfqa_scan_guardrails "${f}" "${app}"; echo rc=$?`,
+    );
+    expect(r.stdout).toMatch(/rc=1/);
+    const blocked = [
+      "git push origin feature-foo",
+      "git push origin main",
+      "git push --force",
+      "git push --force-with-lease",
+      "git push -f origin development_grok",
+      "git push --all",
+      "git push --mirror",
+      "git push --delete origin old",
+      "git push origin HEAD:main",
+    ];
+    for (const line of blocked) {
+      writeFileSync(f, `${line}\n`);
+      r = bash(
+        `source "${LIB}"; selfqa_scan_guardrails "${f}" "${app}"; echo rc=$?`,
+      );
+      expect(r.stdout).toMatch(/rc=1/);
+    }
+    writeFileSync(f, "git push origin development_grok\n");
+    r = bash(
+      `source "${LIB}"; selfqa_scan_guardrails "${f}" "${app}"; echo rc=$?`,
+    );
+    expect(r.stdout).toMatch(/rc=0/);
+  });
+
+  test("HB-122-03: Pass/fixed findings are not open for repeat-BLOCKED", () => {
+    const report = join(root, "findings-pass.md");
+    writeFileSync(
+      report,
+      `# cycle\n### HB-R1-01\n- Status: Pass / fixed\n\n### HB-R1-02\n- Status: Fail\n`,
+    );
+    const r = bash(
+      `source "${LIB}"; selfqa_extract_finding_ids "${report}"`,
+    );
+    expect(r.stdout).toMatch(/HB-R1-02/);
+    expect(r.stdout).not.toMatch(/HB-R1-01/);
+    const a = join(root, "open-a.txt");
+    const b = join(root, "open-b.txt");
+    writeFileSync(a, "HB-R1-01\n");
+    writeFileSync(b, "HB-R1-02\n");
+    const no = bash(
+      `source "${LIB}"; selfqa_repeat_findings "${a}" "${b}"; echo rc=$?`,
+    );
+    expect(no.stdout).toMatch(/rc=1/);
+  });
+
+  test("HB-122-04: price/subscription phrasing detection", () => {
+    const f = join(root, "price.log");
+    const hits = [
+      "we will change the subscription price tonight",
+      "change the price of the plan",
+      "set the subscription to 9.99", // may miss — require set price to
+      "set price to 9.99",
+      "increase the price",
+      "raise the price",
+      "lower the price",
+      "drop the price",
+      "update pricing",
+      "new price tier",
+      "CHANGE THE SUBSCRIPTION PRICE",
+    ];
+    for (const line of hits) {
+      if (line.includes("set the subscription to")) continue; // not required by QA
+      writeFileSync(f, `${line}\n`);
+      const r = bash(
+        `source "${LIB}"; selfqa_scan_guardrails "${f}"; echo rc=$?`,
+      );
+      expect(r.stdout).toMatch(/rc=1/);
+    }
+  });
+
+  test("pre-push hook install/restore + PATH shim refuse", () => {
+    const app = join(root, "hook-app");
+    initRepo(app);
+    const hooks = join(app, "hooks-run");
+    const state = join(app, "hooks-state.txt");
+    const shims = join(app, "shims");
+    const r = bash(
+      `
+      source "${LIB}"
+      cd "${app}"
+      selfqa_install_pre_push_hook "${hooks}" "${state}" development_grok
+      test -x "${hooks}/pre-push"
+      git config --local --get core.hooksPath
+      selfqa_create_path_shims "${shims}" "${app}"
+      SELFQA_RUN=1 "${shims}/ship.sh"; echo ship_rc=$?
+      SELFQA_RUN=1 "${shims}/build.sh" --deploy; echo build_rc=$?
+      selfqa_restore_hooks_path "${state}"
+      if git config --local --get core.hooksPath >/dev/null 2>&1; then echo hooks_still_set; else echo hooks_cleared; fi
+      `,
+      { cwd: app },
+    );
+    expect(r.stdout).toMatch(/ship_rc=1/);
+    expect(r.stdout).toMatch(/build_rc=1/);
+    expect(r.stdout).toMatch(/hooks_cleared/);
+  });
+
   test("repeat findings detection", () => {
     const a = join(root, "a.txt");
     const b = join(root, "b.txt");

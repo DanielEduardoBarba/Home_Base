@@ -43,10 +43,14 @@ ENV
   SELFQA_TARGET_ROOT     App repo path (default: cwd)
   SELFQA_AGENT_TIMEOUT_SEC  Per-agent timeout seconds (default 900)
   SELFQA_REQUIRED_BRANCH Branch gate (default development_grok)
+  SELFQA_CALLBACK_URL    Optional POST target for final callback.json
+  SELFQA_CALLBACK_AUTH   Optional Authorization header for callback
 
 NOTES
   Headless agent invocations use \`--force\` so the Cursor CLI does not prompt
   in print mode. No other force flags are used.
+  Runtime guards (real runs): run-scoped pre-push hook, PATH deploy shims,
+  blank deploy credentials / temp HOME. Text scan is a second layer only.
 
 EXIT
   0  PASS
@@ -106,7 +110,6 @@ if [[ "$TESTERS" -gt 6 ]]; then
   TESTERS=6
 fi
 
-# --- dry-run: print plan, write nothing, exit 0 (CLI optional) ---
 print_plan() {
   local agent_label="${1:-"(not required for dry-run)"}"
   cat <<EOF
@@ -126,11 +129,12 @@ Orchestrator → Developer → QA Manager → $TESTERS tester(s) → Orchestrato
 - Run dir: \`docs/selfqa/<runId>/\`
 - Cycle reports: \`docs/qa/selfqa-<runId>-cycleN.md\`
 - Verdict: \`docs/selfqa/<runId>/VERDICT.json\` — {"verdict":"PASS"|"FAIL"|"BLOCKED"}
-- Final: \`SUMMARY.md\` + \`SUMMARY.json\` (single callback payload)
+- Final: \`SUMMARY.md\` + \`SUMMARY.json\` + \`callback.json\` (single callback payload)
 
-## Guardrails (code-enforced)
-Branch gate, localhost-only targets, repeat finding id → BLOCKED, deploy/ship/merge/force-push/
-wrong-branch push/deletes outside docs/selfqa/App Store/payments abort.
+## Guardrails
+Runtime: pre-push hook (development_grok→origin/development_grok only), PATH shims for
+ship/deploy/firebase/eas/gcloud, blank deploy credentials. Text scan (normalized
+commands) is a second layer; prose like "I will not run ./ship.sh" is ignored.
 EOF
 }
 
@@ -174,6 +178,26 @@ COMMITS_FILE="$RUN_DIR/commits.txt"
 FINDINGS_PREV=""
 FINDINGS_CUR=""
 REPORT_PATHS=()
+LAST_QA_REPORT=""
+FINAL_VERDICT="FAIL"
+OPEN_FINDINGS=1
+CYCLE=0
+CALLBACK_URL="${SELFQA_CALLBACK_URL:-}"
+CALLBACK_AUTH="${SELFQA_CALLBACK_AUTH:-}"
+CALLBACK_SENT=false
+DOCS_COMMIT="$(git -C "$TARGET_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+TYPECHECK_STATUS="not_run"
+TESTS_JSON='{"expected":null,"passed":null,"failed":null}'
+ITEMS_JSON="[]"
+BUGS_JSON='{"high":[],"medium":[],"low":[]}'
+BLOCK_REASON=""
+
+# Runtime enforcement dirs
+HOOKS_DIR="$RUN_DIR/hooks"
+HOOKS_STATE="$RUN_DIR/hooks-state.txt"
+SHIM_DIR="$RUN_DIR/shims"
+AGENT_HOME="$RUN_DIR/agent-home"
+REAL_HOME="${HOME:-/tmp}"
 
 PERSONAS=(
   "Manager — reviews dashboards, approvals, and team workflows"
@@ -204,6 +228,204 @@ write_state() {
 EOF
 }
 
+write_callback_json() {
+  local path="$1"
+  local shortsha fullsha
+  shortsha="$(git -C "$TARGET_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  fullsha="$(git -C "$TARGET_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+  local reports_file="$RUN_DIR/report_paths.txt"
+  : >"$reports_file"
+  local r
+  for r in "${REPORT_PATHS[@]+"${REPORT_PATHS[@]}"}"; do
+    [[ -n "$r" ]] && printf '%s\n' "$r" >>"$reports_file"
+  done
+  python3 - "$path" "$RUN_ID" "$CYCLE" "$CYCLES" "$FINAL_VERDICT" \
+    "$COMMITS_FILE" "$reports_file" "$fullsha" "$shortsha" "$BRANCH" \
+    "$DOCS_COMMIT" "$TYPECHECK_STATUS" "$TESTS_JSON" "$ITEMS_JSON" "$BUGS_JSON" \
+    "$BLOCK_REASON" "$TARGET_ROOT" <<'PY'
+import json, sys
+from pathlib import Path
+(
+    out, run_id, rounds, cap, verdict, commits_f, reports_f,
+    fullsha, shortsha, branch, docs_commit, typecheck, tests_s,
+    items_s, bugs_s, reason, root,
+) = sys.argv[1:18]
+
+def lines(p):
+    try:
+        return [ln.strip() for ln in open(p, encoding="utf-8") if ln.strip()]
+    except FileNotFoundError:
+        return []
+
+try:
+    tests = json.loads(tests_s)
+except Exception:
+    tests = {"expected": None, "passed": None, "failed": None}
+try:
+    items = json.loads(items_s)
+except Exception:
+    items = []
+try:
+    bugs = json.loads(bugs_s)
+except Exception:
+    bugs = {"high": [], "medium": [], "low": []}
+
+payload = {
+    "app": Path(root).name,
+    "runId": run_id,
+    "branch": branch,
+    "rounds": int(rounds or 0),
+    "round": int(rounds or 0),
+    "cyclesCap": int(cap or 0),
+    "verdict": verdict,
+    "commit": fullsha,
+    "shortCommit": shortsha,
+    "docsCommit": docs_commit,
+    "typecheck": typecheck,
+    "tests": tests,
+    "items": items,
+    "bugs": bugs,
+    "commits": lines(commits_f),
+    "reportPaths": lines(reports_f),
+    "reportPath": (lines(reports_f)[-1] if lines(reports_f) else None),
+    "summaryPath": f"docs/selfqa/{run_id}/SUMMARY.md",
+    "verdictPath": f"docs/selfqa/{run_id}/VERDICT.json",
+    "reason": reason or None,
+}
+payload = {k: v for k, v in payload.items() if v is not None}
+open(out, "w", encoding="utf-8").write(json.dumps(payload, indent=2) + "\n")
+PY
+}
+
+write_summary() {
+  local elapsed=$(( ($(date +%s) - START_EPOCH) / 60 ))
+  local reports_file="$RUN_DIR/report_paths.txt"
+  : >"$reports_file"
+  local r
+  for r in "${REPORT_PATHS[@]+"${REPORT_PATHS[@]}"}"; do
+    [[ -n "$r" ]] && printf '%s\n' "$r" >>"$reports_file"
+  done
+  python3 - "$RUN_DIR/SUMMARY.json" "$RUN_ID" "$CYCLE" "$CYCLES" "$FINAL_VERDICT" \
+    "$COMMITS_FILE" "$reports_file" "$elapsed" "$MAX_MINUTES" "$TESTERS" "$GOAL" \
+    "$AGENT_BIN" "$BRANCH" "$LAST_QA_REPORT" "$DOCS_COMMIT" "$TYPECHECK_STATUS" \
+    "$TESTS_JSON" "$ITEMS_JSON" "$BUGS_JSON" <<'PY'
+import json, sys
+(
+    out, run_id, rounds, cap, verdict, commits_f, reports_f, elapsed, max_m,
+    testers, goal, agent, branch, last, docs_commit, typecheck, tests_s,
+    items_s, bugs_s,
+) = sys.argv[1:20]
+
+def lines(p):
+    try:
+        return [ln.strip() for ln in open(p, encoding="utf-8") if ln.strip()]
+    except FileNotFoundError:
+        return []
+
+def loads(s, default):
+    try:
+        return json.loads(s)
+    except Exception:
+        return default
+
+payload = {
+    "runId": run_id,
+    "rounds": int(rounds or 0),
+    "cyclesCap": int(cap or 0),
+    "verdict": verdict,
+    "commits": lines(commits_f),
+    "reportPaths": lines(reports_f),
+    "summaryPath": f"docs/selfqa/{run_id}/SUMMARY.md",
+    "verdictPath": f"docs/selfqa/{run_id}/VERDICT.json",
+    "elapsedMinutes": int(elapsed or 0),
+    "maxMinutes": int(max_m or 0),
+    "testers": int(testers or 0),
+    "goal": goal,
+    "agent": agent,
+    "branch": branch,
+    "lastQaReport": last or None,
+    "docsCommit": docs_commit,
+    "typecheck": typecheck,
+    "tests": loads(tests_s, {}),
+    "items": loads(items_s, []),
+    "bugs": loads(bugs_s, {}),
+}
+open(out, "w", encoding="utf-8").write(json.dumps(payload, indent=2) + "\n")
+PY
+  cat >"$RUN_DIR/SUMMARY.md" <<EOF
+# Self-QA SUMMARY
+
+- runId: $RUN_ID
+- verdict: $FINAL_VERDICT
+- cyclesCompleted: $CYCLE
+- cyclesCap: $CYCLES
+- elapsedMinutes: $elapsed
+- maxMinutes: $MAX_MINUTES
+- testers: $TESTERS
+- goal: $GOAL
+- lastQaReport: ${LAST_QA_REPORT:-none}
+- agent: $AGENT_BIN
+- branch: $BRANCH
+- docsCommit: $DOCS_COMMIT
+- typecheck: $TYPECHECK_STATUS
+- summaryJson: docs/selfqa/$RUN_ID/SUMMARY.json
+- callbackJson: docs/selfqa/$RUN_ID/callback.json
+EOF
+  write_callback_json "$RUN_DIR/callback.json" || true
+  echo "==> SUMMARY: $RUN_DIR/SUMMARY.md (verdict=$FINAL_VERDICT)"
+}
+
+selfqa_emit_callback() {
+  if [[ "$CALLBACK_SENT" == true ]]; then
+    return 0
+  fi
+  CALLBACK_SENT=true
+  mkdir -p "$RUN_DIR"
+  write_summary || true
+  if [[ -n "$CALLBACK_URL" && -f "$RUN_DIR/callback.json" ]]; then
+    selfqa_post_callback "$CALLBACK_URL" "$CALLBACK_AUTH" "$RUN_DIR/callback.json" || true
+  fi
+}
+
+# Optional HTTP POST helper (StockWinter residual: die path still sends one callback).
+selfqa_post_callback() {
+  local url="${1:-}"
+  local auth="${2:-}"
+  local json_file="${3:-}"
+  [[ -n "$url" ]] || return 0
+  [[ -f "$json_file" ]] || return 1
+  local args=(-sS -X POST -H "Content-Type: application/json" --data-binary @"$json_file")
+  if [[ -n "$auth" ]]; then
+    args+=(-H "Authorization: $auth")
+  fi
+  curl "${args[@]}" "$url" >/dev/null || {
+    echo "warn: SELFQA_CALLBACK_URL POST failed" >&2
+    return 1
+  }
+  return 0
+}
+
+selfqa_restore_runtime_guards() {
+  selfqa_restore_hooks_path "$HOOKS_STATE" || true
+}
+
+selfqa_on_die() {
+  local msg="${1:-error}"
+  FINAL_VERDICT="${FINAL_VERDICT:-FAIL}"
+  BLOCK_REASON="${BLOCK_REASON:-$msg}"
+  cat >"$RUN_DIR/VERDICT.json" <<EOF
+{"verdict":"FAIL"}
+EOF
+  selfqa_emit_callback || true
+  selfqa_restore_runtime_guards || true
+}
+
+trap 'selfqa_restore_runtime_guards' EXIT
+
+selfqa_install_pre_push_hook "$HOOKS_DIR" "$HOOKS_STATE" "$BRANCH"
+selfqa_create_path_shims "$SHIM_DIR" "$TARGET_ROOT"
+selfqa_prepare_agent_home "$AGENT_HOME" "$REAL_HOME"
+
 printf '%s\n' "$GOAL" >"$RUN_DIR/GOAL.md"
 cp -f "$PROMPTS_DIR/guardrails.md" "$RUN_DIR/GUARDRAILS.md"
 print_plan "$AGENT_BIN" >"$RUN_DIR/PLAN.md"
@@ -211,6 +433,7 @@ print_plan "$AGENT_BIN" >"$RUN_DIR/PLAN.md"
 echo "==> Self-QA run $RUN_ID"
 echo "    goal: $GOAL"
 echo "    cycles=$CYCLES max-minutes=$MAX_MINUTES testers=$TESTERS agent=$AGENT_BIN"
+echo "    guards: hooksPath + PATH shims + blank deploy env"
 echo "    dir: $RUN_DIR"
 
 if [[ ! -f "$TARGET_ROOT/docs/QA-PROGRESS.md" ]]; then
@@ -242,7 +465,12 @@ abort_guardrail() {
 {"verdict":"BLOCKED"}
 EOF
   FINAL_VERDICT="BLOCKED"
+  BLOCK_REASON="$why"
   write_summary
+  CALLBACK_SENT=true
+  if [[ -n "$CALLBACK_URL" && -f "$RUN_DIR/callback.json" ]]; then
+    selfqa_post_callback "$CALLBACK_URL" "$CALLBACK_AUTH" "$RUN_DIR/callback.json" || true
+  fi
   exit 1
 }
 
@@ -253,21 +481,12 @@ pre_post_scan() {
   local scan_out="$LOG_DIR/guardrail-${tag}.txt"
   : >"$scan_out"
   if [[ -f "$logf" ]]; then
-    if ! selfqa_scan_guardrails "$logf" >>"$scan_out" 2>&1; then
+    if ! selfqa_scan_guardrails "$logf" "$TARGET_ROOT" >>"$scan_out" 2>&1; then
       abort_guardrail "forbidden pattern in agent log ($tag) — see $scan_out"
     fi
   fi
   if ! selfqa_scan_deletions "$TARGET_ROOT" "$before_ref"; then
     abort_guardrail "deletion outside docs/selfqa ($tag)"
-  fi
-  # Reject push to non-development_grok in logs
-  if [[ -f "$logf" ]] && grep -nE 'git[[:space:]]+push' "$logf" >/dev/null 2>&1; then
-    if grep -nE 'git[[:space:]]+push' "$logf" | grep -vE 'development_grok' | grep -vqE 'fetch|status|log'; then
-      # Only flag if push line mentions another branch destination
-      if grep -nE 'git[[:space:]]+push[^[:space:]]*[[:space:]].*\b(main|master|development)\b' "$logf"; then
-        abort_guardrail "git push to non-development_grok ($tag)"
-      fi
-    fi
   fi
 }
 
@@ -304,8 +523,25 @@ EOF
   pre_post_scan "pre-$(basename "$out_log")" /dev/null "$before" || true
   set +e
   # --force kept for non-interactive Cursor CLI print mode (documented in --help).
+  # SELFQA_RUN=1 + shims + blank deploy creds + temp HOME for CLI configs.
   selfqa_run_with_timeout "$SELFQA_AGENT_TIMEOUT_SEC" \
-    "$AGENT_BIN" -p --force --model auto --workspace "$TARGET_ROOT" "$prompt" \
+    env \
+      SELFQA_RUN=1 \
+      HOME="$AGENT_HOME" \
+      XDG_CONFIG_HOME="$AGENT_HOME/.config" \
+      CLOUDSDK_CONFIG="$AGENT_HOME/empty-gcloud" \
+      FIREBASE_TOKEN= \
+      GOOGLE_APPLICATION_CREDENTIALS= \
+      GCLOUD_ACCESS_TOKEN= \
+      CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE= \
+      EXPO_TOKEN= \
+      EAS_ACCESS_TOKEN= \
+      EXPO_APPLE_PASSWORD= \
+      APPLE_ID= \
+      APPLE_APP_SPECIFIC_PASSWORD= \
+      APP_STORE_CONNECT_API_KEY_PATH= \
+      PATH="$SHIM_DIR:$PATH" \
+      "$AGENT_BIN" -p --force --model auto --workspace "$TARGET_ROOT" "$prompt" \
     >"$out_log" 2>"$out_log.err"
   local rc=$?
   set -e
@@ -315,10 +551,15 @@ EOF
   if [[ $rc -ne 0 ]]; then
     echo "Error: agent role=$role exited $rc (see $out_log)" | tee -a "$LOG_DIR/runner.log" >&2
     FINAL_VERDICT="FAIL"
+    BLOCK_REASON="agent role=$role exited $rc"
     cat >"$RUN_DIR/VERDICT.json" <<EOF
 {"verdict":"FAIL"}
 EOF
     write_summary
+    CALLBACK_SENT=true
+    if [[ -n "$CALLBACK_URL" && -f "$RUN_DIR/callback.json" ]]; then
+      selfqa_post_callback "$CALLBACK_URL" "$CALLBACK_AUTH" "$RUN_DIR/callback.json" || true
+    fi
     exit 1
   fi
   return 0
@@ -327,67 +568,6 @@ EOF
 time_up() {
   [[ "$(date +%s)" -ge "$DEADLINE" ]]
 }
-
-write_summary() {
-  local elapsed=$(( ($(date +%s) - START_EPOCH) / 60 ))
-  local reports_file="$RUN_DIR/report_paths.txt"
-  : >"$reports_file"
-  local r
-  for r in "${REPORT_PATHS[@]+"${REPORT_PATHS[@]}"}"; do
-    [[ -n "$r" ]] && printf '%s\n' "$r" >>"$reports_file"
-  done
-  python3 - "$RUN_DIR/SUMMARY.json" "$RUN_ID" "$CYCLE" "$CYCLES" "$FINAL_VERDICT" \
-    "$COMMITS_FILE" "$reports_file" "$elapsed" "$MAX_MINUTES" "$TESTERS" "$GOAL" \
-    "$AGENT_BIN" "$BRANCH" "$LAST_QA_REPORT" <<'PY'
-import json, sys
-out, run_id, rounds, cap, verdict, commits_f, reports_f, elapsed, max_m, testers, goal, agent, branch, last = sys.argv[1:15]
-def lines(p):
-    try:
-        return [ln.strip() for ln in open(p, encoding="utf-8") if ln.strip()]
-    except FileNotFoundError:
-        return []
-payload = {
-    "runId": run_id,
-    "rounds": int(rounds or 0),
-    "cyclesCap": int(cap or 0),
-    "verdict": verdict,
-    "commits": lines(commits_f),
-    "reportPaths": lines(reports_f),
-    "summaryPath": f"docs/selfqa/{run_id}/SUMMARY.md",
-    "verdictPath": f"docs/selfqa/{run_id}/VERDICT.json",
-    "elapsedMinutes": int(elapsed or 0),
-    "maxMinutes": int(max_m or 0),
-    "testers": int(testers or 0),
-    "goal": goal,
-    "agent": agent,
-    "branch": branch,
-    "lastQaReport": last or None,
-}
-open(out, "w", encoding="utf-8").write(json.dumps(payload, indent=2) + "\n")
-PY
-  cat >"$RUN_DIR/SUMMARY.md" <<EOF
-# Self-QA SUMMARY
-
-- runId: $RUN_ID
-- verdict: $FINAL_VERDICT
-- cyclesCompleted: $CYCLE
-- cyclesCap: $CYCLES
-- elapsedMinutes: $elapsed
-- maxMinutes: $MAX_MINUTES
-- testers: $TESTERS
-- goal: $GOAL
-- lastQaReport: ${LAST_QA_REPORT:-none}
-- agent: $AGENT_BIN
-- branch: $BRANCH
-- summaryJson: docs/selfqa/$RUN_ID/SUMMARY.json
-EOF
-  echo "==> SUMMARY: $RUN_DIR/SUMMARY.md (verdict=$FINAL_VERDICT)"
-}
-
-LAST_QA_REPORT=""
-FINAL_VERDICT="FAIL"
-OPEN_FINDINGS=1
-CYCLE=0
 
 for ((CYCLE = 1; CYCLE <= CYCLES; CYCLE++)); do
   if time_up; then
@@ -478,10 +658,15 @@ EOF
 {"verdict":"BLOCKED","reason":"repeat_finding","ids":$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1].split()))' "$common")}
 EOF
       FINAL_VERDICT="BLOCKED"
+      BLOCK_REASON="repeat_finding:$common"
       OPEN_FINDINGS=1
       write_state "$CYCLE" "blocked" "$VERDICT"
       rm -f "$FINDINGS_CUR"
       write_summary
+      CALLBACK_SENT=true
+      if [[ -n "$CALLBACK_URL" && -f "$RUN_DIR/callback.json" ]]; then
+        selfqa_post_callback "$CALLBACK_URL" "$CALLBACK_AUTH" "$RUN_DIR/callback.json" || true
+      fi
       exit 2
     fi
   fi
@@ -513,6 +698,10 @@ EOF
 done
 
 write_summary
+CALLBACK_SENT=true
+if [[ -n "$CALLBACK_URL" && -f "$RUN_DIR/callback.json" ]]; then
+  selfqa_post_callback "$CALLBACK_URL" "$CALLBACK_AUTH" "$RUN_DIR/callback.json" || true
+fi
 if [[ "$FINAL_VERDICT" == "PASS" ]]; then
   exit 0
 fi

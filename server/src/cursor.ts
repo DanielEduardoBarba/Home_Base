@@ -25,7 +25,10 @@ import {
 import { listDir, readFile } from "./files";
 import { buildHomebaseTools, wrapPrompt } from "./homebase_tools";
 import { applySeatEnvForAgents } from "./shell_env";
-import { resolveProjectOwner } from "./project_owner";
+import {
+  repairProjectOwnership,
+  resolveProjectOwner,
+} from "./project_owner";
 import { recordUsageFromUpdate } from "./usage_stats";
 import {
   allowSudoUse,
@@ -3056,6 +3059,13 @@ async function startRun(
         category: "cursor",
         meta: { projectId, chatId: opts.chatId },
       });
+    }
+    // HB-OWN-01: SDK host stays root under systemd, but repair any root-owned
+    // files the local agent wrote so the checkout owner can commit without sudo.
+    try {
+      repairProjectOwnership(cwd);
+    } catch {
+      /* best-effort */
     }
   } catch (e) {
     const err = e instanceof Error ? e.message : String(e);

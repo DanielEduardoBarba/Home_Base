@@ -2,7 +2,7 @@
 
 Follow these rules on every turn. Violations fail the sprint.
 
-- **No deploys / ship scripts** — do not run `./build.sh --deploy`, `--service`, ship.sh, or install to systemd/production.
+- **No deploys / ship scripts** — do not run `./build.sh --deploy`/`--ship`/`--service`, `./ship.sh`, `deploy*.sh`, `ship-expo.sh`, `pnpm deploy*`, firebase/eas/gcloud deploy, or install to systemd/production. The runner also installs PATH shims + a pre-push hook.
 - **No App Store Connect / Play Console** actions.
 - **No real payments** — sandbox / test / demo flags only.
 - **No real customer data** — use clearly labeled QA/demo accounts only.
