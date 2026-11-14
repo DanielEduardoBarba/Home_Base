@@ -1,6 +1,7 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
 import {
   chunkTextForSpeech,
+  getServerTranscriptionConfigured,
   isIosUserAgent,
   isWebKitUserAgent,
   mapSpeechRecognitionError,
@@ -8,10 +9,16 @@ import {
   preferBrowserSpeechRecognition,
   preferServerTranscription,
   secureContextMessages,
+  selectVoiceListenPath,
   serverTranscriptionMissingMessages,
+  setServerTranscriptionConfigured,
   shouldUseContinuousRecognition,
   silentSwitchHintMessages,
 } from './speech'
+
+afterEach(() => {
+  setServerTranscriptionConfigured(null)
+})
 
 describe('isIosUserAgent / continuous mode', () => {
   test('detects iPhone and iPad UAs', () => {
@@ -35,17 +42,60 @@ describe('preferServerTranscription / browser fast path', () => {
   const chrome =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
-  test('iOS and Safari WebKit prefer server STT', () => {
-    expect(preferServerTranscription(ios)).toBe(true)
+  test('iOS and Safari WebKit prefer server STT when configured / unknown', () => {
+    expect(preferServerTranscription(ios, { serverConfigured: true })).toBe(true)
     expect(isWebKitUserAgent(safari)).toBe(true)
-    expect(preferServerTranscription(safari)).toBe(true)
-    expect(preferBrowserSpeechRecognition(ios)).toBe(false)
+    expect(preferServerTranscription(safari, { serverConfigured: true })).toBe(true)
+    expect(preferBrowserSpeechRecognition(ios, { serverConfigured: true })).toBe(false)
+  })
+
+  test('iOS does not prefer server when not configured (browser fallback)', () => {
+    expect(preferServerTranscription(ios, { serverConfigured: false })).toBe(false)
+    expect(preferServerTranscription(safari, { serverConfigured: false })).toBe(false)
+    setServerTranscriptionConfigured(false)
+    expect(getServerTranscriptionConfigured()).toBe(false)
+    expect(preferServerTranscription(ios)).toBe(false)
   })
 
   test('desktop Chrome prefers browser SpeechRecognition', () => {
-    expect(preferServerTranscription(chrome)).toBe(false)
-    expect(preferBrowserSpeechRecognition(chrome)).toBe(true)
+    expect(preferServerTranscription(chrome, { serverConfigured: true })).toBe(false)
+    expect(preferBrowserSpeechRecognition(chrome, { serverConfigured: true })).toBe(true)
   })
+})
+
+describe('selectVoiceListenPath matrix (iOS/desktop × configured × recognition)', () => {
+  const ios = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15'
+  const chrome =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+  const cases: Array<{
+    name: string
+    ua: string
+    serverConfigured: boolean
+    recognitionAvailable: boolean
+    path: 'server' | 'browser' | 'keyboard'
+  }> = [
+    { name: 'iOS configured + recognition', ua: ios, serverConfigured: true, recognitionAvailable: true, path: 'server' },
+    { name: 'iOS configured + no recognition', ua: ios, serverConfigured: true, recognitionAvailable: false, path: 'server' },
+    { name: 'iOS not configured + recognition', ua: ios, serverConfigured: false, recognitionAvailable: true, path: 'browser' },
+    { name: 'iOS not configured + no recognition', ua: ios, serverConfigured: false, recognitionAvailable: false, path: 'keyboard' },
+    { name: 'desktop configured + recognition', ua: chrome, serverConfigured: true, recognitionAvailable: true, path: 'browser' },
+    { name: 'desktop configured + no recognition', ua: chrome, serverConfigured: true, recognitionAvailable: false, path: 'server' },
+    { name: 'desktop not configured + recognition', ua: chrome, serverConfigured: false, recognitionAvailable: true, path: 'browser' },
+    { name: 'desktop not configured + no recognition', ua: chrome, serverConfigured: false, recognitionAvailable: false, path: 'keyboard' },
+  ]
+
+  for (const c of cases) {
+    test(c.name, () => {
+      expect(
+        selectVoiceListenPath({
+          ua: c.ua,
+          serverConfigured: c.serverConfigured,
+          recognitionAvailable: c.recognitionAvailable,
+        }),
+      ).toBe(c.path)
+    })
+  }
 })
 
 describe('silent switch + missing STT messages', () => {
@@ -54,8 +104,9 @@ describe('silent switch + missing STT messages', () => {
     expect(silentSwitchHintMessages({ kid: true }).body.toLowerCase()).toContain('mute')
   })
 
-  test('missing key message names env var', () => {
+  test('missing key message names env var and keyboard fallback', () => {
     expect(serverTranscriptionMissingMessages().body).toContain('HOMEBASE_TRANSCRIBE_API_KEY')
+    expect(serverTranscriptionMissingMessages().body.toLowerCase()).toContain('keyboard mic')
   })
 })
 

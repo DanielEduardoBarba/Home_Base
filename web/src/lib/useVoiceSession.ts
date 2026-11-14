@@ -7,13 +7,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api'
 import {
+  getServerTranscriptionConfigured,
   isIosBrowser,
   isSecureContext,
   mediaRecorderSupported,
   preferBrowserSpeechRecognition,
   preferServerTranscription,
   secureContextMessages,
+  selectVoiceListenPath,
   serverTranscriptionMissingMessages,
+  setServerTranscriptionConfigured,
   silentSwitchHintMessages,
   speakText,
   speechSupported,
@@ -46,7 +49,7 @@ export type UseVoiceSession = {
   listening: boolean
   canSpeak: boolean
   canTts: boolean
-  /** True when this device prefers MediaRecorder → server Whisper. */
+  /** True when this device prefers MediaRecorder → server Whisper (and it is configured). */
   usesServerStt: boolean
   /** Show Ring/Silent switch hint (iOS). */
   showSilentSwitchHint: boolean
@@ -60,10 +63,26 @@ export type UseVoiceSession = {
   beginListen: (prefix?: string) => void
 }
 
+async function ensureSpeechConfigured(): Promise<boolean | null> {
+  const cached = getServerTranscriptionConfigured()
+  if (cached !== null) return cached
+  try {
+    const st = await api.speechStatus()
+    const configured = !!st.configured
+    setServerTranscriptionConfigured(configured)
+    return configured
+  } catch {
+    return null
+  }
+}
+
 export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
   const { enabled, kid = false } = opts
   const [listening, setListening] = useState(false)
   const [voiceMode, setVoiceMode] = useState(false)
+  const [serverConfigured, setServerConfigured] = useState<boolean | null>(() =>
+    getServerTranscriptionConfigured(),
+  )
   const voiceModeRef = useRef(false)
   voiceModeRef.current = voiceMode
 
@@ -75,12 +94,27 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
 
   const canSpeak = useMemo(() => speechSupported(), [])
   const canTts = useMemo(() => speechSynthesisSupported(), [])
-  const usesServerStt = useMemo(() => preferServerTranscription(), [])
+  const usesServerStt = useMemo(
+    () => preferServerTranscription(undefined, { serverConfigured }),
+    [serverConfigured],
+  )
   const showSilentSwitchHint = useMemo(() => isIosBrowser() && voiceMode, [voiceMode])
   const silentSwitchHint = useMemo(
     () => silentSwitchHintMessages({ kid }).body,
     [kid],
   )
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const configured = await ensureSpeechConfigured()
+      if (cancelled) return
+      setServerConfigured(configured)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const stopListening = useCallback(() => {
     listenGen.current += 1
@@ -110,6 +144,8 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
           void (async () => {
             try {
               const st = await api.speechStatus()
+              setServerTranscriptionConfigured(!!st.configured)
+              setServerConfigured(!!st.configured)
               if (!st.configured) {
                 o.onIssue(serverTranscriptionMissingMessages({ kid: o.kid }).body, 'warn')
                 return
@@ -190,66 +226,94 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
       }
 
       inputBeforeSpeech.current = (prefix ?? o.getComposerText()).trim()
-      const applySpeech = (text: string) => {
+
+      void (async () => {
+        const configured = await ensureSpeechConfigured()
         if (gen !== listenGen.current) return
-        const base = inputBeforeSpeech.current
-        o.onText(base ? `${base} ${text}` : text)
-      }
-      const onSpeechError = (message: string) => {
-        if (gen !== listenGen.current) return
-        o.onIssue(message)
-      }
+        setServerConfigured(configured)
 
-      const useServer =
-        preferServerTranscription() && mediaRecorderSupported() && voiceModeRef.current && enabled
-      const useBrowserFast =
-        preferBrowserSpeechRecognition() && speechSupported() && !useServer
-
-      // PRIMARY on iOS/WebKit: MediaRecorder → server STT.
-      if (useServer) {
-        beginRecord(gen, prefix)
-        return
-      }
-
-      // Optional fast path (desktop Chrome) or best-effort elsewhere.
-      if (useBrowserFast || (speechSupported() && !preferServerTranscription())) {
-        const handle = startSpeechDictation({
-          onPartial: applySpeech,
-          onFinal: applySpeech,
-          onError: onSpeechError,
-          onEnd: () => {
-            if (gen !== listenGen.current) return
-            speechRef.current = null
-            setListening(false)
-            if (voiceModeRef.current && enabled) {
-              window.setTimeout(() => {
-                if (voiceModeRef.current && listenGen.current === gen) beginListen()
-              }, 250)
-            }
-          },
-          lang: 'en-US',
-          kid: o.kid,
+        const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : ''
+        const path = selectVoiceListenPath({
+          ua,
+          serverConfigured: configured === true,
+          recognitionAvailable: speechSupported(),
         })
-        if (handle) {
-          if (gen !== listenGen.current) {
-            handle.stop()
-            return
-          }
-          speechRef.current = handle
-          setListening(true)
+        const cfgOpts = { serverConfigured: configured }
+
+        const useServer =
+          path === 'server' &&
+          mediaRecorderSupported() &&
+          voiceModeRef.current &&
+          enabled
+
+        // PRIMARY on iOS/WebKit when server STT is configured.
+        if (useServer) {
+          beginRecord(gen, prefix)
           return
         }
-      }
 
-      // Fallback: server STT when browser recognition missing/failed.
-      if (mediaRecorderSupported() && enabled && voiceModeRef.current) {
-        beginRecord(gen, prefix)
-        return
-      }
+        // Browser recognition: desktop fast path, or iOS webkitSpeechRecognition when not configured.
+        const useBrowser =
+          path === 'browser' ||
+          (speechSupported() &&
+            (preferBrowserSpeechRecognition(undefined, cfgOpts) ||
+              !preferServerTranscription(undefined, cfgOpts)))
 
-      if (preferServerTranscription()) {
-        o.onIssue(serverTranscriptionMissingMessages({ kid: o.kid }).body, 'warn')
-      }
+        if (useBrowser && speechSupported()) {
+          const applySpeech = (text: string) => {
+            if (gen !== listenGen.current) return
+            const base = inputBeforeSpeech.current
+            o.onText(base ? `${base} ${text}` : text)
+          }
+          const onSpeechError = (message: string) => {
+            if (gen !== listenGen.current) return
+            o.onIssue(message)
+          }
+          const handle = startSpeechDictation({
+            onPartial: applySpeech,
+            onFinal: applySpeech,
+            onError: onSpeechError,
+            onEnd: () => {
+              if (gen !== listenGen.current) return
+              speechRef.current = null
+              setListening(false)
+              if (voiceModeRef.current && enabled) {
+                window.setTimeout(() => {
+                  if (voiceModeRef.current && listenGen.current === gen) beginListen()
+                }, 250)
+              }
+            },
+            lang: 'en-US',
+            kid: o.kid,
+          })
+          if (handle) {
+            if (gen !== listenGen.current) {
+              handle.stop()
+              return
+            }
+            speechRef.current = handle
+            setListening(true)
+            return
+          }
+          // Browser recognition failed to start.
+          if (configured && mediaRecorderSupported() && enabled && voiceModeRef.current) {
+            beginRecord(gen, prefix)
+            return
+          }
+          o.onIssue(serverTranscriptionMissingMessages({ kid: o.kid }).body, 'warn')
+          return
+        }
+
+        // Fallback: server STT when browser recognition missing but key is set.
+        if (configured && mediaRecorderSupported() && enabled && voiceModeRef.current) {
+          beginRecord(gen, prefix)
+          return
+        }
+
+        if (path === 'keyboard' || configured === false) {
+          o.onIssue(serverTranscriptionMissingMessages({ kid: o.kid }).body, 'warn')
+        }
+      })()
     },
     [beginRecord, enabled],
   )
@@ -257,12 +321,20 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
   const resumeListenSoon = useCallback(
     (delayMs = 400) => {
       if (!enabled || !voiceModeRef.current) return
-      if (!(speechSupported() || mediaRecorderSupported() || preferServerTranscription())) return
+      if (
+        !(
+          speechSupported() ||
+          mediaRecorderSupported() ||
+          preferServerTranscription(undefined, { serverConfigured })
+        )
+      ) {
+        return
+      }
       window.setTimeout(() => {
         if (voiceModeRef.current) beginListen('')
       }, delayMs)
     },
-    [beginListen, enabled],
+    [beginListen, enabled, serverConfigured],
   )
 
   const speakReply = useCallback(
@@ -314,7 +386,11 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
       beginListen()
       return
     }
-    if (canSpeak || mediaRecorderSupported() || preferServerTranscription()) {
+    if (
+      canSpeak ||
+      mediaRecorderSupported() ||
+      preferServerTranscription(undefined, { serverConfigured })
+    ) {
       beginListen()
     } else {
       stopListening()
@@ -325,7 +401,7 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
         'warn',
       )
     }
-  }, [beginListen, canSpeak, enabled, listening, stopListening, voiceMode])
+  }, [beginListen, canSpeak, enabled, listening, serverConfigured, stopListening, voiceMode])
 
   useEffect(() => {
     return () => {

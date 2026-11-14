@@ -4,15 +4,28 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from '../lib/api'
 import {
   collectVoiceDiagnostics,
-  preferServerTranscription,
+  selectVoiceListenPath,
+  setServerTranscriptionConfigured,
   unlockSpeechSynthesis,
   type VoiceDiagnostics,
+  type VoiceListenPath,
 } from '../lib/speech'
 
 type Props = {
   /** Kid-friendly copy for Doodle device settings. */
   kid?: boolean
   className?: string
+}
+
+function micPathLabel(path: VoiceListenPath): string {
+  switch (path) {
+    case 'server':
+      return 'Server STT (primary)'
+    case 'browser':
+      return 'Browser SpeechRecognition'
+    default:
+      return 'Keyboard mic / type'
+  }
 }
 
 /**
@@ -25,7 +38,7 @@ export function VoiceCheck({ kid = false, className = '' }: Props) {
   const [caPath, setCaPath] = useState<string | null>(null)
   const [transcribe, setTranscribe] = useState<boolean | null>(null)
   const [busy, setBusy] = useState(false)
-  const serverPrimary = preferServerTranscription()
+  const [activePath, setActivePath] = useState<VoiceListenPath | null>(null)
 
   const refresh = useCallback(async () => {
     setBusy(true)
@@ -46,12 +59,23 @@ export function VoiceCheck({ kid = false, className = '' }: Props) {
           setHttpsUrl(null)
         }
       }
+      let configured: boolean | null = null
       try {
         const st = await api.speechStatus()
-        setTranscribe(!!st.configured)
+        configured = !!st.configured
+        setTranscribe(configured)
+        setServerTranscriptionConfigured(configured)
       } catch {
         setTranscribe(null)
       }
+      const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : ''
+      setActivePath(
+        selectVoiceListenPath({
+          ua,
+          serverConfigured: configured === true,
+          recognitionAvailable: !!d.recognitionApi,
+        }),
+      )
     } finally {
       setBusy(false)
     }
@@ -106,8 +130,8 @@ export function VoiceCheck({ kid = false, className = '' }: Props) {
           )}
           {row(
             'Mic path',
-            serverPrimary ? 'Server STT (primary)' : 'Browser SpeechRecognition (fast path)',
-            true,
+            activePath ? micPathLabel(activePath) : '—',
+            activePath === 'keyboard' ? false : activePath ? true : undefined,
           )}
           {row('Speech recognition API', diag.recognitionApi ? 'Present' : 'Missing', diag.recognitionApi)}
           {row('MediaRecorder', diag.mediaRecorder ? 'Present' : 'Missing', diag.mediaRecorder)}

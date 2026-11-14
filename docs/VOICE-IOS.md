@@ -1,16 +1,22 @@
 # Voice on iPhone & iPad (Home Base + Doodle)
 
-Talk mode uses **server-side transcription** as the primary mic path on iOS/WebKit (`MediaRecorder` `audio/mp4` → Home Base `POST /api/speech/transcribe`). Spoken replies use browser **speechSynthesis**. Desktop Chrome may still use on-device **SpeechRecognition** as an optional fast path. Text chat always works even when voice does not.
+Talk mode picks a mic path from `/api/speech/status` + browser capabilities:
+
+1. **Server STT** when `HOMEBASE_TRANSCRIBE_API_KEY` / `OPENAI_API_KEY` is set (`MediaRecorder` → `POST /api/speech/transcribe`) — preferred on iOS/WebKit.
+2. Else **browser `webkitSpeechRecognition`** (iOS-safe: `continuous=false` + restart loop; mic pauses while TTS speaks).
+3. Else **keyboard mic / type** with a clear “not configured” message.
+
+Desktop Chrome/Edge still uses on-device SpeechRecognition as the fast path. Spoken replies use browser **speechSynthesis**. Text chat always works even when voice does not.
 
 ## Quick checklist for Dan
 
 1. **Use HTTPS on the VPN** — open `https://10.6.0.x:8443/` (or the URL from Settings / Voice check), not plain `http://`. iOS blocks mic outside a [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts). Cloudflare Tunnel HTTPS also works.
 2. **Trust the local CA once** (see below) so Safari accepts the self-signed VPN cert.
-3. **Set `HOMEBASE_TRANSCRIBE_API_KEY`** (or `OPENAI_API_KEY`) on the Home Base host — never commit keys. Without it, Talk shows a clear “not configured” message; use the keyboard mic / type.
+3. **Optional: set `HOMEBASE_TRANSCRIBE_API_KEY`** (or `OPENAI_API_KEY`) on the Home Base host — never commit keys. Without it, iPhone/iPad falls back to Safari’s built-in speech recognition; if that fails too, Talk shows a clear “not configured” message and you can use the keyboard mic / type.
 4. Tap **Talk** once (user gesture) so iOS unlocks speech synthesis for later AI replies.
 5. **Ring/Silent switch** — if replies are silent, flip the side switch to Ring and raise volume (speechSynthesis respects the mute switch).
 
-In-app: **Settings → Voice check** (and **Settings → Doodle → Devices**) shows secure context, MediaRecorder, server transcription, HTTPS URLs, and the last error.
+In-app: **Settings → Voice check** (and **Settings → Doodle → Devices**) shows the **active mic path**, secure context, MediaRecorder, server transcription, HTTPS URLs, and the last error.
 
 Implementation: `web/src/lib/speech.ts` + shared `web/src/lib/useVoiceSession.ts` (ChatPanel / every Doodle chat bot).
 
@@ -33,11 +39,14 @@ Regenerate SANs after IP changes: Settings API `POST /api/tls/ensure` with `{ "f
 
 ## Listen path (what Home Base does)
 
-| Device | Mic path |
-| --- | --- |
-| iPhone / iPad / WebKit | **Primary:** MediaRecorder → server Whisper |
-| Desktop Chrome / Edge | Optional fast path: SpeechRecognition; server STT still available |
-| Missing API key | Clear UI message; keyboard mic / type |
+| Device | Server key | Recognition API | Mic path |
+| --- | --- | --- | --- |
+| iPhone / iPad / WebKit | configured | any | **Server STT** (MediaRecorder → Whisper) |
+| iPhone / iPad / WebKit | missing | present | **Browser** webkitSpeechRecognition (iOS-safe) |
+| iPhone / iPad / WebKit | missing | absent | Keyboard mic / type (+ not-configured message) |
+| Desktop Chrome / Edge | any | present | Browser SpeechRecognition (fast path) |
+| Desktop | configured | absent | Server STT |
+| Desktop | missing | absent | Keyboard mic / type |
 
 Also: iOS TTS unlock + sentence chunking; mic pauses while speaking; silent-switch hint when Talk is on.
 
@@ -51,22 +60,24 @@ HOMEBASE_TRANSCRIBE_API_KEY=sk-...
 OPENAI_API_KEY=sk-...
 ```
 
-Uses OpenAI Whisper (`whisper-1`). `/api/speech/status` reports `configured: false` when unset. No key → no cloud audio.
+Uses OpenAI Whisper (`whisper-1`). `/api/speech/status` reports `configured: false` when unset. The client caches that flag and picks the mic path above.
 
 ## Hands-free flow
 
 1. Tap **Talk** (Agent) or the kid mic (Doodle) — unlocks TTS, starts recording / listening.
-2. On iOS: tap Talk again to finish the clip → server transcribes into the composer.
-3. Mic pauses while the reply is spoken (chunked).
-4. Listening resumes while Talk stays on.
-5. Tap **Talk** again to stop.
+2. On iOS with server STT: tap Talk again to finish the clip → server transcribes into the composer.
+3. On iOS without a key: Safari recognition listens with `continuous=false` + restart loop.
+4. Mic pauses while the reply is spoken (chunked).
+5. Listening resumes while Talk stays on.
+6. Tap **Talk** again to stop.
 
 ## Still stuck?
 
 Open **Voice check** on the device and note:
 
 - Secure page = No → use VPN HTTPS (trust CA) or Cloudflare Tunnel  
-- Server transcription = Not configured → set `HOMEBASE_TRANSCRIBE_API_KEY`  
+- Mic path = Keyboard mic / type → set `HOMEBASE_TRANSCRIBE_API_KEY` or enable Dictation / allow mic  
+- Server transcription = Not configured → optional; browser recognition is the fallback  
 - Mic permission = denied → Safari site settings  
 - Spoken replies silent → Ring switch + volume  
 - Synth voices = 0 → tap **Unlock speech**, wait a second, Refresh  

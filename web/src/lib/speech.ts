@@ -2,10 +2,11 @@
  * Browser speech helpers for Home Base + Doodle (Chrome / Safari / iOS WebKit).
  * Pure helpers are unit-tested; browser APIs are gated for iOS secure-context quirks.
  *
- * Listen path policy:
- * - iOS / iPadOS / WebKit → server STT (MediaRecorder → POST /api/speech/transcribe) PRIMARY
- * - Desktop Chrome/Edge with SpeechRecognition → optional fast on-device path
- * - Browser SpeechRecognition elsewhere is best-effort only
+ * Listen path policy (see selectVoiceListenPath):
+ * - iOS / iPadOS / WebKit → server STT when configured; else webkitSpeechRecognition;
+ *   else keyboard-mic / type hint
+ * - Desktop Chrome/Edge → SpeechRecognition fast path; server STT if recognition missing
+ * - Cache /api/speech/status `configured` via setServerTranscriptionConfigured
  */
 
 export type SpeechHandle = {
@@ -61,10 +62,45 @@ let synthUnlocked = false
 let preferredVoice: SpeechSynthesisVoiceLike | null = null
 let speakingActive = false
 let synthWatchdog: ReturnType<typeof setInterval> | null = null
+/** Cached `/api/speech/status` configured flag. null = not fetched yet. */
+let serverTranscriptionConfiguredCache: boolean | null = null
 
 /** Test / UI: last speech-related error string. */
 export function getLastSpeechError(): string | null {
   return lastSpeechError
+}
+
+/** Cached server Whisper configured flag (`null` until first status fetch). */
+export function getServerTranscriptionConfigured(): boolean | null {
+  return serverTranscriptionConfiguredCache
+}
+
+/** Update cached `/api/speech/status` configured flag (Call from VoiceCheck / useVoiceSession). */
+export function setServerTranscriptionConfigured(configured: boolean | null): void {
+  serverTranscriptionConfiguredCache = configured
+}
+
+export type VoiceListenPath = 'server' | 'browser' | 'keyboard'
+
+/**
+ * Pure mic-path picker for Talk / Doodle (unit-tested matrix).
+ * iOS/WebKit: server when configured → browser recognition → keyboard hint.
+ * Desktop: browser when available → server when configured → keyboard hint.
+ */
+export function selectVoiceListenPath(input: {
+  ua: string
+  serverConfigured: boolean
+  recognitionAvailable: boolean
+}): VoiceListenPath {
+  const uaWantsServer = isIosUserAgent(input.ua) || isWebKitUserAgent(input.ua)
+  if (uaWantsServer) {
+    if (input.serverConfigured) return 'server'
+    if (input.recognitionAvailable) return 'browser'
+    return 'keyboard'
+  }
+  if (input.recognitionAvailable) return 'browser'
+  if (input.serverConfigured) return 'server'
+  return 'keyboard'
 }
 
 export function setLastSpeechError(message: string | null): void {
@@ -99,21 +135,33 @@ export function isWebKitUserAgent(ua: string): boolean {
 }
 
 /**
- * Prefer MediaRecorder → Home Base server Whisper on iOS/WebKit.
- * Desktop Chrome keeps on-device SpeechRecognition as the fast path.
+ * Prefer MediaRecorder → Home Base server Whisper on iOS/WebKit when configured.
+ * When `serverConfigured === false` (or cache says so), returns false so iOS can
+ * fall back to webkitSpeechRecognition. Desktop Chrome keeps on-device as fast path.
  */
-export function preferServerTranscription(ua?: string): boolean {
+export function preferServerTranscription(
+  ua?: string,
+  opts?: { serverConfigured?: boolean | null },
+): boolean {
   const agent =
     ua ??
     (typeof navigator !== 'undefined' ? navigator.userAgent || '' : '')
+  const configured =
+    opts && 'serverConfigured' in opts
+      ? opts.serverConfigured
+      : serverTranscriptionConfiguredCache
+  if (configured === false) return false
   if (isIosUserAgent(agent)) return true
   if (isWebKitUserAgent(agent)) return true
   return false
 }
 
 /** Desktop Chrome/Edge-style browsers where SpeechRecognition is usually reliable. */
-export function preferBrowserSpeechRecognition(ua?: string): boolean {
-  if (preferServerTranscription(ua)) return false
+export function preferBrowserSpeechRecognition(
+  ua?: string,
+  opts?: { serverConfigured?: boolean | null },
+): boolean {
+  if (preferServerTranscription(ua, opts)) return false
   const agent =
     ua ??
     (typeof navigator !== 'undefined' ? navigator.userAgent || '' : '')
@@ -210,7 +258,7 @@ export function secureContextMessages(opts: {
   }
 }
 
-/** Clear message when server Whisper key is missing (iOS primary path). */
+/** Clear message when server Whisper key is missing (and browser recognition unavailable/failed). */
 export function serverTranscriptionMissingMessages(opts: {
   kid?: boolean
 } = {}): { title: string; body: string } {
@@ -222,7 +270,7 @@ export function serverTranscriptionMissingMessages(opts: {
   }
   return {
     title: 'Server transcription not configured',
-    body: 'Server transcription is not configured. Set HOMEBASE_TRANSCRIBE_API_KEY (or OPENAI_API_KEY) on the Home Base host. On iPhone/iPad this is the primary Talk mic path — use the keyboard mic / type until it is set.',
+    body: 'Server transcription is not configured. Set HOMEBASE_TRANSCRIBE_API_KEY (or OPENAI_API_KEY) on the Home Base host. Browser speech recognition is unavailable or failed — use the keyboard mic / type.',
   }
 }
 
