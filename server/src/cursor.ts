@@ -29,6 +29,10 @@ import {
   repairProjectOwnership,
   resolveProjectOwner,
 } from "./project_owner";
+import {
+  createOwnerSdkAgentHandle,
+  shouldRunSdkAsOwner,
+} from "./cursor_sdk_host";
 import { recordUsageFromUpdate } from "./usage_stats";
 import {
   allowSudoUse,
@@ -1411,7 +1415,6 @@ async function createAgentHandle(opts: {
   // HOME/PATH/git so field prompts (git fetch, gh, etc.) match a laptop terminal.
   ensureSeatAgentEnv(opts.cwd);
 
-  const { Agent } = await import("@cursor/sdk");
   const apiKey = loadCursorApiKey() || (process.env.CURSOR_API_KEY || "").trim();
   const readonly = opts.mode === "ask";
   const tools = buildHomebaseTools(opts.projectId, readonly, {
@@ -1437,6 +1440,29 @@ async function createAgentHandle(opts: {
     };
   }
 
+  // HB-OWN-02: when homebased is root, run the SDK in a setpriv child as the
+  // checkout owner (real uid/gid/groups). Keep post-run ownership repair as a
+  // backstop for any leftover root-owned files.
+  if (shouldRunSdkAsOwner(opts.cwd)) {
+    const owner = resolveProjectOwner(opts.cwd);
+    const { agent, childUid } = await createOwnerSdkAgentHandle({
+      cwd: opts.cwd,
+      apiKey,
+      model: opts.model || defaultModel(),
+      mode: opts.mode,
+      agentId: opts.agentId,
+      tools: customTools,
+      owner,
+    });
+    appendTrace(
+      "info",
+      `cursor SDK job child uid=${childUid} owner=${owner.name} (${owner.uid})`,
+      "cursor",
+    );
+    return { agent: agent as never };
+  }
+
+  const { Agent } = await import("@cursor/sdk");
   const local = {
     cwd: opts.cwd,
     customTools,
@@ -3060,8 +3086,8 @@ async function startRun(
         meta: { projectId, chatId: opts.chatId },
       });
     }
-    // HB-OWN-01: SDK host stays root under systemd, but repair any root-owned
-    // files the local agent wrote so the checkout owner can commit without sudo.
+    // HB-OWN-02 backstop: SDK jobs prefer a setpriv owner child, but still
+    // repair any root-owned leftovers so the checkout owner can commit.
     try {
       repairProjectOwnership(cwd);
     } catch {

@@ -34,6 +34,18 @@ type WsData = {
   unsubCursor?: () => void;
 };
 
+// Worker entries exit before root runtime bootstrap (sudo-askpass under
+// /var/lib/homebased). SDK worker also gets a seat-writable HOMEBASE_RUNTIME.
+if (process.argv.includes("--cursor-sdk-worker")) {
+  const { runCursorSdkWorker } = await import("./cursor_sdk_worker");
+  process.exit(await runCursorSdkWorker());
+}
+
+if (process.argv.includes("--view-worker")) {
+  const { runViewWorker } = await import("./view_worker");
+  process.exit(await runViewWorker());
+}
+
 ensureRuntimeDirs();
 ensureAskpass();
 Object.assign(process.env, sudoAskpassEnv());
@@ -82,11 +94,6 @@ if (
   process.argv.includes("--self-test")
 ) {
   process.exit(selfTest());
-}
-
-if (process.argv.includes("--view-worker")) {
-  const { runViewWorker } = await import("./view_worker");
-  process.exit(await runViewWorker());
 }
 
 if (process.argv.includes("unlock")) {
