@@ -18,10 +18,7 @@ export function HomeUsageTab({ onHome }: { onHome: () => void }) {
             <h1 className="font-display text-2xl md:text-3xl font-extrabold tracking-tight">
               Usage
             </h1>
-            <p className="text-mute text-sm mt-1.5 leading-relaxed">
-              Plan for the Cursor API key on this laptop — legacy vs The X Subscription, days
-              until reset, Cursor / Other models, Grok bots, and local Chat.
-            </p>
+            <p className="text-mute text-sm mt-1.5">Cursor Spending for the account signed in on this laptop.</p>
           </div>
         </header>
         <UsageBillingPanel />

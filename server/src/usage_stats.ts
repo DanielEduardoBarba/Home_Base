@@ -16,6 +16,7 @@ import {
   loadCursorApiKey,
 } from "./secrets_vault";
 import { listActivity } from "./activity_audit";
+import { fetchCursorSpending, type CursorSpending } from "./cursor_spending";
 import { listMcpTokens } from "./mcp_server";
 
 const USAGE_DIR = () => join(RUNTIME_DIR, "usage");
@@ -1180,17 +1181,20 @@ export async function usageOverview(opts?: { force?: boolean }): Promise<{
   homebase: HomebaseUsage;
   cursor: CursorAccount;
   ai: AiUsageBundle;
+  spending: CursorSpending;
   projects: number;
   generatedAt: number;
 }> {
-  const [homebase, cursor] = await Promise.all([
+  const [homebase, cursor, spending] = await Promise.all([
     Promise.resolve(collectHomebaseUsage()),
     fetchCursorAccount(opts),
+    fetchCursorSpending(opts),
   ]);
   return {
     homebase,
     cursor,
     ai: buildAiBundle(homebase, cursor),
+    spending,
     projects: loadProjects().size,
     generatedAt: Date.now(),
   };

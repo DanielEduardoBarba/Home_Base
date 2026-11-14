@@ -164,7 +164,7 @@ export function HomeDashboard({
           <HomeCard
             tone="usage"
             label="Usage"
-            desc="Cursor plan, days until renew, Grok bots, Cursor vs Other models."
+            desc="Included usage, Cursor vs Other models, on-demand, and reset."
             onClick={onOpenUsage}
             icon={
               <>

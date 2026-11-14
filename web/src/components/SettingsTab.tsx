@@ -490,9 +490,7 @@ export function SettingsTab({
           {
             id: 'usage',
             title: 'AI usage',
-            hint: cursorConfigured
-              ? 'Opens Usage · plan · models · Grok bots'
-              : 'Opens Usage · add Cursor key for plan',
+            hint: 'Opens Usage · same view as Cursor Spending',
           },
           {
             id: 'git',
@@ -1381,7 +1379,7 @@ export function SettingsTab({
       <>
         <SceneShell
           title="AI usage"
-          hint="Plan (legacy vs The X Subscription), Cursor / Other models, MCP Grok bots, and local Chat activity."
+          hint="Same numbers as Cursor Spending."
           onBack={goHub}
         >
           <UsageBillingPanel />

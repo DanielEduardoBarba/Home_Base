@@ -42,7 +42,7 @@ Bottom dock: Apps · Shell · Files · Chat · **More** (Git · **View** · Logs
 - **Chat** — full-page agent; same engine as the Work dock; can jump into Work to show Apps/Shell/Files.
 - **Shell** — standalone PTY + session attach. Under systemd root, Shell/Run/Expo PTYs `setpriv` to the seat user and load that user’s login+interactive env (nvm/pnpm/cargo) so they match a native laptop terminal.
 - **View** — JWT-gated live laptop screen (`/ws/view`) with pointer/keyboard; Bun seat-user `--view-worker` (libX11 `XGetImage` + XTest via `bun:ffi`). Root systemd uses setpriv/runuser to the seat owner (cannot open the user display as root). Explicit Connect/Disconnect; maximize mode; adaptive JPEG. Capture runs only while connected.
-- Alerts bell in the thin top status bar opens a top→bottom near-full inbox; History is a right drawer. Chat supports English speech→text; Cursor done pings toast/sound and optional browser notifications. Home → **Usage** shows Cursor plan (legacy vs The X Subscription), days until renewal/reset, Cursor vs Other models, Grok/MCP bots, and local Chat activity for the stored API key. Home → **Settings** is a hub of grouped rows (Appearance, PIN, Sudo vault, Cursor key, WireGuard / Cloudflare / MCP Server, Storage, About/legal, etc.); **AI usage** there opens the Usage area.
+- Alerts bell in the thin top status bar opens a top→bottom near-full inbox; History is a right drawer. Chat supports English speech→text; Cursor done pings toast/sound and optional browser notifications. Home → **Usage** mirrors [cursor.com/dashboard/spending](https://cursor.com/dashboard/spending) for the Cursor account signed in on this laptop (included, Cursor Models, Other Models, on-demand, reset). Home → **Settings** is a hub of grouped rows (Appearance, PIN, Sudo vault, Cursor key, WireGuard / Cloudflare / MCP Server, Storage, About/legal, etc.); **AI usage** there opens the Usage area.
 
 ### Home Agent
 
@@ -62,7 +62,7 @@ Kid-friendly AI mascot + doodle pad + floating chat (`/doodle`). Cursor chat san
 
 ### Usage
 
-Home area **Usage** (`/usage`): plan for the stored Cursor API key — Legacy vs The X Subscription, tier, billing model, days/hours until weekly reset or monthly renewal, Cursor Models vs Other Models pools, Grok/MCP bot activity (7d), Admin billing when the key allows, and local Home Base Chat stats. Settings → AI usage opens the same area.
+Home area **Usage** (`/usage`): the Cursor Spending view for the IDE login on this laptop — plan, included dollars and percent, Cursor Models, Other Models, on-demand, and days until reset. Settings → AI usage opens the same area.
 
 ### Contingency
 

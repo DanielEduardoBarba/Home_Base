@@ -1129,6 +1129,25 @@ export const api = {
   usage: (opts?: { refresh?: boolean }) =>
     request<{
       generatedAt: number
+      spending: {
+        ok: boolean
+        error: string | null
+        email: string | null
+        planName: string | null
+        price: string | null
+        cycleKind: 'weekly' | 'monthly' | 'unknown'
+        cycleEndMs: number | null
+        daysRemaining: number | null
+        included: { label: string; percent: number | null; width: number; detail: string | null }
+        includedUsedCents: number | null
+        includedLimitCents: number | null
+        cursorModels: { label: string; percent: number | null; width: number; detail: string | null }
+        otherModels: { label: string; percent: number | null; width: number; detail: string | null }
+        onDemandEnabled: boolean | null
+        onDemandUsedCents: number | null
+        onDemandLimitCents: number | null
+        dashboardUrl: string
+      }
       projects: number
       homebase: {
         chats: number
