@@ -178,12 +178,21 @@ export function PinLock({
     })
   }, [])
 
+  // Leaving the Doodle tablet bypass: other areas must ask for the PIN again.
+  const prevBypass = useRef(bypass)
+  useEffect(() => {
+    if (prevBypass.current && !bypass && enabledRef.current) lock()
+    prevBypass.current = bypass
+  }, [bypass, lock])
+
   useEffect(() => {
     if (!enabled) {
       if (!locked) return
       setLocked(false)
       return
     }
+    // Doodle tablet: no idle lock here (it would also lock other devices mid-chat).
+    if (bypass) return
     const onPointer = () => {
       if (!lockedRef.current) markActive()
     }
@@ -220,7 +229,7 @@ export function PinLock({
       window.removeEventListener('pagehide', onPageHide)
       window.clearInterval(tick)
     }
-  }, [enabled, lock, markActive])
+  }, [enabled, bypass, lock, markActive])
 
   const tryUnlock = useCallback(
     async (pin: string) => {

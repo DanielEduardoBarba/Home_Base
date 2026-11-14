@@ -38,6 +38,7 @@ export function parseAppPath(pathname: string): ParseResult {
       head === 'agent' ||
       head === 'vision' ||
       head === 'doodle' ||
+      head === 'usage' ||
       head === 'contingency' ||
       head === 'settings')
   ) {
@@ -74,6 +75,7 @@ export function serializeAppPath(loc: AppLocation): string {
   if (loc.area === 'agent') return '/agent'
   if (loc.area === 'vision') return '/vision'
   if (loc.area === 'doodle') return '/doodle'
+  if (loc.area === 'usage') return '/usage'
   if (loc.area === 'contingency') return '/contingency'
   if (loc.area === 'settings') return '/settings'
   if (loc.tab === 'view') return '/view'

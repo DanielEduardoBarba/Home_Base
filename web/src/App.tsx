@@ -85,6 +85,10 @@ const ContingencyTab = dynamic(
   () => import('./components/ContingencyTab').then((m) => m.ContingencyTab),
   { ssr: false, loading: tabFallback },
 )
+const HomeUsageTab = dynamic(
+  () => import('./components/HomeUsageTab').then((m) => m.HomeUsageTab),
+  { ssr: false, loading: tabFallback },
+)
 const PinLock = dynamic(() => import('./components/PinLock').then((m) => m.PinLock), {
   ssr: false,
 })
@@ -712,6 +716,10 @@ function AuthedApp({ doodleOnly = false }: { doodleOnly?: boolean }) {
               unlockAudio()
               goArea('doodle')
             }}
+            onOpenUsage={() => {
+              unlockAudio()
+              goArea('usage')
+            }}
             onOpenContingency={() => {
               unlockAudio()
               goArea('contingency')
@@ -721,6 +729,24 @@ function AuthedApp({ doodleOnly = false }: { doodleOnly?: boolean }) {
               goArea('settings')
             }}
           />
+        </main>
+        <ToastStack />
+        <NotificationCenter />
+      </div>
+    )
+  }
+
+  if (area === 'usage') {
+    return (
+      <div className="hb-app-shell h-full flex flex-col">
+        <PullToRefresh onRefresh={refresh} />
+        {refreshing && (
+          <div className="hb-refresh-overlay" role="status" aria-live="polite" aria-label="Refreshing">
+            <div className="hb-spinner" />
+          </div>
+        )}
+        <main className="flex-1 min-h-0 overflow-hidden">
+          <HomeUsageTab onHome={() => goArea('home')} />
         </main>
         <ToastStack />
         <NotificationCenter />
@@ -740,6 +766,7 @@ function AuthedApp({ doodleOnly = false }: { doodleOnly?: boolean }) {
         <main className="flex-1 min-h-0 overflow-hidden">
           <SettingsTab
             onHome={() => goArea('home')}
+            onOpenUsage={() => goArea('usage')}
             onPresent={presentInWork}
             onSignedOut={() => {
               // Session is already cleared; AuthedApp unmounts to Login.

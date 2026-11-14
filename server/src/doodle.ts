@@ -88,7 +88,7 @@ type TabletsFile = { tablets: DoodleTablet[]; updatedAt?: number };
 
 const DEFAULT_EXPRESS: DoodleExpress = {
   mouth: "happy",
-  color: "#4ecdc4",
+  color: "#ffb703",
   energy: 0.55,
   bubble: "",
   name: "Doodle",
@@ -290,7 +290,8 @@ export function ensureDoodleProject(): { id: string; path: string; name: string 
 
 export async function enrollDoodleTablet(opts: {
   deviceId: string;
-  pin: string;
+  /** Required when App PIN is enabled; ignored when PIN is off. */
+  pin?: string;
   name?: string;
   ip: string;
   userAgent?: string;
@@ -311,24 +312,20 @@ export async function enrollDoodleTablet(opts: {
       message: "Invalid device id",
     });
   }
-  if (!isAppPinEnabled()) {
-    throw new HttpError(400, {
-      code: "pin_disabled",
-      message: "Enable App PIN in Settings before remembering a tablet",
-    });
-  }
-  if (!verifyAppPin(opts.pin)) {
-    const info = recordFailure(opts.ip, "invalid_pin", {
-      userAgent: opts.userAgent,
-      path: opts.ctx?.path || "/api/doodle/enroll",
-    });
-    throw new HttpError(401, {
-      code: "bad_pin",
-      message: "Incorrect PIN",
-      failCount: info.failCount,
-      retryAfter: info.retryAfter,
-      remaining: info.remaining,
-    });
+  if (isAppPinEnabled()) {
+    const pin = String(opts.pin || "");
+    if (!verifyAppPin(pin)) {
+      const info = recordFailure(opts.ip, "invalid_pin", {
+        userAgent: opts.userAgent,
+        path: opts.ctx?.path || "/api/doodle/enroll",
+      });
+      throw new HttpError(401, {
+        code: "bad_pin",
+        message: "Incorrect PIN",
+        failCount: info.failCount,
+        retryAfter: info.retryAfter,
+      });
+    }
   }
 
   ensureDoodleProject();
@@ -388,7 +385,9 @@ export function doodleStatusPublic(deviceId?: string): {
   };
 }
 
-export function setDoodleExpress(patch: Partial<DoodleExpress>): DoodleExpress {
+export function setDoodleExpress(
+  patch: Partial<Omit<DoodleExpress, "mouth">> & { mouth?: string },
+): DoodleExpress {
   const st = getDoodleState();
   if (patch.mouth != null) st.express.mouth = normalizeMouth(patch.mouth);
   if (patch.color != null) st.express.color = String(patch.color).slice(0, 32);
@@ -509,7 +508,11 @@ export function clearDoodleAll(): {
 
 export const DOODLE_GUIDANCE =
   "You are Doodle — a bubbly, cheerful, kid-friendly Christian AI mascot friend. " +
-  "Speak simply and kindly. Encourage creativity, kindness, prayerfulness, and good habits. " +
+  "Speak simply and kindly in short, sunny replies (1–3 small sentences, a happy emoji is fine). " +
+  "No code, file paths, or technical words — the chat shows only your words to a child. " +
+  "Encourage creativity, kindness, prayerfulness, and good habits. " +
+  "When a doodle.jpg picture is attached it is the child's live drawing — cheer it on warmly. " +
+  "Canvas strokes with color \"eraser\" are rubbed-out paper. " +
   "Stay age-appropriate for young children. Never discuss or depict Halloween, evil, demonic, " +
   "scary horror, sexual, immodest, perverted, or LGBTQ topics — gently redirect to wholesome fun. " +
   "You live in a private sandbox at /opt/homebase-doodle — stay there. " +

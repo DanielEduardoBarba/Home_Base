@@ -133,10 +133,13 @@ function SceneShell({
 export function SettingsTab({
   onSignedOut,
   onHome,
+  onOpenUsage,
   onPresent,
 }: {
   onSignedOut: () => void
   onHome?: () => void
+  /** Prefer the Home → Usage area when set. */
+  onOpenUsage?: () => void
   onPresent?: (req: PresentRequest) => void
 }) {
   const [scene, setScene] = useState<SettingsScene>('hub')
@@ -479,8 +482,8 @@ export function SettingsTab({
             id: 'usage',
             title: 'AI usage',
             hint: cursorConfigured
-              ? 'Plan · Cursor/Other models · MCP / Grok'
-              : 'Local + MCP · add key for Cursor plan',
+              ? 'Opens Usage · plan · models · Grok bots'
+              : 'Opens Usage · add Cursor key for plan',
           },
           {
             id: 'git',
@@ -1234,9 +1237,12 @@ export function SettingsTab({
             <button
               type="button"
               className="hb-btn hb-btn-ghost w-full !min-h-10 text-sm"
-              onClick={() => setScene('usage')}
+              onClick={() => {
+                if (onOpenUsage) onOpenUsage()
+                else setScene('usage')
+              }}
             >
-              AI usage →
+              Usage →
             </button>
           </section>
         </SceneShell>
@@ -1785,7 +1791,13 @@ export function SettingsTab({
                       key={row.id}
                       title={row.title}
                       hint={row.hint}
-                      onClick={() => setScene(row.id)}
+                      onClick={() => {
+                        if (row.id === 'usage' && onOpenUsage) {
+                          onOpenUsage()
+                          return
+                        }
+                        setScene(row.id)
+                      }}
                     />
                   ))}
                 </div>

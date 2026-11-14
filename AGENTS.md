@@ -32,7 +32,7 @@ SPA fetch/WebSocket paths are always relative (`/api/...`, `/ws/...` via `locati
 
 ## UI areas (after login)
 
-**Home** dashboard → **Home Agent** · **Homework** (Work) · **Home Access** · **Vision** · **Doodle** · **Contingency** · **Settings**.
+**Home** dashboard → **Home Agent** · **Homework** (Work) · **Home Access** · **Vision** · **Doodle** · **Usage** · **Contingency** · **Settings**.
 
 ### Homework tabs
 
@@ -42,7 +42,7 @@ Bottom dock: Apps · Shell · Files · Chat · **More** (Git · **View** · Logs
 - **Chat** — full-page agent; same engine as the Work dock; can jump into Work to show Apps/Shell/Files.
 - **Shell** — standalone PTY + session attach. Under systemd root, Shell/Run/Expo PTYs `setpriv` to the seat user and load that user’s login+interactive env (nvm/pnpm/cargo) so they match a native laptop terminal.
 - **View** — JWT-gated live laptop screen (`/ws/view`) with pointer/keyboard; Bun seat-user `--view-worker` (libX11 `XGetImage` + XTest via `bun:ffi`). Root systemd uses setpriv/runuser to the seat owner (cannot open the user display as root). Explicit Connect/Disconnect; maximize mode; adaptive JPEG. Capture runs only while connected.
-- Alerts bell in the thin top status bar opens a top→bottom near-full inbox; History is a right drawer. Chat supports English speech→text; Cursor done pings toast/sound and optional browser notifications. Home → **Settings** is a hub of grouped rows that drill into focused sub-scenes (Appearance, PIN, Sudo vault, Cursor key, **AI usage** — plan family/tier, Cursor vs Other models, MCP/Grok bots — WireGuard / Cloudflare / MCP Server, Storage, About/legal, etc.).
+- Alerts bell in the thin top status bar opens a top→bottom near-full inbox; History is a right drawer. Chat supports English speech→text; Cursor done pings toast/sound and optional browser notifications. Home → **Usage** shows Cursor plan (legacy vs The X Subscription), days until renewal/reset, Cursor vs Other models, Grok/MCP bots, and local Chat activity for the stored API key. Home → **Settings** is a hub of grouped rows (Appearance, PIN, Sudo vault, Cursor key, WireGuard / Cloudflare / MCP Server, Storage, About/legal, etc.); **AI usage** there opens the Usage area.
 
 ### Home Agent
 
@@ -60,9 +60,13 @@ Live laptop screen (same `/ws/view` worker) plus a Chat dock. **Arm** (JWT, defa
 
 Kid-friendly AI mascot + doodle pad + floating chat (`/doodle`). Cursor chat sandboxed at `/opt/homebase-doodle` (project id `doodle`, hidden from Work). Tablet enroll (PIN) issues a 30-day `kind: doodle` cookie that skips App PIN **only** on this scene; other areas keep normal session/PIN. Tools: `homebase_doodle_express` · `_canvas` · `_timer` · `_travel` (Nominatim+OSRM). Tap Clear = chats; hold Clear = chats + workspace wipe. See `.cursor/rules/doodle.mdc`.
 
+### Usage
+
+Home area **Usage** (`/usage`): plan for the stored Cursor API key — Legacy vs The X Subscription, tier, billing model, days/hours until weekly reset or monthly renewal, Cursor Models vs Other Models pools, Grok/MCP bot activity (7d), Admin billing when the key allows, and local Home Base Chat stats. Settings → AI usage opens the same area.
+
 ### Contingency
 
-Human Web GUI hazard scene only — **no MCP**, **no `homebase_*` tools**, no AI. Yellow/black nuclear UI: App PIN (when enabled) → short-lived ticket → press · full-circle spin · arm · final press. Runs editable bash (default `echo c > /proc/sysrq-trigger`) then always attempts reboot if the host is still up. Script in `.runtime/contingency.json` (0600).
+Human Web GUI hazard scene only — **no MCP**, **no `homebase_*` tools**, no AI. Yellow/black nuclear UI: App PIN (when enabled) → short-lived ticket → press · full-circle spin · arm · final press. Runs bash (default `echo c > /proc/sysrq-trigger`) then always attempts reboot if the host is still up. Script is AES-GCM encrypted at rest (`.runtime/contingency.script.enc`); sessions may read it; editing requires Home Base password + App PIN when enabled.
 
 ### Chat persistence
 

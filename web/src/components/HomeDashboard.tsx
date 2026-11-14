@@ -15,6 +15,7 @@ type Props = {
   onOpenAgent: () => void
   onOpenVision: () => void
   onOpenDoodle: () => void
+  onOpenUsage: () => void
   onOpenContingency: () => void
   onOpenSettings: () => void
 }
@@ -27,7 +28,7 @@ function HomeCard({
   icon,
   onClick,
 }: {
-  tone: 'work' | 'agent' | 'vision' | 'doodle' | 'settings' | 'access' | 'contingency' | 'contingency'
+  tone: 'work' | 'agent' | 'vision' | 'doodle' | 'usage' | 'settings' | 'access' | 'contingency'
   label: string
   desc: string
   badge?: string
@@ -58,7 +59,7 @@ function HomeCard({
 }
 
 /**
- * Post-login landing — Agent, Work, Vision, Settings.
+ * Post-login landing — Work, Agent, Vision, Doodle, Usage, Settings, …
  * Home Access is advanced / off-by-default (Settings → Appearance).
  */
 export function HomeDashboard({
@@ -71,6 +72,7 @@ export function HomeDashboard({
   onOpenAgent,
   onOpenVision,
   onOpenDoodle,
+  onOpenUsage,
   onOpenContingency,
   onOpenSettings,
 }: Props) {
@@ -160,9 +162,21 @@ export function HomeDashboard({
             }
           />
           <HomeCard
+            tone="usage"
+            label="Usage"
+            desc="Cursor plan, days until renew, Grok bots, Cursor vs Other models."
+            onClick={onOpenUsage}
+            icon={
+              <>
+                <path d="M4 19V5M4 19h16" />
+                <path d="M7.5 15.5v-3.5M11.5 15.5V8M15.5 15.5v-5M19.5 15.5v-7" />
+              </>
+            }
+          />
+          <HomeCard
             tone="settings"
             label="Settings"
-            desc="Theme, PIN, Cursor key, AI usage, VPN, tunnel, storage."
+            desc="Theme, PIN, Cursor key, VPN, tunnel, storage."
             onClick={onOpenSettings}
             icon={
               <>

@@ -46,6 +46,8 @@ const KEEP_SOFT = new Set([
   "presence_ui_token",
   "email_alerts.json",
   "email_alerts.secrets.enc",
+  "contingency.json",
+  "contingency.script.enc",
   "activity",
   "logs",
 ]);

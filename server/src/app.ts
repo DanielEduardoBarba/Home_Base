@@ -631,12 +631,20 @@ app.post("/api/logout", async (c) => {
 });
 
 app.post("/api/ws-ticket", async (c) => {
-  // Session (PIN-ok) or doodle tablet token
+  // Doodle scope prefers the tablet cookie (PIN-exempt on the doodle socket only).
   let claims: Record<string, unknown>;
-  try {
-    claims = await requireAuth(c, { allowPinLocked: true });
-  } catch {
-    claims = await requireDoodleAuth(c);
+  if (c.req.query("scope") === "doodle") {
+    try {
+      claims = await requireDoodleAuth(c);
+    } catch {
+      claims = await requireAuth(c, { allowPinLocked: true });
+    }
+  } else {
+    try {
+      claims = await requireAuth(c, { allowPinLocked: true });
+    } catch {
+      claims = await requireDoodleAuth(c);
+    }
   }
   const minted = mintWsTicket(claims);
   return c.json({
@@ -724,7 +732,7 @@ app.post("/api/doodle/enroll", async (c) => {
   const body = z
     .object({
       deviceId: z.string().min(8).max(64),
-      pin: z.string(),
+      pin: z.string().optional(),
       name: z.string().max(64).optional(),
     })
     .parse(await readJson(c));
@@ -2404,9 +2412,28 @@ app.get("/api/contingency", async (c) => {
 
 app.put("/api/contingency/script", async (c) => {
   await requireAuth(c);
-  const body = z.object({ script: z.string() }).parse(await readJson(c));
-  const state = setContingencyScript(body.script);
-  return c.json({ ok: true, ...contingencyStatus(), script: state.script, updatedAt: state.updatedAt });
+  const body = z
+    .object({
+      script: z.string(),
+      password: z.string().min(1),
+      pin: z.string().optional(),
+    })
+    .parse(await readJson(c));
+  const state = setContingencyScript(
+    body.script,
+    { password: body.password, pin: body.pin },
+    clientIp(c),
+    {
+      userAgent: clientUserAgent(c),
+      path: "/api/contingency/script",
+    },
+  );
+  return c.json({
+    ok: true,
+    ...contingencyStatus(),
+    script: state.script,
+    updatedAt: state.updatedAt,
+  });
 });
 
 app.post("/api/contingency/authorize", async (c) => {

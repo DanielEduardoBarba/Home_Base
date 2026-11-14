@@ -94,8 +94,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export async function wsUrl(path: string): Promise<string> {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  // Doodle chat must use the tablet token so an App PIN lock elsewhere cannot block it.
+  const doodle = /^\/ws\/cursor\?(.*&)?project=doodle(&|$)/.test(path)
   const minted = await request<{ ticket: string; expiresAt: number; expiresIn: number }>(
-    '/api/ws-ticket',
+    doodle ? '/api/ws-ticket?scope=doodle' : '/api/ws-ticket',
     { method: 'POST' },
   )
   const sep = path.includes('?') ? '&' : '?'
@@ -1169,7 +1171,12 @@ export const api = {
           source: 'auto' | 'manual'
           confidence: 'high' | 'medium' | 'low'
           billingModel: 'usage_based' | 'request_based' | 'mixed' | 'unknown'
+          cycleKind: 'weekly' | 'monthly' | 'unknown'
           cycleStartMs?: number
+          cycleEndMs?: number
+          daysRemaining: number | null
+          hoursRemaining: number | null
+          renewalLabel: string
           dashboardUrl: string
           manageUrl: string
           note: string
@@ -1197,6 +1204,26 @@ export const api = {
             events: number
             chargedCents: number
           }>
+        }
+        poolSummary: {
+          cursorModels: {
+            models: number
+            chats: number
+            events: number
+            chargedCents: number
+          }
+          otherModels: {
+            models: number
+            chats: number
+            events: number
+            chargedCents: number
+          }
+          unknown: {
+            models: number
+            chats: number
+            events: number
+            chargedCents: number
+          }
         }
         sources: {
           homebaseChat: { chats: number; models: number; tokensCaptured: number }
@@ -1665,7 +1692,7 @@ export const api = {
       ttlSec: number
     }>(`/api/doodle/status${q}`)
   },
-  doodleEnroll: (deviceId: string, pin: string, name?: string) =>
+  doodleEnroll: (deviceId: string, pin?: string, name?: string) =>
     request<{
       ok: boolean
       expiresAt: number
@@ -1766,10 +1793,11 @@ export const api = {
       isDefault: boolean
       updatedAt: number
       pinRequired: boolean
+      encryptedAtRest: boolean
       ticketActive: boolean
       ticketExpiresAt: number | null
     }>('/api/contingency'),
-  contingencySetScript: (script: string) =>
+  contingencySetScript: (script: string, password: string, pin?: string) =>
     request<{
       ok: boolean
       script: string
@@ -1777,9 +1805,14 @@ export const api = {
       isDefault: boolean
       updatedAt: number
       pinRequired: boolean
+      encryptedAtRest: boolean
     }>('/api/contingency/script', {
       method: 'PUT',
-      body: JSON.stringify({ script }),
+      body: JSON.stringify({
+        script,
+        password,
+        ...(pin != null && pin !== '' ? { pin } : {}),
+      }),
     }),
   contingencyAuthorize: (pin?: string) =>
     request<{ ok: boolean; ticket: string; expiresAt: number; pinRequired: boolean }>(

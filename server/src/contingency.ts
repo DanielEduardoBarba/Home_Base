@@ -1,12 +1,15 @@
 /**
  * Contingency — human Web GUI only. No MCP tools, no Cursor homebase_* tools.
- * PIN (when enabled) → short-lived ticket → run editable bash → always attempt reboot.
+ * PIN (when enabled) → short-lived ticket → run bash → always attempt reboot.
+ * Script is AES-GCM encrypted at rest (same vault as Cursor key / secrets).
+ * Editing requires Home Base password + App PIN (when PIN is enabled).
  */
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   chmodSync,
   existsSync,
   readFileSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -17,18 +20,20 @@ import {
   HttpError,
   recordFailure,
   remainingAttempts,
+  verifyPassword,
   type AuthEventCtx,
 } from "./auth";
 import { isAppPinEnabled, verifyAppPin } from "./app_pin";
 import { logInfo, logWarn } from "./console_log";
+import { decryptSecret, encryptSecret } from "./secrets_vault";
 
-const STATE_PATH = join(RUNTIME_DIR, "contingency.json");
+const META_PATH = join(RUNTIME_DIR, "contingency.json");
+const SCRIPT_ENC_PATH = join(RUNTIME_DIR, "contingency.script.enc");
 const DEFAULT_SCRIPT = "echo c > /proc/sysrq-trigger";
 const TICKET_TTL_MS = 120_000;
 const SCRIPT_MAX = 32_000;
 
-export type ContingencyState = {
-  script: string;
+export type ContingencyMeta = {
   updatedAt: number;
 };
 
@@ -48,32 +53,66 @@ function chmodPrivate(path: string): void {
   }
 }
 
-function defaultState(): ContingencyState {
-  return { script: DEFAULT_SCRIPT, updatedAt: 0 };
-}
-
-function loadState(): ContingencyState {
+function loadMeta(): ContingencyMeta {
   ensureRuntimeDirs();
-  if (!existsSync(STATE_PATH)) return defaultState();
+  if (!existsSync(META_PATH)) return { updatedAt: 0 };
   try {
-    const raw = JSON.parse(readFileSync(STATE_PATH, "utf8")) as Partial<ContingencyState>;
-    const script =
-      typeof raw.script === "string" && raw.script.trim()
-        ? raw.script
-        : DEFAULT_SCRIPT;
-    return {
-      script,
-      updatedAt: Number(raw.updatedAt) || 0,
+    const raw = JSON.parse(readFileSync(META_PATH, "utf8")) as Partial<ContingencyMeta> & {
+      script?: string;
     };
+    // Legacy plaintext migration: contingency.json used to hold `script`.
+    if (typeof raw.script === "string" && raw.script.trim() && !existsSync(SCRIPT_ENC_PATH)) {
+      const script = raw.script.trim();
+      const updatedAt = Number(raw.updatedAt) || Date.now();
+      writeEncryptedScript(script);
+      saveMeta({ updatedAt });
+      return { updatedAt };
+    }
+    return { updatedAt: Number(raw.updatedAt) || 0 };
   } catch {
-    return defaultState();
+    return { updatedAt: 0 };
   }
 }
 
-function saveState(state: ContingencyState): void {
+function saveMeta(meta: ContingencyMeta): void {
   ensureRuntimeDirs();
-  writeFileSync(STATE_PATH, JSON.stringify(state, null, 2) + "\n", "utf8");
-  chmodPrivate(STATE_PATH);
+  writeFileSync(META_PATH, JSON.stringify({ updatedAt: meta.updatedAt }, null, 2) + "\n", "utf8");
+  chmodPrivate(META_PATH);
+}
+
+function writeEncryptedScript(script: string): void {
+  ensureRuntimeDirs();
+  writeFileSync(SCRIPT_ENC_PATH, encryptSecret(script), { mode: 0o600 });
+  chmodPrivate(SCRIPT_ENC_PATH);
+}
+
+function readScriptPlain(): string {
+  ensureRuntimeDirs();
+  // Prefer encrypted vault.
+  if (existsSync(SCRIPT_ENC_PATH)) {
+    try {
+      const blob = readFileSync(SCRIPT_ENC_PATH, "utf8");
+      const plain = decryptSecret(blob);
+      if (plain != null && plain.trim()) return plain;
+    } catch {
+      /* fall through */
+    }
+  }
+  // Legacy plaintext in meta (pre-encrypt) — migrate on read.
+  if (existsSync(META_PATH)) {
+    try {
+      const raw = JSON.parse(readFileSync(META_PATH, "utf8")) as { script?: string; updatedAt?: number };
+      if (typeof raw.script === "string" && raw.script.trim()) {
+        const script = raw.script;
+        writeEncryptedScript(script);
+        saveMeta({ updatedAt: Number(raw.updatedAt) || Date.now() });
+        return script;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return DEFAULT_SCRIPT;
 }
 
 export function contingencyDefaultScript(): string {
@@ -86,24 +125,77 @@ export function contingencyStatus(): {
   isDefault: boolean;
   updatedAt: number;
   pinRequired: boolean;
+  encryptedAtRest: boolean;
   ticketActive: boolean;
   ticketExpiresAt: number | null;
 } {
-  const state = loadState();
+  const meta = loadMeta();
+  const script = readScriptPlain();
   const pinRequired = isAppPinEnabled();
   const active = Boolean(ticket && !ticket.used && ticket.expiresAt > Date.now());
   return {
-    script: state.script,
+    script,
     defaultScript: DEFAULT_SCRIPT,
-    isDefault: state.script.trim() === DEFAULT_SCRIPT || state.updatedAt === 0,
-    updatedAt: state.updatedAt,
+    isDefault: script.trim() === DEFAULT_SCRIPT || meta.updatedAt === 0,
+    updatedAt: meta.updatedAt,
     pinRequired,
+    encryptedAtRest: existsSync(SCRIPT_ENC_PATH),
     ticketActive: active,
     ticketExpiresAt: active && ticket ? ticket.expiresAt : null,
   };
 }
 
-export function setContingencyScript(script: string): ContingencyState {
+function authScriptEdit(
+  password: string,
+  pin: string | undefined,
+  ip: string,
+  ctx: AuthEventCtx,
+): void {
+  assertNotLocked(ctx);
+  if (!password || !verifyPassword(password)) {
+    const info = recordFailure(ip, "invalid_password", {
+      userAgent: ctx.userAgent,
+      path: ctx.path || "/api/contingency/script",
+    });
+    throw new HttpError(401, {
+      code: "bad_password",
+      message: "Incorrect password",
+      failCount: info.failCount,
+      retryAfter: info.retryAfter,
+      remainingAttempts: remainingAttempts(info.failCount),
+      threshold: FAIL_THRESHOLD,
+    });
+  }
+  if (isAppPinEnabled()) {
+    if (!pin || !verifyAppPin(pin)) {
+      const info = recordFailure(ip, "invalid_pin", {
+        userAgent: ctx.userAgent,
+        path: ctx.path || "/api/contingency/script",
+      });
+      throw new HttpError(401, {
+        code: "bad_pin",
+        message: "Incorrect PIN",
+        failCount: info.failCount,
+        retryAfter: info.retryAfter,
+        remainingAttempts: remainingAttempts(info.failCount),
+        threshold: FAIL_THRESHOLD,
+      });
+    }
+  }
+}
+
+/**
+ * Replace Contingency script. Requires Home Base password, and App PIN when enabled.
+ * Persists AES-GCM ciphertext under `.runtime/contingency.script.enc`.
+ */
+export function setContingencyScript(
+  script: string,
+  creds: { password: string; pin?: string },
+  ip = "unknown",
+  ctx: AuthEventCtx = {},
+): { script: string; updatedAt: number } {
+  authScriptEdit(creds.password, creds.pin, ip, ctx);
+
   const next = String(script ?? "");
   if (next.length > SCRIPT_MAX) {
     throw new HttpError(400, {
@@ -111,14 +203,38 @@ export function setContingencyScript(script: string): ContingencyState {
       message: `Script max ${SCRIPT_MAX} characters`,
     });
   }
-  const state: ContingencyState = {
-    script: next.trim() ? next : DEFAULT_SCRIPT,
-    updatedAt: Date.now(),
-  };
-  saveState(state);
-  // Editing invalidates any pending arm ticket.
+  const plain = next.trim() ? next : DEFAULT_SCRIPT;
+  const updatedAt = Date.now();
+  writeEncryptedScript(plain);
+  saveMeta({ updatedAt });
+  // Drop any leftover plaintext field from legacy meta.
+  try {
+    if (existsSync(META_PATH)) {
+      const raw = JSON.parse(readFileSync(META_PATH, "utf8")) as Record<string, unknown>;
+      if ("script" in raw) {
+        saveMeta({ updatedAt });
+      }
+    }
+  } catch {
+    /* ignore */
+  }
   ticket = null;
-  return state;
+  try {
+    const { recordSecurityEvent } = require("./security_log") as typeof import("./security_log");
+    recordSecurityEvent({
+      event: "contingency_script_edit",
+      source: "ui",
+      result: "success",
+      ip,
+      userAgent: ctx.userAgent,
+      path: ctx.path,
+      status: 200,
+    });
+  } catch {
+    /* ignore */
+  }
+  logInfo("script updated (encrypted at rest)", "contingency");
+  return { script: plain, updatedAt };
 }
 
 function clearTicket(): void {
@@ -232,8 +348,8 @@ export async function executeContingency(
   ctx: AuthEventCtx = {},
 ): Promise<{ ok: true; started: true; message: string }> {
   consumeTicket(presentedTicket);
-  const state = loadState();
-  const payload = buildPayload(state.script);
+  const script = readScriptPlain();
+  const payload = buildPayload(script);
 
   try {
     const { recordSecurityEvent } = require("./security_log") as typeof import("./security_log");
@@ -263,7 +379,6 @@ export async function executeContingency(
 
   logWarn("EXECUTING — user script + mandatory reboot epilogue", "contingency");
 
-  // Detach: do not await process exit (host may crash / reboot mid-flight).
   try {
     const proc = Bun.spawn(["bash", "-lc", payload], {
       cwd: process.env.HOME || "/",
@@ -272,7 +387,6 @@ export async function executeContingency(
       stdin: "ignore",
       env: { ...process.env, HOMEBASE_CONTINGENCY: "1" },
     });
-    // Unref so homebased can keep serving the ack; child keeps running.
     try {
       proc.unref();
     } catch {
@@ -299,4 +413,16 @@ export async function executeContingency(
 
 export function revokeContingencyTicket(): void {
   clearTicket();
+}
+
+/** Soft-reset helper: wipe Contingency script vault (optional). */
+export function clearContingencyScript(): void {
+  for (const p of [SCRIPT_ENC_PATH, META_PATH]) {
+    try {
+      if (existsSync(p)) unlinkSync(p);
+    } catch {
+      /* ignore */
+    }
+  }
+  ticket = null;
 }

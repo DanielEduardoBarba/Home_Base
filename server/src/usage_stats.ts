@@ -151,7 +151,16 @@ export type PlanInfo = {
   source: "auto" | "manual";
   confidence: "high" | "medium" | "low";
   billingModel: "usage_based" | "request_based" | "mixed" | "unknown";
+  /** X Subscription = weekly pool; legacy Cursor = monthly billing cycle. */
+  cycleKind: "weekly" | "monthly" | "unknown";
   cycleStartMs?: number;
+  cycleEndMs?: number;
+  /** Whole days until cycle end (null when unknown). */
+  daysRemaining: number | null;
+  /** Whole hours until cycle end (null when unknown). */
+  hoursRemaining: number | null;
+  /** Human label e.g. "Resets in 3 days" / "Renews in 12h". */
+  renewalLabel: string;
   dashboardUrl: string;
   manageUrl: string;
   note: string;
@@ -182,12 +191,24 @@ export type AiSources = {
   };
 };
 
+export type PoolSummary = {
+  models: number;
+  chats: number;
+  events: number;
+  chargedCents: number;
+};
+
 export type AiUsageBundle = {
   plan: PlanInfo;
   pools: {
     cursorModels: ModelPoolRow[];
     otherModels: ModelPoolRow[];
     unknown: ModelPoolRow[];
+  };
+  poolSummary: {
+    cursorModels: PoolSummary;
+    otherModels: PoolSummary;
+    unknown: PoolSummary;
   };
   sources: AiSources;
   availableTiers: Array<{ family: PlanFamily; tier: PlanTier; label: string }>;
@@ -905,6 +926,103 @@ function buildModelPools(
   };
 }
 
+function cycleKindForFamily(family: PlanFamily): PlanInfo["cycleKind"] {
+  if (family === "x_subscription") return "weekly";
+  if (family === "legacy_cursor" || family === "request_based") return "monthly";
+  return "unknown";
+}
+
+function addBillingPeriod(startMs: number, kind: "weekly" | "monthly"): number {
+  if (kind === "weekly") return startMs + 7 * 24 * 60 * 60 * 1000;
+  const d = new Date(startMs);
+  d.setUTCMonth(d.getUTCMonth() + 1);
+  return d.getTime();
+}
+
+function resolveCycle(
+  family: PlanFamily,
+  cycleStartMs?: number,
+): Pick<
+  PlanInfo,
+  | "cycleKind"
+  | "cycleStartMs"
+  | "cycleEndMs"
+  | "daysRemaining"
+  | "hoursRemaining"
+  | "renewalLabel"
+> {
+  const cycleKind = cycleKindForFamily(family);
+  if (!cycleStartMs || cycleKind === "unknown") {
+    if (cycleKind === "weekly") {
+      return {
+        cycleKind,
+        daysRemaining: null,
+        hoursRemaining: null,
+        renewalLabel: "Weekly pool · open dashboard for next reset",
+      };
+    }
+    if (cycleKind === "monthly") {
+      return {
+        cycleKind,
+        daysRemaining: null,
+        hoursRemaining: null,
+        renewalLabel: "Monthly cycle · open dashboard for renewal date",
+      };
+    }
+    return {
+      cycleKind: "unknown",
+      daysRemaining: null,
+      hoursRemaining: null,
+      renewalLabel: "Set your plan to estimate renewal",
+    };
+  }
+
+  let start = cycleStartMs;
+  let end = addBillingPeriod(start, cycleKind);
+  const now = Date.now();
+  let guard = 0;
+  while (end <= now && guard < 48) {
+    start = end;
+    end = addBillingPeriod(start, cycleKind);
+    guard += 1;
+  }
+  const remainingMs = Math.max(0, end - now);
+  const daysRemaining = Math.floor(remainingMs / 86_400_000);
+  const hoursRemaining = Math.floor(remainingMs / 3_600_000);
+  const verb = cycleKind === "weekly" ? "Resets" : "Renews";
+  let renewalLabel: string;
+  if (remainingMs < 3_600_000) {
+    renewalLabel = `${verb} in under an hour`;
+  } else if (daysRemaining <= 0) {
+    renewalLabel = `${verb} in ${hoursRemaining}h`;
+  } else if (daysRemaining === 1) {
+    renewalLabel = `${verb} tomorrow`;
+  } else {
+    renewalLabel = `${verb} in ${daysRemaining} days`;
+  }
+  return {
+    cycleKind,
+    cycleStartMs: start,
+    cycleEndMs: end,
+    daysRemaining,
+    hoursRemaining,
+    renewalLabel,
+  };
+}
+
+function summarizePool(rows: ModelPoolRow[]): PoolSummary {
+  return rows.reduce(
+    (acc, r) => {
+      acc.models += 1;
+      acc.chats += r.chats;
+      acc.events += r.events;
+      acc.chargedCents += r.chargedCents;
+      return acc;
+    },
+    { models: 0, chats: 0, events: 0, chargedCents: 0 },
+  );
+}
+
 function inferPlan(homebase: HomebaseUsage, cursor: CursorAccount): PlanInfo {
   const override = readPlanOverride();
   const signals: string[] = [];
@@ -967,7 +1085,7 @@ function inferPlan(homebase: HomebaseUsage, cursor: CursorAccount): PlanInfo {
     } else if (pools.cursorModels.length && !pools.otherModels.length) {
       family = "x_subscription";
       confidence = "low";
-      signals.push("Mostly Cursor Models → could be The X Subscription (confirm in Settings)");
+      signals.push("Mostly Cursor Models → could be The X Subscription (confirm under Usage)");
     } else {
       family = "legacy_cursor";
       confidence = "low";
@@ -985,10 +1103,10 @@ function inferPlan(homebase: HomebaseUsage, cursor: CursorAccount): PlanInfo {
     family = override.family;
     tier = override.tier;
     confidence = "high";
-    signals.unshift("Plan set manually in Home Base Settings");
+    signals.unshift("Plan set manually in Home Base Usage");
   } else if (override?.tier) {
     tier = override.tier;
-    signals.unshift("Tier set manually in Home Base Settings");
+    signals.unshift("Tier set manually in Home Base Usage");
     confidence = confidence === "low" ? "medium" : confidence;
   }
 
@@ -1006,10 +1124,10 @@ function inferPlan(homebase: HomebaseUsage, cursor: CursorAccount): PlanInfo {
   let note =
     "Cursor does not expose personal plan tier on the Chat API key. We infer billing family from Admin usage events when available; set your plan below for an exact badge.";
   if (override && override.family !== "auto") {
-    note = "Showing the plan you set in Home Base. Clear to auto-detect again.";
+    note = "Showing the plan you set in Home Base. Switch to Auto-detect to clear.";
   } else if (family === "x_subscription") {
     note =
-      "The X Subscription uses one weekly Cursor-models pool (shared with Grok). Manage billing on grok.com.";
+      "The X Subscription uses one weekly Cursor-models pool (shared with Grok Bot). Manage billing on grok.com.";
   } else if (family === "legacy_cursor") {
     note =
       "Legacy Cursor plans use monthly Cursor Models + Other Models pools. Spending lives on cursor.com/dashboard.";
@@ -1017,6 +1135,8 @@ function inferPlan(homebase: HomebaseUsage, cursor: CursorAccount): PlanInfo {
     note =
       "Oldest request-based pricing. Migrates to usage-based at renewal — see Cursor docs.";
   }
+
+  const cycle = resolveCycle(family, cursor.billing?.subscriptionCycleStartMs);
 
   return {
     family,
@@ -1026,7 +1146,7 @@ function inferPlan(homebase: HomebaseUsage, cursor: CursorAccount): PlanInfo {
     source: override && override.family !== "auto" ? "manual" : "auto",
     confidence,
     billingModel,
-    cycleStartMs: cursor.billing?.subscriptionCycleStartMs,
+    ...cycle,
     dashboardUrl,
     manageUrl,
     note,
@@ -1035,9 +1155,15 @@ function inferPlan(homebase: HomebaseUsage, cursor: CursorAccount): PlanInfo {
 }
 
 function buildAiBundle(homebase: HomebaseUsage, cursor: CursorAccount): AiUsageBundle {
+  const pools = buildModelPools(homebase, cursor);
   return {
     plan: inferPlan(homebase, cursor),
-    pools: buildModelPools(homebase, cursor),
+    pools,
+    poolSummary: {
+      cursorModels: summarizePool(pools.cursorModels),
+      otherModels: summarizePool(pools.otherModels),
+      unknown: summarizePool(pools.unknown),
+    },
     sources: {
       homebaseChat: {
         chats: homebase.chats,

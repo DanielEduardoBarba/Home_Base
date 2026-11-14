@@ -1,4 +1,4 @@
-/** Top-level areas after login (dashboard / homework / access / agent / vision / doodle / contingency / settings). */
+/** Top-level areas after login (dashboard / homework / access / agent / vision / doodle / usage / contingency / settings). */
 export type AppArea =
   | 'home'
   | 'homework'
@@ -6,6 +6,7 @@ export type AppArea =
   | 'agent'
   | 'vision'
   | 'doodle'
+  | 'usage'
   | 'contingency'
   | 'settings'
 
