@@ -14,6 +14,8 @@ DO_SERVICE=false
 DO_DEPLOY=false
 DO_CLEAN=false
 DO_HELP=false
+DO_SELFQA=false
+SELFQA_ARGS=()
 DO_ONBOARDING=false
 # Set when a detached systemd unit is already running deploy (avoid re-schedule loop).
 FROM_DETACHED=false
@@ -181,6 +183,8 @@ USAGE
   ./build.sh --deploy             --bin (incl. presence) → install + systemd (Linux only)
   ./build.sh --deploy --from-detached
                                   Internal: already scheduled outside homebased cgroup
+  ./build.sh --selfqa [options]  Self-QA sprint (scripts/selfqa/run.sh)
+                                  --goal|--goal-file|--cycles|--max-minutes|--testers|--dry-run
   ./build.sh -h|--help
 
   --clean keeps .env and config/projects.json. Pair with --setup to rebuild deps:
@@ -222,6 +226,12 @@ while [[ $# -gt 0 ]]; do
     --path) ADD_PATH="${2:-}"; shift 2 ;;
     --id) ADD_ID="${2:-}"; shift 2 ;;
     --name) ADD_NAME="${2:-}"; shift 2 ;;
+    --selfqa)
+      DO_SELFQA=true
+      shift
+      SELFQA_ARGS=("$@")
+      break
+      ;;
     -h|--help) DO_HELP=true; shift ;;
     *)
       echo "Unknown option: $1" >&2
@@ -234,7 +244,7 @@ done
 # If only --preset/--path without other actions, treat as add-project
 if [[ "$DO_SETUP" == false && "$DO_RUN" == false && "$DO_HELP" == false \
    && "$DO_BIN" == false && "$DO_SERVICE" == false && "$DO_DEPLOY" == false \
-   && "$DO_CLEAN" == false && "$DO_ONBOARDING" == false ]]; then
+   && "$DO_CLEAN" == false && "$DO_ONBOARDING" == false && "$DO_SELFQA" == false ]]; then
   if [[ -n "$ADD_PRESET" || -n "$ADD_PATH" ]]; then
     :
   else
@@ -1850,6 +1860,10 @@ elif [[ "$DO_BIN" == true ]]; then
   fi
 elif [[ "$DO_SERVICE" == true ]]; then
   cmd_service
+fi
+
+if [[ "$DO_SELFQA" == true ]]; then
+  exec "$ROOT/scripts/selfqa/run.sh" "${SELFQA_ARGS[@]}"
 fi
 
 if [[ "$DO_RUN" == true ]]; then

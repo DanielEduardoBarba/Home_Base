@@ -36,3 +36,6 @@ dist.oldroot/
 .idea/
 .vscode/
 *.code-workspace
+
+# Self-QA run logs (keep SUMMARY / cycle reports)
+docs/selfqa/*/logs/
