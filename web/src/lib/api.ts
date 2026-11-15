@@ -1138,14 +1138,17 @@ export const api = {
         cycleKind: 'weekly' | 'monthly' | 'unknown'
         cycleEndMs: number | null
         daysRemaining: number | null
-        included: { label: string; percent: number | null; width: number; detail: string | null }
-        includedUsedCents: number | null
-        includedLimitCents: number | null
         cursorModels: { label: string; percent: number | null; width: number; detail: string | null }
         otherModels: { label: string; percent: number | null; width: number; detail: string | null }
+        grokBot: {
+          includedLabel: string | null
+          percent: number | null
+          width: number
+          resetMs: number | null
+          daysRemaining: number | null
+        } | null
         onDemandEnabled: boolean | null
-        onDemandUsedCents: number | null
-        onDemandLimitCents: number | null
+        monthlyLimitCents: number | null
         dashboardUrl: string
       }
       projects: number

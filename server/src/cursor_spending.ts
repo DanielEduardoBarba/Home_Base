@@ -12,11 +12,20 @@ import { detectSeatUser } from "./shell_env";
 
 export type SpendingMeter = {
   label: string;
-  /** Number shown next to the bar (matches the dashboard copy when present). */
+  /** Integer shown as "N% used", rounded the way the Spending page does. */
   percent: number | null;
   /** Bar width 0–100 from the raw ratio. */
   width: number;
   detail: string | null;
+};
+
+export type GrokBotUsage = {
+  /** "Included in Ultra" when the Cursor plan name is known. */
+  includedLabel: string | null;
+  percent: number | null;
+  width: number;
+  resetMs: number | null;
+  daysRemaining: number | null;
 };
 
 export type CursorSpending = {
@@ -27,15 +36,14 @@ export type CursorSpending = {
   price: string | null;
   cycleKind: "weekly" | "monthly" | "unknown";
   cycleEndMs: number | null;
+  /** Calendar days until the plan limit resets (Spending's "N days left"). */
   daysRemaining: number | null;
-  included: SpendingMeter;
-  includedUsedCents: number | null;
-  includedLimitCents: number | null;
   cursorModels: SpendingMeter;
   otherModels: SpendingMeter;
+  grokBot: GrokBotUsage | null;
   onDemandEnabled: boolean | null;
-  onDemandUsedCents: number | null;
-  onDemandLimitCents: number | null;
+  /** Monthly on-demand cap. Null means the Spending "Disabled" limit. */
+  monthlyLimitCents: number | null;
   dashboardUrl: string;
 };
 
@@ -58,14 +66,11 @@ export function emptySpending(error: string | null): CursorSpending {
     cycleKind: "unknown",
     cycleEndMs: null,
     daysRemaining: null,
-    included: emptyMeter("Included"),
-    includedUsedCents: null,
-    includedLimitCents: null,
     cursorModels: emptyMeter("Cursor Models"),
     otherModels: emptyMeter("Other Models"),
+    grokBot: null,
     onDemandEnabled: null,
-    onDemandUsedCents: null,
-    onDemandLimitCents: null,
+    monthlyLimitCents: null,
     dashboardUrl: DASHBOARD,
   };
 }
@@ -94,34 +99,47 @@ function epochMs(v: unknown): number | null {
   return null;
 }
 
-function percentFromMessage(msg: unknown): number | null {
-  const m = String(msg || "").match(/(\d+(?:\.\d+)?)\s*%/);
-  if (!m) return null;
-  const n = Number(m[1]);
-  return Number.isFinite(n) ? n : null;
-}
-
 function clampWidth(v: number | null): number {
   if (v == null || !Number.isFinite(v)) return 0;
   return Math.max(0, Math.min(100, v));
 }
 
-function moneyDetail(used: number | null, limit: number | null): string | null {
-  if (used == null && limit == null) return null;
-  const fmt = (cents: number) =>
-    `$${(cents / 100).toLocaleString("en-US", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })}`;
-  if (used != null && limit != null) return `${fmt(used)} / ${fmt(limit)}`;
-  if (used != null) return fmt(used);
-  return null;
+/** Spending labels are rounded percents: 4.3 → 4, 98.7 → 99. */
+function shownPercent(raw: number | null): number | null {
+  if (raw == null || !Number.isFinite(raw)) return null;
+  return Math.round(Math.max(0, Math.min(100, raw)));
+}
+
+/** Whole calendar days from today to the reset date, in local time. */
+export function calendarDaysUntil(endMs: number, now = Date.now()): number {
+  const end = new Date(endMs);
+  const cur = new Date(now);
+  const endDay = Date.UTC(end.getFullYear(), end.getMonth(), end.getDate());
+  const nowDay = Date.UTC(cur.getFullYear(), cur.getMonth(), cur.getDate());
+  return Math.max(0, Math.round((endDay - nowDay) / 86_400_000));
+}
+
+function mapGrokBot(sand: Record<string, unknown>, planName: string | null, now: number): GrokBotUsage | null {
+  const raw = num(sand.usagePercent ?? sand.usage_percent);
+  const resetMs = epochMs(sand.nextResetTimestampUtc ?? sand.next_reset_timestamp_utc);
+  const hasLimit = sand.hasNonZeroIncludedLimit === true || sand.has_non_zero_included_limit === true;
+  if (raw == null && !hasLimit && resetMs == null) return null;
+  const linked = String(sand.cursorPlanName || planName || "").trim();
+  return {
+    includedLabel: linked ? `Included in ${linked}` : null,
+    percent: shownPercent(raw),
+    width: clampWidth(raw),
+    resetMs,
+    daysRemaining: resetMs != null ? calendarDaysUntil(resetMs, now) : null,
+  };
 }
 
 export function mapCursorSpending(input: {
   period?: unknown;
   plan?: unknown;
   summary?: unknown;
+  sand?: unknown;
+  hard?: unknown;
   email?: string | null;
   now?: number;
 }): CursorSpending {
@@ -134,16 +152,10 @@ export function mapCursorSpending(input: {
   const summaryPlan = asRecord(individual.plan);
   const planUsage = asRecord(period.planUsage);
   const onDemand = asRecord(individual.onDemand);
+  const hard = asRecord(input.hard);
 
-  const used = num(planUsage.totalSpend ?? planUsage.includedSpend ?? summaryPlan.used);
-  const limit = num(planUsage.limit ?? summaryPlan.limit);
-  const remaining = num(planUsage.remaining ?? summaryPlan.remaining);
   const autoRaw = num(planUsage.autoPercentUsed ?? summaryPlan.autoPercentUsed);
   const apiRaw = num(planUsage.apiPercentUsed ?? summaryPlan.apiPercentUsed);
-  const headlineRaw =
-    used != null && limit != null && limit > 0
-      ? (used / limit) * 100
-      : num(planUsage.totalPercentUsed ?? summaryPlan.totalPercentUsed);
 
   const periodName = String(planInfo.includedUsagePeriod || "");
   const cycleKind: CursorSpending["cycleKind"] = /WEEKLY/i.test(periodName)
@@ -158,22 +170,14 @@ export function mapCursorSpending(input: {
     epochMs(planInfo.renewsAt) ||
     epochMs(planInfo.billingCycleEnd);
 
-  const daysRemaining =
-    cycleEndMs != null ? Math.max(0, Math.floor((cycleEndMs - now) / 86_400_000)) : null;
-
   const planName = String(planInfo.planName || "").trim() || null;
   const price = String(planInfo.price || "").trim() || null;
-  const hasNumbers = used != null || autoRaw != null || apiRaw != null || headlineRaw != null;
+  const grokBot = mapGrokBot(asRecord(input.sand), planName, now);
+  const hasNumbers = autoRaw != null || apiRaw != null || grokBot != null;
 
-  const includedPercent =
-    percentFromMessage(period.displayMessage) ??
-    (headlineRaw != null ? Math.round(headlineRaw) : null);
-  const cursorPercent =
-    percentFromMessage(period.autoModelSelectedDisplayMessage || summary.autoModelSelectedDisplayMessage) ??
-    (autoRaw != null ? Math.round(autoRaw) : null);
-  const otherPercent =
-    percentFromMessage(period.namedModelSelectedDisplayMessage || summary.namedModelSelectedDisplayMessage) ??
-    (apiRaw != null ? Math.round(apiRaw) : null);
+  let onDemandEnabled: boolean | null = null;
+  if (hard.noUsageBasedAllowed === true) onDemandEnabled = false;
+  else if (typeof onDemand.enabled === "boolean") onDemandEnabled = onDemand.enabled;
 
   return {
     ok: Boolean(hasNumbers || planName),
@@ -183,30 +187,22 @@ export function mapCursorSpending(input: {
     price,
     cycleKind,
     cycleEndMs,
-    daysRemaining,
-    included: {
-      label: "Included",
-      percent: includedPercent,
-      width: clampWidth(headlineRaw),
-      detail: moneyDetail(used, limit ?? (remaining != null && used != null ? used + remaining : null)),
-    },
-    includedUsedCents: used,
-    includedLimitCents: limit,
+    daysRemaining: cycleEndMs != null ? calendarDaysUntil(cycleEndMs, now) : null,
     cursorModels: {
       label: "Cursor Models",
-      percent: cursorPercent,
+      percent: shownPercent(autoRaw),
       width: clampWidth(autoRaw),
-      detail: null,
+      detail: "Additional usage beyond limits consumes Other Models quota or on-demand spend.",
     },
     otherModels: {
       label: "Other Models",
-      percent: otherPercent,
+      percent: shownPercent(apiRaw),
       width: clampWidth(apiRaw),
-      detail: null,
+      detail: "Additional usage beyond limits consumes on-demand spend.",
     },
-    onDemandEnabled: typeof onDemand.enabled === "boolean" ? onDemand.enabled : null,
-    onDemandUsedCents: num(onDemand.used),
-    onDemandLimitCents: num(onDemand.limit),
+    grokBot,
+    onDemandEnabled,
+    monthlyLimitCents: onDemandEnabled === false ? null : num(onDemand.limit),
     dashboardUrl: DASHBOARD,
   };
 }
@@ -321,11 +317,13 @@ export async function fetchCursorSpending(opts?: { force?: boolean }): Promise<C
   if (!sub) return emptySpending("Cursor login on this laptop could not be read.");
   const cookie = `WorkosCursorSessionToken=${sub}%3A%3A${token}`;
 
-  const [me, period, plan, summary] = await Promise.all([
+  const [me, period, plan, summary, sand, hard] = await Promise.all([
     cursorJson(cookie, "GET", "/api/auth/me"),
     cursorJson(cookie, "POST", "/api/dashboard/get-current-period-usage", {}),
     cursorJson(cookie, "POST", "/api/dashboard/get-plan-info", {}),
     cursorJson(cookie, "GET", "/api/usage-summary"),
+    cursorJson(cookie, "POST", "/api/dashboard/get-sand-usage-status", {}),
+    cursorJson(cookie, "POST", "/api/dashboard/get-hard-limit", {}),
   ]);
 
   if (!period.ok && !summary.ok) {
@@ -342,6 +340,8 @@ export async function fetchCursorSpending(opts?: { force?: boolean }): Promise<C
     period: period.json,
     plan: plan.json,
     summary: summary.json,
+    sand: sand.ok ? sand.json : null,
+    hard: hard.ok ? hard.json : null,
     email,
   });
   if (!data.ok && (period.error || summary.error)) {

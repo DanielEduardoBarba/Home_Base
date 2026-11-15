@@ -1,22 +1,23 @@
 import { describe, expect, test } from "bun:test";
-import { mapCursorSpending } from "../../src/cursor_spending";
+import { calendarDaysUntil, mapCursorSpending } from "../../src/cursor_spending";
 
 describe("mapCursorSpending", () => {
-  test("matches the Spending page included / model split", () => {
-    const now = Date.parse("2026-11-14T23:00:00.000Z");
+  test("matches Spending: pool percents, calendar days, and Grok Bot", () => {
+    const now = Date.parse("2026-11-14T16:00:00.000Z");
+    const cycleEnd = 1796940136000;
+    const grokReset = Date.parse("2026-11-17T22:02:25.269Z");
     const mapped = mapCursorSpending({
       now,
       period: {
-        billingCycleEnd: "1796940136000",
+        billingCycleEnd: String(cycleEnd),
         planUsage: {
-          totalSpend: 15586,
+          totalSpend: 16110,
           limit: 40000,
-          remaining: 24414,
-          autoPercentUsed: 4.2716666666666665,
+          autoPercentUsed: 4.335666666666667,
           apiPercentUsed: 11.084,
-          totalPercentUsed: 4.795692307692308,
+          totalPercentUsed: 40,
         },
-        displayMessage: "You've used 39% of your included usage",
+        displayMessage: "You've used 40% of your included usage",
         autoModelSelectedDisplayMessage: "You've used 5% of your included total usage",
         namedModelSelectedDisplayMessage: "You've used 11% of your included API usage",
       },
@@ -25,7 +26,7 @@ describe("mapCursorSpending", () => {
           planName: "Ultra",
           price: "$200/mo",
           includedUsagePeriod: "INCLUDED_USAGE_PERIOD_MONTHLY",
-          renewsAt: "1796940136000",
+          renewsAt: String(cycleEnd),
         },
       },
       summary: {
@@ -33,19 +34,27 @@ describe("mapCursorSpending", () => {
           onDemand: { enabled: false, used: 0, limit: null },
         },
       },
-      email: "person@example.com",
+      sand: {
+        usagePercent: 98.682368,
+        nextResetTimestampUtc: "2026-11-17T22:02:25.269Z",
+        hasNonZeroIncludedLimit: true,
+        cursorPlanName: "Ultra",
+      },
+      hard: { noUsageBasedAllowed: true },
     });
 
     expect(mapped.ok).toBe(true);
     expect(mapped.planName).toBe("Ultra");
     expect(mapped.price).toBe("$200/mo");
-    expect(mapped.cycleKind).toBe("monthly");
-    expect(mapped.included.percent).toBe(39);
-    expect(mapped.included.detail).toBe("$155.86 / $400.00");
-    expect(mapped.cursorModels.percent).toBe(5);
+    expect(mapped.daysRemaining).toBe(calendarDaysUntil(cycleEnd, now));
+    expect(mapped.daysRemaining).toBe(26);
+    expect(mapped.cursorModels.percent).toBe(4);
     expect(mapped.otherModels.percent).toBe(11);
+    expect(mapped.grokBot?.percent).toBe(99);
+    expect(mapped.grokBot?.includedLabel).toBe("Included in Ultra");
+    expect(mapped.grokBot?.daysRemaining).toBe(calendarDaysUntil(grokReset, now));
+    expect(mapped.grokBot?.daysRemaining).toBe(3);
     expect(mapped.onDemandEnabled).toBe(false);
-    expect(mapped.onDemandUsedCents).toBe(0);
-    expect(mapped.daysRemaining).toBeGreaterThan(20);
+    expect(mapped.monthlyLimitCents).toBeNull();
   });
 });
