@@ -41,11 +41,23 @@ export type CursorSpending = {
   cursorModels: SpendingMeter;
   otherModels: SpendingMeter;
   grokBot: GrokBotUsage | null;
-  onDemandEnabled: boolean | null;
-  /** Monthly on-demand cap. Null means the Spending "Disabled" limit. */
-  monthlyLimitCents: number | null;
+  /** Spending monthly-limit menu: Disabled, Fixed, or Unlimited. */
+  onDemandMode: "disabled" | "fixed" | "unlimited" | null;
+  /** Dollar cap when mode is fixed. */
+  onDemandLimitDollars: number | null;
   dashboardUrl: string;
 };
+
+/** Cursor's own sentinel for the Spending "Unlimited" monthly limit. */
+export const ON_DEMAND_UNLIMITED = 2_147_483_647;
+
+export const CURSOR_PLAN_CHOICES = [
+  { tier: "pro", name: "Pro", price: "$20/mo", rank: 1 },
+  { tier: "pro_plus", name: "Pro+", price: "$60/mo", rank: 2 },
+  { tier: "ultra", name: "Ultra", price: "$200/mo", rank: 3 },
+] as const;
+
+export type CursorPlanTier = (typeof CURSOR_PLAN_CHOICES)[number]["tier"];
 
 const DASHBOARD = "https://cursor.com/dashboard/spending";
 const CACHE_MS = 60_000;
@@ -69,10 +81,38 @@ export function emptySpending(error: string | null): CursorSpending {
     cursorModels: emptyMeter("Cursor Models"),
     otherModels: emptyMeter("Other Models"),
     grokBot: null,
-    onDemandEnabled: null,
-    monthlyLimitCents: null,
+    onDemandMode: null,
+    onDemandLimitDollars: null,
     dashboardUrl: DASHBOARD,
   };
+}
+
+export function onDemandFromHardLimit(hard: Record<string, unknown>): {
+  mode: CursorSpending["onDemandMode"];
+  dollars: number | null;
+} {
+  if (hard.noUsageBasedAllowed === true || hard.no_usage_based_allowed === true) {
+    return { mode: "disabled", dollars: null };
+  }
+  const limit = num(hard.hardLimit ?? hard.hard_limit);
+  if (limit == null) return { mode: null, dollars: null };
+  if (limit >= ON_DEMAND_UNLIMITED) return { mode: "unlimited", dollars: null };
+  if (limit <= 0) return { mode: "disabled", dollars: null };
+  return { mode: "fixed", dollars: Math.round(limit) };
+}
+
+/** Body the Cursor client sends to set the Spending monthly limit. */
+export function onDemandWriteBody(
+  mode: "disabled" | "fixed" | "unlimited",
+  dollars?: number,
+): { hardLimit: number; noUsageBasedAllowed: boolean } {
+  if (mode === "disabled") return { hardLimit: 0, noUsageBasedAllowed: true };
+  if (mode === "unlimited") return { hardLimit: ON_DEMAND_UNLIMITED, noUsageBasedAllowed: false };
+  const amount = Math.round(Number(dollars));
+  if (!Number.isFinite(amount) || amount < 1 || amount > 100_000) {
+    throw new Error("Monthly limit must be between $1 and $100,000.");
+  }
+  return { hardLimit: amount, noUsageBasedAllowed: false };
 }
 
 function asRecord(v: unknown): Record<string, unknown> {
@@ -175,9 +215,13 @@ export function mapCursorSpending(input: {
   const grokBot = mapGrokBot(asRecord(input.sand), planName, now);
   const hasNumbers = autoRaw != null || apiRaw != null || grokBot != null;
 
-  let onDemandEnabled: boolean | null = null;
-  if (hard.noUsageBasedAllowed === true) onDemandEnabled = false;
-  else if (typeof onDemand.enabled === "boolean") onDemandEnabled = onDemand.enabled;
+  const fromHard = onDemandFromHardLimit(hard);
+  let onDemandMode = fromHard.mode;
+  let onDemandLimitDollars = fromHard.dollars;
+  if (onDemandMode == null && onDemand.enabled === false) {
+    onDemandMode = "disabled";
+    onDemandLimitDollars = null;
+  }
 
   return {
     ok: Boolean(hasNumbers || planName),
@@ -201,8 +245,8 @@ export function mapCursorSpending(input: {
       detail: "Additional usage beyond limits consumes on-demand spend.",
     },
     grokBot,
-    onDemandEnabled,
-    monthlyLimitCents: onDemandEnabled === false ? null : num(onDemand.limit),
+    onDemandMode,
+    onDemandLimitDollars,
     dashboardUrl: DASHBOARD,
   };
 }
@@ -290,9 +334,7 @@ async function cursorJson(
         `HTTP ${res.status}`;
       return { ok: false, status: res.status, json, error: String(msg) };
     }
-    if (!json || typeof json !== "object") {
-      return { ok: false, status: res.status, json, error: "Cursor returned an empty spending response." };
-    }
+    if (!json || typeof json !== "object") json = {};
     return { ok: true, status: res.status, json };
   } catch (e) {
     return {
@@ -349,4 +391,65 @@ export async function fetchCursorSpending(opts?: { force?: boolean }): Promise<C
   }
   cache = { at: Date.now(), fingerprint, data };
   return data;
+}
+
+function sessionCookie(): { cookie: string; fingerprint: string } | null {
+  const token = readAccessToken();
+  if (!token) return null;
+  const sub = jwtSub(token);
+  if (!sub) return null;
+  return {
+    cookie: `WorkosCursorSessionToken=${sub}%3A%3A${token}`,
+    fingerprint: token.slice(-12),
+  };
+}
+
+/** Save the Spending monthly limit. Disabled sends hardLimit 0; Unlimited uses Cursor's sentinel. */
+export async function setCursorOnDemand(input: {
+  mode: "disabled" | "fixed" | "unlimited";
+  dollars?: number;
+}): Promise<CursorSpending> {
+  const session = sessionCookie();
+  if (!session) throw new Error("Sign in to Cursor on this laptop.");
+  const body = onDemandWriteBody(input.mode, input.dollars);
+  const res = await cursorJson(session.cookie, "POST", "/api/dashboard/set-hard-limit", body);
+  if (!res.ok) throw new Error(res.error || "Could not save the on-demand limit.");
+  cache = null;
+  return fetchCursorSpending({ force: true });
+}
+
+/**
+ * Start the same plan checkout the Spending "Adjust Plan" button uses.
+ * Returns the https URL (usually Stripe) for the browser to open. Does not complete payment.
+ */
+export async function startCursorPlanCheckout(tier: CursorPlanTier): Promise<{ url: string }> {
+  const session = sessionCookie();
+  if (!session) throw new Error("Sign in to Cursor on this laptop.");
+  let current = `https://cursor.com/api/auth/checkoutDeepControl?tier=${encodeURIComponent(tier)}&allowTrial=false`;
+  for (let hop = 0; hop < 8; hop++) {
+    const res = await fetch(current, {
+      redirect: "manual",
+      headers: {
+        Cookie: session.cookie,
+        Accept: "text/html,application/json",
+        Origin: "https://cursor.com",
+        Referer: DASHBOARD,
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get("location");
+      if (!loc) throw new Error("Checkout did not return a redirect.");
+      const next = new URL(loc, current);
+      if (next.protocol !== "https:") throw new Error("Checkout redirect was not https.");
+      current = next.toString();
+      if (next.hostname === "checkout.stripe.com" || next.hostname.endsWith(".stripe.com")) {
+        return { url: current };
+      }
+      continue;
+    }
+    if (res.ok) return { url: current };
+    throw new Error(`Checkout failed (HTTP ${res.status}).`);
+  }
+  throw new Error("Checkout redirect did not finish.");
 }

@@ -167,6 +167,7 @@ import {
 import { readDailyLogs } from "./logging";
 import { clearRead, listNotifications, markRead } from "./notifications";
 import { projectPublic, runAction, stopProject, tailLogs } from "./process";
+import { setCursorOnDemand, startCursorPlanCheckout } from "./cursor_spending";
 import { usageOverview, writePlanOverride } from "./usage_stats";
 import {
   interruptSession,
@@ -1402,6 +1403,39 @@ app.put("/api/usage/plan", async (c) => {
     tier: body.family === "auto" ? null : body.tier ?? null,
   });
   return c.json(await usageOverview({ force: true }));
+});
+
+app.post("/api/usage/on-demand", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({
+      mode: z.enum(["disabled", "fixed", "unlimited"]),
+      dollars: z.number().int().min(1).max(100_000).optional(),
+    })
+    .parse(await readJson(c));
+  if (body.mode === "fixed" && body.dollars == null) {
+    throw new HttpError(400, "Enter a monthly limit.");
+  }
+  try {
+    const spending = await setCursorOnDemand(body);
+    return c.json({ ok: true, spending });
+  } catch (e) {
+    throw new HttpError(400, e instanceof Error ? e.message : String(e));
+  }
+});
+
+app.post("/api/usage/plan-checkout", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({
+      tier: z.enum(["pro", "pro_plus", "ultra"]),
+    })
+    .parse(await readJson(c));
+  try {
+    return c.json({ ok: true, ...(await startCursorPlanCheckout(body.tier)) });
+  } catch (e) {
+    throw new HttpError(400, e instanceof Error ? e.message : String(e));
+  }
 });
 
 app.get("/api/onboarding", async (c) => {

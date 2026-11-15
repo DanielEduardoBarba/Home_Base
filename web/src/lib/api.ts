@@ -1147,8 +1147,8 @@ export const api = {
           resetMs: number | null
           daysRemaining: number | null
         } | null
-        onDemandEnabled: boolean | null
-        monthlyLimitCents: number | null
+        onDemandMode: 'disabled' | 'fixed' | 'unlimited' | null
+        onDemandLimitDollars: number | null
         dashboardUrl: string
       }
       projects: number
@@ -1304,6 +1304,19 @@ export const api = {
         availableTiers: Array<{ family: string; tier: string; label: string }>
       }
     }>(`/api/usage${opts?.refresh ? '?refresh=1' : ''}`),
+  setUsageOnDemand: (body: {
+    mode: 'disabled' | 'fixed' | 'unlimited'
+    dollars?: number
+  }) =>
+    request<{ ok: boolean }>('/api/usage/on-demand', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  startUsagePlanCheckout: (tier: 'pro' | 'pro_plus' | 'ultra') =>
+    request<{ ok: boolean; url: string }>('/api/usage/plan-checkout', {
+      method: 'POST',
+      body: JSON.stringify({ tier }),
+    }),
   setUsagePlan: (body: { family: string; tier?: string | null }) =>
     request<Record<string, unknown>>('/api/usage/plan', {
       method: 'PUT',

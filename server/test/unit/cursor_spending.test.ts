@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { calendarDaysUntil, mapCursorSpending } from "../../src/cursor_spending";
+import {
+  calendarDaysUntil,
+  mapCursorSpending,
+  onDemandFromHardLimit,
+  onDemandWriteBody,
+  ON_DEMAND_UNLIMITED,
+} from "../../src/cursor_spending";
 
 describe("mapCursorSpending", () => {
   test("matches Spending: pool percents, calendar days, and Grok Bot", () => {
@@ -54,7 +60,34 @@ describe("mapCursorSpending", () => {
     expect(mapped.grokBot?.includedLabel).toBe("Included in Ultra");
     expect(mapped.grokBot?.daysRemaining).toBe(calendarDaysUntil(grokReset, now));
     expect(mapped.grokBot?.daysRemaining).toBe(3);
-    expect(mapped.onDemandEnabled).toBe(false);
-    expect(mapped.monthlyLimitCents).toBeNull();
+    expect(mapped.onDemandMode).toBe("disabled");
+    expect(mapped.onDemandLimitDollars).toBeNull();
+  });
+
+  test("on-demand write matches Cursor's Disabled / Fixed / Unlimited payloads", () => {
+    expect(onDemandWriteBody("disabled")).toEqual({
+      hardLimit: 0,
+      noUsageBasedAllowed: true,
+    });
+    expect(onDemandWriteBody("fixed", 50)).toEqual({
+      hardLimit: 50,
+      noUsageBasedAllowed: false,
+    });
+    expect(onDemandWriteBody("unlimited")).toEqual({
+      hardLimit: ON_DEMAND_UNLIMITED,
+      noUsageBasedAllowed: false,
+    });
+    expect(onDemandFromHardLimit({ noUsageBasedAllowed: true })).toEqual({
+      mode: "disabled",
+      dollars: null,
+    });
+    expect(onDemandFromHardLimit({ hardLimit: 50, noUsageBasedAllowed: false })).toEqual({
+      mode: "fixed",
+      dollars: 50,
+    });
+    expect(onDemandFromHardLimit({ hardLimit: ON_DEMAND_UNLIMITED })).toEqual({
+      mode: "unlimited",
+      dollars: null,
+    });
   });
 });

@@ -3,6 +3,16 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../lib/api'
 import { useSceneRefresh } from '../lib/sceneRefresh'
+import { AccessibleDialog } from './AccessibleDialog'
+
+const PLANS = [
+  { tier: 'pro' as const, name: 'Pro', price: '$20/mo', rank: 1 },
+  { tier: 'pro_plus' as const, name: 'Pro+', price: '$60/mo', rank: 2 },
+  { tier: 'ultra' as const, name: 'Ultra', price: '$200/mo', rank: 3 },
+]
+
+type PlanTier = (typeof PLANS)[number]['tier']
+type LimitMode = 'disabled' | 'fixed' | 'unlimited'
 
 type Spending = Awaited<ReturnType<typeof api.usage>>['spending']
 type Meter = Spending['cursorModels']
@@ -18,11 +28,12 @@ function daysLeft(n: number | null): string {
   return `${n} days left`
 }
 
-function money(cents: number): string {
-  return `$${(cents / 100).toLocaleString('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`
+function planTier(name: string | null | undefined): PlanTier | null {
+  const n = (name || '').trim().toLowerCase()
+  if (n === 'pro+') return 'pro_plus'
+  if (n === 'pro') return 'pro'
+  if (n === 'ultra') return 'ultra'
+  return null
 }
 
 function MeterRow({ meter }: { meter: Meter }) {
@@ -49,30 +60,17 @@ function MeterRow({ meter }: { meter: Meter }) {
   )
 }
 
-function StatusRow({
-  title,
-  hint,
-  value,
-}: {
-  title: string
-  hint: string
-  value: string
-}) {
-  return (
-    <div className="flex items-start justify-between gap-3">
-      <div className="min-w-0">
-        <p className="text-sm">{title}</p>
-        <p className="text-xs text-mute leading-snug mt-0.5">{hint}</p>
-      </div>
-      <p className="text-sm text-mute shrink-0">{value}</p>
-    </div>
-  )
-}
-
 export function UsageBillingPanel() {
   const [spending, setSpending] = useState<Spending | null>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [planOpen, setPlanOpen] = useState(false)
+  const [planPick, setPlanPick] = useState<PlanTier>('ultra')
+  const [planBusy, setPlanBusy] = useState(false)
+  const [limitMode, setLimitMode] = useState<LimitMode>('disabled')
+  const [limitDollars, setLimitDollars] = useState('50')
+  const [limitBusy, setLimitBusy] = useState(false)
+  const [limitMsg, setLimitMsg] = useState('')
 
   const load = useCallback(async (refresh = false) => {
     setBusy(true)
@@ -80,6 +78,13 @@ export function UsageBillingPanel() {
     try {
       const next = await api.usage({ refresh })
       setSpending(next.spending)
+      const mode = next.spending?.onDemandMode
+      if (mode) setLimitMode(mode)
+      if (next.spending?.onDemandLimitDollars != null) {
+        setLimitDollars(String(next.spending.onDemandLimitDollars))
+      }
+      const tier = planTier(next.spending?.planName)
+      if (tier) setPlanPick(tier)
       if (!next.spending?.ok && next.spending?.error) setError(next.spending.error)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -109,12 +114,55 @@ export function UsageBillingPanel() {
         }`
       : ''
 
-  const onDemand =
-    spending?.onDemandEnabled == null ? '—' : spending.onDemandEnabled ? 'Enabled' : 'Disabled'
-  const monthly =
-    spending?.onDemandEnabled === false || spending?.monthlyLimitCents == null
-      ? 'Disabled'
-      : money(spending.monthlyLimitCents)
+  const currentTier = planTier(spending?.planName)
+  const currentRank = PLANS.find((p) => p.tier === currentTier)?.rank ?? 0
+  const picked = PLANS.find((p) => p.tier === planPick)
+  const planAction =
+    !picked || picked.tier === currentTier
+      ? 'Current plan'
+      : picked.rank < currentRank
+        ? 'Schedule downgrade'
+        : 'Continue to checkout'
+
+  async function saveLimit() {
+    setLimitBusy(true)
+    setLimitMsg('')
+    setError('')
+    try {
+      const dollars = Math.round(Number(limitDollars))
+      await api.setUsageOnDemand(
+        limitMode === 'fixed' ? { mode: 'fixed', dollars } : { mode: limitMode },
+      )
+      setLimitMsg('Saved')
+      await load(true)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLimitBusy(false)
+    }
+  }
+
+  async function confirmPlan() {
+    if (!picked || picked.tier === currentTier) return
+    setPlanBusy(true)
+    setError('')
+    try {
+      const res = await api.startUsagePlanCheckout(picked.tier)
+      if (res.url) window.open(res.url, '_blank', 'noopener,noreferrer')
+      setPlanOpen(false)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setPlanBusy(false)
+    }
+  }
+
+  const limitHint =
+    spending?.onDemandMode === 'unlimited'
+      ? 'Usage past your limit is billed later as on-demand.'
+      : spending?.onDemandMode === 'fixed'
+        ? "Requests stop at this limit. Overage from requests already running isn't billed unless the limit is raised this billing cycle."
+        : 'On-demand spending is currently disabled'
 
   return (
     <div className="space-y-4">
@@ -140,6 +188,18 @@ export function UsageBillingPanel() {
           {spending?.price ? <p className="text-sm text-mute">{spending.price}</p> : null}
         </div>
         {planReset ? <p className="text-sm text-mute">{planReset}</p> : null}
+        {spending?.ok ? (
+          <button
+            type="button"
+            className="hb-btn hb-btn-ghost !min-h-9 !px-3 text-sm"
+            onClick={() => {
+              if (currentTier) setPlanPick(currentTier)
+              setPlanOpen(true)
+            }}
+          >
+            Adjust Plan
+          </button>
+        ) : null}
       </section>
 
       {spending?.ok ? (
@@ -185,25 +245,119 @@ export function UsageBillingPanel() {
 
           <section className="space-y-2">
             <h3 className="text-sm font-semibold px-0.5">On-Demand Usage</h3>
-            <div className="hb-surface p-4 space-y-4">
-              <StatusRow
-                title="On-Demand Spending"
-                hint={
-                  spending.onDemandEnabled
-                    ? 'On-demand spending is on.'
-                    : 'On-demand spending is currently disabled'
-                }
-                value={onDemand}
-              />
-              <StatusRow
-                title="Monthly Limit"
-                hint="Set a fixed amount or make it unlimited."
-                value={monthly}
-              />
+            <div className="hb-surface p-4 space-y-3">
+              <div>
+                <p className="text-sm">On-Demand Spending</p>
+                <p className="text-xs text-mute leading-snug mt-0.5">{limitHint}</p>
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <label className="text-xs text-mute sr-only" htmlFor="hb-ondemand-mode">
+                  Monthly limit
+                </label>
+                <select
+                  id="hb-ondemand-mode"
+                  className="hb-select text-sm"
+                  aria-label="Monthly limit"
+                  value={limitMode}
+                  disabled={limitBusy}
+                  onChange={(e) => {
+                    const next = e.target.value as LimitMode
+                    setLimitMode(next)
+                    setLimitMsg('')
+                    if (next === 'fixed' && (!limitDollars || limitDollars === '0')) setLimitDollars('50')
+                  }}
+                >
+                  <option value="fixed">Fixed</option>
+                  <option value="unlimited">Unlimited</option>
+                  <option value="disabled">Disabled</option>
+                </select>
+                {limitMode === 'fixed' ? (
+                  <input
+                    type="number"
+                    min={1}
+                    max={100000}
+                    aria-label="Monthly limit amount"
+                    className="w-24 rounded-[var(--radius-control)] border border-line bg-panel-2 px-2 py-2 text-sm tabular-nums"
+                    value={limitDollars}
+                    disabled={limitBusy}
+                    onChange={(e) => {
+                      setLimitDollars(e.target.value)
+                      setLimitMsg('')
+                    }}
+                  />
+                ) : null}
+                <button
+                  type="button"
+                  className="hb-btn hb-btn-primary !min-h-9 !px-3 text-sm"
+                  disabled={limitBusy}
+                  onClick={() => void saveLimit()}
+                >
+                  {limitBusy ? '…' : 'Save'}
+                </button>
+              </div>
+              <p className="text-xs text-mute">Set a fixed amount or make it unlimited.</p>
+              {limitMsg ? <p className="text-xs text-sky">{limitMsg}</p> : null}
             </div>
           </section>
         </>
       ) : null}
+
+      <AccessibleDialog
+        open={planOpen}
+        onClose={() => {
+          if (!planBusy) setPlanOpen(false)
+        }}
+        title="Adjust plan"
+        panelClassName="w-full max-w-md hb-surface p-4 space-y-3 shadow-xl"
+      >
+        <div className="space-y-2">
+          {PLANS.map((plan) => {
+            const selected = planPick === plan.tier
+            const current = currentTier === plan.tier
+            return (
+              <button
+                key={plan.tier}
+                type="button"
+                className={`w-full rounded-[var(--radius-control)] border px-3 py-2.5 text-left ${
+                  selected ? 'border-accent bg-accent/10' : 'border-line bg-panel-2'
+                }`}
+                onClick={() => setPlanPick(plan.tier)}
+              >
+                <span className="flex items-baseline justify-between gap-3">
+                  <span className="text-sm font-semibold">
+                    {plan.name}
+                    {current ? <span className="text-mute font-normal"> · Current</span> : null}
+                  </span>
+                  <span className="text-sm text-mute">{plan.price}</span>
+                </span>
+              </button>
+            )
+          })}
+        </div>
+        <p className="text-xs text-mute leading-snug">
+          {picked && picked.rank < currentRank
+            ? 'Downgrades keep this plan until the billing period ends. Cursor checkout confirms it.'
+            : 'Upgrades take effect after checkout. Unused time on this plan is credited there.'}
+        </p>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            className="hb-btn hb-btn-ghost flex-1 !min-h-10"
+            disabled={planBusy}
+            onClick={() => setPlanOpen(false)}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="hb-btn hb-btn-primary flex-1 !min-h-10"
+            disabled={planBusy || planPick === currentTier}
+            onClick={() => void confirmPlan()}
+          >
+            {planBusy ? '…' : planAction}
+          </button>
+        </div>
+      </AccessibleDialog>
     </div>
   )
 }
