@@ -29,7 +29,7 @@ import { decryptSecret, encryptSecret } from "./secrets_vault";
 
 const META_PATH = join(RUNTIME_DIR, "contingency.json");
 const SCRIPT_ENC_PATH = join(RUNTIME_DIR, "contingency.script.enc");
-const DEFAULT_SCRIPT = "echo c > /proc/sysrq-trigger";
+const DEFAULT_SCRIPT = "echo b > /proc/sysrq-trigger";
 const TICKET_TTL_MS = 120_000;
 const SCRIPT_MAX = 32_000;
 

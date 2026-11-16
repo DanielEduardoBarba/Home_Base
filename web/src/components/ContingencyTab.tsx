@@ -27,7 +27,7 @@ type Props = {
 }
 
 /**
- * Contingency — nuclear yellow/black kill switch.
+ * Contingency — nuclear yellow/black kill switch. Final execute button is red.
  * PIN (if enabled) → press → full-circle spin → arm → final press → script + reboot.
  * Web GUI only; never exposed to MCP / Cursor tools.
  */
@@ -41,7 +41,7 @@ export function ContingencyTab({ onHome }: Props) {
   const [ticket, setTicket] = useState<string | null>(null)
   const [ticketExpiresAt, setTicketExpiresAt] = useState<number | null>(null)
   const [script, setScript] = useState('')
-  const [defaultScript, setDefaultScript] = useState('echo c > /proc/sysrq-trigger')
+  const [defaultScript, setDefaultScript] = useState('echo b > /proc/sysrq-trigger')
   const [isDefault, setIsDefault] = useState(true)
   const [scriptOpen, setScriptOpen] = useState(false)
   const [scriptEditing, setScriptEditing] = useState(false)
@@ -463,7 +463,13 @@ export function ContingencyTab({ onHome }: Props) {
           </div>
         ) : (
           <div className="hb-contingency-launch">
-            <div className="hb-contingency-ring-wrap">
+            <div
+              className={`hb-contingency-ring-wrap${
+                phase === 'armed' || phase === 'firing' || phase === 'done'
+                  ? ' hb-contingency-ring-wrap--hot'
+                  : ''
+              }`}
+            >
               <svg className="hb-contingency-ring" viewBox="0 0 120 120" aria-hidden>
                 <circle className="hb-contingency-ring-track" cx="60" cy="60" r="52" />
                 <circle
