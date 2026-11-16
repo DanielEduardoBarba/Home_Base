@@ -4791,14 +4791,15 @@ html.hb-view-max .hb-topbar {
 
 /* ── Contingency (nuclear hazard) ───────────────────────────────────────── */
 .hb-contingency {
-  /* High-contrast hazard palette: ink black + signal yellow + cream copy */
+  /* Hazard palette: ink on yellow, cream on black, white on deep red */
   --hb-nuke-yellow: #ffd400;
   --hb-nuke-yellow-hot: #ffe98a;
   --hb-nuke-cream: #fff6c8;
-  --hb-nuke-ink: #050505;
+  --hb-nuke-ink: #140f00;
   --hb-nuke-black: #0a0a0a;
   --hb-nuke-panel: #12100a;
-  --hb-nuke-red: #ff3b2f;
+  --hb-nuke-red: #c01008;
+  --hb-nuke-red-hot: #ff5a4a;
   --hb-nuke-red-ink: #fff;
   position: relative;
   background: var(--hb-nuke-ink);
@@ -4879,9 +4880,9 @@ html.hb-view-max .hb-topbar {
   appearance: none;
   border: none;
   background: transparent;
-  color: color-mix(in srgb, var(--hb-nuke-cream) 55%, transparent);
+  color: var(--hb-nuke-cream);
   font-size: 0.68rem;
-  font-weight: 500;
+  font-weight: 650;
   letter-spacing: 0.04em;
   text-transform: lowercase;
   text-decoration: underline;
@@ -4889,7 +4890,6 @@ html.hb-view-max .hb-topbar {
   padding: 0.35rem 0.4rem;
   min-height: 36px;
   cursor: pointer;
-  opacity: 0.75;
 }
 
 .hb-contingency-script-link:hover,
@@ -4938,8 +4938,8 @@ html.hb-view-max .hb-topbar {
   font-size: 0.85rem;
   font-weight: 650;
   color: var(--hb-nuke-red-ink);
-  background: #b01008;
-  border: 2px solid #ff6b61;
+  background: #7a0906;
+  border: 2px solid var(--hb-nuke-red-hot);
   border-radius: 0.5rem;
   padding: 0.55rem 0.75rem;
 }
@@ -4978,6 +4978,10 @@ html.hb-view-max .hb-topbar {
   background: var(--hb-nuke-yellow);
   border-radius: 0.25rem;
   box-shadow: 0 0 24px color-mix(in srgb, var(--hb-nuke-yellow) 40%, transparent);
+}
+
+.hb-contingency-hazard span {
+  color: var(--hb-nuke-ink);
 }
 
 .hb-contingency-tri {
@@ -5158,20 +5162,23 @@ html.hb-view-max .hb-topbar {
 
 .hb-contingency-bigbtn-label {
   position: relative;
+  z-index: 1;
   font-family: var(--font-display);
   font-size: clamp(0.85rem, 3.6vw, 1.15rem);
   font-weight: 800;
   letter-spacing: 0.12em;
   text-align: center;
   line-height: 1.15;
+  color: var(--hb-nuke-yellow);
 }
 
 .hb-contingency-bigbtn-hint {
   position: relative;
+  z-index: 1;
   font-size: 0.65rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  opacity: 0.75;
+  color: var(--hb-nuke-cream);
   text-align: center;
   max-width: 9rem;
 }
@@ -5185,26 +5192,43 @@ html.hb-view-max .hb-topbar {
 
 .hb-contingency-bigbtn--armed {
   background:
-    radial-gradient(circle at 40% 35%, #fff4a8 0%, var(--hb-nuke-yellow) 40%, #e6b800 75%, #a88400 100%);
-  color: var(--hb-nuke-ink);
-  border-color: #fff8dc;
+    radial-gradient(circle at 38% 30%, #d21a12 0%, var(--hb-nuke-red) 46%, #5e0705 100%);
+  color: var(--hb-nuke-red-ink);
+  border-color: #ffb4ac;
   animation: hb-contingency-pulse 1.1s ease-in-out infinite;
 }
 
 .hb-contingency-bigbtn--armed .hb-contingency-bigbtn-glow {
-  opacity: 1;
+  opacity: 0.85;
+  background: radial-gradient(circle, color-mix(in srgb, var(--hb-nuke-red-hot) 50%, transparent), transparent 70%);
   animation: hb-contingency-glow 1.1s ease-in-out infinite;
 }
 
+.hb-contingency-bigbtn--armed .hb-contingency-bigbtn-label,
+.hb-contingency-bigbtn--armed .hb-contingency-bigbtn-hint,
+.hb-contingency-bigbtn--firing .hb-contingency-bigbtn-label,
+.hb-contingency-bigbtn--firing .hb-contingency-bigbtn-hint,
+.hb-contingency-bigbtn--done .hb-contingency-bigbtn-label,
+.hb-contingency-bigbtn--done .hb-contingency-bigbtn-hint {
+  color: var(--hb-nuke-red-ink);
+}
+
 .hb-contingency-bigbtn--armed .hb-contingency-bigbtn-hint {
-  color: var(--hb-nuke-ink);
-  opacity: 0.85;
   font-weight: 700;
 }
 
+.hb-contingency-ring-wrap--hot .hb-contingency-ring-track {
+  stroke: color-mix(in srgb, var(--hb-nuke-red-hot) 35%, transparent);
+}
+
+.hb-contingency-ring-wrap--hot .hb-contingency-ring-prog {
+  stroke: var(--hb-nuke-red-hot);
+  filter: drop-shadow(0 0 6px var(--hb-nuke-red-hot));
+}
+
 @keyframes hb-contingency-pulse {
-  0%, 100% { box-shadow: 0 0 28px color-mix(in srgb, var(--hb-nuke-yellow) 55%, transparent); }
-  50% { box-shadow: 0 0 52px color-mix(in srgb, var(--hb-nuke-yellow) 85%, transparent), 0 0 80px color-mix(in srgb, var(--hb-nuke-red) 35%, transparent); }
+  0%, 100% { box-shadow: 0 0 28px color-mix(in srgb, var(--hb-nuke-red) 70%, transparent); }
+  50% { box-shadow: 0 0 52px color-mix(in srgb, var(--hb-nuke-red-hot) 80%, transparent), 0 0 80px color-mix(in srgb, var(--hb-nuke-red) 45%, transparent); }
 }
 
 @keyframes hb-contingency-glow {
@@ -5214,9 +5238,9 @@ html.hb-view-max .hb-topbar {
 
 .hb-contingency-bigbtn--firing,
 .hb-contingency-bigbtn--done {
-  background: radial-gradient(circle, var(--hb-nuke-red), #2a0500 70%);
+  background: radial-gradient(circle at 38% 30%, #9a0e08 0%, #4a0503 72%);
   border-color: #ff8a7a;
-  color: #fff;
+  color: var(--hb-nuke-red-ink);
   animation: none;
 }
 
