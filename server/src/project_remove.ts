@@ -6,6 +6,7 @@ import { deleteProject, loadProjects } from "./config";
 import { purgeProjectWorkspace } from "./cursor";
 import { stopProject } from "./process";
 import { killByProject } from "./pty";
+import { isUnderMcpWorkspaces, tombstoneMcpWorkspace } from "./workspace";
 
 export type RemoveProjectResult = {
   ok: boolean;
@@ -61,6 +62,15 @@ export function removeRegisteredProject(projectId: string): RemoveProjectResult 
   }
 
   const { chatsDeleted, agentsUnmapped } = purgeProjectWorkspace(id);
+
+  // MCP folders stay on disk; tombstone so boot reconcile does not resurrect.
+  try {
+    if (isUnderMcpWorkspaces(project.path)) {
+      tombstoneMcpWorkspace(project.path);
+    }
+  } catch {
+    /* best-effort */
+  }
 
   if (!deleteProject(id)) {
     return {

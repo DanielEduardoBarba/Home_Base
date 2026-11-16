@@ -98,10 +98,46 @@ describeWorkspace("createMcpWorkspace", () => {
     }
   });
 
-  test("duplicate folder rejected", () => {
+  test("already-registered folder returns same project", () => {
     const r = ws.createMcpWorkspace("my-bot-app");
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toMatch(/already exists/i);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.project.id).toBe("my-bot-app");
+  });
+
+  test("orphan folder on disk is re-registered", () => {
+    mcp.saveMcpServer({ allowMcpWorkspaceCreate: true });
+    const orphan = join(mcpRoot, "orphan-bot");
+    mkdirSync(orphan, { recursive: true });
+    // Simulate deploy wipe: remove from projects.json only.
+    const disk = JSON.parse(readFileSync(projectsPath, "utf8")) as {
+      projects: { id: string }[];
+    };
+    disk.projects = disk.projects.filter((p) => p.id !== "orphan-bot");
+    writeFileSync(projectsPath, JSON.stringify(disk) + "\n");
+    expect(loadProjects().has("orphan-bot")).toBe(false);
+    const r = ws.createMcpWorkspace("orphan-bot");
+    expect(r.ok).toBe(true);
+    expect(loadProjects().has("orphan-bot")).toBe(true);
+  });
+
+  test("reconcileMcpWorkspaces restores orphans; skips tombstones", () => {
+    const name = "reconcile-me";
+    mkdirSync(join(mcpRoot, name), { recursive: true });
+    const removed = join(mcpRoot, "was-removed");
+    mkdirSync(removed, { recursive: true });
+    writeFileSync(join(removed, ws.MCP_WORKSPACE_TOMBSTONE), "x\n");
+    const disk = JSON.parse(readFileSync(projectsPath, "utf8")) as {
+      projects: { id: string }[];
+    };
+    disk.projects = disk.projects.filter(
+      (p) => p.id !== name && p.id !== "was-removed",
+    );
+    writeFileSync(projectsPath, JSON.stringify(disk) + "\n");
+    expect(loadProjects().has(name)).toBe(false);
+    const rec = ws.reconcileMcpWorkspaces();
+    expect(rec.registered.some((p) => p.id === name)).toBe(true);
+    expect(loadProjects().has(name)).toBe(true);
+    expect(loadProjects().has("was-removed")).toBe(false);
   });
 
   test("absolute path name rejected", () => {

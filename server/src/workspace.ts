@@ -6,9 +6,11 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   realpathSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import {
@@ -22,6 +24,10 @@ import { detectSeatUser } from "./shell_env";
 
 export const WORKSPACE_NAME_MAX = 64;
 const WORKSPACE_NAME_RE = /^[A-Za-z0-9._-]+$/;
+/** Marker written on MCP create/clone (informational; reconcile does not require it). */
+export const MCP_WORKSPACE_MARKER = ".homebase-mcp-workspace";
+/** Written on intentional unregister so boot reconcile will not resurrect the folder. */
+export const MCP_WORKSPACE_TOMBSTONE = ".homebase-mcp-removed";
 
 const BLOCKED_PARENT_PREFIXES = [
   "/bin",
@@ -228,6 +234,129 @@ export type CreateMcpWorkspaceResult =
   | { ok: true; project: Project }
   | { ok: false; error: string };
 
+function unlinkQuiet(path: string): void {
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    /* ignore */
+  }
+}
+
+/** True when abs path is inside the seat MCP_WORKSPACES root. */
+export function isUnderMcpWorkspaces(absPath: string): boolean {
+  try {
+    const root = realpathSync(mcpWorkspacesRoot());
+    const target = resolve(absPath);
+    let real = target;
+    try {
+      real = realpathSync(target);
+    } catch {
+      /* path may not exist yet */
+    }
+    return real === root || real.startsWith(`${root}/`);
+  } catch {
+    return false;
+  }
+}
+
+/** Mark a folder as an MCP workspace and clear any delete tombstone. */
+export function markMcpWorkspace(target: string): void {
+  const abs = resolve(target);
+  unlinkQuiet(join(abs, MCP_WORKSPACE_TOMBSTONE));
+  const marker = join(abs, MCP_WORKSPACE_MARKER);
+  if (existsSync(marker)) return;
+  writeFileSync(marker, `${new Date().toISOString()}\n`, { mode: 0o644 });
+  chownSeatUser(marker);
+}
+
+/** Record intentional unregister so reconcile will not re-add this folder. */
+export function tombstoneMcpWorkspace(target: string): void {
+  const abs = resolve(target);
+  if (!existsSync(abs)) return;
+  unlinkQuiet(join(abs, MCP_WORKSPACE_MARKER));
+  const stone = join(abs, MCP_WORKSPACE_TOMBSTONE);
+  writeFileSync(stone, `${new Date().toISOString()}\n`, { mode: 0o644 });
+  chownSeatUser(stone);
+}
+
+function registerMcpFolder(rootReal: string, folderName: string): Project {
+  const target = join(rootReal, folderName);
+  assertRealpathInside(rootReal, target);
+  rejectSymlinkEscape(rootReal, target);
+  const st = statSync(target);
+  if (!st.isDirectory()) throw new Error("workspace path is not a directory");
+  markMcpWorkspace(target);
+  return upsertProjectFromInput({
+    path: target,
+    name: folderName,
+    id: projectIdForName(folderName),
+  });
+}
+
+/**
+ * Re-register directories under ~/MCP_WORKSPACES missing from projects.json
+ * (e.g. after an old --deploy overwrite). Skips tombstoned folders so
+ * intentional project deletes stay deleted.
+ */
+export function reconcileMcpWorkspaces(): {
+  registered: Project[];
+  skipped: string[];
+} {
+  const registered: Project[] = [];
+  const skipped: string[] = [];
+  let rootReal: string;
+  try {
+    rootReal = realpathSync(ensureMcpWorkspacesRoot());
+  } catch {
+    return { registered, skipped };
+  }
+
+  let names: string[];
+  try {
+    names = readdirSync(rootReal);
+  } catch {
+    return { registered, skipped };
+  }
+
+  const projects = loadProjects();
+  const registeredPaths = new Set(
+    [...projects.values()].map((p) => resolve(p.path)),
+  );
+
+  for (const name of names) {
+    const nameErr = validateWorkspaceName(name);
+    if (nameErr) {
+      skipped.push(name);
+      continue;
+    }
+    const target = join(rootReal, name);
+    try {
+      const st = lstatSync(target);
+      if (st.isSymbolicLink()) {
+        rejectSymlinkEscape(rootReal, target);
+      }
+      if (!statSync(target).isDirectory()) {
+        skipped.push(name);
+        continue;
+      }
+      if (existsSync(join(target, MCP_WORKSPACE_TOMBSTONE))) {
+        skipped.push(name);
+        continue;
+      }
+      const abs = resolve(realpathSync(target));
+      if (registeredPaths.has(abs) || projects.has(projectIdForName(name))) {
+        continue;
+      }
+      const project = registerMcpFolder(rootReal, name);
+      registered.push(project);
+      registeredPaths.add(resolve(project.path));
+    } catch {
+      skipped.push(name);
+    }
+  }
+  return { registered, skipped };
+}
+
 export function createMcpWorkspace(name: string): CreateMcpWorkspaceResult {
   if (!mcpWorkspaceCreateAllowed()) {
     return {
@@ -262,8 +391,27 @@ export function createMcpWorkspace(name: string): CreateMcpWorkspaceResult {
   if (!lexicalInside(rootReal, target)) {
     return { ok: false, error: "invalid workspace path" };
   }
+
+  // Folder already on disk (often after deploy wiped projects.json): re-register.
   if (existsSync(target)) {
-    return { ok: false, error: "workspace folder already exists" };
+    try {
+      const abs = resolve(realpathSync(target));
+      for (const p of loadProjects().values()) {
+        if (resolve(p.path) === abs) {
+          return { ok: true, project: p };
+        }
+      }
+      if (loadProjects().has(projectIdForName(trimmed))) {
+        return { ok: false, error: "a project with this id is already registered" };
+      }
+      const project = registerMcpFolder(rootReal, trimmed);
+      return { ok: true, project };
+    } catch (e) {
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      };
+    }
   }
 
   try {
@@ -279,12 +427,7 @@ export function createMcpWorkspace(name: string): CreateMcpWorkspaceResult {
   try {
     mkdirWorkspace(target);
     created = true;
-    assertRealpathInside(rootReal, target);
-    const project = upsertProjectFromInput({
-      path: target,
-      name: trimmed,
-      id: projectIdForName(trimmed),
-    });
+    const project = registerMcpFolder(rootReal, trimmed);
     return { ok: true, project };
   } catch (e) {
     if (created) {

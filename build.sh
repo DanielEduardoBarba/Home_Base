@@ -877,17 +877,66 @@ seed_homebase_project() {
   hb_ok "project homebase → $ROOT"
 }
 
+# Merge repo + prod project registries. Repo wins on shared ids (ports/actions);
+# prod-only entries (MCP ~/MCP_WORKSPACES, GUI-added apps) are preserved.
+# Never a blind cp — that wiped MCP workspaces on every --deploy.
+merge_projects_json() {
+  local repo_json="$1"
+  local prod_json="$2"
+  [[ -f "$repo_json" && -f "$prod_json" ]] || return 1
+  run_priv env \
+    HB_REPO_PROJECTS="$repo_json" \
+    HB_PROD_PROJECTS="$prod_json" \
+    python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+repo_path = Path(os.environ["HB_REPO_PROJECTS"])
+prod_path = Path(os.environ["HB_PROD_PROJECTS"])
+repo = json.loads(repo_path.read_text())
+prod = json.loads(prod_path.read_text())
+repo_list = list(repo.get("projects") or [])
+prod_list = list(prod.get("projects") or [])
+by_id = {str(p.get("id")): p for p in prod_list if p.get("id")}
+for p in repo_list:
+    pid = str(p.get("id") or "")
+    if not pid:
+        continue
+    by_id[pid] = p
+ordered = []
+seen = set()
+for p in repo_list:
+    pid = str(p.get("id") or "")
+    if pid and pid in by_id and pid not in seen:
+        ordered.append(by_id[pid])
+        seen.add(pid)
+for p in prod_list:
+    pid = str(p.get("id") or "")
+    if pid and pid in by_id and pid not in seen:
+        ordered.append(by_id[pid])
+        seen.add(pid)
+prod_path.write_text(json.dumps({"projects": ordered}, indent=2) + "\n")
+repo_ids = {str(x.get("id") or "") for x in repo_list}
+kept = sum(1 for p in prod_list if str(p.get("id") or "") and str(p.get("id")) not in repo_ids)
+print(f"    merged projects.json (repo={len(repo_list)} prod-only={kept} → {len(ordered)})")
+PY
+}
+
 # Upsert homebase into /var/lib/homebased/config/projects.json (root-owned).
-# Deploy already copies the repo registry; this re-upserts under sudo so a
-# divergent prod file still gets the Home Base project without a false ✓.
+# Prefer bun upsert (preserves other projects); fall back to merge, never wipe.
 sync_homebase_project_prod() {
   local bun_bin server_dir
   bun_bin="$(command -v bun 2>/dev/null || true)"
   server_dir="$(bun_server_dir)"
   if [[ ! -x "$bun_bin" ]]; then
-    echo "    bun not found — copying repo projects.json" >&2
+    echo "    bun not found — merging repo projects.json into prod" >&2
     [[ -f "$ROOT/config/projects.json" ]] || return 1
-    run_priv cp "$ROOT/config/projects.json" "$HOMEBASE_VAR/config/projects.json"
+    if [[ -f "$HOMEBASE_VAR/config/projects.json" ]]; then
+      merge_projects_json "$ROOT/config/projects.json" "$HOMEBASE_VAR/config/projects.json" || return 1
+    else
+      run_priv cp "$ROOT/config/projects.json" "$HOMEBASE_VAR/config/projects.json"
+    fi
     run_priv bash -c "chown root:root $(printf %q "$HOMEBASE_VAR/config/projects.json"); chmod 644 $(printf %q "$HOMEBASE_VAR/config/projects.json"); command -v setfacl >/dev/null && setfacl -b $(printf %q "$HOMEBASE_VAR/config/projects.json") || true"
     return 0
   fi
@@ -1492,8 +1541,11 @@ prepare_var_lib() {
     refresh_prod_port
     echo "    production HOMEBASE_PORT=$PROD_PORT (from .env)"
   fi
-  # Deploy machine is source of truth for project registry
-  if [[ -f "$ROOT/config/projects.json" ]]; then
+  # Merge project registries — never overwrite prod (that wiped MCP apps).
+  if [[ -f "$ROOT/config/projects.json" && -f "$HOMEBASE_VAR/config/projects.json" ]]; then
+    merge_projects_json "$ROOT/config/projects.json" "$HOMEBASE_VAR/config/projects.json" \
+      || echo "    warning: projects.json merge failed — leaving prod registry" >&2
+  elif [[ -f "$ROOT/config/projects.json" ]]; then
     run_priv cp "$ROOT/config/projects.json" "$HOMEBASE_VAR/config/projects.json"
     echo "    synced config/projects.json → $HOMEBASE_VAR/config/"
   elif [[ ! -f "$HOMEBASE_VAR/config/projects.json" ]]; then

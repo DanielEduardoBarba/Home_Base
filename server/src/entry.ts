@@ -183,6 +183,22 @@ try {
   );
 }
 
+try {
+  const { reconcileMcpWorkspaces } = await import("./workspace");
+  const rec = reconcileMcpWorkspaces();
+  if (rec.registered.length > 0) {
+    logInfo(
+      `mcp workspace reconcile registered=${rec.registered.map((p) => p.id).join(",")}`,
+      "boot",
+    );
+  }
+} catch (e) {
+  logWarn(
+    `mcp workspace reconcile failed: ${e instanceof Error ? e.message : String(e)}`,
+    "boot",
+  );
+}
+
 const hostname = bindHost();
 const port = bindPort();
 

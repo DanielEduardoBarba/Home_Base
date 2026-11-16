@@ -24,6 +24,7 @@ import {
 } from "./mcp_server";
 import {
   ensureMcpWorkspacesRoot,
+  markMcpWorkspace,
   rejectSymlinkEscape,
   validateWorkspaceName,
 } from "./workspace";
@@ -540,6 +541,7 @@ export function cloneGithubWorkspace(opts: {
 
   let project: Project;
   try {
+    markMcpWorkspace(target);
     project = upsertProjectFromInput({
       path: target,
       name,
