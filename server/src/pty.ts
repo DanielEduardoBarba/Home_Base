@@ -342,7 +342,15 @@ export function spawnShell(opts: {
       "pty",
     );
     emitSessionExit(id, opts.projectId, exitCode ?? 0);
-    // Keep the row so the SPA can show dead + dismiss (X); DELETE removes it.
+    // Interactive shells: drop immediately (same as Kill) so the SPA list
+    // updates without a manual refresh. Keep run/expo rows for dead+dismiss.
+    const kind = String(session.info.kind || "shell").toLowerCase();
+    if (kind === "shell" || kind === "interactive") {
+      setTimeout(() => {
+        const cur = sessions.get(id);
+        if (cur?.exited) sessions.delete(id);
+      }, 30);
+    }
   };
 
   let backend =

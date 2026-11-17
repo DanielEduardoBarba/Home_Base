@@ -5,52 +5,16 @@
  * Probe mode (`HOMEBASE_SDK_PROBE=1`): print ready+uid and exit — for harness tests.
  */
 import { appendFileSync } from "node:fs";
+import {
+  FramedWriter,
+  readFrame,
+  type Json,
+} from "./ipc_framing";
 
-type Json = Record<string, unknown>;
+const out = new FramedWriter(Bun.stdout);
 
 function send(obj: Json): void {
-  const data = Buffer.from(JSON.stringify(obj), "utf8");
-  const hdr = Buffer.alloc(4);
-  hdr.writeUInt32BE(data.length, 0);
-  const out = Bun.stdout;
-  out.write(hdr);
-  out.write(data);
-}
-
-type ByteReader = {
-  read: () => Promise<{ done: boolean; value?: Uint8Array }>;
-};
-
-async function readExact(
-  reader: ByteReader,
-  n: number,
-  buf: { cur: Uint8Array },
-): Promise<Uint8Array> {
-  while (buf.cur.length < n) {
-    const { done, value } = await reader.read();
-    if (done || !value) throw new Error("EOF");
-    const next = new Uint8Array(buf.cur.length + value.length);
-    next.set(buf.cur);
-    next.set(value, buf.cur.length);
-    buf.cur = next;
-  }
-  const out = buf.cur.slice(0, n);
-  buf.cur = buf.cur.slice(n);
-  return out;
-}
-
-async function recv(
-  reader: ByteReader,
-  buf: { cur: Uint8Array },
-): Promise<Json> {
-  const hdr = await readExact(reader, 4, buf);
-  const n = new DataView(hdr.buffer, hdr.byteOffset, hdr.byteLength).getUint32(
-    0,
-    false,
-  );
-  if (n <= 0 || n > 64 * 1024 * 1024) throw new Error(`bad size ${n}`);
-  const data = await readExact(reader, n, buf);
-  return JSON.parse(Buffer.from(data).toString("utf8")) as Json;
+  out.sendFire(obj);
 }
 
 function currentUid(): number {
@@ -84,7 +48,7 @@ export async function runCursorSdkWorker(): Promise<number> {
     return 0;
   }
 
-  const stdin = Bun.stdin.stream().getReader() as ByteReader;
+  const stdin = Bun.stdin.stream().getReader();
   const buf = { cur: new Uint8Array(0) };
   const pendingTools = new Map<string, PendingTool>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -120,7 +84,7 @@ export async function runCursorSdkWorker(): Promise<number> {
     for (;;) {
       let msg: Json;
       try {
-        msg = await recv(stdin, buf);
+        msg = await readFrame(stdin, buf);
       } catch {
         break;
       }
@@ -225,7 +189,8 @@ export async function runCursorSdkWorker(): Promise<number> {
           const run = await agent.send(message, {
             ...(mode ? { mode } : {}),
             onDelta: async ({ update }: { update: Record<string, unknown> }) => {
-              send({ type: "delta", runId, update });
+              // Await the framed write so rapid deltas stay ordered and atomic.
+              await out.send({ type: "delta", runId, update });
             },
           });
           liveRuns.set(runId, run);

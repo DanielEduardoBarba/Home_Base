@@ -204,8 +204,8 @@ export function McpServerPanel() {
       <section className="hb-surface p-3.5 space-y-2.5">
         <h2 className="text-sm font-semibold text-text">MCP features</h2>
         <p className="text-xs text-mute leading-relaxed">
-          Fine-tune what tools bots can call. Vision defaults Off. Changes apply on the next MCP
-          request (clients should re-list tools).
+          Fine-tune what tools bots can call. Vision and Isolated Chrome default Off. Changes apply
+          on the next MCP request (clients should re-list tools).
         </p>
         {featureMeta.map((meta) => {
           const id = meta.id as FeatureId

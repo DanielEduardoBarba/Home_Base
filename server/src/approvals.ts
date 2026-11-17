@@ -107,8 +107,9 @@ export async function requestApproval(opts: {
   cwd?: string;
   agentId?: string;
 }): Promise<{ permission: string; user_message: string; agent_message: string }> {
-  // Mode switches must always get an explicit Switch/Stay — never auto-run.
-  const forceAsk = opts.kind === "mode_switch";
+  // Mode switches + browser login assists must always get an explicit human OK.
+  const forceAsk =
+    opts.kind === "mode_switch" || opts.kind === "browser_assist";
 
   if (policy === "auto" && !forceAsk) {
     return {
@@ -120,18 +121,34 @@ export async function requestApproval(opts: {
 
   // Lazy import avoids circular init with cursor.ts
   const { cursorSubscriberCount, broadcastAllCursor } = await import("./cursor");
-  if (cursorSubscriberCount() === 0 && !forceAsk) {
+  let browserViewers = 0;
+  if (opts.kind === "browser_assist") {
+    try {
+      const { browserViewerCount } = await import("./browser_session");
+      browserViewers = browserViewerCount();
+    } catch {
+      /* ignore */
+    }
+  }
+  const listeners = cursorSubscriberCount() + browserViewers;
+  if (listeners === 0 && !forceAsk) {
     return {
       permission: "allow",
       user_message: "No Chat listener — allowed (ask policy fail-open)",
       agent_message: "Allowed without UI listener",
     };
   }
-  if (cursorSubscriberCount() === 0 && forceAsk) {
+  if (listeners === 0 && forceAsk) {
     return {
       permission: "deny",
-      user_message: "No Chat listener — cannot confirm mode switch",
-      agent_message: "Denied — open Chat to Switch/Stay",
+      user_message:
+        opts.kind === "browser_assist"
+          ? "No Chat listener — cannot wait for login/assist"
+          : "No Chat listener — cannot confirm mode switch",
+      agent_message:
+        opts.kind === "browser_assist"
+          ? "Denied — open Chat Browser dock to Done/Cancel"
+          : "Denied — open Chat to Switch/Stay",
     };
   }
 

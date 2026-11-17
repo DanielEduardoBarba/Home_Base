@@ -15,6 +15,22 @@ import { listNotifications, pushNotification } from "./notifications";
 import { projectPublic, runAction, stopProject, tailLogs } from "./process";
 import { systemStatus } from "./system";
 import {
+  BROWSER_GUIDANCE,
+  browserAskHuman,
+  browserAskSecret,
+  browserClick,
+  browserClose,
+  browserHotkey,
+  browserKey,
+  browserNavigate,
+  browserOpen,
+  browserProposeEmail,
+  browserScreenshot,
+  browserScroll,
+  browserStatus,
+  browserType,
+} from "./browser_session";
+import {
   VISION_GUIDANCE,
   ensureVisionWorkspace,
   visionHotkey,
@@ -71,6 +87,7 @@ export type McpFeatureId =
   | "status"
   | "homeAccess"
   | "vision"
+  | "browser"
   | "presence";
 
 export type McpFeatures = Record<McpFeatureId, boolean>;
@@ -81,6 +98,7 @@ export const MCP_FEATURE_DEFAULTS: McpFeatures = {
   status: true,
   homeAccess: true,
   vision: false,
+  browser: false,
   presence: true,
 };
 
@@ -118,6 +136,13 @@ export const MCP_FEATURE_META: {
     id: "vision",
     label: "Vision desktop",
     hint: "Screenshot + Armed pointer/keyboard (off by default)",
+    defaultOn: false,
+  },
+  {
+    id: "browser",
+    label: "Isolated Chrome",
+    hint:
+      "Xvfb/headless Chrome + CDP view/click/type + ask_human + propose_email (off by default; safer than Vision)",
     defaultOn: false,
   },
   {
@@ -176,6 +201,19 @@ export const MCP_TOOL_FEATURE: Record<string, McpFeatureId> = {
   homebase_vision_type: "vision",
   homebase_vision_key: "vision",
   homebase_vision_hotkey: "vision",
+  homebase_browser_status: "browser",
+  homebase_browser_open: "browser",
+  homebase_browser_close: "browser",
+  homebase_browser_navigate: "browser",
+  homebase_browser_screenshot: "browser",
+  homebase_browser_click: "browser",
+  homebase_browser_type: "browser",
+  homebase_browser_key: "browser",
+  homebase_browser_hotkey: "browser",
+  homebase_browser_scroll: "browser",
+  homebase_browser_ask_human: "browser",
+  homebase_browser_ask_secret: "browser",
+  homebase_browser_propose_email: "browser",
   homebase_presence_status: "presence",
   homebase_presence_express: "presence",
   homebase_presence_chat_send: "presence",
@@ -213,6 +251,16 @@ function json(data: unknown): string {
 
 async function visionTool(
   fn: () => Promise<Record<string, unknown>>,
+): Promise<string> {
+  try {
+    return json(await fn());
+  } catch (e) {
+    return json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+async function browserTool(
+  fn: () => Promise<Record<string, unknown>> | Record<string, unknown>,
 ): Promise<string> {
   try {
     return json(await fn());
@@ -262,6 +310,9 @@ export function wrapPrompt(
       `Use homebase_vision_screenshot then click/type/hotkey while Armed. `
     : `Vision (Linux X11 desktop): use homebase_vision_screenshot then homebase_vision_click/type/hotkey ` +
       `while the user has Armed desktop control in the Vision UI. ${VISION_GUIDANCE} `;
+  const browserBit =
+    `Isolated Chrome (MCP feature \"browser\", off by default): ${BROWSER_GUIDANCE} ` +
+    `Use homebase_browser_open / screenshot / click / type / key — one shared Home Base profile. `;
   return (
     `${CONTEXT_MARKER}\n` +
     `Private metadata (do not quote, paraphrase, or repeat):\n` +
@@ -275,6 +326,7 @@ export function wrapPrompt(
     `Home Access panel widgets (buttons/toggles/sliders/gauges) use homebase_access_* tools ` +
     `or edit server/src/home_access.ts / the Home Access UI — leave the framework intact once wired. ` +
     visionBit +
+    browserBit +
     `When the task needs planning vs implementing (or Ask/Debug), call homebase_propose_mode ` +
     `so the user can Switch/Stay mid-chat — do not only narrate a mode change. ` +
     `Answer the user message below in a normal concise voice.\n---\n` +
@@ -622,6 +674,32 @@ export function buildHomebaseTools(
           monitor: args.monitor != null ? Number(args.monitor) : undefined,
           maxWidth: args.maxWidth != null ? Number(args.maxWidth) : undefined,
           quality: args.quality != null ? Number(args.quality) : undefined,
+        }),
+      ),
+  };
+  tools.homebase_browser_status = {
+    description:
+      "Isolated Home Base Chrome status: running?, profile path, viewport, URL. " +
+      "One shared Chrome env for this Home Base (not the operator's personal browser).",
+    parameters: { type: "object", properties: {} },
+    execute: async () => browserTool(() => browserStatus()),
+  };
+  tools.homebase_browser_screenshot = {
+    description:
+      "Screenshot the isolated Home Base Chrome tab (JPEG). Returns a filesystem path — " +
+      "Read that image before clicking. Auto-starts Chrome if needed. Prefer after each action.",
+    parameters: {
+      type: "object",
+      properties: {
+        quality: { type: "number", description: "JPEG quality 30–90 (default 72)" },
+        fullPage: { type: "boolean", description: "Capture beyond viewport" },
+      },
+    },
+    execute: async (args) =>
+      browserTool(() =>
+        browserScreenshot({
+          quality: args.quality != null ? Number(args.quality) : undefined,
+          fullPage: args.fullPage === true,
         }),
       ),
   };
@@ -1573,6 +1651,248 @@ export function buildHomebaseTools(
         required: ["keys"],
       },
       execute: async (args) => visionTool(() => visionHotkey(args)),
+    };
+    tools.homebase_browser_open = {
+      description:
+        "Start (or reuse) the isolated Home Base Chrome workspace. Optional url. " +
+        "reset:true wipes the shared profile (cookies/localStorage) for a clean session. " +
+        "Prefers Xvfb virtual display (seat desktop stays free), then headless, then seat DISPLAY. " +
+        "Human watches/takes control in Chat Browser dock — CDP-only (not Vision).",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "Initial URL (default about:blank)" },
+          reset: {
+            type: "boolean",
+            description: "Wipe .runtime/browser/profile before launch",
+          },
+        },
+      },
+      execute: async (args) =>
+        browserTool(() =>
+          browserOpen({
+            url: args.url != null ? String(args.url) : undefined,
+            reset: args.reset === true,
+          }),
+        ),
+    };
+    tools.homebase_browser_close = {
+      description:
+        "Stop the isolated Home Base Chrome process. Profile data is kept unless you " +
+        "later open with reset:true.",
+      parameters: { type: "object", properties: {} },
+      execute: async () => browserTool(() => browserClose()),
+    };
+    tools.homebase_browser_navigate = {
+      description:
+        "Navigate the isolated Chrome tab to a URL (auto-starts Chrome if needed).",
+      parameters: {
+        type: "object",
+        properties: { url: { type: "string" } },
+        required: ["url"],
+      },
+      execute: async (args) =>
+        browserTool(() => browserNavigate({ url: String(args.url || "") })),
+    };
+    tools.homebase_browser_click = {
+      description:
+        "Click inside isolated Chrome (CDP). Use normalized x,y in 0..1 from the screenshot, " +
+        "or px,py in CSS pixels. button: left|middle|right (or 0|1|2).",
+      parameters: {
+        type: "object",
+        properties: {
+          x: { type: "number", description: "Normalized 0..1" },
+          y: { type: "number", description: "Normalized 0..1" },
+          px: { type: "number" },
+          py: { type: "number" },
+          button: {},
+          clickCount: { type: "number" },
+        },
+      },
+      execute: async (args) =>
+        browserTool(() =>
+          browserClick({
+            x: args.x != null ? Number(args.x) : undefined,
+            y: args.y != null ? Number(args.y) : undefined,
+            px: args.px != null ? Number(args.px) : undefined,
+            py: args.py != null ? Number(args.py) : undefined,
+            button: args.button as string | number | undefined,
+            clickCount:
+              args.clickCount != null ? Number(args.clickCount) : undefined,
+          }),
+        ),
+    };
+    tools.homebase_browser_type = {
+      description:
+        "Type text into the focused element in isolated Chrome (CDP insertText).",
+      parameters: {
+        type: "object",
+        properties: { text: { type: "string" } },
+        required: ["text"],
+      },
+      execute: async (args) =>
+        browserTool(() => browserType({ text: String(args.text ?? "") })),
+    };
+    tools.homebase_browser_key = {
+      description:
+        "Press a key in isolated Chrome. key: Enter, Escape, Tab, Backspace, a-z, F1… " +
+        "action: press|down|up.",
+      parameters: {
+        type: "object",
+        properties: {
+          key: { type: "string" },
+          action: { type: "string" },
+        },
+        required: ["key"],
+      },
+      execute: async (args) =>
+        browserTool(() =>
+          browserKey({
+            key: String(args.key || ""),
+            action: args.action != null ? String(args.action) : undefined,
+          }),
+        ),
+    };
+    tools.homebase_browser_hotkey = {
+      description:
+        'Chord keys in isolated Chrome. keys e.g. ["ctrl","l"] or ["ctrl","shift","t"].',
+      parameters: {
+        type: "object",
+        properties: {
+          keys: {
+            type: "array",
+            items: { type: "string" },
+            description: 'e.g. ["ctrl","l"] or ["ctrl","a"]',
+          },
+        },
+        required: ["keys"],
+      },
+      execute: async (args) =>
+        browserTool(() =>
+          browserHotkey({
+            keys: Array.isArray(args.keys)
+              ? args.keys.map((k) => String(k))
+              : [],
+          }),
+        ),
+    };
+    tools.homebase_browser_scroll = {
+      description:
+        "Scroll the isolated Chrome page (mouse wheel via CDP). deltaY positive = scroll down.",
+      parameters: {
+        type: "object",
+        properties: {
+          deltaX: { type: "number" },
+          deltaY: { type: "number" },
+          x: { type: "number" },
+          y: { type: "number" },
+          px: { type: "number" },
+          py: { type: "number" },
+        },
+      },
+      execute: async (args) =>
+        browserTool(() =>
+          browserScroll({
+            deltaX: args.deltaX != null ? Number(args.deltaX) : undefined,
+            deltaY: args.deltaY != null ? Number(args.deltaY) : undefined,
+            x: args.x != null ? Number(args.x) : undefined,
+            y: args.y != null ? Number(args.y) : undefined,
+            px: args.px != null ? Number(args.px) : undefined,
+            py: args.py != null ? Number(args.py) : undefined,
+          }),
+        ),
+    };
+    tools.homebase_browser_ask_human = {
+      description:
+        "Pause and ask the human in Chat to do something the AI cannot (login, CAPTCHA, 2FA, " +
+        "payment confirm). Opens a Done/Cancel card; human can Take control in the Browser dock. " +
+        "For passwords/API keys prefer homebase_browser_ask_secret (masked card). Blocks until Done/Cancel.",
+      parameters: {
+        type: "object",
+        properties: {
+          prompt: {
+            type: "string",
+            description:
+              'What the human should do, e.g. "Please complete the Google login, then tap Done"',
+          },
+        },
+        required: ["prompt"],
+      },
+      execute: async (args) =>
+        browserTool(() =>
+          browserAskHuman({
+            prompt: String(args.prompt || ""),
+            agentId: ctx.chatId,
+          }),
+        ),
+    };
+    tools.homebase_browser_ask_secret = {
+      description:
+        "Grok-style secure secret card in Chat: human types a password/API key/token into a " +
+        "masked field. Home Base injects it into the focused Isolated Chrome field via CDP. " +
+        "The value is NEVER returned to the model, never written to chat history, and never logged. " +
+        "Focus the input first (click). pressEnter defaults true after typing.",
+      parameters: {
+        type: "object",
+        properties: {
+          label: {
+            type: "string",
+            description: 'Short label, e.g. "Gmail password" or "API key"',
+          },
+          prompt: {
+            type: "string",
+            description: "Optional help text on the card",
+          },
+          kind: {
+            type: "string",
+            description: "password (masked, default) or text (email/username — still not stored in chat)",
+          },
+          pressEnter: {
+            type: "boolean",
+            description: "Press Enter after typing (default true)",
+          },
+        },
+      },
+      execute: async (args) =>
+        browserTool(() =>
+          browserAskSecret({
+            label: args.label != null ? String(args.label) : undefined,
+            prompt: args.prompt != null ? String(args.prompt) : undefined,
+            kind: args.kind != null ? String(args.kind) : undefined,
+            pressEnter: args.pressEnter !== false,
+          }),
+        ),
+    };
+    tools.homebase_browser_propose_email = {
+      description:
+        "Grok-style outbound email card: show To / Subject / Body in Chat for Approve or Deny " +
+        "(human can edit). On Approve, Home Base opens Gmail compose in Isolated Chrome, fills " +
+        "the message (keeps signature when present), and sends. Do NOT click Send yourself — " +
+        "always use this for emails the human should review. Blocks until Approve/Deny.",
+      parameters: {
+        type: "object",
+        properties: {
+          to: {
+            type: "string",
+            description: "Recipient email address",
+          },
+          subject: { type: "string", description: "Email subject" },
+          body: {
+            type: "string",
+            description:
+              "Plain-text body above the Gmail signature (do not include Best,/signature)",
+          },
+        },
+        required: ["to", "subject", "body"],
+      },
+      execute: async (args) =>
+        browserTool(() =>
+          browserProposeEmail({
+            to: String(args.to || ""),
+            subject: String(args.subject || ""),
+            body: String(args.body || ""),
+          }),
+        ),
     };
   }
 

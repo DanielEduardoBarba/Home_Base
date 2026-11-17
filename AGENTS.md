@@ -56,6 +56,12 @@ Panel of **button / toggle / slider / gauge** widgets backed by `/api/home-acces
 
 Live laptop screen (same `/ws/view` worker) plus a Chat dock. **Arm** (JWT, default 15m) unlocks AI mouse/keyboard via `homebase_vision_*` tools; disarmed is look-only (screenshot/status). Linux X11, or Wayland via XWayland (Ubuntu 26+) — not on Mac. Chat cwd is seat-user `~/.homebase` (created on demand). Prefer GUI apps via Vision; use Shell/Files/CLI when that is clearly better. Screenshots under `.runtime/vision/`. See `.cursor/rules/vision.mdc`.
 
+### Isolated Chrome (MCP browser)
+
+Dedicated Chromium/Chrome with `--user-data-dir=.runtime/browser/profile` (one shared Home Base env — not the operator’s personal browser). MCP feature **`browser`** (default Off). Tools: `homebase_browser_status` · `_open` · `_close` · `_navigate` · `_screenshot` · `_click` · `_type` · `_key` · `_hotkey` · `_scroll` · `_ask_human` · `_ask_secret` · `_propose_email`. Control is CDP (view + mouse/keyboard inside the tab); no Vision Arm and no whole-desktop XTest.
+
+**Display:** prefers an **Xvfb virtual display** (separate X session so the seat desktop stays free), then `--headless=new`, then seat `DISPLAY` only as last resort. Humans watch/take control in **Chat’s Browser dock** (`/ws/browser` screencast) — concurrent with AI driving. Click a field while in control opens a type card that inserts via CDP. `homebase_browser_ask_human` = Done/Cancel assist; `homebase_browser_ask_secret` = Grok-style masked card that injects passwords/keys into Chrome (never logged or returned to the model). `homebase_browser_propose_email` = inline Approve/Deny email card (edits allowed; Approve fills Gmail + Send). Prefer this for web UI work; keep Vision for real desktop apps.
+
 ### Doodle
 
 Kid-friendly AI mascot + doodle pad + floating chat (`/doodle`). Cursor chat sandboxed at `/opt/homebase-doodle` (project id `doodle`, hidden from Work). Tablet enroll (PIN) issues a 30-day `kind: doodle` cookie that skips App PIN **only** on this scene; other areas keep normal session/PIN. Tools: `homebase_doodle_express` · `_canvas` · `_timer` · `_travel` (Nominatim+OSRM). Tap Clear = chats; hold Clear = chats + workspace wipe. See `.cursor/rules/doodle.mdc`.
@@ -124,7 +130,7 @@ Writable state: `/var/lib/homebased` (`HOMEBASE_HOME`). Unit **homebased** runs 
 
 ## Capabilities vs non-goals
 
-- **Supports:** local Cursor agents (Home Base context + `homebase_*` in-process tools), optional network **MCP** at `/mcp` (master ON; feature groups incl. presence ON / vision OFF; MCP tokens blocked from Web `/api`; Home Visitor desktop window (`homevisitor` binary) for VPN/LAN remotes only — Grok-style blob via `homebase_presence_express` mood/form/color/energy/bubble + presence chat; activity without expression shows active for 20s; human-only activity audit), project actions/PTY, Files, View, Vision (Armed), WireGuard/Cloudflare, Home Access, optional email alerts (suspicious auth + AI-away), durable chats under `.runtime/chats/`. Grok bot paste guide: `docs/GROK_MCP.md`.
+- **Supports:** local Cursor agents (Home Base context + `homebase_*` in-process tools), optional network **MCP** at `/mcp` (master ON; feature groups incl. presence ON / vision OFF / isolated Chrome browser OFF; MCP tokens blocked from Web `/api`; Home Visitor desktop window (`homevisitor` binary) for VPN/LAN remotes only — Grok-style blob via `homebase_presence_express` mood/form/color/energy/bubble + presence chat; activity without expression shows active for 20s; human-only activity audit), project actions/PTY, Files, View, Vision (Armed), Isolated Chrome (`homebase_browser_*`), WireGuard/Cloudflare, Home Access, optional email alerts (suspicious auth + AI-away), durable chats under `.runtime/chats/`. Grok bot paste guide: `docs/GROK_MCP.md`.
 - **Self-deploy / restart:** `./build.sh --deploy` from a Chat/Shell PTY under homebased schedules a detached systemd oneshot (not killed by `KillMode=control-group`). API `POST /api/system/restart/homebased` and tool `homebase_restart_homebased` use `systemd-run --on-active=1s` the same way.
 - **Does not:** Cursor IDE buffer sync, cloud agents, public internet exposure, native PipeWire portal capture (Wayland uses XWayland)
 

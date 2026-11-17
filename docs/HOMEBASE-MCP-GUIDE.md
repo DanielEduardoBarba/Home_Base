@@ -14,7 +14,9 @@ Grok Bot tokens are burned when you read files, edit, run tests, and retry **ste
 2. Cursor on the laptop does the long coding work against the operator’s **Cursor usage / legacy pool** (same in-app API key as Home Base Chat — confirm on [cursor.com/dashboard](https://cursor.com/dashboard) after the first job).
 3. You get a **≤10-line summary + commit tip** once — not a transcript, not a polling loop.
 
-**Do not** use Vision, Home Access scripts, or presence-chat loops to drive work. **Do not** poll job status every 30–60s (each poll is a paid Developer turn).
+**Do not** use Vision (whole desktop), Home Access scripts, or presence-chat loops to drive work. **Do not** poll job status every 30–60s (each poll is a paid Developer turn).
+
+**Isolated Chrome (optional):** When Settings → MCP → **Isolated Chrome** is On, use `homebase_browser_*` for web UI (screenshot → click/type). One shared Home Base Chrome profile — not the operator’s personal browser, and not Vision Arm. Prefers Xvfb (seat desktop stays free); Chat Browser dock for watch/takeover; `homebase_browser_ask_human` / `_ask_secret` for logins; `homebase_browser_propose_email` for Approve/Deny outbound email.
 
 ---
 
@@ -48,7 +50,7 @@ One-week pilot for a single **Developer** bot. Start with **one small ticket** t
 2. **MCP Server** — Settings → MCP Server → master **On**.
 3. **Features**
    - **On:** Projects (Cursor job handoff), Notifications, Status, Presence  
-   - **Off:** Vision, **Home Access**  
+   - **Off:** Vision, **Home Access**, Isolated Chrome (enable only when sandboxed browser is needed)  
 4. **Mint** — dedicated token label `grok-developer` (not shared).
 5. **Deliver the token safely** — send `hb_mcp_…` to Developer via a **masked secret card** in Developer’s own chat. **Never** paste the token as plain text in a team room or DM history. MCP URL can be shared normally; the secret cannot.
 6. **Webhook (preferred wake)** — In Developer, create a routine with a **webhook trigger**. That yields an HTTPS URL for `__JOB_DONE_WEBHOOK__`. Home Base POSTs once when a job finishes.  
@@ -198,7 +200,7 @@ BILLING
 - First pilot job is a SMALL ticket. Human confirms Cursor dashboard billing before a full week.
 
 FEATURES ON: Projects, Notifications, Status, Presence
-FEATURES OFF: Vision, Home Access
+FEATURES OFF: Vision, Home Access, Isolated Chrome (unless web UI work is in scope)
 
 HARD RULES
 - No Cursor key / password / PIN / VPN mutate / Arm / Web /api with MCP token

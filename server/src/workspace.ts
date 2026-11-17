@@ -14,7 +14,9 @@ import {
 } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import {
+  healEmptyAppProject,
   loadProjects,
+  mcpWorkspaceUpsertFields,
   slugId,
   upsertProjectFromInput,
   type Project,
@@ -286,11 +288,14 @@ function registerMcpFolder(rootReal: string, folderName: string): Project {
   const st = statSync(target);
   if (!st.isDirectory()) throw new Error("workspace path is not a directory");
   markMcpWorkspace(target);
-  return upsertProjectFromInput({
-    path: target,
-    name: folderName,
-    id: projectIdForName(folderName),
-  });
+  // App checkouts (build.sh) get example Run/Ship + free ports; bare folders stay empty.
+  return upsertProjectFromInput(
+    mcpWorkspaceUpsertFields({
+      path: target,
+      name: folderName,
+      id: projectIdForName(folderName),
+    }),
+  );
 }
 
 /**
@@ -345,6 +350,14 @@ export function reconcileMcpWorkspaces(): {
       }
       const abs = resolve(realpathSync(target));
       if (registeredPaths.has(abs) || projects.has(projectIdForName(name))) {
+        // Already registered — heal bare app projects missing Run/Ship.
+        const existing =
+          projects.get(projectIdForName(name)) ||
+          [...projects.values()].find((p) => resolve(p.path) === abs);
+        if (existing) {
+          const healed = healEmptyAppProject(existing);
+          if (healed) registered.push(healed);
+        }
         continue;
       }
       const project = registerMcpFolder(rootReal, name);

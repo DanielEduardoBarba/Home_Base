@@ -299,12 +299,14 @@ ensure_priv_session() {
     PRIV_MODE="sudo"
   else
     # No TTY (e.g. Chat shell): use Home Base askpass card when available.
+    # Prefer a readable/executable askpass — prod path may exist but be ACL-blocked
+    # for the seat user (mask ---), while ROOT/.runtime/sudo-askpass works.
     if [[ -z "${SUDO_ASKPASS:-}" ]]; then
       for _ask in \
+        "${ROOT}/.runtime/sudo-askpass" \
         "${HOMEBASE_HOME:-/var/lib/homebased}/.runtime/sudo-askpass" \
-        "/var/lib/homebased/.runtime/sudo-askpass" \
-        "${ROOT}/.runtime/sudo-askpass"; do
-        if [[ -x "$_ask" ]]; then
+        "/var/lib/homebased/.runtime/sudo-askpass"; do
+        if [[ -x "$_ask" && -r "$_ask" ]]; then
           export SUDO_ASKPASS="$_ask"
           export SUDO_ASKPASS_REQUIRE=1
           break

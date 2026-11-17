@@ -24,6 +24,8 @@ type Props = {
   /** Or attach to existing session */
   sessionId?: string
   onSession?: (id: string) => void
+  /** Fired when the PTY exits (typed `exit`, shell death, etc.). */
+  onEnded?: () => void
   className?: string
 }
 
@@ -36,12 +38,13 @@ function safeDims(fit: FitAddon): { cols: number; rows: number } | null {
   return { cols, rows }
 }
 
-export function TerminalView({ path, sessionId, onSession, className }: Props) {
+export function TerminalView({ path, sessionId, onSession, onEnded, className }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<XTerm | null>(null)
   const handleRef = useRef<WsReconnectHandle | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const onSessionRef = useRef(onSession)
+  const onEndedRef = useRef(onEnded)
   const [connState, setConnState] = useState<WsConnState>('connecting')
   const [actionsOpen, setActionsOpen] = useState(false)
   const [hasSelection, setHasSelection] = useState(false)
@@ -52,6 +55,10 @@ export function TerminalView({ path, sessionId, onSession, className }: Props) {
   useEffect(() => {
     onSessionRef.current = onSession
   }, [onSession])
+
+  useEffect(() => {
+    onEndedRef.current = onEnded
+  }, [onEnded])
 
   useEffect(() => {
     if (!hostRef.current) return
@@ -149,6 +156,11 @@ export function TerminalView({ path, sessionId, onSession, className }: Props) {
             // Interactive PTY: also stop; user taps Live badge / opens a new shell.
             handle.dispose()
             setConnState('offline')
+            try {
+              onEndedRef.current?.()
+            } catch {
+              /* ignore */
+            }
           } else if (msg.type === 'error') {
             term.writeln(`\r\n\x1b[31m${msg.error}\x1b[0m`)
             // Fatal attach errors (session not found) — don't spin forever

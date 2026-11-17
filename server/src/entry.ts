@@ -22,6 +22,11 @@ import { startSecurityMonitor } from "./security";
 import { ensureAskpass, sudoAskpassEnv } from "./sudo";
 import { appendTrace } from "./trace";
 import { viewHub } from "./view";
+import {
+  browserHubConnect,
+  browserHubDisconnect,
+  browserHubHandleMessage,
+} from "./browser_session";
 
 type WsData = {
   url: URL;
@@ -386,6 +391,19 @@ const websocketHandlers = {
         return;
       }
 
+      if (data.url.pathname === "/ws/browser") {
+        data.kind = "browser";
+        const clientWs = {
+          send: (payload: string | Buffer | Uint8Array) => {
+            ws.send(payload);
+          },
+        };
+        (data as { browserWs?: typeof clientWs }).browserWs = clientWs;
+        await browserHubConnect(clientWs);
+        logInfo("websocket open", { source: "ws", fields: wsFields(data) });
+        return;
+      }
+
       if (data.url.pathname === "/ws/cursor") {
         const project = data.url.searchParams.get("project");
         if (!project) {
@@ -481,6 +499,14 @@ const websocketHandlers = {
         return;
       }
 
+      if (data.kind === "browser") {
+        const browserWs = (
+          data as { browserWs?: { send: (d: string | Buffer | Uint8Array) => void } }
+        ).browserWs;
+        if (browserWs) await browserHubHandleMessage(browserWs, msg);
+        return;
+      }
+
       if (data.kind === "cursor" && data.projectId) {
         const t = String(msg.type || "");
         if (
@@ -518,6 +544,17 @@ const websocketHandlers = {
       if (data.kind === "view") {
         const viewWs = (data as { viewWs?: { send: (d: string | Buffer | Uint8Array) => void } }).viewWs;
         if (viewWs) await viewHub.disconnect(viewWs);
+      }
+      if (data.kind === "browser") {
+        const browserWs = (
+          data as {
+            browserWs?: {
+              send: (d: string | Buffer | Uint8Array) => void;
+              __browserId?: number;
+            };
+          }
+        ).browserWs;
+        if (browserWs) await browserHubDisconnect(browserWs);
       }
       if (data.kind === "cursor") data.unsubCursor?.();
       if (data.kind) {

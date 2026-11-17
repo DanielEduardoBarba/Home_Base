@@ -198,7 +198,10 @@ export function AppsTab({
       }
       await onRefresh()
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : String(e))
+      // Compose aborts (e.g. missing .env) surface here — stop looks Idle again.
+      const detail = e instanceof Error ? e.message : String(e)
+      setMsg(detail)
+      await onRefresh()
     } finally {
       setBusy('')
     }

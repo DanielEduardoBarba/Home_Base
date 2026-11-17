@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from 'react'
 import { api, wsUrl } from '../lib/api'
+import { BrowserDock } from './BrowserDock'
 import { ChatMarkdown, copyText } from './ChatMarkdown'
 import { clearLocalChats, loadLocalChatsForImport } from '../lib/chatTabs'
 import type {
@@ -23,6 +24,7 @@ import type {
 } from '../lib/chatTypes'
 import { fileToCompressedChatImage, formatMb } from '../lib/chatImageCompress'
 import { chatImageSrc } from '../lib/chatTypes'
+import { mergeChatMessages, renderableImages } from '../lib/chatMerge'
 import { useNotifyOptional } from '../lib/NotifyContext'
 import { presentFromMessage, presentFromTool, presentLabel } from '../lib/present'
 import { useSceneRefresh } from '../lib/sceneRefresh'
@@ -371,9 +373,9 @@ function MessageCard({
               ))}
             </div>
           )}
-          {!!m.images?.length && (
+          {!!renderableImages(m.images).length && (
             <div className="hb-chat-img-row mb-2">
-              {m.images.map((img, i) => (
+              {renderableImages(m.images).map((img, i) => (
                 <a
                   key={`${img.name || 'img'}-${i}`}
                   href={chatImageSrc(img)}
@@ -798,14 +800,30 @@ function countableMessages(messages: ChatMsg[]): ChatMsg[] {
 }
 
 /** Keep older pages already fetched when a newer tail arrives from the server. */
-function mergeChatMessages(prev: ChatMsg[] | undefined, incoming: ChatMsg[]): ChatMsg[] {
-  const next = incoming.filter((m) => m.id !== 'hb-wire-trim')
-  if (!prev?.length) return next
-  const realPrev = prev.filter((m) => m.id && !isHistoryStub(m.id))
-  if (!realPrev.length) return next
-  const ids = new Set(next.map((m) => m.id))
-  const older = realPrev.filter((m) => !ids.has(m.id))
-  return [...older, ...next]
+function finalizeLocalRunningMessages(messages: ChatMsg[]): ChatMsg[] {
+  return messages.map((m) => {
+    const toolRunning =
+      m.tool?.status === 'running' || m.tool?.status === 'pending'
+    const taskRunning =
+      m.task?.status === 'running' || m.task?.status === 'pending'
+    if (!m.streaming && !toolRunning && !taskRunning) return m
+    return {
+      ...m,
+      streaming: false,
+      tool: m.tool
+        ? {
+            ...m.tool,
+            status: toolRunning ? 'cancelled' : m.tool.status,
+          }
+        : m.tool,
+      task: m.task
+        ? {
+            ...m.task,
+            status: taskRunning ? 'cancelled' : m.task.status,
+          }
+        : m.task,
+    }
+  })
 }
 
 export function ChatPanel({
@@ -942,6 +960,20 @@ export function ChatPanel({
   const [sudoRemember, setSudoRemember] = useState(false)
   const [sudoCachedTtl, setSudoCachedTtl] = useState(0)
   const [sudoBusy, setSudoBusy] = useState(false)
+  /** Grok-style secure secret card for Isolated Chrome (never stored in chat history). */
+  const [secretOpen, setSecretOpen] = useState(false)
+  const [secretId, setSecretId] = useState('')
+  const [secretLabel, setSecretLabel] = useState('Secret')
+  const [secretPrompt, setSecretPrompt] = useState('')
+  const [secretKind, setSecretKind] = useState<'password' | 'text'>('password')
+  const [secretValue, setSecretValue] = useState('')
+  const [secretBusy, setSecretBusy] = useState(false)
+  const [emailOpen, setEmailOpen] = useState(false)
+  const [emailId, setEmailId] = useState('')
+  const [emailTo, setEmailTo] = useState('')
+  const [emailSubject, setEmailSubject] = useState('')
+  const [emailBody, setEmailBody] = useState('')
+  const [emailBusy, setEmailBusy] = useState(false)
   const [dockOpenLocal, setDockOpenLocal] = useState(false)
   /** Keep dock mounted while exit animation plays. */
   const [dockMounted, setDockMounted] = useState(false)
@@ -999,6 +1031,10 @@ export function ChatPanel({
   const phaseRef = useRef(agentPhase)
   const notifyRef = useRef(notify)
   const doneClearTimer = useRef<number | null>(null)
+  /** Force-clear Stop chrome if the server never emits done (hung Task). */
+  const stopWatchdogRef = useRef<number | null>(null)
+  const lastCancelAtRef = useRef(0)
+  const queuedCountRef = useRef(0)
   /** Outbound WS frames queued while the VPN/socket is reconnecting. */
   const outboxRef = useRef<string[]>([])
   activeIdRef.current = activeId
@@ -1007,6 +1043,7 @@ export function ChatPanel({
   phaseRef.current = agentPhase
   connStateRef.current = connState
   notifyRef.current = notify
+  queuedCountRef.current = queuedCount
 
   function flushOutbox(ws?: WebSocket | null) {
     const sock = ws || wsRef.current
@@ -2142,6 +2179,66 @@ export function ChatPanel({
               setError(String(msg.error || 'sudo failed'))
               pushRunLog(`sudo failed · ${msg.error || '?'}`)
             }
+          } else if (msg.type === 'browser-secret-request') {
+            setSecretOpen(true)
+            setSecretId(String(msg.id || ''))
+            setSecretLabel(String(msg.label || 'Secret'))
+            setSecretPrompt(String(msg.prompt || ''))
+            setSecretKind(String(msg.kind || 'password') === 'text' ? 'text' : 'password')
+            setSecretValue('')
+            setSecretBusy(false)
+            setPhase('sudo', 'secure secret needed…')
+            pushRunLog(
+              `secure secret · ${String(msg.label || 'Secret').slice(0, 60)} (value never logged)`,
+            )
+          } else if (msg.type === 'browser-secret-ack') {
+            setSecretBusy(false)
+            if (msg.ok || msg.denied || msg.timedOut) {
+              setSecretValue('')
+              setSecretOpen(false)
+              setSecretId('')
+              pushRunLog(
+                msg.denied
+                  ? 'secure secret denied'
+                  : msg.timedOut
+                    ? 'secure secret timed out'
+                    : `secure secret typed · ${msg.charsTyped ?? '?'} chars (not stored)`,
+              )
+              setPhase(streamingRef.current ? 'tool' : 'idle', streamingRef.current ? 'continuing…' : '')
+            } else {
+              setError(String(msg.error || 'secure secret failed'))
+              pushRunLog(`secure secret failed · ${msg.error || '?'}`)
+            }
+          } else if (msg.type === 'browser-email-request') {
+            setEmailOpen(true)
+            setEmailId(String(msg.id || ''))
+            setEmailTo(String(msg.to || ''))
+            setEmailSubject(String(msg.subject || ''))
+            setEmailBody(String(msg.body || ''))
+            setEmailBusy(false)
+            setPhase('sudo', 'email approval needed…')
+            pushRunLog(
+              `email propose · to=${String(msg.to || '').slice(0, 40)} · ${String(msg.subject || '').slice(0, 60)}`,
+            )
+          } else if (msg.type === 'browser-email-ack') {
+            setEmailBusy(false)
+            if (msg.ok || msg.denied || msg.timedOut) {
+              setEmailOpen(false)
+              setEmailId('')
+              pushRunLog(
+                msg.denied
+                  ? 'email denied'
+                  : msg.timedOut
+                    ? 'email approval timed out'
+                    : msg.sent
+                      ? `email sent · ${String(msg.to || '').slice(0, 40)}`
+                      : `email resolved · ${msg.error || 'ok'}`,
+              )
+              setPhase(streamingRef.current ? 'tool' : 'idle', streamingRef.current ? 'continuing…' : '')
+            } else {
+              setError(String(msg.error || 'email send failed'))
+              pushRunLog(`email failed · ${msg.error || '?'}`)
+            }
           } else if (msg.type === 'status-delta') {
             if (!forActive) return
             const label = String(msg.text || msg.phase || '')
@@ -2156,6 +2253,10 @@ export function ChatPanel({
               String(msg.status || '').toLowerCase() === 'error' ||
               String(msg.status || '').toLowerCase() === 'failed'
             const cid = chatId || activeIdRef.current
+            if (stopWatchdogRef.current) {
+              window.clearTimeout(stopWatchdogRef.current)
+              stopWatchdogRef.current = null
+            }
             if (cid) {
               setTabs((prev) =>
                 prev.map((t) => {
@@ -2258,9 +2359,19 @@ export function ChatPanel({
             }
           } else if (msg.type === 'cancelled') {
             if (!forActive) return
-            setQueuedCount(0)
             const cid = chatId || activeIdRef.current
+            // Interject cancel (follow-up steer) — keep queue chrome, don't wipe count.
+            if (queuedCountRef.current > 0 && !msg.hard) {
+              pushRunLog('steering — applying follow-up')
+              setPhase('busy', 'steering…')
+              return
+            }
+            setQueuedCount(0)
             if (msg.ok === false) {
+              if (stopWatchdogRef.current) {
+                window.clearTimeout(stopWatchdogRef.current)
+                stopWatchdogRef.current = null
+              }
               setError(
                 'No live run on the server. Send again — orphaned agent runs are cleared automatically.',
               )
@@ -2268,22 +2379,51 @@ export function ChatPanel({
               setPhase('idle', '')
               if (cid) {
                 setTabs((prev) =>
-                  prev.map((t) => (t.id === cid ? { ...t, running: false } : t)),
+                  prev.map((t) =>
+                    t.id === cid
+                      ? {
+                          ...t,
+                          running: false,
+                          messages: finalizeLocalRunningMessages(t.messages),
+                        }
+                      : t,
+                  ),
                 )
               }
               return
             }
-            pushRunLog('stop requested — run is ending on the server')
-            setPhase('busy', 'stopping…')
-            // Orphan-only cancels never emit done — clear chrome if still stopping.
+            pushRunLog(
+              msg.hard
+                ? 'force stop — disposing agent'
+                : 'stop requested — run is ending on the server',
+            )
+            setPhase('busy', msg.hard ? 'force stopping…' : 'stopping…')
+            // Never stay on stopping forever — hung Task wait() used to leave this stuck.
             window.setTimeout(() => {
               if (phaseRef.current !== 'busy') return
+              if (queuedCountRef.current > 0) {
+                setPhase('busy', 'steering…')
+                return
+              }
               const tab = tabsRef.current.find((t) => t.id === cid)
-              if (tab?.running) return // live run will clear via done/tab
+              if (tab?.running && !msg.hard) return
               setStreaming(false)
               setPhase('idle', '')
               setError('')
-            }, 2000)
+              if (cid) {
+                setTabs((prev) =>
+                  prev.map((t) =>
+                    t.id === cid
+                      ? {
+                          ...t,
+                          running: false,
+                          messages: finalizeLocalRunningMessages(t.messages),
+                        }
+                      : t,
+                  ),
+                )
+              }
+            }, msg.hard ? 800 : 2800)
           } else if (msg.type === 'queued') {
             if (!forActive) return
             setQueuedCount(Number(msg.position) || 0)
@@ -2326,6 +2466,20 @@ export function ChatPanel({
       localStorage.setItem(MODE_STORAGE_KEY, next)
     } catch {
       /* ignore */
+    }
+    const chatId = activeIdRef.current
+    if (chatId && socketOpen()) {
+      sendWs({
+        type: 'set_mode',
+        chatId,
+        mode: next,
+        quiet: true,
+      })
+    }
+    if (chatId) {
+      setTabs((prev) =>
+        prev.map((t) => (t.id === chatId ? { ...t, mode: next } : t)),
+      )
     }
   }
 
@@ -2581,10 +2735,12 @@ export function ChatPanel({
       setPhase('starting', 'starting…')
       setRunLog([])
     } else {
-      setPhase('busy', 'queued…')
+      // Follow-up interjects: show in-thread immediately; server cancels current turn.
+      setPhase('busy', 'steering…')
+      setQueuedCount((n) => Math.max(1, n + 1))
     }
     pushRunLog(
-      `${queueing ? 'queue' : 'send'} · mode=${mode} model=${model || defaultModel}${
+      `${queueing ? 'interject' : 'send'} · mode=${mode} model=${model || defaultModel}${
         replaceLastUser ? ' · edit' : ''
       }${images.length ? ` · ${images.length} img` : ''}${
         contextPaths.length ? ` · ${contextPaths.length} @` : ''
@@ -2607,11 +2763,13 @@ export function ChatPanel({
       voiceRef.current.resumeListenSoon(400)
     }
     const chatId = active.id
-    if (!opts?.skipOptimistic && !queueing) {
+    if (!opts?.skipOptimistic) {
       setTabs((prev) =>
         prev.map((t) => {
           if (t.id !== chatId) return t
-          let messages = t.messages
+          let messages = t.messages.filter(
+            (m) => !String(m.id || '').startsWith('pending-'),
+          )
           if (replaceLastUser) {
             let lastUser = -1
             for (let i = messages.length - 1; i >= 0; i--) {
@@ -2628,7 +2786,8 @@ export function ChatPanel({
             messages: [
               ...messages,
               {
-                id: `pending-${Date.now()}`,
+                // Stable id so rapid re-sends replace instead of stacking duplicates.
+                id: `pending-${chatId}`,
                 role: 'user',
                 text: prompt,
                 at: Date.now(),
@@ -2703,13 +2862,49 @@ export function ChatPanel({
 
   function cancel() {
     if (!active) return
-    pushRunLog('stop requested')
+    const now = Date.now()
+    const hard = now - lastCancelAtRef.current < 3500 && lastCancelAtRef.current > 0
+    lastCancelAtRef.current = now
+    pushRunLog(hard ? 'force stop requested' : 'stop requested')
     setQueuedCount(0)
     setError('')
     // Keep Stop/busy chrome until the server acks; hide only on done/cancelled/idle.
     setStreaming(true)
-    setPhase('busy', 'stopping…')
-    wsRef.current?.send(JSON.stringify({ type: 'cancel', chatId: active.id }))
+    setPhase('busy', hard ? 'force stopping…' : 'stopping…')
+    sendWs({
+      type: 'cancel',
+      chatId: active.id,
+      invalidate: hard,
+      hard,
+    })
+    if (stopWatchdogRef.current) window.clearTimeout(stopWatchdogRef.current)
+    const chatId = active.id
+    stopWatchdogRef.current = window.setTimeout(() => {
+      stopWatchdogRef.current = null
+      if (phaseRef.current !== 'busy' && !streamingRef.current) return
+      // Still stuck after settle window — force-unlock UI + hard dispose.
+      pushRunLog('stop watchdog — forcing idle')
+      setStreaming(false)
+      setPhase('idle', '')
+      setQueuedCount(0)
+      setTabs((prev) =>
+        prev.map((t) =>
+          t.id === chatId
+            ? {
+                ...t,
+                running: false,
+                messages: finalizeLocalRunningMessages(t.messages),
+              }
+            : t,
+        ),
+      )
+      sendWs({
+        type: 'cancel',
+        chatId,
+        invalidate: true,
+        hard: true,
+      })
+    }, hard ? 3500 : 5500)
   }
 
   function regenerate() {
@@ -2827,6 +3022,67 @@ export function ChatPanel({
     setSudoBusy(true)
     pushRunLog('allowing vaulted sudo for this command')
     wsRef.current.send(JSON.stringify({ type: 'sudo_allow', id: sudoId || undefined }))
+  }
+
+  function submitBrowserSecret(e?: FormEvent) {
+    e?.preventDefault()
+    const value = secretValue
+    if (!value || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+    setSecretBusy(true)
+    pushRunLog('submitting secure secret to Isolated Chrome (not logged)')
+    wsRef.current.send(
+      JSON.stringify({
+        type: 'browser_secret',
+        id: secretId || undefined,
+        secret: value,
+        chatId: activeIdRef.current,
+      }),
+    )
+    // Clear local field immediately so React state / screenshots never keep it.
+    setSecretValue('')
+  }
+
+  function denyBrowserSecret() {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({ type: 'browser_secret_deny', id: secretId || undefined }),
+      )
+    }
+    setSecretValue('')
+    setSecretOpen(false)
+    setSecretId('')
+    pushRunLog('secure secret denied')
+    setPhase(streamingRef.current ? 'tool' : 'idle', streamingRef.current ? 'continuing…' : '')
+  }
+
+  function approveBrowserEmail(e?: FormEvent) {
+    e?.preventDefault()
+    if (!emailTo.trim() || !emailSubject.trim() || !emailBody.trim()) return
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+    setEmailBusy(true)
+    pushRunLog(`approving email · to=${emailTo.trim().slice(0, 40)}`)
+    wsRef.current.send(
+      JSON.stringify({
+        type: 'browser_email_approve',
+        id: emailId || undefined,
+        to: emailTo.trim(),
+        subject: emailSubject.trim(),
+        body: emailBody.trim(),
+        chatId: activeIdRef.current,
+      }),
+    )
+  }
+
+  function denyBrowserEmail() {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({ type: 'browser_email_deny', id: emailId || undefined }),
+      )
+    }
+    setEmailOpen(false)
+    setEmailId('')
+    pushRunLog('email denied')
+    setPhase(streamingRef.current ? 'tool' : 'idle', streamingRef.current ? 'continuing…' : '')
   }
 
   function denySudoPrompt() {
@@ -3422,6 +3678,7 @@ export function ChatPanel({
           Oops! {kidName} got a little mixed up. Try again!
         </p>
       )}
+      <BrowserDock />
       <div ref={bottomRef} />
     </div>
   ) : (
@@ -3469,7 +3726,7 @@ export function ChatPanel({
           <p className="text-mute text-xs leading-relaxed">
             {isAgent
               ? 'Type a message, or tap the mic for talk mode — green Confirm sends, and replies are spoken while talk mode stays on.'
-              : 'Server-backed chats stream like Cursor IDE. Queue follow-ups while it runs, Esc to stop, Edit/Retry on messages, Copy on bubbles and code blocks. Gear → mode, model, tool approvals.'}
+              : 'Server-backed chats stream like Cursor IDE. Send while busy to steer (interrupts the current turn), Esc/Stop to halt, Edit/Retry on messages, Copy on bubbles and code blocks. Gear → mode, model, tool approvals.'}
           </p>
         </div>
       )}
@@ -3519,6 +3776,7 @@ export function ChatPanel({
       )}
       {pendingApprovals.map((ap) => {
         const modeSwitch = ap.kind === 'mode_switch'
+        const browserAssist = ap.kind === 'browser_assist'
         return (
           <div
             key={ap.id}
@@ -3526,7 +3784,11 @@ export function ChatPanel({
           >
             <div className="flex items-center gap-2 text-xs font-semibold">
               <span className="text-amber uppercase tracking-wide text-[10px]">
-                {modeSwitch ? 'Switch mode' : 'Pending approval'}
+                {modeSwitch
+                  ? 'Switch mode'
+                  : browserAssist
+                    ? 'Browser assist'
+                    : 'Pending approval'}
               </span>
               <span className="font-mono text-text">
                 {modeSwitch ? ap.tool : ap.tool}
@@ -3535,27 +3797,148 @@ export function ChatPanel({
             <pre className="hb-chat-tool-detail text-[11px] text-mute max-h-28">
               {modeSwitch
                 ? ap.detail || `Switch to ${ap.tool}?`
-                : formatToolDetail(ap.tool, ap.command || ap.detail || ap.tool)}
+                : browserAssist
+                  ? ap.detail || 'Please complete this in Isolated Chrome, then tap Done.'
+                  : formatToolDetail(ap.tool, ap.command || ap.detail || ap.tool)}
             </pre>
+            {browserAssist && (
+              <p className="text-[10px] text-mute m-0">
+                Take control in the Browser dock below if you need to type a login. Passwords stay in
+                the browser — do not paste them into chat.
+              </p>
+            )}
             <div className="flex gap-2">
               <button
                 type="button"
                 className="flex-1 rounded-lg hb-btn-primary text-xs font-semibold py-1.5 border-0"
                 onClick={() => decideApproval(ap.id, 'allow')}
               >
-                {modeSwitch ? 'Switch' : 'Allow'}
+                {modeSwitch ? 'Switch' : browserAssist ? 'Done' : 'Allow'}
               </button>
               <button
                 type="button"
                 className="flex-1 rounded-lg border border-danger/50 text-danger text-xs font-semibold py-1.5"
                 onClick={() => decideApproval(ap.id, 'deny')}
               >
-                {modeSwitch ? 'Stay' : 'Deny'}
+                {modeSwitch ? 'Stay' : browserAssist ? 'Cancel' : 'Deny'}
               </button>
             </div>
           </div>
         )
       })}
+      {secretOpen && (
+        <form
+          onSubmit={submitBrowserSecret}
+          className="rounded-xl border border-sky/45 bg-sky/10 px-3 py-2.5 space-y-2 mr-4 hb-chat-enter"
+        >
+          <div className="flex items-center gap-2 text-xs font-semibold flex-wrap">
+            <span className="text-sky uppercase tracking-wide text-[10px]">Secure input</span>
+            <span className="text-mute font-normal">
+              Typed into Isolated Chrome · never kept in chat
+            </span>
+          </div>
+          <div className="rounded-lg bg-panel-2/80 border border-line/80 px-2.5 py-2">
+            <div className="text-[10px] uppercase tracking-wide text-mute mb-1">{secretLabel}</div>
+            {secretPrompt && (
+              <p className="text-[11px] text-text m-0 whitespace-pre-wrap">{secretPrompt}</p>
+            )}
+          </div>
+          <input
+            type={secretKind === 'text' ? 'text' : 'password'}
+            value={secretValue}
+            onChange={(e) => setSecretValue(e.target.value)}
+            autoComplete="off"
+            autoCorrect="off"
+            spellCheck={false}
+            placeholder={secretKind === 'text' ? 'Enter value' : 'Enter password / key'}
+            className="w-full rounded-lg bg-panel-2 border border-line px-3 py-2 text-sm outline-none focus:border-accent"
+            autoFocus
+          />
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={secretBusy || !secretValue}
+              className="flex-1 rounded-lg hb-btn-primary text-xs font-semibold py-1.5 border-0 disabled:opacity-40"
+            >
+              {secretBusy ? 'Sending…' : 'Fill & continue'}
+            </button>
+            <button
+              type="button"
+              className="rounded-lg border border-danger/40 text-danger text-xs font-semibold px-3 py-1.5"
+              onClick={denyBrowserSecret}
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+      {emailOpen && (
+        <form
+          onSubmit={approveBrowserEmail}
+          className="rounded-xl border border-ok/45 bg-ok/10 px-3 py-2.5 space-y-2 mr-4 hb-chat-enter"
+        >
+          <div className="flex items-center gap-2 text-xs font-semibold flex-wrap">
+            <span className="text-ok uppercase tracking-wide text-[10px]">Send email</span>
+            <span className="text-mute font-normal">
+              Review · edit · Approve sends via Isolated Chrome Gmail
+            </span>
+          </div>
+          <label className="block space-y-1">
+            <span className="text-[10px] uppercase tracking-wide text-mute">To</span>
+            <input
+              type="email"
+              value={emailTo}
+              onChange={(e) => setEmailTo(e.target.value)}
+              className="w-full rounded-lg bg-panel-2 border border-line px-3 py-1.5 text-sm outline-none focus:border-accent"
+              autoComplete="off"
+              required
+            />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-[10px] uppercase tracking-wide text-mute">Subject</span>
+            <input
+              type="text"
+              value={emailSubject}
+              onChange={(e) => setEmailSubject(e.target.value)}
+              className="w-full rounded-lg bg-panel-2 border border-line px-3 py-1.5 text-sm outline-none focus:border-accent"
+              autoComplete="off"
+              required
+            />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-[10px] uppercase tracking-wide text-mute">Body</span>
+            <textarea
+              value={emailBody}
+              onChange={(e) => setEmailBody(e.target.value)}
+              rows={6}
+              className="w-full rounded-lg bg-panel-2 border border-line px-3 py-2 text-sm outline-none focus:border-accent resize-y min-h-[6rem]"
+              required
+            />
+          </label>
+          <p className="text-[10px] text-mute m-0">
+            Your Gmail signature/footer is kept in Chrome — body above is the message only.
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={
+                emailBusy || !emailTo.trim() || !emailSubject.trim() || !emailBody.trim()
+              }
+              className="flex-1 rounded-lg hb-btn-primary text-xs font-semibold py-1.5 border-0 disabled:opacity-40"
+            >
+              {emailBusy ? 'Sending…' : 'Approve & send'}
+            </button>
+            <button
+              type="button"
+              className="rounded-lg border border-danger/40 text-danger text-xs font-semibold px-3 py-1.5"
+              onClick={denyBrowserEmail}
+              disabled={emailBusy}
+            >
+              Deny
+            </button>
+          </div>
+        </form>
+      )}
       {sudoOpen && (
         <form
           onSubmit={submitSudo}
@@ -3624,6 +4007,7 @@ export function ChatPanel({
         </form>
       )}
       {error && <p className="text-sm text-danger hb-chat-enter">{error}</p>}
+      <BrowserDock />
       <div ref={bottomRef} />
     </div>
   )
@@ -3782,7 +4166,7 @@ export function ChatPanel({
   const composer = kid ? kidComposer : (
     <form
       onSubmit={send}
-      className={`hb-chat-composer shrink-0 border-t border-line px-3 pt-2 pb-3 space-y-2 relative ${
+      className={`hb-chat-composer shrink-0 border-t border-line relative ${
         isDock ? 'rounded-b-2xl' : ''
       }`}
     >
@@ -3919,7 +4303,7 @@ export function ChatPanel({
         </>
       )}
 
-      <div className="flex items-center gap-1.5 min-w-0">
+      <div className="hb-chat-opt-row">
         <button
           type="button"
           className={`hb-chat-opt-btn ${settingsOpen ? 'hb-chat-opt-btn-open' : ''}`}
@@ -3933,8 +4317,83 @@ export function ChatPanel({
             <circle cx="12" cy="12" r="3" />
           </svg>
         </button>
-        <div className="hb-chat-opt-chips min-w-0 flex-1">
-          <span className="hb-chat-opt-chip" title={modeMeta.title}>
+        <div className="hb-chat-compose-tools" aria-label="Compose tools">
+          <button
+            type="button"
+            className="hb-at-btn"
+            aria-label="Attach file context"
+            title="@ attach file context"
+            onClick={insertAtMention}
+          >
+            @
+          </button>
+          <button
+            type="button"
+            className="hb-attach-btn"
+            aria-label="Attach image"
+            title="Attach image (or paste / drop)"
+            onClick={() => imageInputRef.current?.click()}
+          >
+            <svg viewBox="0 0 24 24" className="hb-attach-icon" aria-hidden>
+              <path
+                d="M8.5 13.5 11 11l2.5 2.5L17 10l3 3v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-1.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.75"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <rect
+                x="3"
+                y="5"
+                width="18"
+                height="14"
+                rx="2"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.75"
+              />
+            </svg>
+          </button>
+          {!isAgent && canSpeak && (
+            <button
+              type="button"
+              onClick={toggleListen}
+              disabled={streaming}
+              className={`hb-mic-btn ${listening ? 'hb-mic-btn-live' : ''}`}
+              aria-pressed={listening}
+              aria-label={listening ? 'Stop dictation' : 'Dictate in English'}
+              title={listening ? 'Stop' : 'Speak (English → text)'}
+            >
+              <svg viewBox="0 0 24 24" className="hb-mic-icon" aria-hidden>
+                {listening ? (
+                  <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" />
+                ) : (
+                  <>
+                    <path
+                      d="M12 3.5a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0v-5a3 3 0 0 0-3-3z"
+                      fill="currentColor"
+                    />
+                    <path
+                      d="M7 11a5 5 0 0 0 10 0M12 16v3.5M9 19.5h6"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.75"
+                      strokeLinecap="round"
+                    />
+                  </>
+                )}
+              </svg>
+            </button>
+          )}
+        </div>
+        <div className="hb-chat-opt-chips min-w-0 flex-1" role="group" aria-label="Chat settings summary">
+          <button
+            type="button"
+            className="hb-chat-opt-chip"
+            title={`${modeMeta.title} — tap to change`}
+            onClick={() => setSettingsOpen(true)}
+          >
             <svg viewBox="0 0 16 16" aria-hidden>
               <path
                 d="M3 11.5 8 3l5 8.5H3z"
@@ -3944,20 +4403,31 @@ export function ChatPanel({
                 strokeLinejoin="round"
               />
             </svg>
-            {modeMeta.label}
-          </span>
-          <span className="hb-chat-opt-chip" title="Model">
+            <span className="hb-chat-opt-chip-label">{modeMeta.label}</span>
+          </button>
+          <button
+            type="button"
+            className="hb-chat-opt-chip hb-chat-opt-chip--model"
+            title="Model — tap to change"
+            onClick={() => setSettingsOpen(true)}
+          >
             <svg viewBox="0 0 16 16" aria-hidden>
               <circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" strokeWidth="1.4" />
               <circle cx="8" cy="8" r="1.6" fill="currentColor" />
             </svg>
-            <span className="truncate max-w-[7rem]">{modelLabel}</span>
-          </span>
-          <span
+            <span className="hb-chat-opt-chip-label truncate">{modelLabel}</span>
+          </button>
+          <button
+            type="button"
             className={`hb-chat-opt-chip ${
               approvalPolicy === 'ask' ? 'hb-chat-opt-chip-warn' : 'hb-chat-opt-chip-ok'
             }`}
-            title={approvalPolicy === 'ask' ? 'Ask before tools' : 'Auto-run tools'}
+            title={
+              approvalPolicy === 'ask'
+                ? 'Ask before tools — tap to change'
+                : 'Auto-run tools — tap to change'
+            }
+            onClick={() => setSettingsOpen(true)}
           >
             <svg viewBox="0 0 16 16" aria-hidden>
               {approvalPolicy === 'ask' ? (
@@ -3976,20 +4446,62 @@ export function ChatPanel({
                 />
               )}
             </svg>
-            {approvalPolicy === 'ask' ? 'Ask' : 'Auto'}
-          </span>
+            <span className="hb-chat-opt-chip-label">
+              {approvalPolicy === 'ask' ? 'Ask' : 'Auto'}
+            </span>
+          </button>
         </div>
+        {isAgent && (
+          <button
+            type="button"
+            className={`hb-agent-talk-btn hb-agent-talk-btn--compact ${voiceMode ? 'hb-agent-talk-btn--on' : ''}`}
+            aria-pressed={voiceMode}
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              toggleListen()
+            }}
+            title={
+              voiceMode
+                ? 'Turn off talk mode'
+                : canSpeak
+                  ? 'Talk — dictate + speak replies'
+                  : 'Talk — speak AI replies (mic unavailable)'
+            }
+          >
+            <svg viewBox="0 0 24 24" className="hb-mic-icon" aria-hidden>
+              {voiceMode ? (
+                <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" />
+              ) : (
+                <>
+                  <path
+                    d="M12 3.5a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0v-5a3 3 0 0 0-3-3z"
+                    fill="currentColor"
+                  />
+                  <path
+                    d="M7 11a5 5 0 0 0 10 0M12 16v3.5M9 19.5h6"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.75"
+                    strokeLinecap="round"
+                  />
+                </>
+              )}
+            </svg>
+            <span className="hb-agent-talk-label">{voiceMode ? 'On' : 'Talk'}</span>
+          </button>
+        )}
       </div>
 
       {(queuedCount > 0 || editingLast) && (
         <p className="hb-chat-queue">
           {editingLast
             ? 'Editing last message — Send replaces it (Esc cancels edit)'
-            : `${queuedCount} follow-up${queuedCount === 1 ? '' : 's'} queued · Esc stops`}
+            : `${queuedCount} follow-up${queuedCount === 1 ? '' : 's'} steering in · Esc stops`}
         </p>
       )}
       {agentId && (
-        <p className="hb-chat-queue font-mono truncate" title={agentId}>
+        <p className="hb-chat-queue hb-chat-queue--agent font-mono truncate" title={agentId}>
           agent {agentId.slice(0, 12)}…
         </p>
       )}
@@ -4039,60 +4551,16 @@ export function ChatPanel({
           e.target.value = ''
         }}
       />
-      {isAgent && (
-        <div className="hb-agent-talk-row">
-          <span className="hb-agent-talk-hint truncate">
-            {voiceMode
-              ? listening
-                ? 'Listening… tap Confirm to send'
-                : canSpeak
-                  ? 'Talk on — speak, then Confirm'
-                  : canTts
-                    ? 'Talk on — AI replies will be spoken'
-                    : 'Talk on'
+      {isAgent && voiceMode && (
+        <p className="hb-agent-talk-hint" role="status">
+          {listening
+            ? 'Listening… tap Confirm to send'
+            : canSpeak
+              ? 'Talk on — speak, then Confirm'
               : canTts
-                ? 'Type below, or turn Talk on (speaks replies)'
-                : 'Type below, or turn Talk on'}
-          </span>
-          <button
-            type="button"
-            className={`hb-agent-talk-btn ${voiceMode ? 'hb-agent-talk-btn--on' : ''}`}
-            aria-pressed={voiceMode}
-            onClick={(e) => {
-              e.preventDefault()
-              e.stopPropagation()
-              toggleListen()
-            }}
-            title={
-              voiceMode
-                ? 'Turn off talk mode'
-                : canSpeak
-                  ? 'Talk — dictate + speak replies'
-                  : 'Talk — speak AI replies (mic unavailable)'
-            }
-          >
-            <svg viewBox="0 0 24 24" className="hb-mic-icon" aria-hidden>
-              {voiceMode ? (
-                <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" />
-              ) : (
-                <>
-                  <path
-                    d="M12 3.5a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0v-5a3 3 0 0 0-3-3z"
-                    fill="currentColor"
-                  />
-                  <path
-                    d="M7 11a5 5 0 0 0 10 0M12 16v3.5M9 19.5h6"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.75"
-                    strokeLinecap="round"
-                  />
-                </>
-              )}
-            </svg>
-            <span>{voiceMode ? 'Talk on' : 'Talk'}</span>
-          </button>
-        </div>
+                ? 'Talk on — replies will be spoken'
+                : 'Talk on'}
+        </p>
       )}
       {showSilentSwitchHint && (
         <p className="hb-voice-silent-hint" role="status">
@@ -4100,7 +4568,7 @@ export function ChatPanel({
         </p>
       )}
       <div
-        className="flex gap-2 items-stretch"
+        className="hb-chat-compose-row"
         onDragOver={(e) => {
           if ([...e.dataTransfer.types].includes('Files')) e.preventDefault()
         }}
@@ -4134,19 +4602,19 @@ export function ChatPanel({
               const t = e.currentTarget
               syncAtMention(t.value, t.selectionStart ?? t.value.length)
             }}
-            rows={2}
+            rows={1}
             placeholder={
               listening || (isAgent && voiceMode)
                 ? 'Listening… speak in English'
                 : streaming
-                  ? `Queue follow-up (${cwdLabel})…`
+                  ? `Steer follow-up (${cwdLabel})…`
                   : editingLast
                     ? 'Edit last message…'
                     : draftImages.length || draftContext.length
                       ? 'Add a note (optional)…'
                       : `Message (@ for files · ${cwdLabel})…`
             }
-            className={`hb-chat-textarea w-full rounded-xl bg-panel-2 border px-3 py-2.5 text-sm resize-none outline-none focus:border-accent ${
+            className={`hb-chat-textarea w-full resize-none outline-none focus:border-accent ${
               listening || (isAgent && voiceMode) ? 'border-accent/60' : 'border-line'
             }`}
             enterKeyHint="send"
@@ -4177,96 +4645,20 @@ export function ChatPanel({
               }
             }}
           />
-          <div className="hb-chat-compose-tools">
-            <button
-              type="button"
-              className="hb-at-btn"
-              aria-label="Attach file context"
-              title="@ attach file context"
-              onClick={insertAtMention}
-            >
-              @
-            </button>
-            <button
-              type="button"
-              className="hb-attach-btn"
-              aria-label="Attach image"
-              title="Attach image (or paste / drop)"
-              onClick={() => imageInputRef.current?.click()}
-            >
-              <svg viewBox="0 0 24 24" className="hb-attach-icon" aria-hidden>
-                <path
-                  d="M8.5 13.5 11 11l2.5 2.5L17 10l3 3v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-1.5"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.75"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-                <rect
-                  x="3"
-                  y="5"
-                  width="18"
-                  height="14"
-                  rx="2"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.75"
-                />
-              </svg>
-            </button>
-            {!isAgent && canSpeak && (
-              <button
-                type="button"
-                onClick={toggleListen}
-                disabled={streaming}
-                className={`hb-mic-btn ${listening ? 'hb-mic-btn-live' : ''}`}
-                aria-pressed={listening}
-                aria-label={listening ? 'Stop dictation' : 'Dictate in English'}
-                title={listening ? 'Stop' : 'Speak (English → text)'}
-              >
-                <svg viewBox="0 0 24 24" className="hb-mic-icon" aria-hidden>
-                  {listening ? (
-                    <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" />
-                  ) : (
-                    <>
-                      <path
-                        d="M12 3.5a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0v-5a3 3 0 0 0-3-3z"
-                        fill="currentColor"
-                      />
-                      <path
-                        d="M7 11a5 5 0 0 0 10 0M12 16v3.5M9 19.5h6"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.75"
-                        strokeLinecap="round"
-                      />
-                    </>
-                  )}
-                </svg>
-              </button>
-            )}
-          </div>
         </div>
-        <div className="flex flex-col gap-2">
+        <div className="hb-chat-compose-actions">
           <button
             type="submit"
             disabled={
               !connected || (!input.trim() && !draftImages.length && !draftContext.length)
             }
-            className={`rounded-xl font-semibold px-4 py-2.5 text-sm disabled:opacity-40 border-0 ${
+            className={`hb-chat-send-btn disabled:opacity-40 border-0 ${
               isAgent && voiceMode
                 ? 'hb-agent-confirm'
                 : 'hb-btn-primary'
             }`}
           >
-            {isAgent && voiceMode
-              ? 'Confirm'
-              : streaming && !editingLast
-                ? 'Queue'
-                : editingLast
-                  ? 'Resend'
-                  : 'Send'}
+            {isAgent && voiceMode ? 'Confirm' : editingLast ? 'Resend' : 'Send'}
           </button>
           {(streaming ||
             !!active?.running ||
@@ -4275,8 +4667,8 @@ export function ChatPanel({
             <button
               type="button"
               onClick={cancel}
-              className="rounded-xl border border-danger/50 text-danger text-xs py-2 font-semibold"
-              title="Stop (Esc)"
+              className="hb-chat-stop-btn"
+              title="Stop (Esc). Press again within 3s to force-dispose the agent."
             >
               Stop
             </button>

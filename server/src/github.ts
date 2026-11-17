@@ -13,6 +13,7 @@ import {
 import { join, resolve } from "node:path";
 import {
   loadProjects,
+  mcpWorkspaceUpsertFields,
   slugId,
   upsertProjectFromInput,
   type Project,
@@ -542,11 +543,13 @@ export function cloneGithubWorkspace(opts: {
   let project: Project;
   try {
     markMcpWorkspace(target);
-    project = upsertProjectFromInput({
-      path: target,
-      name,
-      id: projectIdForName(name),
-    });
+    project = upsertProjectFromInput(
+      mcpWorkspaceUpsertFields({
+        path: target,
+        name,
+        id: projectIdForName(name),
+      }),
+    );
   } catch (e) {
     return plainError(e instanceof Error ? e.message : String(e));
   }

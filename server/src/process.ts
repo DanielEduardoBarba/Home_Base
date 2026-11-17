@@ -5,8 +5,10 @@ import { watchActionSessions } from "./action_callbacks";
 import { projectLanEnv } from "./network";
 import { homebaseListenPort, killPortListeners, isPortListening } from "./ports";
 import {
+  getSession,
   killByProject,
   listSessions,
+  readSessionOutput,
   spawnShell,
   type SessionPublic,
 } from "./pty";
@@ -134,10 +136,33 @@ function advertiseEnv(project: Project): Record<string, string> {
   return projectLanEnv(project.ports.map((p) => ({ id: p.id, port: p.port })));
 }
 
+/** Strip ANSI + collapse whitespace for a short public error from a PTY ring. */
+function sessionFailHint(sessionId: string | undefined): string {
+  if (!sessionId) return "Run session exited before ports were ready";
+  const rec = readSessionOutput(sessionId);
+  const raw = String(rec?.output || "")
+    .replace(/\x1b\[[0-9;]*m/g, "")
+    .replace(/\r/g, "")
+    .trim();
+  const lines = raw
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const errLine =
+    [...lines].reverse().find((l) => /error:|die |missing |failed|fatal/i.test(l)) ||
+    lines[lines.length - 1] ||
+    "";
+  const clipped = errLine.slice(0, 240);
+  return clipped
+    ? `Run failed: ${clipped}`
+    : "Run session exited before ports were ready";
+}
+
 async function waitForComposeGate(
   project: Project,
-  timeoutSec = 75,
-): Promise<{ ready: boolean; waited: boolean }> {
+  opts: { sessionId?: string; timeoutSec?: number } = {},
+): Promise<{ ready: boolean; waited: boolean; failed?: string }> {
+  const timeoutSec = opts.timeoutSec ?? 75;
   let prefer = project.ports.filter((p) => p.id === "api");
   if (!prefer.length) {
     prefer = project.ports.filter((p) => p.id !== "expo").slice(0, 1);
@@ -146,6 +171,17 @@ async function waitForComposeGate(
 
   const deadline = Date.now() + timeoutSec * 1000;
   while (Date.now() < deadline) {
+    if (opts.sessionId) {
+      const s = getSession(opts.sessionId);
+      // Missing or exited → compose must stop (don't leave Expo "Running" alone).
+      if (!s || s.exited) {
+        return {
+          ready: false,
+          waited: true,
+          failed: sessionFailHint(opts.sessionId),
+        };
+      }
+    }
     let ready = true;
     for (const p of prefer) {
       if (!isPortListening(p.port)) {
@@ -162,6 +198,17 @@ async function waitForComposeGate(
     }
     if (ready) return { ready: true, waited: true };
     await Bun.sleep(1000);
+  }
+  // Timed out — if the run PTY already died, treat as hard failure.
+  if (opts.sessionId) {
+    const s = getSession(opts.sessionId);
+    if (!s || s.exited) {
+      return {
+        ready: false,
+        waited: true,
+        failed: sessionFailHint(opts.sessionId),
+      };
+    }
   }
   return { ready: false, waited: true };
 }
@@ -233,7 +280,7 @@ export async function runAction(
       throw new Error(`Action ${action.id} type=compose needs compose: [actionId,…]`);
     }
     const sessions: SessionPublic[] = [];
-    let gate: { ready: boolean; waited: boolean } | undefined;
+    let gate: { ready: boolean; waited: boolean; failed?: string } | undefined;
     for (let i = 0; i < ids.length; i++) {
       const aid = ids[i]!;
       const target = project.actions.find((a) => a.id === aid);
@@ -247,7 +294,19 @@ export async function runAction(
       if (r.session) sessions.push(r.session);
       if (r.sessions) sessions.push(...r.sessions);
       if (target.kind === "run" && i < ids.length - 1) {
-        gate = await waitForComposeGate(project);
+        gate = await waitForComposeGate(project, {
+          sessionId: r.session?.id,
+        });
+        if (gate.failed) {
+          appendTrace(
+            "error",
+            `${project.id}: compose aborted — ${gate.failed}`,
+            "process",
+          );
+          // Tear down whatever we started so Apps doesn't stay "Running".
+          stopProject(project);
+          throw new Error(gate.failed);
+        }
         if (!gate.ready) {
           appendTrace(
             "warn",
