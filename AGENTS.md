@@ -58,9 +58,9 @@ Live laptop screen (same `/ws/view` worker) plus a Chat dock. **Arm** (JWT, defa
 
 ### Isolated Chrome (MCP browser)
 
-Dedicated Chromium/Chrome with `--user-data-dir=.runtime/browser/profile` (one shared Home Base env — not the operator’s personal browser). MCP feature **`browser`** (default Off). Tools: `homebase_browser_status` · `_open` · `_close` · `_navigate` · `_screenshot` · `_click` · `_type` · `_key` · `_hotkey` · `_scroll` · `_ask_human` · `_ask_secret` · `_propose_email`. Control is CDP (view + mouse/keyboard inside the tab); no Vision Arm and no whole-desktop XTest.
+Dedicated Chromium/Chrome with `--user-data-dir=.runtime/browser/profile` (one shared Home Base env — not the operator’s personal browser). MCP feature **`browser`** (default Off). Tools: `homebase_browser_status` · `_open` · `_close` · `_navigate` · `_observe` · `_screenshot` · `_click` · `_fill` · `_type` · `_key` · `_hotkey` · `_scroll` · `_wait` · `_ask_human` · `_ask_secret` · `_propose_email`. Control is CDP (view + mouse/keyboard inside the tab); no Vision Arm and no whole-desktop XTest.
 
-**Display:** prefers an **Xvfb virtual display** (separate X session so the seat desktop stays free), then `--headless=new`, then seat `DISPLAY` only as last resort. Humans watch/take control in **Chat’s Browser dock** (`/ws/browser` screencast) — concurrent with AI driving. Click a field while in control opens a type card that inserts via CDP. `homebase_browser_ask_human` = Done/Cancel assist; `homebase_browser_ask_secret` = Grok-style masked card that injects passwords/keys into Chrome (never logged or returned to the model). `homebase_browser_propose_email` = inline Approve/Deny email card (edits allowed; Approve fills Gmail + Send). Prefer this for web UI work; keep Vision for real desktop apps.
+**Agent loop (token-cheap):** `observe` → `click`/`fill` by **ref** → `observe` again. Use `_screenshot` only when pixels matter. `_fill({ref|label,text})` beats click+type. `_wait` instead of blind sleeps. Humans: Take control → click field → type card. `ask_human` / `ask_secret` for login; `propose_email` for Approve/Deny outbound mail (never click Send yourself). Prefer this for web UI; Vision for real desktop apps.
 
 ### Doodle
 

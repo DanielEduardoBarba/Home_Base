@@ -118,6 +118,9 @@ describe("homebase tools AI deny + feature filter", () => {
     expect(withBrowser.homebase_browser_click).toBeDefined();
     expect(withBrowser.homebase_browser_ask_human).toBeDefined();
     expect(withBrowser.homebase_browser_propose_email).toBeDefined();
+    expect(withBrowser.homebase_browser_observe).toBeDefined();
+    expect(withBrowser.homebase_browser_fill).toBeDefined();
+    expect(withBrowser.homebase_browser_wait).toBeDefined();
     const without = tools.buildMcpTools(tools.MCP_FEATURE_DEFAULTS);
     expect(without.homebase_vision_screenshot).toBeUndefined();
     expect(without.homebase_browser_screenshot).toBeUndefined();

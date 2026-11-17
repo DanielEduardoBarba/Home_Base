@@ -28,6 +28,7 @@ describe("browser_session status (no Chrome required)", () => {
     expect(String(st.guidance)).toContain("homebase_browser_");
     expect(String(st.guidance)).toContain("ask_human");
     expect(String(st.guidance)).toContain("propose_email");
+    expect(String(st.guidance)).toContain("observe");
     expect(st.emailPending).toBe(null);
   });
 

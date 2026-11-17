@@ -20,15 +20,18 @@ import {
   browserAskSecret,
   browserClick,
   browserClose,
+  browserFill,
   browserHotkey,
   browserKey,
   browserNavigate,
+  browserObserve,
   browserOpen,
   browserProposeEmail,
   browserScreenshot,
   browserScroll,
   browserStatus,
   browserType,
+  browserWait,
 } from "./browser_session";
 import {
   VISION_GUIDANCE,
@@ -142,7 +145,7 @@ export const MCP_FEATURE_META: {
     id: "browser",
     label: "Isolated Chrome",
     hint:
-      "Xvfb/headless Chrome + CDP view/click/type + ask_human + propose_email (off by default; safer than Vision)",
+      "Xvfb/headless Chrome + observe/fill/click + ask_human + propose_email (off by default; safer than Vision)",
     defaultOn: false,
   },
   {
@@ -205,12 +208,15 @@ export const MCP_TOOL_FEATURE: Record<string, McpFeatureId> = {
   homebase_browser_open: "browser",
   homebase_browser_close: "browser",
   homebase_browser_navigate: "browser",
+  homebase_browser_observe: "browser",
   homebase_browser_screenshot: "browser",
   homebase_browser_click: "browser",
+  homebase_browser_fill: "browser",
   homebase_browser_type: "browser",
   homebase_browser_key: "browser",
   homebase_browser_hotkey: "browser",
   homebase_browser_scroll: "browser",
+  homebase_browser_wait: "browser",
   homebase_browser_ask_human: "browser",
   homebase_browser_ask_secret: "browser",
   homebase_browser_propose_email: "browser",
@@ -312,7 +318,7 @@ export function wrapPrompt(
       `while the user has Armed desktop control in the Vision UI. ${VISION_GUIDANCE} `;
   const browserBit =
     `Isolated Chrome (MCP feature \"browser\", off by default): ${BROWSER_GUIDANCE} ` +
-    `Use homebase_browser_open / screenshot / click / type / key — one shared Home Base profile. `;
+    `Use homebase_browser_open → observe → click/fill by ref (screenshot only if pixels needed). `;
   return (
     `${CONTEXT_MARKER}\n` +
     `Private metadata (do not quote, paraphrase, or repeat):\n` +
@@ -684,10 +690,50 @@ export function buildHomebaseTools(
     parameters: { type: "object", properties: {} },
     execute: async () => browserTool(() => browserStatus()),
   };
+  tools.homebase_browser_observe = {
+    description:
+      "PRIMARY see tool for Isolated Chrome (token-cheap). Returns url, title, focused field, " +
+      "interactive elements with ref/role/name/x/y, and a text excerpt. " +
+      "Then act with homebase_browser_click({ref}) or homebase_browser_fill({ref|label, text}). " +
+      "Re-observe after acts. Set shot:true only if you also need a JPEG path. " +
+      "Prefer this over homebase_browser_screenshot.",
+    parameters: {
+      type: "object",
+      properties: {
+        maxElements: {
+          type: "number",
+          description: "Max interactive elements (default 40, max 80)",
+        },
+        textMax: {
+          type: "number",
+          description: "Max page text chars (default 2500)",
+        },
+        shot: {
+          type: "boolean",
+          description: "Also capture a JPEG path (default false)",
+        },
+        quality: {
+          type: "number",
+          description: "JPEG quality when shot:true (default 55)",
+        },
+      },
+    },
+    execute: async (args) =>
+      browserTool(() =>
+        browserObserve({
+          maxElements:
+            args.maxElements != null ? Number(args.maxElements) : undefined,
+          textMax: args.textMax != null ? Number(args.textMax) : undefined,
+          shot: args.shot === true,
+          quality: args.quality != null ? Number(args.quality) : undefined,
+        }),
+      ),
+  };
   tools.homebase_browser_screenshot = {
     description:
-      "Screenshot the isolated Home Base Chrome tab (JPEG). Returns a filesystem path — " +
-      "Read that image before clicking. Auto-starts Chrome if needed. Prefer after each action.",
+      "JPEG screenshot of Isolated Chrome (expensive for tokens). Prefer homebase_browser_observe " +
+      "for refs/text. Use screenshot only for CAPTCHA, layout, or when observe is insufficient. " +
+      "Returns a filesystem path — Read the image if you need pixels.",
     parameters: {
       type: "object",
       properties: {
@@ -1696,11 +1742,15 @@ export function buildHomebaseTools(
     };
     tools.homebase_browser_click = {
       description:
-        "Click inside isolated Chrome (CDP). Use normalized x,y in 0..1 from the screenshot, " +
-        "or px,py in CSS pixels. button: left|middle|right (or 0|1|2).",
+        "Click in Isolated Chrome. Preferred: ref from homebase_browser_observe (e.g. ref:\"e3\"). " +
+        "Fallback: normalized x,y 0..1 or px,py. button: left|middle|right.",
       parameters: {
         type: "object",
         properties: {
+          ref: {
+            type: "string",
+            description: 'Observe ref like "e3" (preferred)',
+          },
           x: { type: "number", description: "Normalized 0..1" },
           y: { type: "number", description: "Normalized 0..1" },
           px: { type: "number" },
@@ -1712,6 +1762,7 @@ export function buildHomebaseTools(
       execute: async (args) =>
         browserTool(() =>
           browserClick({
+            ref: args.ref != null ? String(args.ref) : undefined,
             x: args.x != null ? Number(args.x) : undefined,
             y: args.y != null ? Number(args.y) : undefined,
             px: args.px != null ? Number(args.px) : undefined,
@@ -1722,9 +1773,45 @@ export function buildHomebaseTools(
           }),
         ),
     };
+    tools.homebase_browser_fill = {
+      description:
+        "Fill a text field in Isolated Chrome (preferred over click+type). " +
+        "Pass ref from observe, or label matching aria-label/placeholder/name. " +
+        "Clears the field, types text, optional pressEnter. Then observe to verify.",
+      parameters: {
+        type: "object",
+        properties: {
+          ref: { type: "string", description: 'Observe ref like "e5"' },
+          label: {
+            type: "string",
+            description: 'Substring match e.g. "To recipients" or "Subject"',
+          },
+          text: { type: "string" },
+          pressEnter: {
+            type: "boolean",
+            description: "Press Enter after typing (default false)",
+          },
+          clear: {
+            type: "boolean",
+            description: "Clear existing value first (default true)",
+          },
+        },
+        required: ["text"],
+      },
+      execute: async (args) =>
+        browserTool(() =>
+          browserFill({
+            ref: args.ref != null ? String(args.ref) : undefined,
+            label: args.label != null ? String(args.label) : undefined,
+            text: String(args.text ?? ""),
+            pressEnter: args.pressEnter === true,
+            clear: args.clear !== false,
+          }),
+        ),
+    };
     tools.homebase_browser_type = {
       description:
-        "Type text into the focused element in isolated Chrome (CDP insertText).",
+        "Type into the already-focused element (CDP). Prefer homebase_browser_fill({ref|label,text}) when possible.",
       parameters: {
         type: "object",
         properties: { text: { type: "string" } },
@@ -1732,6 +1819,32 @@ export function buildHomebaseTools(
       },
       execute: async (args) =>
         browserTool(() => browserType({ text: String(args.text ?? "") })),
+    };
+    tools.homebase_browser_wait = {
+      description:
+        "Wait until page text appears and/or URL contains a substring (default 12s). " +
+        "Use instead of guessing sleeps after navigate/click.",
+      parameters: {
+        type: "object",
+        properties: {
+          text: { type: "string", description: "Substring in page text" },
+          urlIncludes: {
+            type: "string",
+            description: "Substring in location.href",
+          },
+          timeoutMs: { type: "number", description: "Max wait (default 12000)" },
+        },
+      },
+      execute: async (args) =>
+        browserTool(() =>
+          browserWait({
+            text: args.text != null ? String(args.text) : undefined,
+            urlIncludes:
+              args.urlIncludes != null ? String(args.urlIncludes) : undefined,
+            timeoutMs:
+              args.timeoutMs != null ? Number(args.timeoutMs) : undefined,
+          }),
+        ),
     };
     tools.homebase_browser_key = {
       description:

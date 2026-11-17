@@ -40,13 +40,12 @@ const WINDOW_H = 900;
 export const BROWSER_GUIDANCE =
   "Isolated Home Base Chrome (homebase_browser_*): one shared profile under " +
   ".runtime/browser/profile — not the operator's personal Chrome. " +
-  "Prefer screenshot → act → screenshot. Use normalized x,y in 0..1 for clicks. " +
-  "For logins/CAPTCHA/2FA call homebase_browser_ask_human and homebase_browser_ask_secret " +
-  "(Grok-style masked card — never guess passwords, never put secrets in chat text). " +
-  "For outbound email use homebase_browser_propose_email (inline Approve/Deny card — do not " +
-  "click Send yourself). Humans typing into a focused field: Take control → click field → " +
-  "type overlay inserts via CDP. This is safer than Vision (no whole-desktop Arm). " +
-  "Prefer browser tools for web UI work. The human can watch/take control in Chat's Browser dock.";
+  "Default loop (token-cheap): homebase_browser_observe → click/fill by ref → observe again. " +
+  "Use homebase_browser_screenshot only when you need pixels (layout/CAPTCHA/visual). " +
+  "homebase_browser_fill({ref|label, text}) beats click+type. homebase_browser_wait for text/url. " +
+  "For logins/CAPTCHA/2FA: ask_human / ask_secret (never put secrets in chat). " +
+  "For outbound email: homebase_browser_propose_email (Approve/Deny — never click Send yourself). " +
+  "Humans: Take control → click field → type overlay. Safer than Vision. Prefer browser tools for web UI.";
 
 export type BrowserController = "agent" | "human";
 
@@ -241,9 +240,18 @@ let nextClientId = 1;
 const browserClients = new Map<number, BrowserClient>();
 let lastFrameJpeg: Buffer | null = null;
 let lastFrameAt = 0;
+/** Last observe() refs → CSS-pixel centers for click/fill by ref. */
+let lastObserveRefs = new Map<
+  string,
+  { px: number; py: number; name: string; role: string; tag: string }
+>();
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function clearObserveRefs(): void {
+  lastObserveRefs = new Map();
 }
 
 function ensureDirs(): void {
@@ -741,6 +749,7 @@ async function stopSession(reason: string): Promise<void> {
     });
     emailPending = null;
   }
+  clearObserveRefs();
   controller = "agent";
   if (!cur) {
     emitStatus();
@@ -1005,6 +1014,7 @@ async function launchSession(initialUrl?: string): Promise<SessionState> {
 }
 
 async function navigateOn(state: SessionState, url: string): Promise<void> {
+  clearObserveRefs();
   if (!state.pageSessionId) throw new Error("no page session");
   await state.cdp.send("Page.navigate", { url }, state.pageSessionId);
   await Bun.sleep(350);
@@ -1514,7 +1524,9 @@ export async function browserScreenshot(opts: {
     width: state.viewportW,
     height: state.viewportH,
     url: href,
-    hint: "Read the image at path (or latest) before clicking.",
+    hint:
+      "Pixels only — prefer homebase_browser_observe for refs/text (cheaper). " +
+      "If you Read this image, click with x,y 0..1 or ref from a prior observe.",
   };
 }
 
@@ -1673,6 +1685,8 @@ export async function browserClick(opts: {
   y?: number;
   px?: number;
   py?: number;
+  /** Element ref from homebase_browser_observe (e.g. "e3"). */
+  ref?: string;
   button?: string | number;
   clickCount?: number;
   /** When true, skip agent-control gate (Chat takeover). */
@@ -1685,6 +1699,16 @@ export async function browserClick(opts: {
   const state = await ensureSession();
   if (!state.pageSessionId) throw new Error("no page session");
   await refreshViewport(state);
+  const refKey = opts.ref != null ? String(opts.ref).trim() : "";
+  if (refKey) {
+    const hit = lastObserveRefs.get(refKey);
+    if (!hit) {
+      throw new Error(
+        `Unknown ref "${refKey}" — call homebase_browser_observe first (refs reset on navigate).`,
+      );
+    }
+    opts = { ...opts, px: hit.px, py: hit.py, x: undefined, y: undefined };
+  }
   const pt = resolvePoint(state, opts);
   const buttonRaw = opts.button;
   const button =
@@ -1962,6 +1986,349 @@ export async function browserScroll(opts: {
 }
 
 /**
+ * Cheap structured "see" for models: interactive refs + focus + text excerpt.
+ * Prefer this over screenshot unless pixels are required.
+ */
+export async function browserObserve(opts: {
+  maxElements?: number;
+  textMax?: number;
+  shot?: boolean;
+  quality?: number;
+} = {}): Promise<Record<string, unknown>> {
+  assertAgentControl();
+  const state = await ensureSession();
+  if (!state.pageSessionId) throw new Error("no page session");
+  await refreshViewport(state);
+  const maxElements = Math.max(
+    5,
+    Math.min(80, Math.floor(Number(opts.maxElements ?? 40))),
+  );
+  const textMax = Math.max(
+    200,
+    Math.min(8000, Math.floor(Number(opts.textMax ?? 2500))),
+  );
+  const sid = state.pageSessionId;
+
+  const evaluated = (await state.cdp.send(
+    "Runtime.evaluate",
+    {
+      expression: `(() => {
+        const maxE = ${maxElements};
+        const textMax = ${textMax};
+        const vw = window.innerWidth || 1;
+        const vh = window.innerHeight || 1;
+        const isVisible = (el) => {
+          const r = el.getBoundingClientRect();
+          if (r.width < 2 || r.height < 2) return false;
+          if (r.bottom < 0 || r.right < 0 || r.top > vh || r.left > vw) return false;
+          const st = window.getComputedStyle(el);
+          if (st.visibility === 'hidden' || st.display === 'none' || Number(st.opacity) === 0) return false;
+          return true;
+        };
+        const roleOf = (el) => {
+          const explicit = el.getAttribute('role');
+          if (explicit) return explicit;
+          const tag = el.tagName.toLowerCase();
+          if (tag === 'a') return 'link';
+          if (tag === 'button') return 'button';
+          if (tag === 'input') {
+            const t = (el.getAttribute('type') || 'text').toLowerCase();
+            if (t === 'submit' || t === 'button') return 'button';
+            if (t === 'checkbox') return 'checkbox';
+            if (t === 'radio') return 'radio';
+            return 'textbox';
+          }
+          if (tag === 'textarea') return 'textbox';
+          if (tag === 'select') return 'combobox';
+          if (el.isContentEditable) return 'textbox';
+          return tag;
+        };
+        const nameOf = (el) => {
+          const bits = [
+            el.getAttribute('aria-label'),
+            el.getAttribute('placeholder'),
+            el.getAttribute('name'),
+            el.getAttribute('title'),
+            el.innerText,
+            el.textContent,
+            el.value,
+          ];
+          for (const b of bits) {
+            const s = String(b || '').replace(/\\s+/g, ' ').trim();
+            if (s) return s.slice(0, 80);
+          }
+          return '';
+        };
+        const sel = 'a[href], button, input:not([type=hidden]), textarea, select, [role=button], [role=link], [role=tab], [role=menuitem], [role=textbox], [role=checkbox], [role=switch], [contenteditable=true], [g_editable=true]';
+        const nodes = [...document.querySelectorAll(sel)].filter(isVisible);
+        // Prefer named / actionable; drop empty generic divs.
+        const scored = nodes.map((el, i) => {
+          const name = nameOf(el);
+          const role = roleOf(el);
+          const r = el.getBoundingClientRect();
+          const score = (name ? 2 : 0) + (role === 'textbox' || role === 'button' || role === 'link' ? 1 : 0);
+          return { el, name, role, r, score, i };
+        }).filter((x) => x.name || x.role === 'textbox' || x.role === 'button' || x.role === 'link' || x.role === 'tab');
+        scored.sort((a, b) => b.score - a.score || a.i - b.i);
+        const picked = scored.slice(0, maxE);
+        const elements = picked.map((x, idx) => {
+          const ref = 'e' + (idx + 1);
+          const cx = x.r.left + x.r.width / 2;
+          const cy = x.r.top + x.r.height / 2;
+          let value = '';
+          try {
+            if (typeof x.el.value === 'string') value = String(x.el.value).slice(0, 120);
+          } catch (_) {}
+          return {
+            ref,
+            role: x.role,
+            name: x.name,
+            tag: String(x.el.tagName || '').toLowerCase(),
+            x: Math.max(0, Math.min(1, cx / vw)),
+            y: Math.max(0, Math.min(1, cy / vh)),
+            px: Math.round(cx),
+            py: Math.round(cy),
+            value: value || undefined,
+          };
+        });
+        const ae = document.activeElement;
+        let focus = null;
+        if (ae) {
+          const fr = ae.getBoundingClientRect();
+          focus = {
+            tag: String(ae.tagName || '').toLowerCase(),
+            role: roleOf(ae),
+            name: nameOf(ae).slice(0, 80),
+            editable: !!(ae.isContentEditable || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA'),
+            x: Math.max(0, Math.min(1, (fr.left + fr.width / 2) / vw)),
+            y: Math.max(0, Math.min(1, (fr.top + fr.height / 2) / vh)),
+          };
+        }
+        const text = String(document.body && document.body.innerText || '')
+          .replace(/\\s+/g, ' ')
+          .trim()
+          .slice(0, textMax);
+        return {
+          title: document.title || '',
+          url: location.href,
+          elements,
+          focus,
+          text,
+        };
+      })()`,
+      returnByValue: true,
+    },
+    sid,
+  )) as {
+    result?: {
+      value?: {
+        title?: string;
+        url?: string;
+        elements?: Array<{
+          ref: string;
+          role: string;
+          name: string;
+          tag: string;
+          x: number;
+          y: number;
+          px: number;
+          py: number;
+          value?: string;
+        }>;
+        focus?: Record<string, unknown> | null;
+        text?: string;
+      };
+    };
+  };
+
+  const v = evaluated?.result?.value;
+  if (!v) throw new Error("observe failed — page not ready");
+  clearObserveRefs();
+  for (const el of v.elements || []) {
+    lastObserveRefs.set(el.ref, {
+      px: el.px,
+      py: el.py,
+      name: el.name,
+      role: el.role,
+      tag: el.tag,
+    });
+  }
+  if (v.url) state.url = String(v.url);
+
+  const out: Record<string, unknown> = {
+    ok: true,
+    url: v.url || (await currentUrl(state)),
+    title: v.title || "",
+    focus: v.focus || null,
+    elements: (v.elements || []).map(({ px: _px, py: _py, ...rest }) => rest),
+    text: v.text || "",
+    elementCount: (v.elements || []).length,
+    hint:
+      "Act with homebase_browser_click({ref}) or homebase_browser_fill({ref|label, text}). " +
+      "Re-observe after acts. Screenshot only if you need pixels.",
+  };
+  if (opts.shot) {
+    const shot = await browserScreenshot({
+      quality: opts.quality != null ? Number(opts.quality) : 55,
+    });
+    out.shot = { path: shot.path, latest: shot.latest, bytes: shot.bytes };
+  }
+  return out;
+}
+
+/** Wait until URL/text appears (or timeout). Avoids blind sleeps. */
+export async function browserWait(opts: {
+  text?: string;
+  urlIncludes?: string;
+  timeoutMs?: number;
+}): Promise<Record<string, unknown>> {
+  assertAgentControl();
+  const text = opts.text != null ? String(opts.text) : "";
+  const urlIncludes =
+    opts.urlIncludes != null ? String(opts.urlIncludes) : "";
+  if (!text && !urlIncludes) {
+    throw new Error("Provide text and/or urlIncludes");
+  }
+  const timeoutMs = Math.max(
+    500,
+    Math.min(60_000, Math.floor(Number(opts.timeoutMs ?? 12_000))),
+  );
+  const state = await ensureSession();
+  if (!state.pageSessionId) throw new Error("no page session");
+  const sid = state.pageSessionId;
+  const start = Date.now();
+  let lastUrl = "";
+  while (Date.now() - start < timeoutMs) {
+    const href = await currentUrl(state);
+    lastUrl = href;
+    let textOk = !text;
+    let urlOk = !urlIncludes || href.includes(urlIncludes);
+    if (text) {
+      const ev = (await state.cdp.send(
+        "Runtime.evaluate",
+        {
+          expression: `(() => {
+            const needle = ${JSON.stringify(text)};
+            const hay = String(document.body && document.body.innerText || '');
+            return hay.includes(needle);
+          })()`,
+          returnByValue: true,
+        },
+        sid,
+      )) as { result?: { value?: boolean } };
+      textOk = Boolean(ev?.result?.value);
+    }
+    if (textOk && urlOk) {
+      return {
+        ok: true,
+        matched: true,
+        url: href,
+        waitedMs: Date.now() - start,
+        hint: "Condition met — call observe next.",
+      };
+    }
+    await sleep(280);
+  }
+  return {
+    ok: false,
+    matched: false,
+    url: lastUrl,
+    waitedMs: Date.now() - start,
+    error: "wait timed out",
+  };
+}
+
+/**
+ * Fill an input by observe ref or accessible label (clear → type → optional Enter).
+ * Preferred over click + type for forms.
+ */
+export async function browserFill(opts: {
+  ref?: string;
+  label?: string;
+  text: string;
+  pressEnter?: boolean;
+  clear?: boolean;
+}): Promise<Record<string, unknown>> {
+  assertAgentControl();
+  const text = String(opts.text ?? "");
+  const refKey = opts.ref != null ? String(opts.ref).trim() : "";
+  const label = opts.label != null ? String(opts.label).trim() : "";
+  if (!refKey && !label) {
+    throw new Error("Provide ref (from observe) or label (aria/placeholder/name)");
+  }
+  const state = await ensureSession();
+  if (!state.pageSessionId) throw new Error("no page session");
+  await refreshViewport(state);
+  const sid = state.pageSessionId;
+
+  if (refKey) {
+    const hit = lastObserveRefs.get(refKey);
+    if (!hit) {
+      throw new Error(
+        `Unknown ref "${refKey}" — call homebase_browser_observe first.`,
+      );
+    }
+    await browserClick({ px: hit.px, py: hit.py, clickCount: 1 });
+    await sleep(60);
+  } else {
+    const focused = (await state.cdp.send(
+      "Runtime.evaluate",
+      {
+        expression: `(() => {
+          const needle = ${JSON.stringify(label.toLowerCase())};
+          const nodes = [...document.querySelectorAll('input, textarea, [contenteditable=true], [role=textbox], [g_editable=true]')];
+          const match = nodes.find((el) => {
+            const blob = [
+              el.getAttribute('aria-label'),
+              el.getAttribute('placeholder'),
+              el.getAttribute('name'),
+              el.getAttribute('title'),
+            ].join(' ').toLowerCase();
+            return blob.includes(needle);
+          });
+          if (!match) return { ok: false };
+          match.focus();
+          try { match.click(); } catch (_) {}
+          return { ok: true, tag: match.tagName };
+        })()`,
+        returnByValue: true,
+      },
+      sid,
+    )) as { result?: { value?: { ok?: boolean } } };
+    if (!focused?.result?.value?.ok) {
+      throw new Error(`No field matching label "${label}"`);
+    }
+    await sleep(60);
+  }
+
+  const focus = await probeFocusedEditable(state);
+  if (!focus.editable) {
+    throw new Error(
+      "Target did not become editable — observe and pick a textbox ref.",
+    );
+  }
+  if (opts.clear !== false) {
+    await browserHotkey({ keys: ["ctrl", "a"] });
+    await sleep(30);
+    await browserKey({ key: "Backspace" });
+    await sleep(30);
+  }
+  const inserted = await insertTextIntoFocused(state, text);
+  if (opts.pressEnter) {
+    await browserKey({ key: "Enter" });
+  }
+  return {
+    ok: true,
+    chars: inserted.chars,
+    ref: refKey || undefined,
+    label: label || undefined,
+    pressEnter: Boolean(opts.pressEnter),
+    focus: inserted.focus,
+    hint: "Call homebase_browser_observe to verify.",
+  };
+}
+
+/**
  * Grok-style outbound email card: human Approves / Denies (can edit fields).
  * On Approve, fills Gmail compose in Isolated Chrome and clicks Send.
  */
@@ -2065,6 +2432,58 @@ export async function browserProposeEmail(opts: {
   };
 }
 
+async function evalBool(
+  state: SessionState,
+  expression: string,
+): Promise<boolean> {
+  if (!state.pageSessionId) return false;
+  try {
+    const r = (await state.cdp.send(
+      "Runtime.evaluate",
+      { expression, returnByValue: true },
+      state.pageSessionId,
+    )) as { result?: { value?: boolean } };
+    return Boolean(r?.result?.value);
+  } catch {
+    return false;
+  }
+}
+
+async function waitForGmailCompose(
+  state: SessionState,
+  timeoutMs = 12_000,
+): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const ready = await evalBool(
+      state,
+      `(() => {
+        const to = document.querySelector('input[aria-label="To recipients"], input[aria-label*="To recipients"], textarea[name="to"]');
+        const sub = document.querySelector('input[name="subjectbox"]');
+        const body = document.querySelector('div[aria-label="Message Body"][contenteditable="true"], div[g_editable="true"][contenteditable="true"]');
+        return !!(to && sub && body);
+      })()`,
+    );
+    if (ready) return;
+    await sleep(300);
+  }
+  throw new Error("Gmail compose UI did not appear in time");
+}
+
+async function gmailHasRecipient(state: SessionState, to: string): Promise<boolean> {
+  const needle = JSON.stringify(to.toLowerCase());
+  return evalBool(
+    state,
+    `(() => {
+      const to = ${needle};
+      const chips = [...document.querySelectorAll('[email], [data-hovercard-id], span[data-hovercard-id]')];
+      if (chips.some((c) => String(c.getAttribute('email') || c.getAttribute('data-hovercard-id') || '').toLowerCase() === to)) return true;
+      const blob = String(document.body && document.body.innerText || '').toLowerCase();
+      return blob.includes(to);
+    })()`,
+  );
+}
+
 async function fillAndSendGmail(opts: {
   to: string;
   subject: string;
@@ -2072,174 +2491,119 @@ async function fillAndSendGmail(opts: {
 }): Promise<{ ok: boolean; url?: string | null; error?: string }> {
   // Sending must not be blocked by human takeover.
   controller = "agent";
+  clearObserveRefs();
   const state = await ensureSession();
   if (!state.pageSessionId) throw new Error("no page session");
   const sid = state.pageSessionId;
 
-  await navigateOn(state, "https://mail.google.com/mail/u/0/#inbox?compose=new");
+  await navigateOn(
+    state,
+    "https://mail.google.com/mail/u/0/#inbox?compose=new",
+  );
   emitStatus();
-  await sleep(2200);
+  await waitForGmailCompose(state);
 
-  const toJson = JSON.stringify(opts.to);
-  const subjectJson = JSON.stringify(opts.subject);
-  const bodyJson = JSON.stringify(opts.body);
+  // --- To (chip): focus → clear → insertText → Enter → verify ---
+  const toFocused = await evalBool(
+    state,
+    `(() => {
+      const el = document.querySelector('input[aria-label="To recipients"], input[aria-label*="To recipients"], textarea[name="to"]');
+      if (!el) return false;
+      el.focus();
+      try { el.click(); } catch (_) {}
+      return document.activeElement === el;
+    })()`,
+  );
+  if (!toFocused) throw new Error("Could not focus Gmail To field");
+  await sleep(80);
+  await browserHotkey({ keys: ["ctrl", "a"] });
+  await browserKey({ key: "Backspace" });
+  await insertTextIntoFocused(state, opts.to);
+  await browserKey({ key: "Enter" });
+  await sleep(450);
+  if (!(await gmailHasRecipient(state, opts.to))) {
+    // Retry once: sometimes first Enter opens a contact picker.
+    await insertTextIntoFocused(state, opts.to);
+    await browserKey({ key: "Enter" });
+    await sleep(450);
+  }
+  if (!(await gmailHasRecipient(state, opts.to))) {
+    throw new Error(
+      `Gmail To chip missing for ${opts.to} — not sending (fix propose_email fill).`,
+    );
+  }
 
-  const fill = (await state.cdp.send(
+  // --- Subject ---
+  await state.cdp.send(
     "Runtime.evaluate",
     {
       expression: `(() => {
-        const toVal = ${toJson};
-        const subjectVal = ${subjectJson};
-        const bodyVal = ${bodyJson};
-        const fire = (el) => {
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-        };
-        const setInput = (el, val) => {
-          if (!el) return false;
-          el.focus();
-          const proto = el.tagName === 'TEXTAREA'
-            ? HTMLTextAreaElement.prototype
-            : HTMLInputElement.prototype;
-          const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-          if (desc && desc.set) desc.set.call(el, val);
-          else el.value = val;
-          fire(el);
-          return true;
-        };
-        // Discard stale drafts if a compose is already open with junk recipients —
-        // compose=new usually opens a fresh window; prefer the newest.
-        const toEl =
-          document.querySelector('textarea[name="to"]') ||
-          document.querySelector('input[aria-label*="To recipients"]') ||
-          document.querySelector('input[peoplekit-id]') ||
-          document.querySelector('div[aria-label*="To"] input') ||
-          document.querySelector('input[aria-label^="To"]');
-        let toOk = false;
-        if (toEl && (toEl.tagName === 'INPUT' || toEl.tagName === 'TEXTAREA')) {
-          toOk = setInput(toEl, toVal);
-        } else if (toEl) {
-          toEl.focus();
-          toOk = true;
-        }
-        const subEl =
-          document.querySelector('input[name="subjectbox"]') ||
-          document.querySelector('input[aria-label="Subject"]');
-        const subOk = setInput(subEl, subjectVal);
-        const bodyEl =
-          document.querySelector('div[aria-label="Message Body"][contenteditable="true"]') ||
-          document.querySelector('div[g_editable="true"][contenteditable="true"]') ||
-          document.querySelector('div[role="textbox"][contenteditable="true"]');
-        let bodyOk = false;
-        if (bodyEl) {
-          bodyEl.focus();
-          // Prepend above existing signature; keep signature HTML if present.
-          const existing = bodyEl.innerHTML || '';
-          const intro = bodyVal
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/\\n/g, '<br>')
-            .replace(/\\r/g, '');
-          const marker = existing.includes('Best,') || existing.includes('Daniel Barba');
-          bodyEl.innerHTML = marker
-            ? intro + '<br><br>' + existing
-            : intro + (existing ? '<br><br>' + existing : '');
-          fire(bodyEl);
-          bodyOk = true;
-        }
-        return { toOk, subOk, bodyOk, hasToEl: !!toEl, hasSubEl: !!subEl, hasBodyEl: !!bodyEl };
+        const el = document.querySelector('input[name="subjectbox"], input[aria-label="Subject"]');
+        if (!el) return false;
+        el.focus();
+        const proto = HTMLInputElement.prototype;
+        const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+        const val = ${JSON.stringify(opts.subject)};
+        if (desc && desc.set) desc.set.call(el, val); else el.value = val;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
       })()`,
       returnByValue: true,
     },
     sid,
-  )) as {
-    result?: {
-      value?: {
-        toOk?: boolean;
-        subOk?: boolean;
-        bodyOk?: boolean;
-        hasToEl?: boolean;
-        hasSubEl?: boolean;
-        hasBodyEl?: boolean;
-      };
-    };
-  };
+  );
+  await sleep(100);
 
-  const fv = fill?.result?.value;
-  if (!fv?.hasToEl || !fv?.hasSubEl || !fv?.hasBodyEl) {
-    // Keyboard fallback: To → Enter → Tab → Subject → Tab → Body
-    await sleep(400);
-    await insertTextIntoFocused(state, opts.to);
-    await browserKey({ key: "Enter" });
-    await sleep(200);
-    await browserKey({ key: "Tab" });
-    await sleep(150);
-    await insertTextIntoFocused(state, opts.subject);
-    await sleep(150);
-    await browserKey({ key: "Tab" });
-    await sleep(150);
-    await insertTextIntoFocused(state, opts.body + "\n\n");
-  } else {
-    if (!fv.toOk) {
-      // Chip-style To: type + Enter
-      const toFocus = await state.cdp.send(
-        "Runtime.evaluate",
-        {
-          expression: `(() => {
-            const el =
-              document.querySelector('textarea[name="to"]') ||
-              document.querySelector('input[aria-label*="To recipients"]') ||
-              document.querySelector('input[peoplekit-id]');
-            if (el) { el.focus(); return true; }
-            return false;
-          })()`,
-          returnByValue: true,
-        },
-        sid,
-      );
-      void toFocus;
-      await insertTextIntoFocused(state, opts.to);
-      await browserKey({ key: "Enter" });
-    }
-    if (!fv.subOk) {
-      await state.cdp.send(
-        "Runtime.evaluate",
-        {
-          expression: `(() => {
-            const el = document.querySelector('input[name="subjectbox"]');
-            if (el) el.focus();
-            return !!el;
-          })()`,
-          returnByValue: true,
-        },
-        sid,
-      );
-      await insertTextIntoFocused(state, opts.subject);
-    }
-    if (!fv.bodyOk) {
-      await state.cdp.send(
-        "Runtime.evaluate",
-        {
-          expression: `(() => {
-            const el =
-              document.querySelector('div[aria-label="Message Body"][contenteditable="true"]') ||
-              document.querySelector('div[g_editable="true"][contenteditable="true"]');
-            if (el) el.focus();
-            return !!el;
-          })()`,
-          returnByValue: true,
-        },
-        sid,
-      );
-      await insertTextIntoFocused(state, opts.body + "\n\n");
-    }
+  // --- Body: prepend above signature ---
+  await state.cdp.send(
+    "Runtime.evaluate",
+    {
+      expression: `(() => {
+        const bodyEl =
+          document.querySelector('div[aria-label="Message Body"][contenteditable="true"]') ||
+          document.querySelector('div[g_editable="true"][contenteditable="true"]');
+        if (!bodyEl) return false;
+        const bodyVal = ${JSON.stringify(opts.body)};
+        const existing = bodyEl.innerHTML || '';
+        const intro = bodyVal
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/\\n/g, '<br>');
+        const keepSig = /Best,|Daniel Barba|developdan\\.com/i.test(existing);
+        bodyEl.focus();
+        bodyEl.innerHTML = keepSig
+          ? intro + '<br><br>' + existing
+          : intro + (existing ? '<br><br>' + existing : '');
+        bodyEl.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+      })()`,
+      returnByValue: true,
+    },
+    sid,
+  );
+  await sleep(250);
+
+  // Final recipient check — never Send with empty To.
+  if (!(await gmailHasRecipient(state, opts.to))) {
+    throw new Error("Recipient lost before send — aborted");
   }
 
-  await sleep(400);
-  // Confirm recipient chip with Tab out of To if needed, then Send via Ctrl+Enter.
   await browserHotkey({ keys: ["ctrl", "Enter"] });
-  await sleep(1500);
+  await sleep(1600);
+
+  // If Gmail still shows the recipient error dialog, surface it.
+  const errDialog = await evalBool(
+    state,
+    `(() => {
+      const t = String(document.body && document.body.innerText || '');
+      return t.includes('Please specify at least one recipient');
+    })()`,
+  );
+  if (errDialog) {
+    throw new Error("Gmail rejected send: missing recipient");
+  }
 
   const href = await currentUrl(state);
   emitStatus();

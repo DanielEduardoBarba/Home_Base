@@ -16,7 +16,7 @@ Grok Bot tokens are burned when you read files, edit, run tests, and retry **ste
 
 **Do not** use Vision (whole desktop), Home Access scripts, or presence-chat loops to drive work. **Do not** poll job status every 30–60s (each poll is a paid Developer turn).
 
-**Isolated Chrome (optional):** When Settings → MCP → **Isolated Chrome** is On, use `homebase_browser_*` for web UI (screenshot → click/type). One shared Home Base Chrome profile — not the operator’s personal browser, and not Vision Arm. Prefers Xvfb (seat desktop stays free); Chat Browser dock for watch/takeover; `homebase_browser_ask_human` / `_ask_secret` for logins; `homebase_browser_propose_email` for Approve/Deny outbound email.
+**Isolated Chrome (optional):** When Settings → MCP → **Isolated Chrome** is On, use `homebase_browser_*` for web UI. Prefer `observe` → `click`/`fill` by ref (screenshot only if pixels needed). Prefers Xvfb; Chat Browser dock for watch/takeover; `ask_human` / `ask_secret` for logins; `propose_email` for Approve/Deny outbound email.
 
 ---
 

@@ -16,7 +16,7 @@ Grok Bot tokens are burned when you read files, edit, run tests, and retry **ste
 
 **Do not** use Vision (whole desktop), Home Access scripts, or presence-chat loops to drive work. **Do not** poll job status every 30–60s (each poll is a paid Developer turn).
 
-**Isolated Chrome (optional):** When Settings → MCP → **Isolated Chrome** is On, use `homebase_browser_*` for web UI (screenshot → click/type). One shared Home Base Chrome profile under `.runtime/browser/profile` — not the operator’s personal browser, and not Vision Arm. Runs on a virtual Xvfb display when possible (seat desktop stays free); humans watch/take over in Chat’s Browser dock. For logins/CAPTCHA call `homebase_browser_ask_human` (Done/Cancel). For passwords/API keys call `homebase_browser_ask_secret` (masked card → typed into Chrome; never in chat history). For outbound email call `homebase_browser_propose_email` (inline Approve/Deny card — do not click Send yourself). Prefer this over Vision for browser tasks.
+**Isolated Chrome (optional):** When Settings → MCP → **Isolated Chrome** is On, use `homebase_browser_*` for web UI. Default loop: `homebase_browser_observe` → `click`/`fill` by **ref** → observe again (screenshot only if you need pixels). One shared Home Base Chrome profile under `.runtime/browser/profile` — not the operator’s personal browser, and not Vision Arm. Xvfb when possible; Chat Browser dock for watch/takeover. Logins: `ask_human` / `ask_secret`. Outbound email: `propose_email` (Approve/Deny — never click Send yourself). Prefer this over Vision for browser tasks.
 
 ---
 
