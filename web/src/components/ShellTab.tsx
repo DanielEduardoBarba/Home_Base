@@ -173,30 +173,57 @@ export function ShellTab({
     void refresh()
   }
 
+  function detachSession(id: string) {
+    if (attach.includes(id) || interactiveId === id) {
+      const next = attach.filter((x) => x !== id)
+      if (!next.length || interactiveId === id) leaveTerminal()
+      else {
+        setAttach(next)
+        if (project?.id) writeShellAttach(project.id, next)
+        setActiveTab(0)
+      }
+    } else {
+      onClearAttach?.()
+      void refresh()
+    }
+  }
+
   async function killSession(id: string) {
     setError('')
     try {
       await api.killSession(id)
-      if (attach.includes(id) || interactiveId === id) {
-        const next = attach.filter((x) => x !== id)
-        if (!next.length || interactiveId === id) leaveTerminal()
-        else {
-          setAttach(next)
-          setActiveTab(0)
-        }
-      } else {
-        onClearAttach?.()
-        await refresh()
-      }
+      detachSession(id)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
   }
 
+  /** PTY ended (typed exit / shell death) — leave the terminal + refresh list. */
+  function onTerminalEnded(id?: string) {
+    const sid = id || interactiveId || attach[activeTab] || attach[0]
+    if (sid) {
+      // Best-effort remove (server also drops interactive shells on exit).
+      void api.killSession(sid).catch(() => undefined)
+      detachSession(sid)
+    } else {
+      leaveTerminal()
+    }
+    void refresh()
+  }
+
   async function exitSession(id: string) {
     setError('')
     try {
+      // Ctrl+C twice, then kill if still alive — same UX as a clean exit.
       await api.interruptSession(id)
+      await new Promise((r) => window.setTimeout(r, 350))
+      await api.interruptSession(id)
+      await new Promise((r) => window.setTimeout(r, 500))
+      const live = await api.sessions(project!.id)
+      if (live.sessions.some((s) => s.id === id && s.alive)) {
+        await api.killSession(id)
+      }
+      detachSession(id)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -252,7 +279,7 @@ export function ShellTab({
             holdLabel="…"
             holdMs={1000}
             tone="warn"
-            title="Hold 1s — send Ctrl+C twice"
+            title="Hold 1s — interrupt, then stop if still running"
             className="text-[11px] !min-h-8 !px-2.5"
             onConfirm={() => void exitSession(sessionId)}
           />
@@ -324,9 +351,15 @@ export function ShellTab({
               setInteractiveId(id)
               void refresh()
             }}
+            onEnded={() => onTerminalEnded()}
           />
         ) : liveId ? (
-          <TerminalView sessionId={liveId} path="" className="flex-1 min-h-0" />
+          <TerminalView
+            sessionId={liveId}
+            path=""
+            className="flex-1 min-h-0"
+            onEnded={() => onTerminalEnded(liveId)}
+          />
         ) : null}
       </div>
     )
@@ -436,6 +469,7 @@ export function ShellTab({
               setInteractiveId(id)
               void refresh()
             }}
+            onEnded={() => onTerminalEnded()}
           />
         </div>
       ) : attach.length > 0 && activeId ? (
@@ -469,6 +503,7 @@ export function ShellTab({
             sessionId={activeId}
             path=""
             className="flex-1 min-h-0"
+            onEnded={() => onTerminalEnded(activeId)}
           />
         </div>
       ) : (
@@ -516,7 +551,7 @@ export function ShellTab({
                       holdLabel="…"
                       holdMs={1000}
                       tone="warn"
-                      title="Hold 1s — send Ctrl+C twice"
+                      title="Hold 1s — interrupt, then stop if still running"
                       className="text-xs !min-h-9 px-3"
                       onConfirm={() => void exitSession(s.id)}
                     />

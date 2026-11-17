@@ -3,7 +3,6 @@ import type { PresentRequest, WorkScene } from '../lib/chatTypes'
 import type { Project } from '../lib/types'
 import type { WorkItem } from '../lib/uiPrefs'
 import { AppsTab } from './AppsTab'
-import { ChatPanel, readDockOpen, writeDockOpen } from './ChatPanel'
 import { CursorTab } from './CursorTab'
 import { FilesTab } from './FilesTab'
 import { GitTab } from './GitTab'
@@ -13,6 +12,7 @@ import { ShellTab } from './ShellTab'
  * Work = one workspace: project + Apps / Shell / Files / Git / Chat.
  * The app top bar owns the workspace picker and the bottom dock switches panes;
  * the parent remembers the project and the pane across visits.
+ * Chat is the bottom-nav pane only — no floating dock FAB overlay.
  */
 export function WorkTab({
   projects,
@@ -30,7 +30,7 @@ export function WorkTab({
   onRefresh: () => void | Promise<void>
   item: WorkItem
   onItemChange: (item: WorkItem) => void
-  /** Latest present request (from Chat tab or dock). */
+  /** Latest present request (from Chat tab). */
   present?: PresentRequest | null
   /** Increments on each present — survives Strict Mode remounts. */
   presentKey?: number
@@ -53,23 +53,8 @@ export function WorkTab({
   const [diffAction, setDiffAction] = useState<string | null>(() =>
     present?.scene === 'files' ? present.action || null : null,
   )
-  // Incoming present from Chat → start with dock minimized so the scene is visible
-  const [dockOpen, setDockOpenState] = useState(false)
   // 0 so the first presentKey from Chat→Work is treated as a change
   const [lastPresentKey, setLastPresentKey] = useState(0)
-
-  useEffect(() => {
-    if (present && presentKey) {
-      setDockOpenState(false)
-      return
-    }
-    setDockOpenState(readDockOpen())
-  }, [present, presentKey])
-
-  function setDockOpen(open: boolean) {
-    writeDockOpen(open)
-    setDockOpenState(open)
-  }
 
   function applyShellPresent(req: PresentRequest, key: number) {
     if (req.sessionIds?.length) {
@@ -93,14 +78,13 @@ export function WorkTab({
     onItemChange(scene)
   }
 
-  // Apply present when key changes (Chat → Work, or dock buttons while here)
+  // Apply present when key changes (Chat → Work)
   useEffect(() => {
     if (!present || !presentKey || presentKey === lastPresentKey) return
     setLastPresentKey(presentKey)
     showScene(present.scene)
     if (present.scene === 'shell') applyShellPresent(present, presentKey)
     if (present.scene === 'files') applyFilesPresent(present)
-    setDockOpen(false)
     // showScene writes the remembered pane; present identity is presentKey.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [present, presentKey, lastPresentKey])
@@ -111,7 +95,6 @@ export function WorkTab({
     showScene(req.scene)
     if (req.scene === 'shell') applyShellPresent(req, key)
     if (req.scene === 'files') applyFilesPresent(req)
-    setDockOpen(false)
   }
 
   return (
@@ -130,8 +113,7 @@ export function WorkTab({
                 onRefresh={onRefresh}
                 embedded
                 onAskAiWire={() => {
-                  onItemChange('apps')
-                  setDockOpen(true)
+                  onItemChange('chat')
                 }}
                 onOpenGit={() => onItemChange('git')}
                 onOpenShell={(ids) => {
@@ -187,18 +169,6 @@ export function WorkTab({
             />
           )}
         </div>
-
-        {item !== 'chat' && (
-          <ChatPanel
-            projects={projects}
-            selectedId={selectedId}
-            onSelect={onSelect}
-            variant="dock"
-            dockOpen={dockOpen}
-            onDockOpenChange={setDockOpen}
-            onPresent={applyPresent}
-          />
-        )}
       </div>
     </div>
   )

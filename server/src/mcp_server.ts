@@ -1,6 +1,6 @@
 /**
  * Network MCP toggle + fine-tunable features + revocable opaque Bearer tokens.
- * Default: master enabled; feature groups on except vision (off).
+ * Default: master enabled; feature groups on except vision + browser (off).
  * Tokens are hashed at rest (sha256); plaintext shown once on mint.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -561,8 +561,8 @@ function grokHookupGuide(url: string | null): string {
     "",
     "## 2. Enable MCP + features",
     "- Settings → Remote access → MCP Server → master toggle On (default).",
-    "- Feature toggles: Developer pilot = Projects + Notifications + Status + Presence On; Vision + Home Access Off.",
-    "- Full toggles: Projects/Notifications/Status/Home Access/Presence default On; Vision defaults Off.",
+    "- Feature toggles: Developer pilot = Projects + Notifications + Status + Presence On; Vision + Home Access + Isolated Chrome Off.",
+    "- Full toggles: Projects/Notifications/Status/Home Access/Presence default On; Vision + Isolated Chrome default Off.",
     "",
     "## 3. Mint a token",
     "- MCP Server → Mint (label e.g. \"grok-developer\" — dedicated, not shared).",
@@ -585,6 +585,7 @@ function grokHookupGuide(url: string | null): string {
     "  color (#hex), energy (0..1), bubble (≤160), name. Prefer express over presence-chat dumps.",
     "  Window does not pop for localhost Web GUI on the laptop — remotes only.",
     "- If Vision tools are missing, Vision is Off or not Armed — ask the human, do not try to Arm yourself.",
+    "- Isolated Chrome (homebase_browser_*): enable Settings → MCP → Isolated Chrome. Screenshot → click/type inside a dedicated profile (.runtime/browser/profile). Prefer over Vision for web UI.",
     "- Web GUI is humans-only (password + optional PIN). MCP tokens are rejected on /api — use /mcp only.",
     "- Keep one token per bot (Developer separate); revoke in Settings if compromised.",
     "",

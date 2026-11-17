@@ -15,6 +15,25 @@ import { listNotifications, pushNotification } from "./notifications";
 import { projectPublic, runAction, stopProject, tailLogs } from "./process";
 import { systemStatus } from "./system";
 import {
+  BROWSER_GUIDANCE,
+  browserAskHuman,
+  browserAskSecret,
+  browserClick,
+  browserClose,
+  browserFill,
+  browserHotkey,
+  browserKey,
+  browserNavigate,
+  browserObserve,
+  browserOpen,
+  browserProposeEmail,
+  browserScreenshot,
+  browserScroll,
+  browserStatus,
+  browserType,
+  browserWait,
+} from "./browser_session";
+import {
   VISION_GUIDANCE,
   ensureVisionWorkspace,
   visionHotkey,
@@ -71,6 +90,7 @@ export type McpFeatureId =
   | "status"
   | "homeAccess"
   | "vision"
+  | "browser"
   | "presence";
 
 export type McpFeatures = Record<McpFeatureId, boolean>;
@@ -81,6 +101,7 @@ export const MCP_FEATURE_DEFAULTS: McpFeatures = {
   status: true,
   homeAccess: true,
   vision: false,
+  browser: false,
   presence: true,
 };
 
@@ -118,6 +139,13 @@ export const MCP_FEATURE_META: {
     id: "vision",
     label: "Vision desktop",
     hint: "Screenshot + Armed pointer/keyboard (off by default)",
+    defaultOn: false,
+  },
+  {
+    id: "browser",
+    label: "Isolated Chrome",
+    hint:
+      "Xvfb/headless Chrome + observe/fill/click + ask_human + propose_email (off by default; safer than Vision)",
     defaultOn: false,
   },
   {
@@ -176,6 +204,22 @@ export const MCP_TOOL_FEATURE: Record<string, McpFeatureId> = {
   homebase_vision_type: "vision",
   homebase_vision_key: "vision",
   homebase_vision_hotkey: "vision",
+  homebase_browser_status: "browser",
+  homebase_browser_open: "browser",
+  homebase_browser_close: "browser",
+  homebase_browser_navigate: "browser",
+  homebase_browser_observe: "browser",
+  homebase_browser_screenshot: "browser",
+  homebase_browser_click: "browser",
+  homebase_browser_fill: "browser",
+  homebase_browser_type: "browser",
+  homebase_browser_key: "browser",
+  homebase_browser_hotkey: "browser",
+  homebase_browser_scroll: "browser",
+  homebase_browser_wait: "browser",
+  homebase_browser_ask_human: "browser",
+  homebase_browser_ask_secret: "browser",
+  homebase_browser_propose_email: "browser",
   homebase_presence_status: "presence",
   homebase_presence_express: "presence",
   homebase_presence_chat_send: "presence",
@@ -213,6 +257,16 @@ function json(data: unknown): string {
 
 async function visionTool(
   fn: () => Promise<Record<string, unknown>>,
+): Promise<string> {
+  try {
+    return json(await fn());
+  } catch (e) {
+    return json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+async function browserTool(
+  fn: () => Promise<Record<string, unknown>> | Record<string, unknown>,
 ): Promise<string> {
   try {
     return json(await fn());
@@ -262,6 +316,9 @@ export function wrapPrompt(
       `Use homebase_vision_screenshot then click/type/hotkey while Armed. `
     : `Vision (Linux X11 desktop): use homebase_vision_screenshot then homebase_vision_click/type/hotkey ` +
       `while the user has Armed desktop control in the Vision UI. ${VISION_GUIDANCE} `;
+  const browserBit =
+    `Isolated Chrome (MCP feature \"browser\", off by default): ${BROWSER_GUIDANCE} ` +
+    `Use homebase_browser_open → observe → click/fill by ref (screenshot only if pixels needed). `;
   return (
     `${CONTEXT_MARKER}\n` +
     `Private metadata (do not quote, paraphrase, or repeat):\n` +
@@ -275,6 +332,7 @@ export function wrapPrompt(
     `Home Access panel widgets (buttons/toggles/sliders/gauges) use homebase_access_* tools ` +
     `or edit server/src/home_access.ts / the Home Access UI — leave the framework intact once wired. ` +
     visionBit +
+    browserBit +
     `When the task needs planning vs implementing (or Ask/Debug), call homebase_propose_mode ` +
     `so the user can Switch/Stay mid-chat — do not only narrate a mode change. ` +
     `Answer the user message below in a normal concise voice.\n---\n` +
@@ -622,6 +680,72 @@ export function buildHomebaseTools(
           monitor: args.monitor != null ? Number(args.monitor) : undefined,
           maxWidth: args.maxWidth != null ? Number(args.maxWidth) : undefined,
           quality: args.quality != null ? Number(args.quality) : undefined,
+        }),
+      ),
+  };
+  tools.homebase_browser_status = {
+    description:
+      "Isolated Home Base Chrome status: running?, profile path, viewport, URL. " +
+      "One shared Chrome env for this Home Base (not the operator's personal browser).",
+    parameters: { type: "object", properties: {} },
+    execute: async () => browserTool(() => browserStatus()),
+  };
+  tools.homebase_browser_observe = {
+    description:
+      "PRIMARY see tool for Isolated Chrome (token-cheap). Returns url, title, focused field, " +
+      "interactive elements with ref/role/name/x/y, and a text excerpt. " +
+      "Then act with homebase_browser_click({ref}) or homebase_browser_fill({ref|label, text}). " +
+      "Re-observe after acts. Set shot:true only if you also need a JPEG path. " +
+      "Prefer this over homebase_browser_screenshot.",
+    parameters: {
+      type: "object",
+      properties: {
+        maxElements: {
+          type: "number",
+          description: "Max interactive elements (default 40, max 80)",
+        },
+        textMax: {
+          type: "number",
+          description: "Max page text chars (default 2500)",
+        },
+        shot: {
+          type: "boolean",
+          description: "Also capture a JPEG path (default false)",
+        },
+        quality: {
+          type: "number",
+          description: "JPEG quality when shot:true (default 55)",
+        },
+      },
+    },
+    execute: async (args) =>
+      browserTool(() =>
+        browserObserve({
+          maxElements:
+            args.maxElements != null ? Number(args.maxElements) : undefined,
+          textMax: args.textMax != null ? Number(args.textMax) : undefined,
+          shot: args.shot === true,
+          quality: args.quality != null ? Number(args.quality) : undefined,
+        }),
+      ),
+  };
+  tools.homebase_browser_screenshot = {
+    description:
+      "JPEG screenshot of Isolated Chrome (expensive for tokens). Prefer homebase_browser_observe " +
+      "for refs/text. Use screenshot only for CAPTCHA, layout, or when observe is insufficient. " +
+      "Returns a filesystem path — Read the image if you need pixels.",
+    parameters: {
+      type: "object",
+      properties: {
+        quality: { type: "number", description: "JPEG quality 30–90 (default 72)" },
+        fullPage: { type: "boolean", description: "Capture beyond viewport" },
+      },
+    },
+    execute: async (args) =>
+      browserTool(() =>
+        browserScreenshot({
+          quality: args.quality != null ? Number(args.quality) : undefined,
+          fullPage: args.fullPage === true,
         }),
       ),
   };
@@ -1573,6 +1697,315 @@ export function buildHomebaseTools(
         required: ["keys"],
       },
       execute: async (args) => visionTool(() => visionHotkey(args)),
+    };
+    tools.homebase_browser_open = {
+      description:
+        "Start (or reuse) the isolated Home Base Chrome workspace. Optional url. " +
+        "reset:true wipes the shared profile (cookies/localStorage) for a clean session. " +
+        "Prefers Xvfb virtual display (seat desktop stays free), then headless, then seat DISPLAY. " +
+        "Human watches/takes control in Chat Browser dock — CDP-only (not Vision).",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "Initial URL (default about:blank)" },
+          reset: {
+            type: "boolean",
+            description: "Wipe .runtime/browser/profile before launch",
+          },
+        },
+      },
+      execute: async (args) =>
+        browserTool(() =>
+          browserOpen({
+            url: args.url != null ? String(args.url) : undefined,
+            reset: args.reset === true,
+          }),
+        ),
+    };
+    tools.homebase_browser_close = {
+      description:
+        "Stop the isolated Home Base Chrome process. Profile data is kept unless you " +
+        "later open with reset:true.",
+      parameters: { type: "object", properties: {} },
+      execute: async () => browserTool(() => browserClose()),
+    };
+    tools.homebase_browser_navigate = {
+      description:
+        "Navigate the isolated Chrome tab to a URL (auto-starts Chrome if needed).",
+      parameters: {
+        type: "object",
+        properties: { url: { type: "string" } },
+        required: ["url"],
+      },
+      execute: async (args) =>
+        browserTool(() => browserNavigate({ url: String(args.url || "") })),
+    };
+    tools.homebase_browser_click = {
+      description:
+        "Click in Isolated Chrome. Preferred: ref from homebase_browser_observe (e.g. ref:\"e3\"). " +
+        "Fallback: normalized x,y 0..1 or px,py. button: left|middle|right.",
+      parameters: {
+        type: "object",
+        properties: {
+          ref: {
+            type: "string",
+            description: 'Observe ref like "e3" (preferred)',
+          },
+          x: { type: "number", description: "Normalized 0..1" },
+          y: { type: "number", description: "Normalized 0..1" },
+          px: { type: "number" },
+          py: { type: "number" },
+          button: {},
+          clickCount: { type: "number" },
+        },
+      },
+      execute: async (args) =>
+        browserTool(() =>
+          browserClick({
+            ref: args.ref != null ? String(args.ref) : undefined,
+            x: args.x != null ? Number(args.x) : undefined,
+            y: args.y != null ? Number(args.y) : undefined,
+            px: args.px != null ? Number(args.px) : undefined,
+            py: args.py != null ? Number(args.py) : undefined,
+            button: args.button as string | number | undefined,
+            clickCount:
+              args.clickCount != null ? Number(args.clickCount) : undefined,
+          }),
+        ),
+    };
+    tools.homebase_browser_fill = {
+      description:
+        "Fill a text field in Isolated Chrome (preferred over click+type). " +
+        "Pass ref from observe, or label matching aria-label/placeholder/name. " +
+        "Clears the field, types text, optional pressEnter. Then observe to verify.",
+      parameters: {
+        type: "object",
+        properties: {
+          ref: { type: "string", description: 'Observe ref like "e5"' },
+          label: {
+            type: "string",
+            description: 'Substring match e.g. "To recipients" or "Subject"',
+          },
+          text: { type: "string" },
+          pressEnter: {
+            type: "boolean",
+            description: "Press Enter after typing (default false)",
+          },
+          clear: {
+            type: "boolean",
+            description: "Clear existing value first (default true)",
+          },
+        },
+        required: ["text"],
+      },
+      execute: async (args) =>
+        browserTool(() =>
+          browserFill({
+            ref: args.ref != null ? String(args.ref) : undefined,
+            label: args.label != null ? String(args.label) : undefined,
+            text: String(args.text ?? ""),
+            pressEnter: args.pressEnter === true,
+            clear: args.clear !== false,
+          }),
+        ),
+    };
+    tools.homebase_browser_type = {
+      description:
+        "Type into the already-focused element (CDP). Prefer homebase_browser_fill({ref|label,text}) when possible.",
+      parameters: {
+        type: "object",
+        properties: { text: { type: "string" } },
+        required: ["text"],
+      },
+      execute: async (args) =>
+        browserTool(() => browserType({ text: String(args.text ?? "") })),
+    };
+    tools.homebase_browser_wait = {
+      description:
+        "Wait until page text appears and/or URL contains a substring (default 12s). " +
+        "Use instead of guessing sleeps after navigate/click.",
+      parameters: {
+        type: "object",
+        properties: {
+          text: { type: "string", description: "Substring in page text" },
+          urlIncludes: {
+            type: "string",
+            description: "Substring in location.href",
+          },
+          timeoutMs: { type: "number", description: "Max wait (default 12000)" },
+        },
+      },
+      execute: async (args) =>
+        browserTool(() =>
+          browserWait({
+            text: args.text != null ? String(args.text) : undefined,
+            urlIncludes:
+              args.urlIncludes != null ? String(args.urlIncludes) : undefined,
+            timeoutMs:
+              args.timeoutMs != null ? Number(args.timeoutMs) : undefined,
+          }),
+        ),
+    };
+    tools.homebase_browser_key = {
+      description:
+        "Press a key in isolated Chrome. key: Enter, Escape, Tab, Backspace, a-z, F1… " +
+        "action: press|down|up.",
+      parameters: {
+        type: "object",
+        properties: {
+          key: { type: "string" },
+          action: { type: "string" },
+        },
+        required: ["key"],
+      },
+      execute: async (args) =>
+        browserTool(() =>
+          browserKey({
+            key: String(args.key || ""),
+            action: args.action != null ? String(args.action) : undefined,
+          }),
+        ),
+    };
+    tools.homebase_browser_hotkey = {
+      description:
+        'Chord keys in isolated Chrome. keys e.g. ["ctrl","l"] or ["ctrl","shift","t"].',
+      parameters: {
+        type: "object",
+        properties: {
+          keys: {
+            type: "array",
+            items: { type: "string" },
+            description: 'e.g. ["ctrl","l"] or ["ctrl","a"]',
+          },
+        },
+        required: ["keys"],
+      },
+      execute: async (args) =>
+        browserTool(() =>
+          browserHotkey({
+            keys: Array.isArray(args.keys)
+              ? args.keys.map((k) => String(k))
+              : [],
+          }),
+        ),
+    };
+    tools.homebase_browser_scroll = {
+      description:
+        "Scroll the isolated Chrome page (mouse wheel via CDP). deltaY positive = scroll down.",
+      parameters: {
+        type: "object",
+        properties: {
+          deltaX: { type: "number" },
+          deltaY: { type: "number" },
+          x: { type: "number" },
+          y: { type: "number" },
+          px: { type: "number" },
+          py: { type: "number" },
+        },
+      },
+      execute: async (args) =>
+        browserTool(() =>
+          browserScroll({
+            deltaX: args.deltaX != null ? Number(args.deltaX) : undefined,
+            deltaY: args.deltaY != null ? Number(args.deltaY) : undefined,
+            x: args.x != null ? Number(args.x) : undefined,
+            y: args.y != null ? Number(args.y) : undefined,
+            px: args.px != null ? Number(args.px) : undefined,
+            py: args.py != null ? Number(args.py) : undefined,
+          }),
+        ),
+    };
+    tools.homebase_browser_ask_human = {
+      description:
+        "Pause and ask the human in Chat to do something the AI cannot (login, CAPTCHA, 2FA, " +
+        "payment confirm). Opens a Done/Cancel card; human can Take control in the Browser dock. " +
+        "For passwords/API keys prefer homebase_browser_ask_secret (masked card). Blocks until Done/Cancel.",
+      parameters: {
+        type: "object",
+        properties: {
+          prompt: {
+            type: "string",
+            description:
+              'What the human should do, e.g. "Please complete the Google login, then tap Done"',
+          },
+        },
+        required: ["prompt"],
+      },
+      execute: async (args) =>
+        browserTool(() =>
+          browserAskHuman({
+            prompt: String(args.prompt || ""),
+            agentId: ctx.chatId,
+          }),
+        ),
+    };
+    tools.homebase_browser_ask_secret = {
+      description:
+        "Grok-style secure secret card in Chat: human types a password/API key/token into a " +
+        "masked field. Home Base injects it into the focused Isolated Chrome field via CDP. " +
+        "The value is NEVER returned to the model, never written to chat history, and never logged. " +
+        "Focus the input first (click). pressEnter defaults true after typing.",
+      parameters: {
+        type: "object",
+        properties: {
+          label: {
+            type: "string",
+            description: 'Short label, e.g. "Gmail password" or "API key"',
+          },
+          prompt: {
+            type: "string",
+            description: "Optional help text on the card",
+          },
+          kind: {
+            type: "string",
+            description: "password (masked, default) or text (email/username — still not stored in chat)",
+          },
+          pressEnter: {
+            type: "boolean",
+            description: "Press Enter after typing (default true)",
+          },
+        },
+      },
+      execute: async (args) =>
+        browserTool(() =>
+          browserAskSecret({
+            label: args.label != null ? String(args.label) : undefined,
+            prompt: args.prompt != null ? String(args.prompt) : undefined,
+            kind: args.kind != null ? String(args.kind) : undefined,
+            pressEnter: args.pressEnter !== false,
+          }),
+        ),
+    };
+    tools.homebase_browser_propose_email = {
+      description:
+        "Grok-style outbound email card: show To / Subject / Body in Chat for Approve or Deny " +
+        "(human can edit). On Approve, Home Base opens Gmail compose in Isolated Chrome, fills " +
+        "the message (keeps signature when present), and sends. Do NOT click Send yourself — " +
+        "always use this for emails the human should review. Blocks until Approve/Deny.",
+      parameters: {
+        type: "object",
+        properties: {
+          to: {
+            type: "string",
+            description: "Recipient email address",
+          },
+          subject: { type: "string", description: "Email subject" },
+          body: {
+            type: "string",
+            description:
+              "Plain-text body above the Gmail signature (do not include Best,/signature)",
+          },
+        },
+        required: ["to", "subject", "body"],
+      },
+      execute: async (args) =>
+        browserTool(() =>
+          browserProposeEmail({
+            to: String(args.to || ""),
+            subject: String(args.subject || ""),
+            body: String(args.body || ""),
+          }),
+        ),
     };
   }
 

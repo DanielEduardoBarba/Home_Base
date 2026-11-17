@@ -21,7 +21,7 @@ describe("mcp_server state + tokens", () => {
     expect(mcp.mcpServerEnabled()).toBe(true);
   });
 
-  test("feature defaults: vision off, others on", () => {
+  test("feature defaults: vision + browser off, others on", () => {
     const feats = mcp.loadMcpServer().features;
     expect(feats.projects).toBe(true);
     expect(feats.notifications).toBe(true);
@@ -29,6 +29,7 @@ describe("mcp_server state + tokens", () => {
     expect(feats.homeAccess).toBe(true);
     expect(feats.presence).toBe(true);
     expect(feats.vision).toBe(false);
+    expect(feats.browser).toBe(false);
   });
 
   test("toggle features persists", () => {
@@ -64,17 +65,24 @@ describe("mcp_server state + tokens", () => {
     expect(() => mcp.verifyMcpBearerToken(undefined)).toThrow();
   });
 
-  test("catalog respects vision default off", () => {
+  test("catalog respects vision + browser default off", () => {
     mcp.saveMcpServer({
       enabled: true,
       features: { ...tools.MCP_FEATURE_DEFAULTS },
     });
     const pub = mcp.mcpServerPublic();
     expect(pub.features.vision).toBe(false);
+    expect(pub.features.browser).toBe(false);
     expect(pub.catalog.allowed.some((t) => t.name.startsWith("homebase_vision_"))).toBe(
       false,
     );
+    expect(pub.catalog.allowed.some((t) => t.name.startsWith("homebase_browser_"))).toBe(
+      false,
+    );
     expect(pub.catalog.disabled.some((t) => t.name === "homebase_vision_screenshot")).toBe(
+      true,
+    );
+    expect(pub.catalog.disabled.some((t) => t.name === "homebase_browser_screenshot")).toBe(
       true,
     );
     expect(pub.grokGuide.includes("WireGuard")).toBe(true);
@@ -102,8 +110,20 @@ describe("homebase tools AI deny + feature filter", () => {
       vision: true,
     });
     expect(withVision.homebase_vision_screenshot).toBeDefined();
+    const withBrowser = tools.buildMcpTools({
+      ...tools.MCP_FEATURE_DEFAULTS,
+      browser: true,
+    });
+    expect(withBrowser.homebase_browser_screenshot).toBeDefined();
+    expect(withBrowser.homebase_browser_click).toBeDefined();
+    expect(withBrowser.homebase_browser_ask_human).toBeDefined();
+    expect(withBrowser.homebase_browser_propose_email).toBeDefined();
+    expect(withBrowser.homebase_browser_observe).toBeDefined();
+    expect(withBrowser.homebase_browser_fill).toBeDefined();
+    expect(withBrowser.homebase_browser_wait).toBeDefined();
     const without = tools.buildMcpTools(tools.MCP_FEATURE_DEFAULTS);
     expect(without.homebase_vision_screenshot).toBeUndefined();
+    expect(without.homebase_browser_screenshot).toBeUndefined();
     expect(without.homebase_list_projects).toBeDefined();
     const noProjects = tools.buildMcpTools({
       ...tools.MCP_FEATURE_DEFAULTS,

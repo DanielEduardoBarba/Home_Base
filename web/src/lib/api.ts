@@ -335,6 +335,7 @@ export const api = {
         status: boolean
         homeAccess: boolean
         vision: boolean
+        browser: boolean
         presence: boolean
       }
       featureMeta: {
@@ -344,6 +345,7 @@ export const api = {
           | 'status'
           | 'homeAccess'
           | 'vision'
+          | 'browser'
           | 'presence'
         label: string
         hint: string
@@ -391,6 +393,7 @@ export const api = {
       status: boolean
       homeAccess: boolean
       vision: boolean
+      browser: boolean
       presence: boolean
     }>
   }) =>
@@ -403,6 +406,7 @@ export const api = {
         status: boolean
         homeAccess: boolean
         vision: boolean
+        browser: boolean
         presence: boolean
       }
       url: string | null
@@ -1894,6 +1898,61 @@ export const api = {
         body: JSON.stringify({ workspace }),
       },
     ),
+  browserStatus: () =>
+    request<{
+      ok: boolean
+      running: boolean
+      url?: string | null
+      controller?: 'agent' | 'human' | null
+      displayMode?: 'xvfb' | 'headless' | 'seat' | null
+      display?: string | null
+      askPending?: { id: string; prompt: string; createdAt: number } | null
+      viewport?: { width: number; height: number } | null
+      viewers?: number
+      guidance?: string
+    }>('/api/browser/status'),
+  browserTakeControl: () =>
+    request<{
+      ok: boolean
+      running: boolean
+      controller?: 'agent' | 'human' | null
+      url?: string | null
+      displayMode?: 'xvfb' | 'headless' | 'seat' | null
+      display?: string | null
+      askPending?: { id: string; prompt: string; createdAt: number } | null
+      viewport?: { width: number; height: number } | null
+    }>('/api/browser/take-control', { method: 'POST', body: '{}' }),
+  browserReleaseControl: () =>
+    request<{
+      ok: boolean
+      running: boolean
+      controller?: 'agent' | 'human' | null
+      url?: string | null
+      displayMode?: 'xvfb' | 'headless' | 'seat' | null
+      display?: string | null
+      askPending?: { id: string; prompt: string; createdAt: number } | null
+      viewport?: { width: number; height: number } | null
+    }>('/api/browser/release-control', { method: 'POST', body: '{}' }),
+  browserInput: (body: {
+    action: string
+    x?: number
+    y?: number
+    px?: number
+    py?: number
+    text?: string
+    pressEnter?: boolean
+    key?: string
+    keyAction?: string
+    keys?: string[]
+    button?: string | number
+    clickCount?: number
+    deltaX?: number
+    deltaY?: number
+  }) =>
+    request<Record<string, unknown>>('/api/browser/input', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   visionStatus: () =>
     request<{
       ok: boolean

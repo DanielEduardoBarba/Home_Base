@@ -58,6 +58,20 @@ export function AtMentionPicker({
     if (open) setBrowseDir(rootPath || '')
   }, [open, rootPath])
 
+  // Outclick / tap outside closes the @ card (same idea as chat options sheet).
+  useEffect(() => {
+    if (!open) return
+    const onPointer = (e: PointerEvent) => {
+      const t = e.target
+      if (!(t instanceof Element)) return
+      if (t.closest('.hb-at-picker, .hb-at-btn')) return
+      onCloseRef.current()
+    }
+    // Bubble phase so item clicks inside the picker still fire first.
+    document.addEventListener('pointerdown', onPointer)
+    return () => document.removeEventListener('pointerdown', onPointer)
+  }, [open])
+
   useEffect(() => {
     if (!open) return
     const id = ++reqId.current

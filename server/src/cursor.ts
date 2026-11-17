@@ -515,6 +515,46 @@ function resolveChatCwd(projectId: string, tabCwd?: string | null): string {
 }
 
 const AGENT_CLEANUP_MS = 8_000;
+/** After Stop: do not hang forever waiting for hung Task/subagent wait(). */
+const CANCEL_SETTLE_MS = 2_500;
+/** Cap SDK cancel/listRuns so Stop ack stays snappy. */
+const CANCEL_SDK_MS = 2_000;
+
+/** Race a promise against a timeout (resolves fallback — never rejects on timer). */
+export async function raceTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  fallback: T | (() => T),
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => {
+          resolve(typeof fallback === "function" ? (fallback as () => T)() : fallback);
+        }, ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * After abort+cancel, wait for run.wait() but never block the chat lock forever
+ * (hung Task / subagent was leaving UI on "stopping…" indefinitely).
+ */
+export async function settleCancelledRun(
+  waitPromise: Promise<AgentRunResult>,
+  settleMs = CANCEL_SETTLE_MS,
+): Promise<AgentRunResult> {
+  return raceTimeout(
+    waitPromise.catch(() => ({ status: "cancelled" as const })),
+    settleMs,
+    { status: "cancelled" as const },
+  );
+}
 
 /** Best-effort SDK cleanup — never block the delete response. */
 async function disposeAgentBackground(agentId: string, cwd: string): Promise<void> {
@@ -1907,20 +1947,27 @@ export function applyChatMode(opts: {
   chatId: string;
   mode: string;
   reason?: string;
+  /** When false, skip the status bubble (quiet UI mode clicks). */
+  announce?: boolean;
 }): { ok: boolean; mode: string; previous?: string } {
   const ws = loadWorkspace(opts.projectId);
   const tab = ws.tabs.find((t) => t.id === opts.chatId);
   if (!tab) return { ok: false, mode: normalizeChatMode(opts.mode) };
   const previous = tab.mode || "agent";
   const mode = normalizeChatMode(opts.mode);
+  if (previous === mode) {
+    return { ok: true, mode, previous };
+  }
   tab.mode = mode;
   tab.updatedAt = Date.now();
-  tab.messages.push({
-    id: randomBytes(6).toString("hex"),
-    role: "status",
-    text: `Switched to ${mode}${opts.reason ? ` — ${opts.reason}` : ""}`,
-    at: Date.now(),
-  });
+  if (opts.announce !== false) {
+    tab.messages.push({
+      id: randomBytes(6).toString("hex"),
+      role: "status",
+      text: `Switched to ${mode}${opts.reason ? ` — ${opts.reason}` : ""}`,
+      at: Date.now(),
+    });
+  }
   saveWorkspace(opts.projectId);
   broadcast(opts.projectId, { type: "mode", chatId: opts.chatId, mode });
   broadcast(opts.projectId, { type: "tab", tab });
@@ -2279,16 +2326,27 @@ export async function handleCursorMessage(
 
   if (type === "cancel") {
     const chatId = String(msg.chatId || "");
+    // Explicit Stop drops follow-ups (Cursor Esc). Interject-from-send keeps the queue.
     promptQueues.delete(sessionKey(projectId, chatId));
+    const invalidate = msg.invalidate === true || msg.hard === true;
     void (async () => {
-      const ok = await cancelRun(projectId, chatId);
+      const ok = await cancelRun(projectId, chatId, invalidate);
       try {
         const { cancelCursorJobByChat } = await import("./cursor_jobs");
         await cancelCursorJobByChat(projectId, chatId);
       } catch {
         /* ignore — job may not exist */
       }
-      send({ type: "cancelled", ok, chatId });
+      send({ type: "cancelled", ok, chatId, hard: invalidate });
+      // If the run loop is still wedged, force-unlock so the UI can idle.
+      const key = sessionKey(projectId, chatId);
+      if (running.has(key)) {
+        try {
+          running.get(key)?.abort();
+        } catch {
+          /* ignore */
+        }
+      }
     })();
     return;
   }
@@ -2339,17 +2397,19 @@ export async function handleCursorMessage(
   if (type === "set_mode") {
     const chatId = String(msg.chatId || ws.activeId || "");
     const mode = normalizeChatMode(String(msg.mode || "agent"));
-    const tab = ws.tabs.find((t) => t.id === chatId);
-    if (!tab) {
+    const applied = applyChatMode({
+      projectId,
+      chatId,
+      mode,
+      announce: msg.announce !== false && msg.quiet !== true,
+      reason: msg.reason != null ? String(msg.reason) : undefined,
+    });
+    if (!applied.ok) {
       send({ type: "error", error: "chat not found" });
       return;
     }
-    tab.mode = mode;
-    tab.updatedAt = Date.now();
-    saveWorkspace(projectId);
-    const payload = { type: "mode", chatId, mode };
-    send(payload);
-    broadcast(projectId, payload);
+    // applyChatMode already broadcasts mode + tab; ack the requester.
+    send({ type: "mode", chatId, mode: applied.mode });
     return;
   }
 
@@ -2481,6 +2541,103 @@ export async function handleCursorMessage(
     return;
   }
 
+  if (type === "browser_secret") {
+    const { browserResolveSecret } = await import("./browser_session");
+    const id = String(msg.id || "");
+    // Secret value must never be logged or broadcast back.
+    const secret = String(msg.secret ?? msg.value ?? "");
+    const result = await browserResolveSecret(id, secret);
+    send({
+      type: "browser-secret-ack",
+      id,
+      ok: Boolean(result.ok),
+      charsTyped: result.charsTyped,
+      error: result.error,
+      label: result.label,
+    });
+    broadcast(projectId, {
+      type: "browser-secret-ack",
+      id,
+      ok: Boolean(result.ok),
+      charsTyped: result.charsTyped,
+      error: result.error,
+      label: result.label,
+    });
+    return;
+  }
+
+  if (type === "browser_secret_deny") {
+    const { browserDenySecret } = await import("./browser_session");
+    const id = msg.id ? String(msg.id) : undefined;
+    const result = browserDenySecret(id);
+    send({
+      type: "browser-secret-ack",
+      id,
+      ok: true,
+      denied: true,
+      label: result.label,
+    });
+    broadcast(projectId, {
+      type: "browser-secret-ack",
+      id,
+      ok: true,
+      denied: true,
+      label: result.label,
+    });
+    return;
+  }
+
+  if (type === "browser_email_approve") {
+    const { browserResolveEmail } = await import("./browser_session");
+    const id = String(msg.id || "");
+    const result = await browserResolveEmail(id, {
+      to: msg.to != null ? String(msg.to) : undefined,
+      subject: msg.subject != null ? String(msg.subject) : undefined,
+      body: msg.body != null ? String(msg.body) : undefined,
+    });
+    send({
+      type: "browser-email-ack",
+      id,
+      ok: Boolean(result.ok),
+      sent: Boolean(result.sent),
+      to: result.to,
+      subject: result.subject,
+      error: result.error,
+      url: result.url,
+    });
+    broadcast(projectId, {
+      type: "browser-email-ack",
+      id,
+      ok: Boolean(result.ok),
+      sent: Boolean(result.sent),
+      to: result.to,
+      subject: result.subject,
+      error: result.error,
+    });
+    return;
+  }
+
+  if (type === "browser_email_deny") {
+    const { browserDenyEmail } = await import("./browser_session");
+    const id = msg.id ? String(msg.id) : undefined;
+    const result = browserDenyEmail(id);
+    send({
+      type: "browser-email-ack",
+      id,
+      ok: true,
+      denied: true,
+      subject: result.subject,
+    });
+    broadcast(projectId, {
+      type: "browser-email-ack",
+      id,
+      ok: true,
+      denied: true,
+      subject: result.subject,
+    });
+    return;
+  }
+
   send(workspacePayload(projectId, ws));
 }
 
@@ -2586,6 +2743,14 @@ async function startRun(
         position: q.length,
         prompt: prompt.slice(0, 120),
       });
+      // Cursor-like interject: stop the current turn so the follow-up runs next
+      // instead of waiting on a hung Task/plan for tens of minutes.
+      broadcast(projectId, {
+        type: "status-delta",
+        chatId: opts.chatId,
+        status: "steering…",
+      });
+      void cancelRun(projectId, opts.chatId, false);
       try {
         opts.onStarted?.();
       } catch {
@@ -3018,6 +3183,18 @@ async function startRun(
       ac.signal.addEventListener("abort", () => resolve(), { once: true });
     });
     const waitPromise = run.wait().catch((e) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      // Framed SDK IPC used to surface Bun's raw "JSON Parse error: Expected '}'"
+      // when concurrent onDelta writes interleaved. Treat as recoverable run error.
+      if (/json parse|ipc json|ipc bad size|ipc EOF/i.test(msg)) {
+        return {
+          status: "error" as const,
+          error: {
+            message:
+              "Agent stream interrupted — press Stop if needed, then send again.",
+          },
+        };
+      }
       throw e;
     });
     const raced = await Promise.race([
@@ -3026,22 +3203,28 @@ async function startRun(
     ]);
     if (raced.kind === "abort") {
       try {
-        await run.cancel?.();
+        await raceTimeout(
+          Promise.resolve(run.cancel?.()),
+          CANCEL_SDK_MS,
+          undefined,
+        );
       } catch {
         /* ignore */
       }
       if (agentId) {
         try {
-          await clearStuckAgentRuns(agentId, cwd);
+          await raceTimeout(clearStuckAgentRuns(agentId, cwd), CANCEL_SDK_MS, 0);
         } catch {
           /* ignore */
         }
       }
     }
+    // Critical: never await wait() unbound after cancel — hung Task/subagents
+    // previously left running/tab.running stuck and UI on "stopping…".
     const result: AgentRunResult =
       raced.kind === "done"
         ? raced.r
-        : await waitPromise.catch(() => ({ status: "cancelled" as const }));
+        : await settleCancelledRun(waitPromise);
 
     for (const m of tab.messages) {
       if (m.streaming) m.streaming = false;
@@ -3173,7 +3356,7 @@ export async function cancelRun(
   }
   if (live?.cancel) {
     try {
-      await live.cancel();
+      await raceTimeout(Promise.resolve(live.cancel()), CANCEL_SDK_MS, undefined);
       ok = true;
     } catch {
       /* ignore */
@@ -3185,7 +3368,7 @@ export async function cancelRun(
   const agentId = tab?.agentId || mapped;
   const cwd = resolveChatCwd(projectId, tab?.cwd);
   if (agentId && !invalidate) {
-    const n = await clearStuckAgentRuns(agentId, cwd);
+    const n = await raceTimeout(clearStuckAgentRuns(agentId, cwd), CANCEL_SDK_MS, 0);
     if (n > 0) ok = true;
   }
   if (invalidate) {
@@ -3193,10 +3376,20 @@ export async function cancelRun(
     if (tab) {
       tab.agentId = null;
       tab.running = false;
+      finalizeInterruptedTools(tab, "cancelled");
       saveWorkspace(projectId);
+      broadcast(projectId, { type: "tab", tab });
+      broadcast(projectId, { type: "done", chatId, status: "cancelled" });
     }
     if (removedId) void disposeAgentBackground(String(removedId), cwd);
     ok = true;
+  } else if (tab && ac) {
+    // Soft stop: seal tool/task chrome immediately so "running" bubbles die
+    // even while wait() is still settling.
+    finalizeInterruptedTools(tab, "cancelled");
+    tab.updatedAt = Date.now();
+    scheduleSaveWorkspace(projectId);
+    broadcast(projectId, { type: "tab", tab });
   }
   return ok;
 }

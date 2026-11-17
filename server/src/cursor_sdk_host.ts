@@ -12,14 +12,18 @@ import {
 } from "./shell_env";
 import { resolveProjectOwner } from "./project_owner";
 import { appendTrace } from "./trace";
+import {
+  FramedWriter,
+  readFrame,
+  type ByteReader,
+  type Json,
+} from "./ipc_framing";
 
 export type SdkWorkerReady = {
   uid: number;
   gid: number;
   pid: number;
 };
-
-type Json = Record<string, unknown>;
 
 type ToolDef = {
   description?: string;
@@ -72,49 +76,6 @@ function resolveSdkWorkerCmd(): string[] {
     return [exec, "run", worker];
   }
   return [exec, "--cursor-sdk-worker"];
-}
-
-function encodeMsg(obj: Json): Uint8Array {
-  const data = Buffer.from(JSON.stringify(obj), "utf8");
-  const hdr = Buffer.alloc(4);
-  hdr.writeUInt32BE(data.length, 0);
-  return Buffer.concat([hdr, data]);
-}
-
-type ByteReader = {
-  read: () => Promise<{ done: boolean; value?: Uint8Array }>;
-};
-
-async function readExact(
-  reader: ByteReader,
-  n: number,
-  buf: { cur: Uint8Array },
-): Promise<Uint8Array> {
-  while (buf.cur.length < n) {
-    const { done, value } = await reader.read();
-    if (done || !value) throw new Error("sdk-worker EOF");
-    const next = new Uint8Array(buf.cur.length + value.length);
-    next.set(buf.cur);
-    next.set(value, buf.cur.length);
-    buf.cur = next;
-  }
-  const out = buf.cur.slice(0, n);
-  buf.cur = buf.cur.slice(n);
-  return out;
-}
-
-async function readMsg(
-  reader: ByteReader,
-  buf: { cur: Uint8Array },
-): Promise<Json> {
-  const hdr = await readExact(reader, 4, buf);
-  const n = new DataView(hdr.buffer, hdr.byteOffset, hdr.byteLength).getUint32(
-    0,
-    false,
-  );
-  if (n <= 0 || n > 64 * 1024 * 1024) throw new Error(`bad size ${n}`);
-  const data = await readExact(reader, n, buf);
-  return JSON.parse(Buffer.from(data).toString("utf8")) as Json;
 }
 
 /** True when homebased is root and the checkout owner is a real non-root user. */
@@ -219,7 +180,7 @@ async function spawnSdkWorkerSession(
   })();
 
   const readyMsg = await Promise.race([
-    readMsg(reader, buf),
+    readFrame(reader, buf),
     proc.exited.then((code) => {
       throw new Error(`sdk-worker exited before ready (${code ?? "?"})`);
     }),
@@ -238,19 +199,23 @@ async function spawnSdkWorkerSession(
     pid: Number(readyMsg.pid) || (proc.pid ?? -1),
   };
 
-  const stdin = proc.stdin as { write: (b: Uint8Array) => number | void; end?: () => void };
+  const stdin = proc.stdin as {
+    write: (b: Uint8Array) => number | boolean | Promise<number | void> | void;
+    end?: () => void;
+  };
+  const framed = new FramedWriter(stdin);
   const send = (obj: Json) => {
-    stdin.write(encodeMsg(obj));
+    framed.sendFire(obj);
   };
 
   return {
     ready,
     proc,
     send,
-    next: () => readMsg(reader, buf),
+    next: () => readFrame(reader, buf),
     kill: async () => {
       try {
-        send({ type: "close" });
+        await framed.send({ type: "close" });
       } catch {
         /* ignore */
       }

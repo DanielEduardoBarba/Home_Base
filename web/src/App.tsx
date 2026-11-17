@@ -41,7 +41,6 @@ import {
   writeWorkPlace,
   type WorkItem,
 } from './lib/uiPrefs'
-import { writeDockOpen } from './components/ChatPanel'
 import { useVisibleInterval } from './lib/visibility'
 import { logActivity, presenceHeartbeat } from './lib/activity'
 
@@ -99,7 +98,7 @@ const OnboardingFlow = dynamic(
 
 type NavId = 'apps' | 'shell' | 'files' | 'chat' | 'git' | 'view' | 'logs'
 
-/** Bottom dock: the workspace scenes, one tap each (Alerts = top-bar bell; Settings = Home card). */
+/** Bottom dock: primary workspace scenes. */
 const NAV_MAIN: { id: NavId; label: string }[] = [
   { id: 'apps', label: 'Apps' },
   { id: 'shell', label: 'Shell' },
@@ -107,12 +106,17 @@ const NAV_MAIN: { id: NavId; label: string }[] = [
   { id: 'chat', label: 'Chat' },
 ]
 
-/** Behind the dock's More slot. */
+/** Shown inline when width allows; otherwise behind More. */
 const NAV_MORE: { id: NavId; label: string }[] = [
   { id: 'git', label: 'Git' },
   { id: 'view', label: 'View' },
   { id: 'logs', label: 'Logs' },
 ]
+
+const NAV_ALL = [...NAV_MAIN, ...NAV_MORE]
+
+/** Min width per dock item before collapsing Git/View/Logs into More. */
+const NAV_MIN_ITEM_PX = 52
 
 function activeNavId(tab: Tab, workItem: WorkItem): NavId | null {
   if (tab === 'work') return workItem
@@ -240,6 +244,9 @@ function AuthedApp({ doodleOnly = false }: { doodleOnly?: boolean }) {
   const { unread, inboxOpen, toggleInbox, closeInbox, unlockAudio } = useNotify()
   const [viewVisited, setViewVisited] = useState(false)
   const [moreOpen, setMoreOpen] = useState(false)
+  /** Prefer expanded dock; collapse only when items can't fit. */
+  const [navExpanded, setNavExpanded] = useState(true)
+  const navDockRef = useRef<HTMLDivElement | null>(null)
   const [addOpen, setAddOpen] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [onboardingReady, setOnboardingReady] = useState(false)
@@ -415,6 +422,26 @@ function AuthedApp({ doodleOnly = false }: { doodleOnly?: boolean }) {
     setWorkItem(readWorkPlace(selectedId).item)
   }, [selectedId, routesReady])
 
+  // Expand Git/View/Logs into the dock when width fits; else keep More.
+  useEffect(() => {
+    const el = navDockRef.current
+    if (!el) return
+    const measure = () => {
+      const w = el.clientWidth || window.innerWidth
+      const fits = w >= NAV_ALL.length * NAV_MIN_ITEM_PX
+      setNavExpanded(fits)
+      if (fits) setMoreOpen(false)
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    window.addEventListener('resize', measure)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', measure)
+    }
+  }, [])
+
   // Close the More tray on outside tap / Escape
   useEffect(() => {
     if (!moreOpen) return
@@ -558,9 +585,12 @@ function AuthedApp({ doodleOnly = false }: { doodleOnly?: boolean }) {
   const onProjectAdded = useCallback(
     (result: AddProjectResult) => {
       setAddOpen(false)
-      const item: WorkItem | null = result.openGit ? 'git' : result.askAi ? 'apps' : null
+      const item: WorkItem | null = result.openGit
+        ? 'git'
+        : result.askAi
+          ? 'chat'
+          : null
       if (item) writeWorkPlace(result.projectId, { item })
-      if (result.askAi) writeDockOpen(true)
       writeLastProjectId(result.projectId)
       setSelectedId(result.projectId)
       if (item) {
@@ -597,8 +627,8 @@ function AuthedApp({ doodleOnly = false }: { doodleOnly?: boolean }) {
           onRefresh={refreshProjects}
           onAskAiWire={(id) => {
             selectProject(id)
-            writeDockOpen(true)
-            presentInWork({ scene: 'apps' })
+            // Bottom-nav Chat pane — do not open the floating Work dock FAB.
+            void chooseWorkItem('chat')
           }}
           onOpenShell={(ids) => {
             const list = Array.isArray(ids) ? ids : ids ? [ids] : []
@@ -668,7 +698,11 @@ function AuthedApp({ doodleOnly = false }: { doodleOnly?: boolean }) {
   const cursorHint = activeProject?.cursor
   const cursorRunning = !!(cursorHint?.running || cursorHint?.active)
   const navActive = activeNavId(tab, workItem)
-  const moreActive = NAV_MORE.find((t) => t.id === navActive) || null
+  const moreActive = !navExpanded
+    ? NAV_MORE.find((t) => t.id === navActive) || null
+    : null
+  const dockItems = navExpanded ? NAV_ALL : NAV_MAIN
+  const dockCols = dockItems.length + (navExpanded ? 0 : 1)
   const showWorkspacePicker = tab !== 'view' && tab !== 'logs' && projects.length > 0
 
   if (notFoundPath) {
@@ -984,8 +1018,13 @@ function AuthedApp({ doodleOnly = false }: { doodleOnly?: boolean }) {
       <ToastStack />
       <NotificationCenter />
 
-      <nav className="hb-nav" aria-label="Primary" data-more-open={moreOpen ? 'true' : 'false'}>
-        {moreOpen && (
+      <nav
+        className="hb-nav"
+        aria-label="Primary"
+        data-more-open={moreOpen ? 'true' : 'false'}
+        data-nav-expanded={navExpanded ? 'true' : 'false'}
+      >
+        {!navExpanded && moreOpen && (
           <div className="hb-nav-more-tray" role="group" aria-label="More">
             {NAV_MORE.map((t) => {
               const active = navActive === t.id
@@ -1005,8 +1044,12 @@ function AuthedApp({ doodleOnly = false }: { doodleOnly?: boolean }) {
             })}
           </div>
         )}
-        <div className="hb-nav-dock" style={{ gridTemplateColumns: `repeat(${NAV_MAIN.length + 1}, minmax(0, 1fr))` }}>
-          {NAV_MAIN.map((t) => {
+        <div
+          ref={navDockRef}
+          className="hb-nav-dock"
+          style={{ gridTemplateColumns: `repeat(${dockCols}, minmax(0, 1fr))` }}
+        >
+          {dockItems.map((t) => {
             const active = navActive === t.id
             return (
               <button
@@ -1022,20 +1065,22 @@ function AuthedApp({ doodleOnly = false }: { doodleOnly?: boolean }) {
               </button>
             )
           })}
-          <button
-            type="button"
-            onClick={() => setMoreOpen((v) => !v)}
-            className="hb-nav-item"
-            data-active={!!moreActive || moreOpen}
-            aria-current={moreActive ? 'page' : undefined}
-            aria-expanded={moreOpen}
-            aria-haspopup="true"
-          >
-            <TabIcon id={moreActive && !moreOpen ? moreActive.id : 'more'} />
-            <span className="truncate max-w-full px-0.5">
-              {moreActive && !moreOpen ? moreActive.label : 'More'}
-            </span>
-          </button>
+          {!navExpanded && (
+            <button
+              type="button"
+              onClick={() => setMoreOpen((v) => !v)}
+              className="hb-nav-item"
+              data-active={!!moreActive || moreOpen}
+              aria-current={moreActive ? 'page' : undefined}
+              aria-expanded={moreOpen}
+              aria-haspopup="true"
+            >
+              <TabIcon id={moreActive && !moreOpen ? moreActive.id : 'more'} />
+              <span className="truncate max-w-full px-0.5">
+                {moreActive && !moreOpen ? moreActive.label : 'More'}
+              </span>
+            </button>
+          )}
         </div>
       </nav>
     </div>

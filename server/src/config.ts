@@ -102,6 +102,9 @@ export function ensureRuntimeDirs(): void {
     join(RUNTIME_DIR, "logs"),
     join(RUNTIME_DIR, "chats"),
     join(RUNTIME_DIR, "vision"),
+    join(RUNTIME_DIR, "browser"),
+    join(RUNTIME_DIR, "browser", "profile"),
+    join(RUNTIME_DIR, "browser", "shots"),
     SECURITY_DIR,
     CONFIG_DIR,
   ]) {
@@ -241,6 +244,97 @@ export function statHostPath(input: string): {
       error: e instanceof Error ? e.message : String(e),
     };
   }
+}
+
+/**
+ * Next free api/web/expo triplet (4X00 / 3X00 / 8X00) not used by any project.
+ * Used when MCP workspaces get the example Run/Ship preset.
+ */
+export function nextDevPortTriplet(): {
+  api: number;
+  web: number;
+  expo: number;
+} {
+  const used = new Set<number>();
+  for (const p of loadProjects().values()) {
+    for (const port of p.ports || []) {
+      const n = Number(port.port);
+      if (Number.isFinite(n)) used.add(n);
+    }
+  }
+  for (let h = 1; h <= 9; h++) {
+    const api = 4000 + h * 100;
+    const web = 3000 + h * 100;
+    const expo = 8000 + h * 100;
+    if (!used.has(api) && !used.has(web) && !used.has(expo)) {
+      return { api, web, expo };
+    }
+  }
+  // Last resort — dense high ports
+  for (let api = 4400; api < 4900; api += 10) {
+    const web = api - 1000;
+    const expo = api + 4000;
+    if (!used.has(api) && !used.has(web) && !used.has(expo)) {
+      return { api, web, expo };
+    }
+  }
+  return { api: 4990, web: 3990, expo: 8990 };
+}
+
+/** True when the checkout looks like a Home Base app (has ./build.sh). */
+export function looksLikeAppWorkspace(absPath: string): boolean {
+  const root = resolve(absPath);
+  return existsSync(join(root, "build.sh"));
+}
+
+/**
+ * Build upsert input for an MCP workspace: empty folder stays bare; app
+ * checkouts (build.sh) get the example Run/Ship actions + a free port triplet.
+ */
+export function mcpWorkspaceUpsertFields(opts: {
+  path: string;
+  id?: string;
+  name?: string;
+}): {
+  path: string;
+  id?: string;
+  name?: string;
+  preset?: string;
+  ports?: unknown[];
+} {
+  const abs = resolve(String(opts.path || "").trim());
+  const base = {
+    path: abs,
+    id: opts.id,
+    name: opts.name,
+  };
+  if (!looksLikeAppWorkspace(abs)) return base;
+  const ports = nextDevPortTriplet();
+  return {
+    ...base,
+    preset: "example",
+    ports: [
+      { id: "api", label: "API", port: ports.api, health: "/health" },
+      { id: "web", label: "Web", port: ports.web },
+      { id: "expo", label: "Expo", port: ports.expo },
+    ],
+  };
+}
+
+/**
+ * If an MCP/app project has build.sh but no Run/Ship actions (e.g. after a
+ * deploy wiped projects.json and reconcile re-added it bare), apply example.
+ */
+export function healEmptyAppProject(project: Project): Project | null {
+  if (project.actions?.length) return null;
+  if (!looksLikeAppWorkspace(project.path)) return null;
+  return upsertProjectFromInput(
+    mcpWorkspaceUpsertFields({
+      path: project.path,
+      id: project.id,
+      name: project.name,
+    }),
+  );
 }
 
 /** Upsert from preset name and/or raw fields (used by REST + Chat tools). */

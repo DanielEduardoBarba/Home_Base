@@ -2242,6 +2242,101 @@ app.post("/api/vision/disarm", async (c) => {
   return c.json(disarmVision("api"));
 });
 
+app.get("/api/browser/status", async (c) => {
+  await requireAuth(c);
+  const { browserStatus } = await import("./browser_session");
+  return c.json(browserStatus());
+});
+
+app.post("/api/browser/take-control", async (c) => {
+  await requireAuth(c);
+  const { browserTakeControl } = await import("./browser_session");
+  try {
+    return c.json(await browserTakeControl());
+  } catch (e) {
+    throw new HttpError(400, e instanceof Error ? e.message : String(e));
+  }
+});
+
+app.post("/api/browser/release-control", async (c) => {
+  await requireAuth(c);
+  const { browserReleaseControl } = await import("./browser_session");
+  return c.json(await browserReleaseControl());
+});
+
+app.post("/api/browser/input", async (c) => {
+  await requireAuth(c);
+  const body = (await readJson(c).catch(() => ({}))) as Record<string, unknown>;
+  const action = String(body.action || "click").toLowerCase();
+  const {
+    browserClick,
+    browserType,
+    browserKey,
+    browserHotkey,
+    browserScroll,
+  } = await import("./browser_session");
+  try {
+    if (action === "click" || action === "move") {
+      return c.json(
+        await browserClick({
+          x: body.x != null ? Number(body.x) : undefined,
+          y: body.y != null ? Number(body.y) : undefined,
+          px: body.px != null ? Number(body.px) : undefined,
+          py: body.py != null ? Number(body.py) : undefined,
+          button: body.button as string | number | undefined,
+          clickCount: body.clickCount != null ? Number(body.clickCount) : undefined,
+          asHuman: true,
+        }),
+      );
+    }
+    if (action === "type") {
+      return c.json(
+        await browserType({
+          text: String(body.text ?? ""),
+          asHuman: true,
+          pressEnter: body.pressEnter === true || body.pressEnter === "true",
+        }),
+      );
+    }
+    if (action === "key") {
+      return c.json(
+        await browserKey({
+          key: String(body.key || ""),
+          action: body.keyAction != null ? String(body.keyAction) : undefined,
+          asHuman: true,
+        }),
+      );
+    }
+    if (action === "hotkey") {
+      return c.json(
+        await browserHotkey({
+          keys: Array.isArray(body.keys)
+            ? body.keys.map((k) => String(k))
+            : [],
+          asHuman: true,
+        }),
+      );
+    }
+    if (action === "scroll" || action === "wheel") {
+      return c.json(
+        await browserScroll({
+          deltaX: body.deltaX != null ? Number(body.deltaX) : undefined,
+          deltaY: body.deltaY != null ? Number(body.deltaY) : undefined,
+          x: body.x != null ? Number(body.x) : undefined,
+          y: body.y != null ? Number(body.y) : undefined,
+          px: body.px != null ? Number(body.px) : undefined,
+          py: body.py != null ? Number(body.py) : undefined,
+          asHuman: true,
+        }),
+      );
+    }
+    throw new HttpError(400, `Unknown browser input action: ${action}`);
+  } catch (e) {
+    if (e instanceof HttpError) throw e;
+    throw new HttpError(400, e instanceof Error ? e.message : String(e));
+  }
+});
+
 app.get("/api/mcp-server", async (c) => {
   await requireAuth(c);
   const { mcpServerPublic } = await import("./mcp_server");
@@ -2264,6 +2359,7 @@ app.post("/api/mcp-server", async (c) => {
           status: featureBool,
           homeAccess: featureBool,
           vision: featureBool,
+          browser: featureBool,
           presence: featureBool,
         })
         .optional(),
