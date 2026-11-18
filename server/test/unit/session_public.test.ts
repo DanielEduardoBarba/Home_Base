@@ -22,26 +22,67 @@ describe("session public shape", () => {
     }
   });
 
-  test("exited sessions stay listed until removed", async () => {
+  // HB-49641-01 / 5780803: interactive shells auto-drop on exit so the SPA
+  // list updates; run/expo stay listed for dead+dismiss.
+  test("interactive shells are removed after exit", async () => {
     const info = spawnShell({
-      projectId: "exit-proj",
+      projectId: "exit-shell-proj",
       cwd: process.cwd(),
       kind: "shell",
       title: "Shell",
       command: ["bash", "-c", "exit 0"],
     });
     for (let i = 0; i < 40; i++) {
-      const row = listSessions("exit-proj").find((s) => s.id === info.id);
+      const listed = listSessions("exit-shell-proj").some((s) => s.id === info.id);
+      if (!listed) return;
+      await Bun.sleep(50);
+    }
+    killSession(info.id);
+    throw new Error("exited interactive shell still listed after timeout");
+  });
+
+  test("exited run sessions stay listed until removed", async () => {
+    const info = spawnShell({
+      projectId: "exit-run-proj",
+      cwd: process.cwd(),
+      kind: "run",
+      title: "Run",
+      command: ["bash", "-c", "exit 0"],
+    });
+    for (let i = 0; i < 40; i++) {
+      const row = listSessions("exit-run-proj").find((s) => s.id === info.id);
       if (row && !row.alive) {
-        expect(row.label).toBe("Shell");
+        expect(row.label).toBe("Run");
         expect(killSession(info.id)).toBe(true);
-        expect(listSessions("exit-proj").some((s) => s.id === info.id)).toBe(false);
+        expect(listSessions("exit-run-proj").some((s) => s.id === info.id)).toBe(false);
         return;
       }
       await Bun.sleep(50);
     }
     killSession(info.id);
-    throw new Error("session did not exit in time");
+    throw new Error("run session did not exit in time");
+  });
+
+  test("exited expo sessions stay listed until removed", async () => {
+    const info = spawnShell({
+      projectId: "exit-expo-proj",
+      cwd: process.cwd(),
+      kind: "expo",
+      title: "Expo",
+      command: ["bash", "-c", "exit 0"],
+    });
+    for (let i = 0; i < 40; i++) {
+      const row = listSessions("exit-expo-proj").find((s) => s.id === info.id);
+      if (row && !row.alive) {
+        expect(row.label).toBe("Expo");
+        expect(killSession(info.id)).toBe(true);
+        expect(listSessions("exit-expo-proj").some((s) => s.id === info.id)).toBe(false);
+        return;
+      }
+      await Bun.sleep(50);
+    }
+    killSession(info.id);
+    throw new Error("expo session did not exit in time");
   });
 
   test("killByProject only hits matching kinds", () => {

@@ -89,8 +89,9 @@ export async function readFrame(
   }
 }
 
+/** Sink for framed IPC. writeAll only ever passes Buffer chunks (never string). */
 type WritableSink = {
-  write: (data: Uint8Array | string) => number | boolean | Promise<number | void> | void;
+  write: (data: Uint8Array) => number | boolean | Promise<number | void> | void;
 };
 
 async function writeAll(sink: WritableSink, frame: Buffer): Promise<void> {

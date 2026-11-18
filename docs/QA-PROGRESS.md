@@ -170,3 +170,13 @@ See `docs/qa/home-base-1.22.2-119d8d2-ownership-review.md`.
 - **Items 2–5 pass:** planted root `.git/COMMIT_EDITMSG` repaired (`find .git ! -user box` empty); project status reports ownership health; owner `git commit` works without sudo after repair; setup/boot `repairAllRegisteredProjects` works (full `./build.sh --setup` not run).
 - Unit tests 0 fail; `tsc` clean. **HB-122-01..04 still open** (expected). Not a Self-QA or deploy pass; keep 1.20.3 as the rollback.
 
+
+
+## 2026-11-17 (America/New_York) — HB-49641-01/02 fixes after 49641a5 review
+
+See `docs/qa/home-base-49641a5-hb-49641-fixes.md` (parent QA: `docs/qa/home-base-49641a5-review.md` / `3741e7d`).
+
+- **HB-49641-01:** Kept Dan’s `5780803` auto-drop of exited interactive shells. Updated `session_public` tests (shells removed; run/expo stay until dismiss) + ShellTab helper copy.
+- **HB-49641-02:** `WritableSink` is Uint8Array-only; server `tsc` clean; partial-write framing regression test added.
+- Verified: server/web `tsc` 0; server `bun test test/unit` 198 pass / 110 skip / 0 fail; web `bun test` 80/0; `web npm run build` pass. **Not deployed.** Live stays 1.24.37; rollback 1.20.3.
+

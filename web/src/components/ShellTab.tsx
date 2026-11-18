@@ -512,7 +512,7 @@ export function ShellTab({
           {sessions.length === 0 && (
             <p className="text-mute text-sm leading-relaxed">
               No PTY sessions. Start a stack from Apps, or tap + for an interactive shell.
-              Tap a session to open it. Dead sessions get an X to dismiss.
+              Tap a session to open it. Interactive shells close on exit; dead run/Expo sessions get an X to dismiss.
             </p>
           )}
           <ul className="space-y-2.5">

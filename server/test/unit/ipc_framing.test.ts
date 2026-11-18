@@ -95,4 +95,30 @@ describe("ipc_framing", () => {
     const frame = encodeFrame({ type: "delta", update: { text: "{" } });
     expect(frame.length).toBe(4 + frame.readUInt32BE(0));
   });
+
+  // HB-49641-02: WritableSink is Uint8Array-only; writeAll must retry partials.
+  test("FramedWriter retries partial numeric writes", async () => {
+    const chunks: Uint8Array[] = [];
+    let calls = 0;
+    const partialSink = {
+      write: (data: Uint8Array) => {
+        calls++;
+        if (data.length > 8) {
+          chunks.push(data.subarray(0, 8));
+          return 8;
+        }
+        chunks.push(data);
+        return data.length;
+      },
+    };
+    const writer = new FramedWriter(partialSink);
+    await writer.send({ type: "partial", n: 42 });
+    expect(calls).toBeGreaterThan(1);
+    const concat = Buffer.concat(chunks.map((c) => Buffer.from(c)));
+    expect(concat.readUInt32BE(0)).toBe(concat.length - 4);
+    expect(JSON.parse(concat.subarray(4).toString("utf8"))).toEqual({
+      type: "partial",
+      n: 42,
+    });
+  });
 });
