@@ -32,7 +32,7 @@ SPA fetch/WebSocket paths are always relative (`/api/...`, `/ws/...` via `locati
 
 ## UI areas (after login)
 
-**Home** dashboard → **Home Agent** · **Homework** (Work) · **Home Access** · **Vision** · **Doodle** · **Usage** · **Contingency** · **Settings**.
+**Home** dashboard → **Home Agent** · **Homework** (Work) · **Home Access** · **Vision** · **Usage** · **Contingency** · **Settings**.
 
 ### Homework tabs
 
@@ -62,13 +62,11 @@ Dedicated Chromium/Chrome with `--user-data-dir=.runtime/browser/profile` (one s
 
 **Agent loop (token-cheap):** `observe` → `click`/`fill` by **ref** → `observe` again. Use `_screenshot` only when pixels matter. `_fill({ref|label,text})` beats click+type. `_wait` instead of blind sleeps. Humans: Take control → click field → type card. `ask_human` / `ask_secret` for login; `propose_email` for Approve/Deny outbound mail (never click Send yourself). Prefer this for web UI; Vision for real desktop apps.
 
-### Doodle
-
-Kid-friendly AI mascot + doodle pad + floating chat (`/doodle`). Cursor chat sandboxed at `/opt/homebase-doodle` (project id `doodle`, hidden from Work). Tablet enroll (PIN) issues a 30-day `kind: doodle` cookie that skips App PIN **only** on this scene; other areas keep normal session/PIN. Tools: `homebase_doodle_express` · `_canvas` · `_timer` · `_travel` (Nominatim+OSRM). Tap Clear = chats; hold Clear = chats + workspace wipe. See `.cursor/rules/doodle.mdc`.
-
 ### Usage
 
-Home area **Usage** (`/usage`): the Cursor Spending view for the IDE login on this laptop — plan and reset, Cursor Models, Other Models, Grok Bot weekly usage, and on-demand. Settings → AI usage opens the same area.
+Home area **Usage** (`/usage`): the Cursor Spending view for the IDE login on this laptop — plan and reset, Cursor Models, Other Models, Grok Bot weekly usage, and on-demand. Reads the Cursor IDE session from the seat user's `state.vscdb` (including `cursor-safe-storage` / libsecret unlock). Settings → AI usage opens the same area.
+
+**Doodle** was removed from Home Base; the kid mascot/pad lives in a separate project codebase (not this control plane). Old `/doodle` bookmarks redirect home.
 
 ### Contingency
 

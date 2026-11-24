@@ -37,17 +37,8 @@ function writeCachedGate(enabled: boolean, locked: boolean): void {
  * App PIN gate — idle / tab-return lock. Hash + locked flag live on the server
  * so a refresh cannot clear the lock. homebased keeps running; only this client
  * is covered and HTTP/WS commands are refused until the PIN unlocks.
- *
- * `bypass` — Doodle tablet scene only: enrolled device skips the overlay while
- * other scenes still require PIN.
  */
-export function PinLock({
-  children,
-  bypass = false,
-}: {
-  children: ReactNode
-  bypass?: boolean
-}) {
+export function PinLock({ children }: { children: ReactNode }) {
   const cached = readCachedGate()
   const [enabled, setEnabled] = useState(cached.enabled)
   const [locked, setLocked] = useState(cached.locked)
@@ -178,21 +169,12 @@ export function PinLock({
     })
   }, [])
 
-  // Leaving the Doodle tablet bypass: other areas must ask for the PIN again.
-  const prevBypass = useRef(bypass)
-  useEffect(() => {
-    if (prevBypass.current && !bypass && enabledRef.current) lock()
-    prevBypass.current = bypass
-  }, [bypass, lock])
-
   useEffect(() => {
     if (!enabled) {
       if (!locked) return
       setLocked(false)
       return
     }
-    // Doodle tablet: no idle lock here (it would also lock other devices mid-chat).
-    if (bypass) return
     const onPointer = () => {
       if (!lockedRef.current) markActive()
     }
@@ -229,7 +211,7 @@ export function PinLock({
       window.removeEventListener('pagehide', onPageHide)
       window.clearInterval(tick)
     }
-  }, [enabled, bypass, lock, markActive])
+  }, [enabled, lock, markActive])
 
   const tryUnlock = useCallback(
     async (pin: string) => {
@@ -314,7 +296,7 @@ export function PinLock({
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [enabled, locked, press, backspace, retryAfter])
 
-  if (bypass || !enabled || !locked) return <>{children}</>
+  if (!enabled || !locked) return <>{children}</>
 
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', '⌫']
 

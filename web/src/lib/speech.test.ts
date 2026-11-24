@@ -101,7 +101,6 @@ describe('selectVoiceListenPath matrix (iOS/desktop × configured × recognition
 describe('silent switch + missing STT messages', () => {
   test('silent switch hint mentions Ring', () => {
     expect(silentSwitchHintMessages().body.toLowerCase()).toContain('ring')
-    expect(silentSwitchHintMessages({ kid: true }).body.toLowerCase()).toContain('mute')
   })
 
   test('missing key message names env var and keyboard fallback', () => {
@@ -115,12 +114,6 @@ describe('mapSpeechRecognitionError', () => {
     expect(mapSpeechRecognitionError('not-allowed')).toContain('Microphone permission denied')
     expect(mapSpeechRecognitionError('service-not-allowed')).toContain('Enable Dictation')
     expect(mapSpeechRecognitionError('audio-capture')).toContain('microphone')
-  })
-
-  test('maps kid-friendly variants', () => {
-    expect(mapSpeechRecognitionError('service-not-allowed', { kid: true })).toContain('grown-up')
-    expect(mapSpeechRecognitionError('not-allowed', { kid: true })).toContain('microphone')
-    expect(mapSpeechRecognitionError('no-speech', { kid: true })).toContain('hear')
   })
 
   test('aborted and unknown stay specific', () => {
@@ -177,13 +170,6 @@ describe('secureContextMessages', () => {
     expect(m.title.toLowerCase()).toContain('secure')
     expect(m.body).toContain('https://hb.example.com')
     expect(m.body.toLowerCase()).toContain('text chat')
-  })
-
-  test('kid message is gentle and mentions typing', () => {
-    const m = secureContextMessages({ kid: true })
-    expect(m.title.toLowerCase()).toContain('safe')
-    expect(m.body.toLowerCase()).toContain('type')
-    expect(m.body.toLowerCase()).toContain('grown-up')
   })
 })
 

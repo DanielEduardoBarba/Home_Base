@@ -128,42 +128,15 @@ import {
   jsonError,
   readJson,
   requireAuth,
-  requireDoodleAuth,
-  DOODLE_PROJECT_ID,
 } from "./http";
 import {
   applySessionCookies,
-  applyDoodleCookies,
   assertCsrf,
   clearSessionCookies,
-  clearDoodleCookies,
   csrfRequired,
   ensureCsrfCookie,
-  readDoodleCookie,
 } from "./session_cookie";
 import { mintWsTicket, redeemWsTicket } from "./ws_tickets";
-import {
-  appendDoodleStrokes,
-  clearDoodleAll,
-  clearDoodleCanvas,
-  clearDoodleChats,
-  doodleStatusPublic,
-  enrollDoodleTablet,
-  ensureDoodleProject,
-  ensureDoodleWorkspace,
-  doodleTabletPublic,
-  forgetAllDoodleTablets,
-  forgetDoodleTablet,
-  getDoodleCanvas,
-  getDoodleState,
-  listDoodleTablets,
-  planDoodleTravel,
-  putDoodleCanvas,
-  revokeDoodleTabletTokens,
-  setDoodleExpress,
-  setDoodleTimer,
-  setDoodleTravel,
-} from "./doodle";
 import { readDailyLogs } from "./logging";
 import { clearRead, listNotifications, markRead } from "./notifications";
 import { projectPublic, runAction, stopProject, tailLogs } from "./process";
@@ -597,26 +570,7 @@ app.get("/api/auth/session", async (c) => {
       scope: "session",
     });
   } catch {
-    // Tablet-only: valid doodle cookie without session
-    try {
-      const tok = readDoodleCookie(c);
-      if (!tok) return c.json({ authenticated: false });
-      const claims = await verifyAccessToken(tok, clientIp(c), {
-        allowKinds: ["doodle"],
-      });
-      const exp = Number(claims.exp) || 0;
-      const csrfToken = ensureCsrfCookie(c, exp, cookieSecure(c));
-      return c.json({
-        authenticated: true,
-        expiresAt: exp,
-        expiresIn: Math.max(0, exp - Math.floor(Date.now() / 1000)),
-        csrfToken,
-        scope: "doodle",
-        deviceId: typeof claims.did === "string" ? claims.did : undefined,
-      });
-    } catch {
-      return c.json({ authenticated: false });
-    }
+    return c.json({ authenticated: false });
   }
 });
 
@@ -631,40 +585,12 @@ app.post("/api/logout", async (c) => {
   } catch {
     /* still clear cookies so a stale browser session is dropped */
   }
-  try {
-    const tok = readDoodleCookie(c);
-    if (tok) {
-      const claims = await verifyAccessToken(tok, clientIp(c), {
-        allowKinds: ["doodle"],
-      });
-      const jti = typeof claims.jti === "string" ? claims.jti : "";
-      const exp = Number(claims.exp) || 0;
-      revokeSessionJti(jti, exp);
-    }
-  } catch {
-    /* ignore */
-  }
   clearSessionCookies(c);
-  clearDoodleCookies(c);
   return c.json({ ok: true });
 });
 
 app.post("/api/ws-ticket", async (c) => {
-  // Doodle scope prefers the tablet cookie (PIN-exempt on the doodle socket only).
-  let claims: Record<string, unknown>;
-  if (c.req.query("scope") === "doodle") {
-    try {
-      claims = await requireDoodleAuth(c);
-    } catch {
-      claims = await requireAuth(c, { allowPinLocked: true });
-    }
-  } else {
-    try {
-      claims = await requireAuth(c, { allowPinLocked: true });
-    } catch {
-      claims = await requireDoodleAuth(c);
-    }
-  }
+  const claims = await requireAuth(c, { allowPinLocked: true });
   const minted = mintWsTicket(claims);
   return c.json({
     ticket: minted.ticket,
@@ -736,280 +662,6 @@ app.post("/api/app-pin/idle", async (c) => {
   return c.json({ ok: true, ...setAppPinIdleMs(body.idleMs) });
 });
 
-/** Doodle scene — tablet enroll, canvas, applets, sandbox. */
-app.get("/api/doodle/status", async (c) => {
-  await requireDoodleAuth(c);
-  ensureDoodleProject();
-  const deviceId = (c.req.query("deviceId") || "").trim();
-  return c.json(doodleStatusPublic(deviceId || undefined));
-});
-
-app.post("/api/doodle/enroll", async (c) => {
-  assertSameOrigin(c);
-  // Need a live session (or already doodle) to enroll — PIN proves tablet.
-  await requireAuth(c, { allowPinLocked: true });
-  const body = z
-    .object({
-      deviceId: z.string().min(8).max(64),
-      pin: z.string().optional(),
-      name: z.string().max(64).optional(),
-    })
-    .parse(await readJson(c));
-  const result = await enrollDoodleTablet({
-    deviceId: body.deviceId,
-    pin: body.pin,
-    name: body.name,
-    ip: clientIp(c),
-    userAgent: clientUserAgent(c),
-    ctx: { userAgent: clientUserAgent(c), path: "/api/doodle/enroll" },
-  });
-  applyDoodleCookies(c, result.token, result.expiresAt, cookieSecure(c));
-  return c.json({
-    ok: true,
-    expiresAt: result.expiresAt,
-    expiresIn: result.expiresIn,
-    deviceId: result.deviceId,
-    tablet: result.tablet,
-    ttlSec: result.expiresIn,
-  });
-});
-
-app.get("/api/doodle/tablet", async (c) => {
-  const claims = await requireDoodleAuth(c);
-  const deviceId = (c.req.query("deviceId") || "").trim();
-  const enrolled = deviceId
-    ? Boolean(listDoodleTablets().find((t) => t.deviceId === deviceId))
-    : false;
-  return c.json({
-    enrolled,
-    deviceId: deviceId || (typeof claims.did === "string" ? claims.did : null),
-    doodleScoped: claims.doodleScoped,
-  });
-});
-
-/** Settings → Doodle → Devices: list trusted tablets (session only). */
-app.get("/api/doodle/tablets", async (c) => {
-  await requireAuth(c);
-  const tablets = listDoodleTablets().map(doodleTabletPublic);
-  return c.json({ tablets, count: tablets.length, ttlSec: 30 * 24 * 60 * 60 });
-});
-
-app.delete("/api/doodle/tablet", async (c) => {
-  assertSameOrigin(c);
-  // Self-forget from a Doodle tablet cookie, or admin forget from a session.
-  const claims = await requireDoodleAuth(c);
-  const body = z
-    .object({ deviceId: z.string().min(8).max(64) })
-    .parse(
-      await readJson(c).catch(() => ({
-        deviceId: c.req.query("deviceId") || "",
-      })),
-    );
-  const did = typeof claims.did === "string" ? claims.did : "";
-  // Doodle-scoped tokens may only forget themselves.
-  if (claims.doodleScoped && body.deviceId !== did) {
-    throw new HttpError(403, {
-      code: "doodle_scope",
-      message: "Doodle tablet can only forget itself",
-    });
-  }
-  const ok = forgetDoodleTablet(body.deviceId);
-  if (ok && (!did || body.deviceId === did)) clearDoodleCookies(c);
-  try {
-    const { recordActivity } = await import("./activity_audit");
-    recordActivity({
-      source: "web",
-      kind: "doodle_tablet_forget",
-      summary: ok
-        ? `Forgot Doodle tablet ${body.deviceId.slice(0, 12)}…`
-        : `Forget miss ${body.deviceId.slice(0, 12)}…`,
-      detail: { deviceId: body.deviceId, forgotten: ok },
-    });
-  } catch {
-    /* ignore */
-  }
-  return c.json({ ok, forgotten: ok });
-});
-
-/** Session-only: untrust one or every tablet. */
-app.post("/api/doodle/tablets/forget", async (c) => {
-  assertSameOrigin(c);
-  await requireAuth(c);
-  const body = z
-    .object({
-      deviceId: z.string().min(8).max(64).optional(),
-      all: z.boolean().optional(),
-    })
-    .parse(await readJson(c));
-  let forgotten = 0;
-  if (body.all) {
-    forgotten = forgetAllDoodleTablets();
-    clearDoodleCookies(c);
-  } else if (body.deviceId) {
-    forgotten = forgetDoodleTablet(body.deviceId) ? 1 : 0;
-  } else {
-    throw new HttpError(400, {
-      code: "bad_request",
-      message: "deviceId or all required",
-    });
-  }
-  try {
-    const { recordActivity } = await import("./activity_audit");
-    recordActivity({
-      source: "web",
-      kind: body.all ? "doodle_tablets_forget_all" : "doodle_tablet_forget",
-      summary: body.all
-        ? `Forgot all Doodle tablets (${forgotten})`
-        : `Forgot Doodle tablet ${(body.deviceId || "").slice(0, 12)}…`,
-      detail: { deviceId: body.deviceId || null, forgotten },
-    });
-  } catch {
-    /* ignore */
-  }
-  return c.json({
-    ok: true,
-    forgotten,
-    tablets: listDoodleTablets().map(doodleTabletPublic),
-  });
-});
-
-/**
- * Session-only: revoke long-lived doodle JWTs (bump tokenRev).
- * Device stays trusted; tablet must re-enroll for a fresh cookie.
- */
-app.post("/api/doodle/tablets/revoke", async (c) => {
-  assertSameOrigin(c);
-  await requireAuth(c);
-  const body = z
-    .object({
-      deviceId: z.string().min(8).max(64).optional(),
-      all: z.boolean().optional(),
-    })
-    .parse(await readJson(c));
-  if (!body.all && !body.deviceId) {
-    throw new HttpError(400, {
-      code: "bad_request",
-      message: "deviceId or all required",
-    });
-  }
-  const revoked = body.all
-    ? revokeDoodleTabletTokens()
-    : revokeDoodleTabletTokens(body.deviceId);
-  if (body.all || revoked > 0) clearDoodleCookies(c);
-  try {
-    const { recordActivity } = await import("./activity_audit");
-    recordActivity({
-      source: "web",
-      kind: body.all ? "doodle_tokens_revoke_all" : "doodle_token_revoke",
-      summary: body.all
-        ? `Revoked Doodle tokens on ${revoked} tablet(s)`
-        : `Revoked Doodle tokens for ${(body.deviceId || "").slice(0, 12)}…`,
-      detail: { deviceId: body.deviceId || null, revoked },
-    });
-  } catch {
-    /* ignore */
-  }
-  return c.json({
-    ok: true,
-    revoked,
-    tablets: listDoodleTablets().map(doodleTabletPublic),
-  });
-});
-
-app.get("/api/doodle/canvas", async (c) => {
-  await requireDoodleAuth(c);
-  return c.json(getDoodleCanvas());
-});
-
-app.put("/api/doodle/canvas", async (c) => {
-  await requireDoodleAuth(c);
-  const body = z
-    .object({
-      strokes: z.array(z.record(z.string(), z.unknown())).optional(),
-    })
-    .parse(await readJson(c));
-  return c.json(putDoodleCanvas((body.strokes || []) as never));
-});
-
-app.post("/api/doodle/canvas/append", async (c) => {
-  await requireDoodleAuth(c);
-  const body = z
-    .object({
-      strokes: z.array(z.record(z.string(), z.unknown())),
-    })
-    .parse(await readJson(c));
-  return c.json(appendDoodleStrokes(body.strokes as never));
-});
-
-app.post("/api/doodle/canvas/clear", async (c) => {
-  await requireDoodleAuth(c);
-  return c.json(clearDoodleCanvas());
-});
-
-app.get("/api/doodle/state", async (c) => {
-  await requireDoodleAuth(c);
-  return c.json(getDoodleState());
-});
-
-app.post("/api/doodle/express", async (c) => {
-  await requireDoodleAuth(c);
-  const body = z
-    .object({
-      mouth: z.string().optional(),
-      color: z.string().optional(),
-      energy: z.number().optional(),
-      bubble: z.string().optional(),
-      name: z.string().optional(),
-    })
-    .parse(await readJson(c));
-  return c.json({ ok: true, express: setDoodleExpress(body) });
-});
-
-app.post("/api/doodle/timer", async (c) => {
-  await requireDoodleAuth(c);
-  const body = z
-    .object({
-      seconds: z.number().optional(),
-      label: z.string().optional(),
-      cancel: z.boolean().optional(),
-    })
-    .parse(await readJson(c));
-  return c.json({ ok: true, timer: setDoodleTimer(body) });
-});
-
-app.post("/api/doodle/travel", async (c) => {
-  await requireDoodleAuth(c);
-  const body = z
-    .object({
-      destination: z.string().min(1).max(200),
-      arriveByIso: z.string().optional(),
-      arriveInMinutes: z.number().optional(),
-      originLat: z.number().optional(),
-      originLon: z.number().optional(),
-      cancel: z.boolean().optional(),
-    })
-    .parse(await readJson(c));
-  if (body.cancel) {
-    setDoodleTravel(null);
-    return c.json({ ok: true, travel: null });
-  }
-  const travel = await planDoodleTravel(body);
-  return c.json({ ok: true, travel });
-});
-
-app.post("/api/doodle/clear", async (c) => {
-  await requireDoodleAuth(c);
-  const body = z
-    .object({
-      workspace: z.boolean().optional(),
-    })
-    .parse(await readJson(c).catch(() => ({})));
-  if (body.workspace) {
-    return c.json({ ok: true, ...clearDoodleAll() });
-  }
-  return c.json({ ok: true, ...clearDoodleChats(), filesRemoved: 0 });
-});
-
 app.post("/api/app-pin/import", async (c) => {
   await requireAuth(c, { allowPinLocked: true });
   const body = z
@@ -1058,9 +710,7 @@ app.get("/api/share/hostname", async (c) => {
 app.get("/api/projects", async (c) => {
   await requireAuth(c);
   const projects = await Promise.all(
-    [...loadProjects().values()]
-      .filter((p) => p.id !== DOODLE_PROJECT_ID)
-      .map((p) => projectPublic(p)),
+    [...loadProjects().values()].map((p) => projectPublic(p)),
   );
   return c.json({ projects });
 });
@@ -1563,12 +1213,12 @@ app.post("/api/tls/ensure", async (c) => {
 
 /** Server OpenAI transcription — PRIMARY Talk mic path on iOS/WebKit. */
 app.get("/api/speech/status", async (c) => {
-  await requireDoodleAuth(c);
+  await requireAuth(c);
   return c.json(speechTranscribeStatus());
 });
 
 app.post("/api/speech/transcribe", async (c) => {
-  await requireDoodleAuth(c);
+  await requireAuth(c);
   let form: Awaited<ReturnType<typeof c.req.parseBody>>;
   try {
     form = await c.req.parseBody({ all: true });
@@ -2057,23 +1707,15 @@ app.post("/api/internal/sudo-release", async (c) => {
   return c.json(releaseSudoPassword({ id: body.id }));
 });
 
-async function requireCursorProjectAuth(c: import("hono").Context, projectId: string) {
-  if (projectId === DOODLE_PROJECT_ID) {
-    ensureDoodleProject();
-    return requireDoodleAuth(c);
-  }
-  return requireAuth(c);
-}
-
 app.get("/api/cursor/:projectId/chats", async (c) => {
   const projectId = c.req.param("projectId");
-  await requireCursorProjectAuth(c, projectId);
+  await requireAuth(c);
   return c.json(listChatSummaries(projectId));
 });
 
 app.post("/api/cursor/:projectId/chats", async (c) => {
   const projectId = c.req.param("projectId");
-  await requireCursorProjectAuth(c, projectId);
+  await requireAuth(c);
   const body = z
     .object({
       title: z.string().max(200).optional(),
@@ -2082,14 +1724,14 @@ app.post("/api/cursor/:projectId/chats", async (c) => {
     .parse(await readJson(c).catch(() => ({})));
   const tab = createChat(projectId, {
     title: body.title,
-    cwd: body.cwd || (projectId === DOODLE_PROJECT_ID ? ensureDoodleWorkspace() : undefined),
+    cwd: body.cwd,
   });
   return c.json({ ok: true, chat: tab });
 });
 
 app.delete("/api/cursor/:projectId/chats/:chatId", async (c) => {
   const projectId = c.req.param("projectId");
-  await requireCursorProjectAuth(c, projectId);
+  await requireAuth(c);
   const result = deleteChat(projectId, c.req.param("chatId"));
   if (!result.ok) throw new HttpError(400, "invalid chat id");
   return c.json(result);
@@ -2097,7 +1739,7 @@ app.delete("/api/cursor/:projectId/chats/:chatId", async (c) => {
 
 app.get("/api/cursor/:projectId", async (c) => {
   const projectId = c.req.param("projectId");
-  await requireCursorProjectAuth(c, projectId);
+  await requireAuth(c);
   return c.json({
     configured: cursorConfigured(),
     workspace: clientWorkspace(projectId),
@@ -2106,7 +1748,7 @@ app.get("/api/cursor/:projectId", async (c) => {
 
 app.post("/api/cursor/:projectId/reset", async (c) => {
   const projectId = c.req.param("projectId");
-  await requireCursorProjectAuth(c, projectId);
+  await requireAuth(c);
   return c.json({ ok: true });
 });
 
@@ -2872,27 +2514,16 @@ export async function authenticateWsToken(
     // PIN lock does not drop auth — sockets may stay up so server work continues;
     // message handlers refuse client commands until unlock (see entry.ts).
     if (!rec) return false;
-    // Doodle tickets may only open the doodle cursor socket.
-    if (rec.kind === "doodle") {
-      const project = url.searchParams.get("project") || "";
-      if (url.pathname !== "/ws/cursor" || project !== DOODLE_PROJECT_ID) {
-        return false;
-      }
-    }
+    // Session tickets only — reject retired tablet-enroll / other kinds.
+    if (rec.kind && rec.kind !== "session") return false;
     return { ok: true, kind: rec.kind || "session", did: rec.did };
   }
   const token = bearerFromHeader(headers.get("authorization"));
   if (!token) return false;
   try {
     const claims = await verifyAccessToken(token, "unknown", {
-      allowKinds: ["session", "doodle"],
+      allowKinds: ["session"],
     });
-    if (claims.kind === "doodle") {
-      const project = url.searchParams.get("project") || "";
-      if (url.pathname !== "/ws/cursor" || project !== DOODLE_PROJECT_ID) {
-        return false;
-      }
-    }
     return {
       ok: true,
       kind: String(claims.kind || "session"),

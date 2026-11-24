@@ -12,8 +12,6 @@ import {
 } from '../lib/speech'
 
 type Props = {
-  /** Kid-friendly copy for Doodle device settings. */
-  kid?: boolean
   className?: string
 }
 
@@ -29,10 +27,10 @@ function micPathLabel(path: VoiceListenPath): string {
 }
 
 /**
- * Small voice diagnostic for Settings / Doodle device settings.
+ * Small voice diagnostic for Settings.
  * Shows secure context, recognition API, mic permission, synth voices, last error.
  */
-export function VoiceCheck({ kid = false, className = '' }: Props) {
+export function VoiceCheck({ className = '' }: Props) {
   const [diag, setDiag] = useState<VoiceDiagnostics | null>(null)
   const [httpsUrl, setHttpsUrl] = useState<string | null>(null)
   const [caPath, setCaPath] = useState<string | null>(null)
@@ -111,11 +109,9 @@ export function VoiceCheck({ kid = false, className = '' }: Props) {
   return (
     <section className={`hb-voice-check ${className}`.trim()} aria-label="Voice check">
       <header className="hb-voice-check-head">
-        <h3 className="hb-voice-check-title">{kid ? 'Voice check' : 'Voice check'}</h3>
+        <h3 className="hb-voice-check-title">Voice check</h3>
         <p className="hb-voice-check-sub">
-          {kid
-            ? 'This shows why Talk might not work on this iPad or iPhone.'
-            : 'Diagnose mic / speech blockers on this device (esp. iOS Safari).'}
+          Diagnose mic / speech blockers on this device (esp. iOS Safari).
         </p>
       </header>
 
@@ -158,29 +154,21 @@ export function VoiceCheck({ kid = false, className = '' }: Props) {
 
       {!diag?.secureContext && (
         <p className="hb-voice-check-hint" role="status">
-          {kid
-            ? httpsUrl
-              ? `Ask a grown-up to open ${httpsUrl} for Talk to work.`
-              : 'Ask a grown-up to open the Home Base https link (VPN HTTPS or Cloudflare Tunnel) for Talk to work.'
-            : httpsUrl
-              ? `Open the HTTPS URL instead: ${httpsUrl}`
-              : 'Open Settings → WireGuard / Voice check for the VPN HTTPS URL (trust the local CA first), or use Cloudflare Tunnel.'}
+          {httpsUrl
+            ? `Open the HTTPS URL instead: ${httpsUrl}`
+            : 'Open Settings → WireGuard / Voice check for the VPN HTTPS URL (trust the local CA first), or use Cloudflare Tunnel.'}
         </p>
       )}
 
       {caPath && !diag?.secureContext && (
         <p className="hb-voice-check-hint" role="status">
-          {kid
-            ? 'A grown-up can download the trust file over HTTP, then turn on Certificate Trust Settings.'
-            : `Download CA over HTTP: ${caPath} — then Settings → General → About → Certificate Trust Settings.`}
+          {`Download CA over HTTP: ${caPath} — then Settings → General → About → Certificate Trust Settings.`}
         </p>
       )}
 
       {diag?.ios && (
         <p className="hb-voice-check-hint" role="status">
-          {kid
-            ? 'If you cannot hear replies, flip the mute switch on the side to Ring and turn the volume up.'
-            : 'Silent switch mutes spoken replies — flip to Ring and raise volume.'}
+          Silent switch mutes spoken replies — flip to Ring and raise volume.
         </p>
       )}
 

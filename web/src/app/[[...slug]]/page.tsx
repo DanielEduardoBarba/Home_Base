@@ -6,7 +6,6 @@ const KNOWN_SLUGS: string[][] = [
   ['access'],
   ['agent'],
   ['vision'],
-  ['doodle'],
   ['usage'],
   ['contingency'],
   ['settings'],

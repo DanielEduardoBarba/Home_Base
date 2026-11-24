@@ -1,7 +1,7 @@
 'use client'
 
 /**
- * Shared Talk / mic session for ChatPanel, Doodle, and every chat bot surface.
+ * Shared Talk / mic session for ChatPanel and every chat bot surface.
  * Owns listen/record/speak orchestration — no duplicate speech wiring in UI.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -32,9 +32,8 @@ import {
 export type VoiceIssueLevel = 'error' | 'warn'
 
 export type UseVoiceSessionOpts = {
-  /** Agent Talk or Doodle kid mic. */
+  /** Agent Talk mic. */
   enabled: boolean
-  kid?: boolean
   /** Apply dictation text into the composer. */
   onText: (text: string) => void
   /** Surface errors / hints (toast + status). */
@@ -78,7 +77,7 @@ async function ensureSpeechConfigured(): Promise<boolean | null> {
 }
 
 export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
-  const { enabled, kid = false } = opts
+  const { enabled } = opts
   const [listening, setListening] = useState(false)
   const [voiceMode, setVoiceMode] = useState(false)
   const [serverConfigured, setServerConfigured] = useState<boolean | null>(() =>
@@ -101,10 +100,7 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
     [serverConfigured],
   )
   const showSilentSwitchHint = useMemo(() => isIosBrowser() && voiceMode, [voiceMode])
-  const silentSwitchHint = useMemo(
-    () => silentSwitchHintMessages({ kid }).body,
-    [kid],
-  )
+  const silentSwitchHint = useMemo(() => silentSwitchHintMessages().body, [])
 
   useEffect(() => {
     let cancelled = false
@@ -151,7 +147,6 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
     if (serverSttRef.current) return serverSttRef.current
     const o = optsRef.current
     serverSttRef.current = createServerSttSession({
-      kid: o.kid,
       getComposerPrefix: () => inputBeforeSpeech.current || o.getComposerText(),
       onText: (text) => o.onText(text),
       onIssue: (message, level) => o.onIssue(message, level),
@@ -180,12 +175,7 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
       const stt = ensureServerStt()
       stt.start(prefix)
       if (enabled) {
-        o.onIssue(
-          o.kid
-            ? 'Hold Talk — I am recording. Tap again when you finish.'
-            : 'Recording… tap Talk again to send audio for transcription.',
-          'warn',
-        )
+        o.onIssue('Recording… tap Talk again to send audio for transcription.', 'warn')
       }
     },
     [enabled, ensureServerStt],
@@ -206,7 +196,7 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
 
       if (!isSecureContext()) {
         serverSttRef.current?.cancel()
-        const msg = secureContextMessages({ kid: o.kid }).body
+        const msg = secureContextMessages().body
         o.onIssue(msg)
         void (async () => {
           try {
@@ -222,7 +212,7 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
               httpsUrl = cf.publicUrl || null
             }
             if (httpsUrl) {
-              o.onIssue(secureContextMessages({ kid: o.kid, httpsUrl }).body)
+              o.onIssue(secureContextMessages({ httpsUrl }).body)
             }
           } catch {
             /* keep generic */
@@ -293,7 +283,6 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
               }
             },
             lang: 'en-US',
-            kid: o.kid,
           })
           if (handle) {
             if (gen !== listenGen.current) {
@@ -309,7 +298,7 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
             beginRecord(prefix)
             return
           }
-          o.onIssue(serverTranscriptionMissingMessages({ kid: o.kid }).body, 'warn')
+          o.onIssue(serverTranscriptionMissingMessages().body, 'warn')
           return
         }
 
@@ -320,7 +309,7 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
         }
 
         if (path === 'keyboard' || configured === false) {
-          o.onIssue(serverTranscriptionMissingMessages({ kid: o.kid }).body, 'warn')
+          o.onIssue(serverTranscriptionMissingMessages().body, 'warn')
         }
       })()
     },
@@ -405,9 +394,7 @@ export function useVoiceSession(opts: UseVoiceSessionOpts): UseVoiceSession {
     } else {
       cancelListening()
       o.onIssue(
-        o.kid
-          ? 'I can still talk back out loud — type your words, or ask a grown-up to check Voice check in Settings.'
-          : 'Microphone dictation unavailable here — Talk will still speak AI replies. Use the keyboard mic if available.',
+        'Microphone dictation unavailable here — Talk will still speak AI replies. Use the keyboard mic if available.',
         'warn',
       )
     }

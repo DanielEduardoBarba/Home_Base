@@ -839,9 +839,6 @@ export function ChatPanel({
   defaultCwd,
   defaultCwdLabel,
   embedded = false,
-  kid = false,
-  kidAttachImage,
-  kidName = 'Doodle',
 }: {
   projects: Project[]
   selectedId: string
@@ -860,12 +857,6 @@ export function ChatPanel({
   defaultCwdLabel?: string
   /** Page variant inside Work — hide the project row (the app top bar owns it). */
   embedded?: boolean
-  /** Doodle kid skin: same socket/persistence, only chat bubbles + big friendly composer. */
-  kid?: boolean
-  /** Kid skin: image (e.g. the doodle pad) attached to every send so the AI sees it. */
-  kidAttachImage?: () => ChatImage | null
-  /** Kid skin: mascot name shown on bubbles. */
-  kidName?: string
 }) {
   const project = projects.find((p) => p.id === selectedId) || projects[0]
   const isDock = variant === 'dock'
@@ -907,7 +898,6 @@ export function ChatPanel({
   const [models, setModels] = useState<CursorModel[]>([])
   const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([])
   const [mode, setMode] = useState<ChatMode>(() => {
-    if (kid) return 'agent'
     try {
       const saved = (localStorage.getItem(MODE_STORAGE_KEY) || 'agent') as ChatMode
       return CHAT_MODES.some((m) => m.id === saved) ? saved : 'agent'
@@ -1174,11 +1164,10 @@ export function ChatPanel({
   }
 
   const voice = useVoiceSession({
-    enabled: isAgent || !!kid,
-    kid: !!kid,
+    enabled: isAgent,
     onText: setComposerText,
     onIssue: (message, level) => {
-      if (isAgent || kid) reportAgentIssue(message, level)
+      if (isAgent) reportAgentIssue(message, level)
       else setError(message)
     },
     unlockAudio: () => notify?.unlockAudio(),
@@ -2679,8 +2668,7 @@ export function ChatPanel({
     opts?: { prompt?: string; replaceLastUser?: boolean; skipOptimistic?: boolean },
   ) {
     e?.preventDefault()
-    const kidImage = kid && kidAttachImage ? kidAttachImage() : null
-    const images = kidImage ? [...draftImages, kidImage] : draftImages
+    const images = draftImages
     const contextPaths = draftContext
     let prompt = (opts?.prompt ?? input).trim()
     if (!prompt && images.length) {
@@ -2758,7 +2746,7 @@ export function ChatPanel({
     setDraftImages([])
     setDraftContext([])
     // Voice mode: pause mic while sending; resume after (TTS of the reply pauses again).
-    if ((isAgent || kid) && voiceRef.current.voiceMode) {
+    if (isAgent && voiceRef.current.voiceMode) {
       voiceRef.current.stopListening()
       voiceRef.current.resumeListenSoon(400)
     }
@@ -3345,7 +3333,7 @@ export function ChatPanel({
     </>
   )
 
-  const header = kid ? null : isAgent ? (
+  const header = isAgent ? (
     <div className="hb-agent-bar shrink-0">
       <button type="button" className="hb-btn hb-btn-ghost text-sm" onClick={() => onAgentBack?.()}>
         ← Chats
@@ -3597,91 +3585,7 @@ export function ChatPanel({
         : 'Connecting'
     : `Earlier messages · ${historyLoaded} of ${historyTotal}`
 
-  const kidBusy = streaming || !!active?.running
-  const kidMessages = kid
-    ? (active?.messages || []).filter(
-        (m) => (m.role === 'user' || m.role === 'assistant') && (m.text || '').trim(),
-      )
-    : []
-  const messages = kid ? (
-    <div
-      ref={listRef}
-      className="hb-kid-chat-list relative flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain"
-      onScroll={(e) => {
-        const el = e.currentTarget
-        const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 72
-        stickBottom.current = nearBottom
-        setShowJump(!nearBottom && el.scrollHeight > el.clientHeight + 120)
-      }}
-    >
-      {kidMessages.length === 0 && !kidBusy && (
-        <div className="hb-kid-empty">
-          <p className="hb-kid-empty-title">Hi friend!</p>
-          <p className="hb-kid-empty-sub">
-            Say hello to {kidName}. Ask for a story, a drawing idea, or a timer!
-          </p>
-          <div className="hb-kid-suggest">
-            {['Tell me a happy story', 'What should I draw?', 'Set a 5 minute timer'].map((s) => (
-              <button
-                key={s}
-                type="button"
-                className="hb-kid-suggest-btn"
-                disabled={!connected}
-                onClick={() => send(undefined, { prompt: s })}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-      {kidMessages.map((m) =>
-        m.role === 'user' ? (
-          <div key={m.id} className="hb-kid-row hb-kid-row--me">
-            <div className="hb-kid-bubble hb-kid-bubble--me">{m.text}</div>
-          </div>
-        ) : (
-          <div key={m.id} className="hb-kid-row hb-kid-row--bot">
-            <span className="hb-kid-avatar" aria-hidden />
-            <div className="hb-kid-bubble hb-kid-bubble--bot">
-              <span className="hb-kid-bubble-name">{kidName}</span>
-              <ChatMarkdown text={m.text || ''} />
-            </div>
-          </div>
-        ),
-      )}
-      {kidBusy && (
-        <div className="hb-kid-row hb-kid-row--bot" role="status" aria-label={`${kidName} is thinking`}>
-          <span className="hb-kid-avatar" aria-hidden />
-          <div className="hb-kid-bubble hb-kid-bubble--bot hb-kid-typing">
-            <span />
-            <span />
-            <span />
-          </div>
-        </div>
-      )}
-      {pendingApprovals.map((ap) => (
-        <div key={ap.id} className="hb-kid-ask">
-          <p>{kidName} wants to use a helper. Ask a grown-up!</p>
-          <div className="hb-kid-ask-actions">
-            <button type="button" className="hb-kid-btn hb-kid-btn--go" onClick={() => decideApproval(ap.id, 'allow')}>
-              Okay
-            </button>
-            <button type="button" className="hb-kid-btn" onClick={() => decideApproval(ap.id, 'deny')}>
-              No thanks
-            </button>
-          </div>
-        </div>
-      ))}
-      {error && (
-        <p className="hb-kid-oops" title={error}>
-          Oops! {kidName} got a little mixed up. Try again!
-        </p>
-      )}
-      <BrowserDock />
-      <div ref={bottomRef} />
-    </div>
-  ) : (
+  const messages = (
     <div
       ref={listRef}
       className="relative flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-3 space-y-3"
@@ -4095,75 +3999,7 @@ export function ChatPanel({
     </div>
   )
 
-  const kidComposer = (
-    <div className="hb-kid-composer-wrap shrink-0">
-    {showSilentSwitchHint && (
-      <p className="hb-voice-silent-hint hb-voice-silent-hint--kid" role="status">
-        {silentSwitchHint}
-      </p>
-    )}
-    <form onSubmit={send} className="hb-kid-composer">
-      <button
-        type="button"
-        className={`hb-kid-mic${listening || voiceMode ? ' hb-kid-mic--on' : ''}`}
-        aria-pressed={voiceMode}
-        aria-label={voiceMode ? 'Stop talking' : 'Talk out loud'}
-        onClick={(e) => {
-          e.preventDefault()
-          toggleListen()
-        }}
-      >
-        <svg viewBox="0 0 24 24" aria-hidden>
-          <path d="M12 3.5a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0v-5a3 3 0 0 0-3-3z" fill="currentColor" />
-          <path
-            d="M7 11a5 5 0 0 0 10 0M12 16v3.5M9 19.5h6"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-          />
-        </svg>
-      </button>
-      <textarea
-        ref={textareaRef}
-        value={input}
-        onChange={(e) => setComposerText(e.target.value)}
-        rows={1}
-        placeholder={listening || voiceMode ? 'I am listening…' : `Say hi to ${kidName}!`}
-        className="hb-kid-input"
-        enterKeyHint="send"
-        autoComplete="off"
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault()
-            if (listening) stopListening()
-            send(e)
-          }
-        }}
-      />
-      {kidBusy ? (
-        <button type="button" className="hb-kid-send hb-kid-send--stop" onClick={cancel} aria-label="Stop">
-          <svg viewBox="0 0 24 24" aria-hidden>
-            <rect x="7" y="7" width="10" height="10" rx="2.5" fill="currentColor" />
-          </svg>
-        </button>
-      ) : (
-        <button
-          type="submit"
-          className="hb-kid-send"
-          disabled={!connected || !input.trim()}
-          aria-label="Send"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden>
-            <path d="M4 12 20 4l-5 16-3.5-6.5L4 12z" fill="currentColor" />
-          </svg>
-        </button>
-      )}
-    </form>
-    </div>
-  )
-
-  const composer = kid ? kidComposer : (
+  const composer = (
     <form
       onSubmit={send}
       className={`hb-chat-composer shrink-0 border-t border-line relative ${
@@ -4787,15 +4623,6 @@ export function ChatPanel({
           )}
         </aside>
       </>
-    )
-  }
-
-  if (kid) {
-    return (
-      <div className="hb-kid-chat h-full flex flex-col min-h-0">
-        {messages}
-        {composer}
-      </div>
     )
   }
 

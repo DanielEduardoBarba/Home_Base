@@ -20,7 +20,6 @@ const VALID_AREAS: AppArea[] = [
   'access',
   'agent',
   'vision',
-  'doodle',
   'usage',
   'contingency',
   'settings',

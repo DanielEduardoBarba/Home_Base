@@ -1,4 +1,4 @@
-# Voice on iPhone & iPad (Home Base + Doodle)
+# Voice on iPhone & iPad (Home Base)
 
 Talk mode picks a mic path from `/api/speech/status` + browser capabilities:
 
@@ -16,9 +16,9 @@ Desktop Chrome/Edge still uses on-device SpeechRecognition as the fast path. Spo
 4. Tap **Talk** once (user gesture) so iOS unlocks speech synthesis for later AI replies.
 5. **Ring/Silent switch** — if replies are silent, flip the side switch to Ring and raise volume (speechSynthesis respects the mute switch).
 
-In-app: **Settings → Voice check** (and **Settings → Doodle → Devices**) shows the **active mic path**, secure context, MediaRecorder, server transcription, HTTPS URLs, and the last error.
+In-app: **Settings → Voice check** shows the **active mic path**, secure context, MediaRecorder, server transcription, HTTPS URLs, and the last error.
 
-Implementation: `web/src/lib/speech.ts` + shared `web/src/lib/useVoiceSession.ts` (ChatPanel / every Doodle chat bot).
+Implementation: `web/src/lib/speech.ts` + shared `web/src/lib/useVoiceSession.ts` (ChatPanel / Agent Talk).
 
 ## Trust Home Base Local CA on iPhone / iPad
 
@@ -67,7 +67,7 @@ Uses OpenAI `gpt-4o-mini-transcribe` by default (about $0.003/min); set `HOMEBAS
 
 ## Hands-free flow
 
-1. Tap **Talk** (Agent) or the kid mic (Doodle) — unlocks TTS, starts recording / listening.
+1. Tap **Talk** (Agent) — unlocks TTS, starts recording / listening.
 2. On iOS with server STT: tap Talk again to finish the clip → server transcribes into the composer.
 3. On iOS without a key: Safari recognition listens with `continuous=false` + restart loop.
 4. Mic pauses while the reply is spoken (chunked).

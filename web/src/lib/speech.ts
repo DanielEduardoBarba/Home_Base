@@ -1,5 +1,5 @@
 /**
- * Browser speech helpers for Home Base + Doodle (Chrome / Safari / iOS WebKit).
+ * Browser speech helpers for Home Base (Chrome / Safari / iOS WebKit).
  * Pure helpers are unit-tested; browser APIs are gated for iOS secure-context quirks.
  *
  * Listen path policy (see selectVoiceListenPath):
@@ -86,7 +86,7 @@ export function setServerTranscriptionConfigured(configured: boolean | null): vo
 export type VoiceListenPath = 'server' | 'browser' | 'keyboard'
 
 /**
- * Pure mic-path picker for Talk / Doodle (unit-tested matrix).
+ * Pure mic-path picker for Talk (unit-tested matrix).
  * iOS/WebKit: server when configured → browser recognition → keyboard hint.
  * Desktop: browser when available → server when configured → keyboard hint.
  */
@@ -174,16 +174,10 @@ export function preferBrowserSpeechRecognition(
 }
 
 /** iOS Ring/Silent switch mutes speechSynthesis — hint copy for Talk UI. */
-export function silentSwitchHintMessages(opts: { kid?: boolean } = {}): {
+export function silentSwitchHintMessages(): {
   title: string
   body: string
 } {
-  if (opts.kid) {
-    return {
-      title: 'Silent switch',
-      body: 'If you cannot hear me, flip the mute switch on the side of the iPhone/iPad (Ring mode), then turn the volume up.',
-    }
-  }
   return {
     title: 'Silent switch mutes spoken replies',
     body: 'iPhone/iPad Ring/Silent switch mutes speechSynthesis. Flip to Ring and raise volume to hear Talk replies. Text chat still works.',
@@ -195,60 +189,33 @@ export function shouldUseContinuousRecognition(ua: string): boolean {
   return !isIosUserAgent(ua)
 }
 
-export function mapSpeechRecognitionError(
-  error: string,
-  opts: { kid?: boolean } = {},
-): string {
-  const kid = !!opts.kid
+export function mapSpeechRecognitionError(error: string): string {
   const code = (error || '').trim().toLowerCase()
   switch (code) {
     case 'not-allowed':
-      return kid
-        ? 'Please allow the microphone for this page (ask a grown-up if you need help).'
-        : 'Microphone permission denied — allow mic access for this site in Safari Settings.'
+      return 'Microphone permission denied — allow mic access for this site in Safari Settings.'
     case 'service-not-allowed':
-      return kid
-        ? 'Voice listening is turned off on this iPhone/iPad. A grown-up can enable Dictation in Settings.'
-        : 'Speech service not allowed — enable Settings → Siri & Dictation / Keyboard → Enable Dictation (Screen Time may block it).'
+      return 'Speech service not allowed — enable Settings → Siri & Dictation / Keyboard → Enable Dictation (Screen Time may block it).'
     case 'audio-capture':
-      return kid
-        ? 'Could not hear the microphone. Check that nothing else is using it.'
-        : 'Audio capture failed — another app may be using the microphone, or mic access is blocked.'
+      return 'Audio capture failed — another app may be using the microphone, or mic access is blocked.'
     case 'network':
-      return kid
-        ? 'Voice needs a network connection. Try again in a moment.'
-        : 'Speech recognition network error — check connectivity and try again.'
+      return 'Speech recognition network error — check connectivity and try again.'
     case 'no-speech':
-      return kid ? 'I did not hear anything — tap Talk and try again.' : 'No speech detected'
+      return 'No speech detected'
     case 'aborted':
-      return kid ? 'Listening stopped.' : 'Speech recognition aborted'
+      return 'Speech recognition aborted'
     case 'bad-grammar':
     case 'language-not-supported':
-      return kid
-        ? 'This device cannot understand that language for talking.'
-        : `Speech recognition error: ${code}`
+      return `Speech recognition error: ${code}`
     default:
-      return kid ? `Voice hiccup (${code || 'unknown'}). Try typing instead.` : `Speech: ${code || 'error'}`
+      return `Speech: ${code || 'error'}`
   }
 }
 
 export function secureContextMessages(opts: {
-  kid?: boolean
   httpsUrl?: string | null
 } = {}): { title: string; body: string } {
   const https = (opts.httpsUrl || '').trim()
-  const linkHint = https
-    ? ` Open ${https} instead.`
-    : ' Ask a grown-up to open the VPN HTTPS link (or Cloudflare Tunnel) from Home Base Settings.'
-  if (opts.kid) {
-    return {
-      title: 'Voice needs a safe link',
-      body:
-        'Talking out loud only works on a special secure web address (https).' +
-        linkHint +
-        ' You can still type your message!',
-    }
-  }
   return {
     title: 'Secure connection required for voice',
     body:
@@ -262,15 +229,7 @@ export function secureContextMessages(opts: {
 }
 
 /** Clear message when server STT key is missing (and browser recognition unavailable/failed). */
-export function serverTranscriptionMissingMessages(opts: {
-  kid?: boolean
-} = {}): { title: string; body: string } {
-  if (opts.kid) {
-    return {
-      title: 'Voice typing needs setup',
-      body: 'Voice typing needs a grown-up to set up server listening, or use the keyboard mic. You can still type!',
-    }
-  }
+export function serverTranscriptionMissingMessages(): { title: string; body: string } {
   return {
     title: 'Server transcription not configured',
     body: 'Server transcription is not configured. Set HOMEBASE_TRANSCRIBE_API_KEY (or OPENAI_API_KEY) on the Home Base host. Browser speech recognition is unavailable or failed — use the keyboard mic / type.',
@@ -628,10 +587,9 @@ export function startSpeechDictation(opts: {
   onError?: (message: string) => void
   onEnd?: () => void
   lang?: string
-  kid?: boolean
 }): SpeechHandle | null {
   if (typeof window !== 'undefined' && !window.isSecureContext) {
-    const msg = secureContextMessages({ kid: opts.kid }).body
+    const msg = secureContextMessages().body
     setLastSpeechError(msg)
     opts.onError?.(msg)
     return null
@@ -639,9 +597,7 @@ export function startSpeechDictation(opts: {
 
   const Ctor = getCtor()
   if (!Ctor) {
-    const msg = opts.kid
-      ? 'Voice listening is not available here — try typing, or use the keyboard mic.'
-      : 'Speech recognition is not available in this browser'
+    const msg = 'Speech recognition is not available in this browser'
     setLastSpeechError(msg)
     opts.onError?.(msg)
     return null
@@ -746,7 +702,7 @@ export function startSpeechDictation(opts: {
       // Expected on iOS single-shot — restart loop handles it.
       return
     }
-    const mapped = mapSpeechRecognitionError(err, { kid: opts.kid })
+    const mapped = mapSpeechRecognitionError(err)
     setLastSpeechError(mapped)
     opts.onError?.(mapped)
     if (err === 'not-allowed' || err === 'service-not-allowed' || err === 'audio-capture') {
@@ -833,18 +789,15 @@ export function preferredRecordingMime(): string {
 export function startMediaRecorderCapture(opts: {
   onBlob: (blob: Blob, mime: string) => void
   onError?: (message: string) => void
-  kid?: boolean
 }): SpeechHandle | null {
   if (typeof window !== 'undefined' && !window.isSecureContext) {
-    const msg = secureContextMessages({ kid: opts.kid }).body
+    const msg = secureContextMessages().body
     setLastSpeechError(msg)
     opts.onError?.(msg)
     return null
   }
   if (!mediaRecorderSupported() || typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-    const msg = opts.kid
-      ? 'Recording is not available — type your message or use the keyboard mic.'
-      : 'MediaRecorder / getUserMedia not available in this browser'
+    const msg = 'MediaRecorder / getUserMedia not available in this browser'
     setLastSpeechError(msg)
     opts.onError?.(msg)
     return null
@@ -900,7 +853,7 @@ export function startMediaRecorderCapture(opts: {
       const name = e instanceof DOMException ? e.name : ''
       let msg: string
       if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
-        msg = mapSpeechRecognitionError('not-allowed', { kid: opts.kid })
+        msg = mapSpeechRecognitionError('not-allowed')
       } else {
         msg = e instanceof Error ? e.message : 'Could not start recording'
       }
@@ -922,7 +875,7 @@ export function startMediaRecorderCapture(opts: {
 }
 
 /**
- * Push-to-talk server STT session (shared by Chat + Doodle via useVoiceSession).
+ * Push-to-talk server STT session (shared by Chat via useVoiceSession).
  * stop() finishes the clip and POSTs; cancel() discards with no fetch.
  * Generation is only invalidated on cancel / a new start — not before MediaRecorder.stop().
  */
@@ -936,7 +889,6 @@ export function createServerSttSession(opts: {
   onText: (text: string) => void
   onIssue?: (message: string, level?: 'error' | 'warn') => void
   getComposerPrefix?: () => string
-  kid?: boolean
   /** Injected for unit tests; defaults to startMediaRecorderCapture. */
   startCapture?: typeof startMediaRecorderCapture
   /** POST /api/speech/transcribe (or fake). */
@@ -973,7 +925,6 @@ export function createServerSttSession(opts: {
     const myGen = ++gen
     prefix = (explicitPrefix ?? opts.getComposerPrefix?.() ?? '').trim()
     const h = startCapture({
-      kid: opts.kid,
       onError: (message) => {
         if (myGen <= discardThrough) return
         opts.onIssue?.(
@@ -992,7 +943,7 @@ export function createServerSttSession(opts: {
               const ok = await opts.ensureConfigured()
               if (myGen <= discardThrough) return
               if (!ok) {
-                opts.onIssue?.(serverTranscriptionMissingMessages({ kid: opts.kid }).body, 'warn')
+                opts.onIssue?.(serverTranscriptionMissingMessages().body, 'warn')
                 return
               }
             }
@@ -1004,10 +955,7 @@ export function createServerSttSession(opts: {
             if (myGen <= discardThrough) return
             const text = (res.text || '').trim()
             if (!text) {
-              opts.onIssue?.(
-                opts.kid ? 'I could not catch that — try again!' : 'No speech transcribed',
-                'warn',
-              )
+              opts.onIssue?.('No speech transcribed', 'warn')
               return
             }
             opts.onText(prefix ? `${prefix} ${text}` : text)

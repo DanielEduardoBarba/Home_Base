@@ -32,12 +32,15 @@ export function parseAppPath(pathname: string): ParseResult {
   }
 
   const head = parts[0] || ''
+  // Retired built-in scene (moved to a separate project) — send bookmarks home.
+  if (parts.length === 1 && head === 'doodle') {
+    return { kind: 'ok', loc: { area: 'home', tab: 'work', workItem: 'apps' } }
+  }
   if (
     parts.length === 1 &&
     (head === 'access' ||
       head === 'agent' ||
       head === 'vision' ||
-      head === 'doodle' ||
       head === 'usage' ||
       head === 'contingency' ||
       head === 'settings')
@@ -74,7 +77,6 @@ export function serializeAppPath(loc: AppLocation): string {
   if (loc.area === 'access') return '/access'
   if (loc.area === 'agent') return '/agent'
   if (loc.area === 'vision') return '/vision'
-  if (loc.area === 'doodle') return '/doodle'
   if (loc.area === 'usage') return '/usage'
   if (loc.area === 'contingency') return '/contingency'
   if (loc.area === 'settings') return '/settings'

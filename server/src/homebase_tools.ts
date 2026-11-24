@@ -288,19 +288,6 @@ export function wrapPrompt(
   const path = p?.path || "?";
   const cwdBit = opts.cwd ? ` · cwd ${opts.cwd}` : "";
 
-  if (projectId === "doodle" || (opts.cwd || "").replace(/\/+$/, "") === "/opt/homebase-doodle") {
-    const { DOODLE_GUIDANCE } = require("./doodle") as typeof import("./doodle");
-    return (
-      `${CONTEXT_MARKER}\n` +
-      `Private metadata (do not quote, paraphrase, or repeat):\n` +
-      `UI=Home Base Doodle scene v${readVersion()} · project Doodle (doodle) @ /opt/homebase-doodle · ` +
-      `chat ${opts.chatId || "default"}${cwdBit}. ` +
-      `${DOODLE_GUIDANCE} ` +
-      `Answer the child below in a warm, short, bubbly voice.\n---\n` +
-      text
-    );
-  }
-
   let visionWorkspace = "";
   try {
     visionWorkspace = ensureVisionWorkspace();
@@ -340,134 +327,12 @@ export function wrapPrompt(
   );
 }
 
-function buildDoodleOnlyTools(): Record<string, HomebaseToolDef> {
-  const tools: Record<string, HomebaseToolDef> = {};
-  tools.homebase_doodle_express = {
-    description:
-      "Update Doodle's face and bubble. mouth: happy (D) | curious (.) | blank (-) | sad (C) | frozen (no mouth). " +
-      "Optional color (#hex), energy 0..1, bubble text, name.",
-    parameters: {
-      type: "object",
-      properties: {
-        mouth: { type: "string" },
-        color: { type: "string" },
-        energy: { type: "number" },
-        bubble: { type: "string" },
-        name: { type: "string" },
-      },
-    },
-    execute: async (args) => {
-      const { setDoodleExpress } = await import("./doodle");
-      return json({
-        ok: true,
-        express: setDoodleExpress({
-          mouth: args.mouth as never,
-          color: args.color != null ? String(args.color) : undefined,
-          energy: args.energy != null ? Number(args.energy) : undefined,
-          bubble: args.bubble != null ? String(args.bubble) : undefined,
-          name: args.name != null ? String(args.name) : undefined,
-        }),
-      });
-    },
-  };
-  tools.homebase_doodle_canvas = {
-    description:
-      "See or draw on the shared doodle pad. action: get | clear | draw. " +
-      "For draw, pass strokes: [{id,color,width,points:[{x,y}]}] with x/y normalized 0..1.",
-    parameters: {
-      type: "object",
-      properties: {
-        action: { type: "string" },
-        strokes: { type: "array", items: { type: "object" } },
-      },
-      required: ["action"],
-    },
-    execute: async (args) => {
-      const {
-        getDoodleCanvas,
-        clearDoodleCanvas,
-        appendDoodleStrokes,
-      } = await import("./doodle");
-      const action = String(args.action || "get").toLowerCase();
-      if (action === "clear") return json({ ok: true, ...clearDoodleCanvas() });
-      if (action === "draw") {
-        return json({
-          ok: true,
-          ...appendDoodleStrokes((args.strokes || []) as never),
-        });
-      }
-      return json({ ok: true, ...getDoodleCanvas() });
-    },
-  };
-  tools.homebase_doodle_timer = {
-    description:
-      "Start or cancel a kid-friendly countdown applet on the Doodle scene. " +
-      "Pass seconds + optional label, or cancel:true.",
-    parameters: {
-      type: "object",
-      properties: {
-        seconds: { type: "number" },
-        label: { type: "string" },
-        cancel: { type: "boolean" },
-      },
-    },
-    execute: async (args) => {
-      const { setDoodleTimer } = await import("./doodle");
-      return json({
-        ok: true,
-        timer: setDoodleTimer({
-          seconds: args.seconds != null ? Number(args.seconds) : undefined,
-          label: args.label != null ? String(args.label) : undefined,
-          cancel: Boolean(args.cancel),
-        }),
-      });
-    },
-  };
-  tools.homebase_doodle_travel = {
-    description:
-      "Plan car travel time with free maps (Nominatim + OSRM). Sets leave-by time and a get-ready countdown. " +
-      "Pass destination and either arriveByIso (ISO datetime) or arriveInMinutes. Optional originLat/originLon.",
-    parameters: {
-      type: "object",
-      properties: {
-        destination: { type: "string" },
-        arriveByIso: { type: "string" },
-        arriveInMinutes: { type: "number" },
-        originLat: { type: "number" },
-        originLon: { type: "number" },
-        cancel: { type: "boolean" },
-      },
-    },
-    execute: async (args) => {
-      const { planDoodleTravel, setDoodleTravel } = await import("./doodle");
-      if (args.cancel) {
-        setDoodleTravel(null);
-        return json({ ok: true, travel: null });
-      }
-      const travel = await planDoodleTravel({
-        destination: String(args.destination || ""),
-        arriveByIso: args.arriveByIso != null ? String(args.arriveByIso) : undefined,
-        arriveInMinutes:
-          args.arriveInMinutes != null ? Number(args.arriveInMinutes) : undefined,
-        originLat: args.originLat != null ? Number(args.originLat) : undefined,
-        originLon: args.originLon != null ? Number(args.originLon) : undefined,
-      });
-      return json({ ok: true, travel });
-    },
-  };
-  return tools;
-}
-
 export function buildHomebaseTools(
   projectId: string,
   readonly = false,
   ctx: HomebaseToolContext = {},
   surface: HomebaseToolSurface = "cursor",
 ): Record<string, HomebaseToolDef> {
-  if (projectId === "doodle" && surface === "cursor") {
-    return buildDoodleOnlyTools();
-  }
-
   const resolvePid = (args: Record<string, unknown>) =>
     String(args.projectId || args.project_id || "").trim() || projectId;
 

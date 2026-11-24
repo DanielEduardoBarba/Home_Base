@@ -14,7 +14,6 @@ type Props = {
   onOpenAccess: () => void
   onOpenAgent: () => void
   onOpenVision: () => void
-  onOpenDoodle: () => void
   onOpenUsage: () => void
   onOpenContingency: () => void
   onOpenSettings: () => void
@@ -28,7 +27,7 @@ function HomeCard({
   icon,
   onClick,
 }: {
-  tone: 'work' | 'agent' | 'vision' | 'doodle' | 'usage' | 'settings' | 'access' | 'contingency'
+  tone: 'work' | 'agent' | 'vision' | 'usage' | 'settings' | 'access' | 'contingency'
   label: string
   desc: string
   badge?: string
@@ -59,7 +58,7 @@ function HomeCard({
 }
 
 /**
- * Post-login landing — Work, Agent, Vision, Doodle, Usage, Settings, …
+ * Post-login landing — Work, Agent, Vision, Usage, Settings, …
  * Home Access is advanced / off-by-default (Settings → Appearance).
  */
 export function HomeDashboard({
@@ -71,7 +70,6 @@ export function HomeDashboard({
   onOpenAccess,
   onOpenAgent,
   onOpenVision,
-  onOpenDoodle,
   onOpenUsage,
   onOpenContingency,
   onOpenSettings,
@@ -144,20 +142,6 @@ export function HomeDashboard({
               <>
                 <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" />
                 <circle cx="12" cy="12" r="3" />
-              </>
-            }
-          />
-          <HomeCard
-            tone="doodle"
-            label="Doodle"
-            desc="Kid-friendly mascot, doodle pad, and chat — timers and travel helpers."
-            onClick={onOpenDoodle}
-            icon={
-              <>
-                <circle cx="12" cy="11" r="6.5" />
-                <path d="M9.2 14.2 Q12 17 14.8 14.2" />
-                <circle cx="10" cy="10" r="0.9" fill="currentColor" stroke="none" />
-                <circle cx="14" cy="10" r="0.9" fill="currentColor" stroke="none" />
               </>
             }
           />

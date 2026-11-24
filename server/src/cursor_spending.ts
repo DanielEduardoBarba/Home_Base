@@ -4,11 +4,7 @@
  * login session already stored by the IDE on this laptop.
  * The session token never leaves this process and is not returned to the client.
  */
-import { Database } from "bun:sqlite";
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { detectSeatUser } from "./shell_env";
+import { resolveCursorIdeAccessToken } from "./cursor_ide_session";
 
 export type SpendingMeter = {
   label: string;
@@ -251,39 +247,6 @@ export function mapCursorSpending(input: {
   };
 }
 
-function stateDbPaths(): string[] {
-  const homes = new Set<string>();
-  try {
-    const home = detectSeatUser().home;
-    if (home) homes.add(home);
-  } catch {
-    /* ignore */
-  }
-  if (process.env.HOME) homes.add(process.env.HOME);
-  homes.add(homedir());
-  return [...homes].map((home) =>
-    join(home, ".config", "Cursor", "User", "globalStorage", "state.vscdb"),
-  );
-}
-
-function readAccessToken(): string | null {
-  for (const path of stateDbPaths()) {
-    if (!existsSync(path)) continue;
-    try {
-      const db = new Database(path, { readonly: true });
-      const row = db
-        .query("SELECT value FROM ItemTable WHERE key = ?")
-        .get("cursorAuth/accessToken") as { value?: string } | null;
-      db.close();
-      const token = String(row?.value || "").trim();
-      if (token.split(".").length >= 3) return token;
-    } catch {
-      /* locked or unreadable */
-    }
-  }
-  return null;
-}
-
 function jwtSub(token: string): string | null {
   try {
     const part = token.split(".")[1] || "";
@@ -295,6 +258,12 @@ function jwtSub(token: string): string | null {
   } catch {
     return null;
   }
+}
+
+function accessTokenOrError(): { token: string } | { error: string } {
+  const session = resolveCursorIdeAccessToken();
+  if (session.ok) return { token: session.token };
+  return { error: session.message };
 }
 
 async function cursorJson(
@@ -348,8 +317,9 @@ async function cursorJson(
 
 /** Live Spending snapshot for the Cursor account signed in on this laptop. */
 export async function fetchCursorSpending(opts?: { force?: boolean }): Promise<CursorSpending> {
-  const token = readAccessToken();
-  if (!token) return emptySpending("Sign in to Cursor on this laptop.");
+  const resolved = accessTokenOrError();
+  if ("error" in resolved) return emptySpending(resolved.error);
+  const token = resolved.token;
   const fingerprint = token.slice(-12);
   if (!opts?.force && cache && cache.fingerprint === fingerprint && Date.now() - cache.at < CACHE_MS) {
     return cache.data;
@@ -393,11 +363,14 @@ export async function fetchCursorSpending(opts?: { force?: boolean }): Promise<C
   return data;
 }
 
-function sessionCookie(): { cookie: string; fingerprint: string } | null {
-  const token = readAccessToken();
-  if (!token) return null;
+function sessionCookie():
+  | { cookie: string; fingerprint: string }
+  | { error: string } {
+  const resolved = accessTokenOrError();
+  if ("error" in resolved) return { error: resolved.error };
+  const token = resolved.token;
   const sub = jwtSub(token);
-  if (!sub) return null;
+  if (!sub) return { error: "Cursor login on this laptop could not be read." };
   return {
     cookie: `WorkosCursorSessionToken=${sub}%3A%3A${token}`,
     fingerprint: token.slice(-12),
@@ -410,7 +383,7 @@ export async function setCursorOnDemand(input: {
   dollars?: number;
 }): Promise<CursorSpending> {
   const session = sessionCookie();
-  if (!session) throw new Error("Sign in to Cursor on this laptop.");
+  if ("error" in session) throw new Error(session.error);
   const body = onDemandWriteBody(input.mode, input.dollars);
   const res = await cursorJson(session.cookie, "POST", "/api/dashboard/set-hard-limit", body);
   if (!res.ok) throw new Error(res.error || "Could not save the on-demand limit.");
@@ -424,7 +397,7 @@ export async function setCursorOnDemand(input: {
  */
 export async function startCursorPlanCheckout(tier: CursorPlanTier): Promise<{ url: string }> {
   const session = sessionCookie();
-  if (!session) throw new Error("Sign in to Cursor on this laptop.");
+  if ("error" in session) throw new Error(session.error);
   let current = `https://cursor.com/api/auth/checkoutDeepControl?tier=${encodeURIComponent(tier)}&allowTrial=false`;
   for (let hop = 0; hop < 8; hop++) {
     const res = await fetch(current, {

@@ -94,10 +94,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export async function wsUrl(path: string): Promise<string> {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  // Doodle chat must use the tablet token so an App PIN lock elsewhere cannot block it.
-  const doodle = /^\/ws\/cursor\?(.*&)?project=doodle(&|$)/.test(path)
   const minted = await request<{ ticket: string; expiresAt: number; expiresIn: number }>(
-    doodle ? '/api/ws-ticket?scope=doodle' : '/api/ws-ticket',
+    '/api/ws-ticket',
     { method: 'POST' },
   )
   const sep = path.includes('?') ? '&' : '?'
@@ -852,8 +850,7 @@ export const api = {
         expiresAt?: number
         expiresIn?: number
         csrfToken?: string
-        scope?: 'session' | 'doodle'
-        deviceId?: string
+        scope?: 'session'
       }
     }),
   logout: () =>
@@ -1788,116 +1785,6 @@ export const api = {
   clearSudo: () => request<{ ok: boolean }>('/api/sudo', { method: 'DELETE' }),
   clearPersistentSudo: () =>
     request<{ ok: boolean }>('/api/sudo/persistent', { method: 'DELETE' }),
-  doodleStatus: (deviceId?: string) => {
-    const q = deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : ''
-    return request<{
-      projectId: string
-      workspace: string
-      enrolled: boolean
-      pinRequiredForEnroll: boolean
-      express: {
-        mouth: string
-        color: string
-        energy: number
-        bubble: string
-        name: string
-      }
-      timer: {
-        active: boolean
-        label: string
-        endsAt: number
-        startedAt: number
-      } | null
-      travel: {
-        active: boolean
-        destination: string
-        leaveBy: number
-        arriveBy: number
-        durationSec: number
-        distanceM: number
-        label: string
-      } | null
-      strokeCount: number
-      ttlSec: number
-    }>(`/api/doodle/status${q}`)
-  },
-  doodleEnroll: (deviceId: string, pin?: string, name?: string) =>
-    request<{
-      ok: boolean
-      expiresAt: number
-      expiresIn: number
-      deviceId: string
-      ttlSec: number
-    }>('/api/doodle/enroll', {
-      method: 'POST',
-      body: JSON.stringify({ deviceId, pin, name }),
-    }),
-  doodleForgetTablet: (deviceId: string) =>
-    request<{ ok: boolean; forgotten: boolean }>('/api/doodle/tablet', {
-      method: 'DELETE',
-      body: JSON.stringify({ deviceId }),
-    }),
-  /** Settings → Doodle → Devices (session JWT). */
-  doodleTablets: () =>
-    request<{
-      tablets: Array<{
-        deviceId: string
-        name: string
-        enrolledAt: number
-        lastSeenAt: number
-        userAgent: string | null
-        tokenRev: number
-      }>
-      count: number
-      ttlSec: number
-    }>('/api/doodle/tablets'),
-  doodleTabletsForget: (opts: { deviceId?: string; all?: boolean }) =>
-    request<{
-      ok: boolean
-      forgotten: number
-      tablets: Array<{
-        deviceId: string
-        name: string
-        enrolledAt: number
-        lastSeenAt: number
-        userAgent: string | null
-        tokenRev: number
-      }>
-    }>('/api/doodle/tablets/forget', {
-      method: 'POST',
-      body: JSON.stringify(opts),
-    }),
-  doodleTabletsRevoke: (opts: { deviceId?: string; all?: boolean }) =>
-    request<{
-      ok: boolean
-      revoked: number
-      tablets: Array<{
-        deviceId: string
-        name: string
-        enrolledAt: number
-        lastSeenAt: number
-        userAgent: string | null
-        tokenRev: number
-      }>
-    }>('/api/doodle/tablets/revoke', {
-      method: 'POST',
-      body: JSON.stringify(opts),
-    }),
-  doodleCanvas: () =>
-    request<{ strokes: unknown[]; updatedAt: number }>('/api/doodle/canvas'),
-  doodlePutCanvas: (strokes: unknown[]) =>
-    request<{ strokes: unknown[]; updatedAt: number }>('/api/doodle/canvas', {
-      method: 'PUT',
-      body: JSON.stringify({ strokes }),
-    }),
-  doodleClear: (workspace = false) =>
-    request<{ ok: boolean; chatsDeleted: number; filesRemoved?: number }>(
-      '/api/doodle/clear',
-      {
-        method: 'POST',
-        body: JSON.stringify({ workspace }),
-      },
-    ),
   browserStatus: () =>
     request<{
       ok: boolean

@@ -35,8 +35,6 @@ import { decryptSecret, encryptSecret } from "./secrets_vault";
 export const LOCKOUT_SCHEDULE = [10, 30, 60, 180, 300, 600, 1800, 3600, 86400];
 export const FAIL_THRESHOLD = 5;
 export const JWT_TTL_SEC = 24 * 60 * 60;
-/** Doodle tablet scene JWT — 30 days; kind "doodle" only. */
-export const DOODLE_JWT_TTL_SEC = 30 * 24 * 60 * 60;
 const JWT_ALG = "HS256";
 
 const SCRYPT_N = 2 ** 14;
@@ -284,10 +282,6 @@ export async function issueJwt(opts: {
   subject?: string;
   kind?: string;
   ttl?: number;
-  /** Doodle tablet device id (embedded as `did` claim). */
-  did?: string;
-  /** Doodle tablet token generation (embedded as `tr`; revoke bumps this). */
-  tr?: number;
 }): Promise<{
   token: string;
   expiresAt: number;
@@ -296,18 +290,13 @@ export async function issueJwt(opts: {
 }> {
   const now = Math.floor(Date.now() / 1000);
   const kind = opts.kind ?? "session";
-  const defaultTtl = kind === "doodle" ? DOODLE_JWT_TTL_SEC : JWT_TTL_SEC;
-  const ttl = Math.max(30, opts.ttl ?? defaultTtl);
+  const ttl = Math.max(30, opts.ttl ?? JWT_TTL_SEC);
   const exp = now + ttl;
   const claims: Record<string, unknown> = {
     kind,
     jti: randomBytes(8).toString("hex"),
     ae: authEpoch(),
   };
-  if (opts.did) claims.did = String(opts.did).slice(0, 64);
-  if (opts.tr != null && Number.isFinite(opts.tr)) {
-    claims.tr = Math.max(0, Math.floor(Number(opts.tr)));
-  }
   const token = await new SignJWT(claims)
     .setProtectedHeader({ alg: JWT_ALG })
     .setSubject(opts.subject ?? "homebase")
@@ -831,7 +820,7 @@ export async function loginWithPassword(
 export async function verifyAccessToken(
   token: string | undefined | null,
   _ip = "unknown",
-  opts?: { allowKinds?: Array<"session" | "doodle"> },
+  opts?: { allowKinds?: Array<"session"> },
 ): Promise<Record<string, unknown>> {
   if (!passwordIsSet()) {
     throw new HttpError(
@@ -867,14 +856,7 @@ export async function verifyAccessToken(
       code: "share_token",
     });
   }
-  if (claims.kind === "doodle") {
-    if (!allow.includes("doodle")) {
-      throw new HttpError(401, {
-        message: "Doodle token cannot access this API",
-        code: "doodle_scope",
-      });
-    }
-  } else if (claims.kind === "session") {
+  if (claims.kind === "session") {
     if (!allow.includes("session")) {
       throw new HttpError(401, {
         message: "Invalid session token",
@@ -882,6 +864,7 @@ export async function verifyAccessToken(
       });
     }
   } else {
+    // Session cookies only — reject retired tablet-enroll / other kinds.
     throw new HttpError(401, {
       message: "Invalid session token",
       code: "invalid_kind",
@@ -906,30 +889,6 @@ export async function verifyAccessToken(
       throw new HttpError(401, {
         message: "Session ended — sign in again",
         code: "revoked_session",
-      });
-    }
-  }
-  if (claims.kind === "doodle") {
-    const did = typeof claims.did === "string" ? claims.did : "";
-    if (!did) {
-      throw new HttpError(401, {
-        message: "Invalid doodle token",
-        code: "invalid_doodle",
-      });
-    }
-    const doodle = require("./doodle") as typeof import("./doodle");
-    if (!doodle.isDoodleTabletEnrolled(did)) {
-      throw new HttpError(401, {
-        message: "Tablet no longer remembered — enroll again",
-        code: "doodle_forgotten",
-      });
-    }
-    const tokenTr = Number(claims.tr ?? 0) || 0;
-    const liveTr = doodle.doodleTabletTokenRev(did);
-    if (tokenTr !== liveTr) {
-      throw new HttpError(401, {
-        message: "Doodle token revoked — enroll this tablet again",
-        code: "doodle_token_revoked",
       });
     }
   }
