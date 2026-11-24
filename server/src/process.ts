@@ -34,12 +34,77 @@ export type RunActionOpts = {
   };
 };
 
-function resolveScript(project: Project, script: string): string {
+/** Resolve a project-relative script path; reject escapes. */
+export function resolveScript(project: Project, script: string): string {
   const abs = resolve(project.path, script);
-  if (!abs.startsWith(resolve(project.path))) {
+  const root = resolve(project.path);
+  if (abs !== root && !abs.startsWith(root + "/")) {
     throw new Error("Script escapes project directory");
   }
   return abs;
+}
+
+/** Split a script field that may include args (`pnpm --filter @pkg seed:qa`). */
+export function splitScriptField(script: string): string[] {
+  const s = String(script || "").trim();
+  if (!s) return [];
+  const out: string[] = [];
+  let cur = "";
+  let quote: '"' | "'" | null = null;
+  for (const ch of s) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      else cur += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (cur) {
+        out.push(cur);
+        cur = "";
+      }
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+function shellQuote(arg: string): string {
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(arg)) return arg;
+  return `'${arg.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Build argv for an action script field.
+ * - Path-like (`scripts/foo.sh`, `./x`) → `bash <abs> …args`
+ * - Bare command with args (`pnpm --filter @pkg seed:qa`) → `bash -lc '…'`
+ */
+export function buildActionCommand(
+  project: Project,
+  script: string,
+  extraArgs: string[] = [],
+): string[] {
+  const parts = splitScriptField(script || "./script.sh");
+  if (!parts.length) parts.push("./script.sh");
+  const head = parts[0]!;
+  const scriptArgs = parts.slice(1);
+  const more = (extraArgs || []).map(String);
+  const pathLike =
+    head.includes("/") ||
+    head.startsWith(".") ||
+    head.endsWith(".sh") ||
+    head.endsWith(".bash");
+  if (pathLike) {
+    const abs = resolveScript(project, head);
+    return ["bash", abs, ...scriptArgs, ...more];
+  }
+  const cmdline = [...parts, ...more].map(shellQuote).join(" ");
+  return ["bash", "-lc", cmdline];
 }
 
 async function probeHealth(
@@ -65,20 +130,47 @@ export async function portsStatus(
   project: Project,
 ): Promise<Record<string, unknown>[]> {
   const out: Record<string, unknown>[] = [];
-  for (const p of project.ports) {
-    const up = isPortListening(p.port);
-    let health: Record<string, unknown> | null = null;
-    if (up && p.health) {
-      health = await probeHealth(p.port, p.health);
+  for (const p of project.ports || []) {
+    try {
+      const portNum = Number(p.port);
+      const up =
+        Number.isFinite(portNum) && portNum > 0
+          ? isPortListening(portNum)
+          : false;
+      let health: Record<string, unknown> | null = null;
+      if (up && p.health) {
+        try {
+          health = await probeHealth(portNum, p.health);
+        } catch {
+          health = { ok: false, url: "", status: null, error: "probe_failed" };
+        }
+      }
+      out.push({
+        id: p.id,
+        port: portNum,
+        label: p.label || p.id,
+        up,
+        listening: up,
+        health,
+      });
+    } catch (e) {
+      appendTrace(
+        "warn",
+        `${project.id}: portsStatus ${p?.id || "?"} — ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+        "process",
+      );
+      out.push({
+        id: p?.id || "unknown",
+        port: Number(p?.port) || 0,
+        label: p?.label || p?.id || "unknown",
+        up: false,
+        listening: false,
+        health: null,
+        error: e instanceof Error ? e.message : String(e),
+      });
     }
-    out.push({
-      id: p.id,
-      port: p.port,
-      label: p.label || p.id,
-      up,
-      listening: up,
-      health,
-    });
   }
   return out;
 }
@@ -217,6 +309,7 @@ export async function runAction(
   project: Project,
   actionId: string,
   extraArgsOrOpts: string[] | RunActionOpts = [],
+  depth = 0,
 ): Promise<{
   type: string;
   session?: SessionPublic;
@@ -226,6 +319,11 @@ export async function runAction(
   callbackId?: string;
   callbackUrl?: string;
 }> {
+  if (depth > 8) {
+    throw new Error(
+      `Action nesting too deep (restart/compose cycle?) at ${actionId}`,
+    );
+  }
   const opts: RunActionOpts = Array.isArray(extraArgsOrOpts)
     ? { extraArgs: extraArgsOrOpts }
     : extraArgsOrOpts || {};
@@ -270,8 +368,13 @@ export async function runAction(
 
   if (action.type === "restart") {
     stopProject(project);
-    const target = action.restartAction || action.id;
-    return runAction(project, target, opts);
+    const target = (action.restartAction || "").trim();
+    if (!target || target === action.id) {
+      throw new Error(
+        `Action ${action.id}: type=restart needs restartAction pointing at another action`,
+      );
+    }
+    return runAction(project, target, opts, depth + 1);
   }
 
   if (action.type === "compose") {
@@ -290,7 +393,7 @@ export async function runAction(
       }
       // Do not fan out callbacks to every compose step — only the outer call.
       const stepOpts: RunActionOpts = { extraArgs: opts.extraArgs };
-      const r = await runAction(project, aid, stepOpts);
+      const r = await runAction(project, aid, stepOpts, depth + 1);
       if (r.session) sessions.push(r.session);
       if (r.sessions) sessions.push(...r.sessions);
       if (target.kind === "run" && i < ids.length - 1) {
@@ -332,11 +435,12 @@ export async function runAction(
     };
   }
 
+  const actionArgs = Array.isArray(action.args) ? action.args : [];
   // Configured action id selfqa with kind selfqa / args --selfqa
   if (
     action.id === "selfqa" ||
     action.kind === "selfqa" ||
-    action.args.includes("--selfqa")
+    actionArgs.includes("--selfqa")
   ) {
     const support = projectSupportsSelfQa(project);
     if (!support.ok) {
@@ -357,20 +461,30 @@ export async function runAction(
     return { type: "selfqa", session, selfqa };
   }
 
-  const session = spawnActionPty(project, action, extraArgs);
-  const watched = watchActionSessions({
-    projectId: project.id,
-    actionId,
-    sessionIds: [session.id],
-    callbackUrl: opts.callbackUrl,
-    callbackAuth: opts.callbackAuth,
-  });
-  return {
-    type: "script",
-    session,
-    callbackId: watched.callbackId,
-    callbackUrl: watched.callbackUrl,
-  };
+  try {
+    const session = spawnActionPty(project, action, extraArgs);
+    const watched = watchActionSessions({
+      projectId: project.id,
+      actionId,
+      sessionIds: [session.id],
+      callbackUrl: opts.callbackUrl,
+      callbackAuth: opts.callbackAuth,
+    });
+    return {
+      type: "script",
+      session,
+      callbackId: watched.callbackId,
+      callbackUrl: watched.callbackUrl,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    appendTrace(
+      "error",
+      `action ${project.id}/${actionId} failed: ${msg}`,
+      "process",
+    );
+    throw e instanceof Error ? e : new Error(msg);
+  }
 }
 
 function spawnActionPty(
@@ -396,12 +510,21 @@ function spawnActionPty(
     killByProject(project.id, new Set([kind]));
   }
 
-  const script = resolveScript(project, action.script || "./script.sh");
-  let args = [...action.args, ...extraArgs];
+  const baseArgs = Array.isArray(action.args) ? action.args : [];
+  let args = [...baseArgs, ...extraArgs];
   // If the preset only has --selfqa, allow callers to pass structured opts via extraArgs only.
   if (action.kind === "selfqa" && !args.some((a) => a === "--selfqa")) {
     args = [...buildSelfQaArgs({}), ...extraArgs];
   }
+  // When script field already embeds args (pnpm --filter …), don't double-append
+  // configured args that duplicate — still append explicit extraArgs via build.
+  const command = buildActionCommand(
+    project,
+    action.script || "./script.sh",
+    // script-field tokens carry their own args; only pass action.args+extra when
+    // the script is a single path token (classic ./script.sh + args[] form).
+    splitScriptField(action.script || "").length <= 1 ? args : extraArgs,
+  );
   const lan = advertiseEnv(project);
   const env = {
     ...lan,
@@ -417,14 +540,14 @@ function spawnActionPty(
     cwd: project.path,
     kind,
     title: action.label || action.id,
-    command: ["bash", script, ...args],
+    command,
     env,
   });
   return {
     ...info,
     alive: true,
     label: info.title,
-    cmdline: info.cmdline || ["bash", script, ...args],
+    cmdline: info.cmdline || command,
   };
 }
 
@@ -454,8 +577,18 @@ export function stopProject(project: Project): string[] {
       /* ignore */
     }
   }
-  for (const p of project.ports) {
-    killed.push(...killPortListeners(p.port));
+  for (const p of project.ports || []) {
+    try {
+      killed.push(...killPortListeners(p.port));
+    } catch (e) {
+      appendTrace(
+        "warn",
+        `${project.id}: killPort ${p?.port} — ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+        "process",
+      );
+    }
   }
   return killed;
 }

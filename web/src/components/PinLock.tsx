@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { api } from '../lib/api'
 import { clearSession, hasSession } from '../lib/auth'
 import { formatWait, parseAuthError } from '../lib/authErrors'
+import { isPinLockSuppressed } from '../lib/pinLockSuppress'
 import {
   clearLegacyLocalPin,
   readLegacyLocalPin,
@@ -183,14 +184,22 @@ export function PinLock({ children }: { children: ReactNode }) {
     }
     const onVis = () => {
       if (document.visibilityState === 'hidden') {
+        // Port tiles / intentional window.open briefly suppress so iOS Safari
+        // pagehide does not look like a Home Base crash (PIN gate).
+        if (isPinLockSuppressed()) return
         if (!lockedRef.current) lastActive.current = 0
       } else if (document.visibilityState === 'visible') {
         if (lockedRef.current) return
+        if (isPinLockSuppressed()) {
+          markActive()
+          return
+        }
         if (Date.now() - lastActive.current >= idleMs.current) lock()
         else markActive()
       }
     }
     const onPageHide = () => {
+      if (isPinLockSuppressed()) return
       lastActive.current = 0
       if (enabledRef.current && !lockedRef.current) {
         void api.appPinLock().catch(() => undefined)

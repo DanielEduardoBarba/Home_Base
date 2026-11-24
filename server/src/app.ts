@@ -1282,20 +1282,32 @@ app.post("/api/projects/:projectId/action", async (c) => {
       dryRun: z.boolean().optional(),
     })
     .parse(await readJson(c));
-  return c.json(
-    await runAction(p, body.actionId, {
-      extraArgs: body.extraArgs || [],
-      callbackUrl: body.callbackUrl,
-      callbackAuth: body.callbackAuth,
-      selfqa: {
-        goal: body.goal,
-        cycles: body.cycles,
-        maxMinutes: body.maxMinutes,
-        testers: body.testers,
-        dryRun: body.dryRun,
-      },
-    }),
-  );
+  try {
+    return c.json(
+      await runAction(p, body.actionId, {
+        extraArgs: body.extraArgs || [],
+        callbackUrl: body.callbackUrl,
+        callbackAuth: body.callbackAuth,
+        selfqa: {
+          goal: body.goal,
+          cycles: body.cycles,
+          maxMinutes: body.maxMinutes,
+          testers: body.testers,
+          dryRun: body.dryRun,
+        },
+      }),
+    );
+  } catch (e) {
+    // Never let action failures take down the request worker — surface as HTTP.
+    const msg = e instanceof Error ? e.message : String(e);
+    const status =
+      /not found|unknown action|needs restartAction|escapes project|too deep|not supported|already has an active/i.test(
+        msg,
+      )
+        ? 400
+        : 500;
+    throw new HttpError(status, msg);
+  }
 });
 
 app.get("/api/projects/:projectId/selfqa", async (c) => {

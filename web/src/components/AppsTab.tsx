@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../lib/api'
+import { suppressPinLockFor } from '../lib/pinLockSuppress'
+import {
+  decidePortTileClick,
+  openPortInNewTab,
+} from '../lib/portTile'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 import type { ActionDef, Project } from '../lib/types'
 import { useServerIdentity } from '../lib/serverIdentity'
@@ -84,7 +89,8 @@ export function AppsTab({
 
   const runActions = useMemo(() => {
     if (!project) return []
-    return project.actions.filter(
+    const actions = project.actions || []
+    return actions.filter(
       (a) =>
         (a.group === 'main' || !a.group) &&
         a.type !== 'stop' &&
@@ -96,12 +102,14 @@ export function AppsTab({
     )
   }, [project])
 
-  const ship = project?.actions.filter((a) => a.group === 'ship') || []
-  const hotkeys = project?.actions.filter((a) => a.group === 'hotkey') || []
+  const ship = project?.actions?.filter((a) => a.group === 'ship') || []
+  const hotkeys = project?.actions?.filter((a) => a.group === 'hotkey') || []
+  // Include group "qa" (and any other custom group) so actions like
+  // api-noflags are visible — not only reachable via a port id match.
   const other =
-    project?.actions.filter(
+    project?.actions?.filter(
       (a) =>
-        !['main', 'ship', 'hotkey', 'qa', ''].includes(a.group) &&
+        !['main', 'ship', 'hotkey', ''].includes(a.group || '') &&
         a.group &&
         a.id !== 'selfqa',
     ) || []
@@ -211,6 +219,37 @@ export function AppsTab({
     if (!project || !selectedRun) return
     if (isRunning(project)) await doStop()
     else await doRun(selectedRun)
+  }
+
+  async function onPortTile(ps: {
+    id: string
+    port: number
+    label?: string
+    up?: boolean
+    listening?: boolean
+  }) {
+    if (!project) return
+    try {
+      const decision = decidePortTileClick({
+        port: ps,
+        actions: project.actions,
+        location: window.location,
+      })
+      if (decision.kind === 'run') {
+        await doRun(decision.action)
+        return
+      }
+      if (decision.kind === 'open') {
+        suppressPinLockFor(3000)
+        if (!openPortInNewTab(decision.href)) {
+          setMsg(`Could not open ${decision.href} (popup blocked)`)
+        }
+        return
+      }
+      setMsg(decision.message)
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e))
+    }
   }
 
   if (!projects.length) {
@@ -381,26 +420,34 @@ export function AppsTab({
                 up: false,
               }))
             ).map((ps) => {
-              // Same host the SPA was loaded from (VPN/LAN), not localhost
+              // Same host the SPA was loaded from (VPN/LAN), not localhost.
+              // Use a button (not <a target=_blank>): on iPhone/PWA an <a> can
+              // same-tab navigate + pagehide → App PIN lock ("UI crashed").
               const href = `${location.protocol}//${location.hostname}:${ps.port}/`
+              const match = (project.actions || []).find((a) => a.id === ps.id)
+              const title = portUp(ps)
+                ? `Open ${href}`
+                : match
+                  ? `Start ${match.label || match.id}`
+                  : `${ps.label || ps.id} not listening`
               return (
-                <a
+                <button
                   key={ps.id}
-                  href={href}
-                  target="_blank"
-                  rel="noreferrer"
-                  title={href}
-                  className="hb-port !py-1.5 block no-underline"
+                  type="button"
+                  title={title}
+                  disabled={!!busy}
+                  onClick={() => void onPortTile(ps)}
+                  className="hb-port !py-1.5 block w-full text-left no-underline"
                   data-up={portUp(ps) ? '1' : '0'}
                 >
                   <div className="flex items-center justify-center gap-1">
                     <Dot up={portUp(ps)} />
                     <span>:{ps.port}</span>
                   </div>
-                  <div className="mt-0.5 truncate text-[10px] opacity-90">
+                  <div className="mt-0.5 truncate text-[10px] opacity-90 text-center">
                     {ps.label || ps.id}
                   </div>
-                </a>
+                </button>
               )
             })}
           </div>
