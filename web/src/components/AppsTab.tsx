@@ -4,6 +4,7 @@ import { suppressPinLockFor } from '../lib/pinLockSuppress'
 import {
   decidePortTileClick,
   openPortInNewTab,
+  type PortTilePort,
 } from '../lib/portTile'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 import type { ActionDef, Project } from '../lib/types'
@@ -221,13 +222,7 @@ export function AppsTab({
     else await doRun(selectedRun)
   }
 
-  async function onPortTile(ps: {
-    id: string
-    port: number
-    label?: string
-    up?: boolean
-    listening?: boolean
-  }) {
+  async function onPortTile(ps: PortTilePort) {
     if (!project) return
     try {
       const decision = decidePortTileClick({
@@ -240,6 +235,7 @@ export function AppsTab({
         return
       }
       if (decision.kind === 'open') {
+        // One-shot: first hide from window.open is ignored; delayed lock if still hidden.
         suppressPinLockFor(3000)
         if (!openPortInNewTab(decision.href)) {
           setMsg(`Could not open ${decision.href} (popup blocked)`)

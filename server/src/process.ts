@@ -101,10 +101,43 @@ export function buildActionCommand(
     head.endsWith(".bash");
   if (pathLike) {
     const abs = resolveScript(project, head);
+    if (!existsSync(abs)) {
+      throw new Error(`Script not found: ${head}`);
+    }
     return ["bash", abs, ...scriptArgs, ...more];
   }
   const cmdline = [...parts, ...more].map(shellQuote).join(" ");
   return ["bash", "-lc", cmdline];
+}
+
+/** If action id matches a project port that is already listening, refuse spawn. */
+export function assertPortFreeForAction(project: Project, actionId: string): void {
+  for (const p of project.ports || []) {
+    if (p.id !== actionId) continue;
+    const portNum = Number(p.port);
+    if (!Number.isFinite(portNum) || portNum <= 0) continue;
+    if (isPortListening(portNum)) {
+      throw new Error(`Port ${portNum} already in use`);
+    }
+  }
+}
+
+const QUICK_EXIT_MS = 500;
+
+/** If the PTY dies with non-zero within a short window, surface failure (not "started"). */
+async function awaitQuickNonZeroExit(sessionId: string): Promise<void> {
+  const deadline = Date.now() + QUICK_EXIT_MS;
+  while (Date.now() < deadline) {
+    const s = getSession(sessionId);
+    if (!s || s.exited) {
+      const code = s?.exitCode;
+      if (code != null && code !== 0) {
+        throw new Error(sessionFailHint(sessionId) || `Action exited with code ${code}`);
+      }
+      return;
+    }
+    await Bun.sleep(40);
+  }
 }
 
 async function probeHealth(
@@ -367,13 +400,18 @@ export async function runAction(
   }
 
   if (action.type === "restart") {
-    stopProject(project);
+    // Validate BEFORE stopping anything — empty/self restartAction must leave project untouched.
     const target = (action.restartAction || "").trim();
     if (!target || target === action.id) {
       throw new Error(
         `Action ${action.id}: type=restart needs restartAction pointing at another action`,
       );
     }
+    const next = project.actions.find((a) => a.id === target);
+    if (!next) {
+      throw new Error(`Unknown action: ${target}`);
+    }
+    stopProject(project);
     return runAction(project, target, opts, depth + 1);
   }
 
@@ -462,7 +500,17 @@ export async function runAction(
   }
 
   try {
+    // Fail closed before PTY spawn: missing script / port already bound.
+    buildActionCommand(
+      project,
+      action.script || "./script.sh",
+      splitScriptField(action.script || "").length <= 1
+        ? [...(Array.isArray(action.args) ? action.args : []), ...extraArgs]
+        : extraArgs,
+    );
+    // For run/expo, prior same-kind sessions are replaced inside spawn — check port after that kill.
     const session = spawnActionPty(project, action, extraArgs);
+    await awaitQuickNonZeroExit(session.id);
     const watched = watchActionSessions({
       projectId: project.id,
       actionId,
@@ -509,6 +557,9 @@ function spawnActionPty(
     }
     killByProject(project.id, new Set([kind]));
   }
+
+  // After replacing our own sessions, refuse if the matching port is still bound.
+  assertPortFreeForAction(project, action.id);
 
   const baseArgs = Array.isArray(action.args) ? action.args : [];
   let args = [...baseArgs, ...extraArgs];

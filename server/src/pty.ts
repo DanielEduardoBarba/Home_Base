@@ -47,6 +47,8 @@ type PtySession = {
   ring: string;
   subscribers: Set<Subscriber>;
   exited: boolean;
+  /** Set when the process exits; null while still running. */
+  exitCode: number | null;
 };
 
 const sessions = new Map<string, PtySession>();
@@ -332,6 +334,7 @@ export function spawnShell(opts: {
   };
   const onExit = (exitCode: number) => {
     session.exited = true;
+    session.exitCode = exitCode ?? 0;
     broadcast(session, JSON.stringify({ type: "exit", code: exitCode }));
     const tail = session.ring.replace(/\s+/g, " ").trim().slice(-360);
     appendTrace(
@@ -375,6 +378,7 @@ export function spawnShell(opts: {
     ring: "",
     subscribers: new Set(),
     exited: false,
+    exitCode: null,
   };
   sessions.set(id, session);
   appendTrace("info", `pty spawn ${id} cwd=${opts.cwd} mode=${backend.mode}`, "pty");

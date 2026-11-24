@@ -1,14 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ActionDef, Project } from "../../src/config";
 import {
+  assertPortFreeForAction,
   buildActionCommand,
   resolveScript,
   runAction,
   splitScriptField,
 } from "../../src/process";
+import { killSession, listSessions, spawnShell } from "../../src/pty";
 
 function project(partial?: Partial<Project>): Project {
   const path = partial?.path || mkdtempSync(join(tmpdir(), "hb-act-"));
@@ -115,7 +117,7 @@ describe("resolveScript / buildActionCommand", () => {
 });
 
 describe("runAction hardening", () => {
-  test("restart without restartAction fails (no stack overflow)", async () => {
+  test("restart without restartAction fails BEFORE stopping sessions", async () => {
     const p = project({
       actions: [
         action({
@@ -126,10 +128,23 @@ describe("runAction hardening", () => {
         }),
       ],
     });
-    await expect(runAction(p, "restart")).rejects.toThrow(/restartAction/);
+    const alive = spawnShell({
+      projectId: p.id,
+      cwd: p.path,
+      kind: "run",
+      title: "keep-me",
+      command: ["bash", "-lc", "sleep 30"],
+    });
+    try {
+      await expect(runAction(p, "restart")).rejects.toThrow(/restartAction/);
+      const still = listSessions(p.id).find((s) => s.id === alive.id);
+      expect(still?.alive).toBe(true);
+    } finally {
+      killSession(alive.id);
+    }
   });
 
-  test("restart targeting self fails", async () => {
+  test("restart targeting self fails BEFORE stopping sessions", async () => {
     const p = project({
       actions: [
         action({
@@ -139,12 +154,95 @@ describe("runAction hardening", () => {
         }),
       ],
     });
-    await expect(runAction(p, "restart")).rejects.toThrow(/restartAction/);
+    const alive = spawnShell({
+      projectId: p.id,
+      cwd: p.path,
+      kind: "run",
+      title: "keep-me-self",
+      command: ["bash", "-lc", "sleep 30"],
+    });
+    try {
+      await expect(runAction(p, "restart")).rejects.toThrow(/restartAction/);
+      const still = listSessions(p.id).find((s) => s.id === alive.id);
+      expect(still?.alive).toBe(true);
+    } finally {
+      killSession(alive.id);
+    }
   });
 
   test("unknown action throws without crashing process", async () => {
     const p = project({ actions: [] });
     await expect(runAction(p, "api-noflags")).rejects.toThrow(/Unknown action/);
+  });
+
+  test("missing script → error before spawn", async () => {
+    const p = project({
+      actions: [
+        action({
+          id: "api-noflags",
+          group: "qa",
+          script: "scripts/does-not-exist.sh",
+        }),
+      ],
+    });
+    expect(() =>
+      buildActionCommand(p, "scripts/does-not-exist.sh"),
+    ).toThrow(/Script not found/);
+    await expect(runAction(p, "api-noflags")).rejects.toThrow(/Script not found/);
+    expect(listSessions(p.id).length).toBe(0);
+  });
+
+  test("port already in use → error before spawn", async () => {
+    const srv = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        return new Response("ok");
+      },
+    });
+    const bound = Number(srv.port);
+    try {
+      const p = project({
+        ports: [{ id: "api-noflags", port: bound, label: "API" }],
+        actions: [
+          action({
+            id: "api-noflags",
+            group: "qa",
+            script: "scripts/qa-start-api-noflags.sh",
+          }),
+        ],
+      });
+      mkdirSync(join(p.path, "scripts"), { recursive: true });
+      writeFileSync(
+        join(p.path, "scripts", "qa-start-api-noflags.sh"),
+        "#!/bin/bash\nsleep 30\n",
+      );
+      expect(() => assertPortFreeForAction(p, "api-noflags")).toThrow(
+        /already in use/,
+      );
+      await expect(runAction(p, "api-noflags")).rejects.toThrow(/already in use/);
+      expect(listSessions(p.id).length).toBe(0);
+    } finally {
+      srv.stop(true);
+    }
+  });
+
+  test("non-zero quick exit reports failure (not started)", async () => {
+    const p = project({
+      ports: [{ id: "boom", port: 59999, label: "Boom" }],
+      actions: [
+        action({
+          id: "boom",
+          kind: "action",
+          script: "scripts/boom.sh",
+        }),
+      ],
+    });
+    mkdirSync(join(p.path, "scripts"), { recursive: true });
+    const script = join(p.path, "scripts", "boom.sh");
+    writeFileSync(script, "#!/bin/bash\necho boom-error >&2\nexit 7\n");
+    chmodSync(script, 0o755);
+    await expect(runAction(p, "boom")).rejects.toThrow(/Run failed|exited|boom/i);
   });
 
   test("port id == action id is allowed (separate namespaces)", async () => {

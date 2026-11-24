@@ -1301,7 +1301,7 @@ app.post("/api/projects/:projectId/action", async (c) => {
     // Never let action failures take down the request worker — surface as HTTP.
     const msg = e instanceof Error ? e.message : String(e);
     const status =
-      /not found|unknown action|needs restartAction|escapes project|too deep|not supported|already has an active/i.test(
+      /not found|unknown action|needs restartAction|escapes project|too deep|not supported|already has an active|already in use|script not found|run failed|exited with code/i.test(
         msg,
       )
         ? 400

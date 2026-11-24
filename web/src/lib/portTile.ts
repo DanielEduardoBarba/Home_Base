@@ -39,8 +39,12 @@ export function portTileHref(
  * Decide what tapping an Apps port tile should do.
  * Never same-tab navigate — callers open via window.open + pin-lock suppress.
  */
+/** Port tile rows may lack up/label before portsStatus arrives. */
+export type PortTilePort = Pick<PortStatus, 'id' | 'port'> &
+  Partial<Pick<PortStatus, 'up' | 'listening' | 'label'>>
+
 export function decidePortTileClick(opts: {
-  port: Pick<PortStatus, 'id' | 'port' | 'up' | 'listening' | 'label'>
+  port: PortTilePort
   actions: ActionDef[] | undefined | null
   location: Pick<Location, 'protocol' | 'hostname'>
 }): PortTileDecision {

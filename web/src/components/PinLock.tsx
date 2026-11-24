@@ -4,7 +4,11 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { api } from '../lib/api'
 import { clearSession, hasSession } from '../lib/auth'
 import { formatWait, parseAuthError } from '../lib/authErrors'
-import { isPinLockSuppressed } from '../lib/pinLockSuppress'
+import {
+  clearPinLockHideGrace,
+  isPinLockSuppressed,
+  takePinLockHideSuppress,
+} from '../lib/pinLockSuppress'
 import {
   clearLegacyLocalPin,
   readLegacyLocalPin,
@@ -182,13 +186,47 @@ export function PinLock({ children }: { children: ReactNode }) {
     const onKey = () => {
       if (!lockedRef.current) markActive()
     }
+    let delayedHideLock: number | null = null
+    const clearDelayedHideLock = () => {
+      if (delayedHideLock != null) {
+        window.clearTimeout(delayedHideLock)
+        delayedHideLock = null
+      }
+    }
+    const scheduleDelayedHideLock = (ms: number) => {
+      clearDelayedHideLock()
+      delayedHideLock = window.setTimeout(() => {
+        delayedHideLock = null
+        if (document.visibilityState !== 'hidden') return
+        clearPinLockHideGrace()
+        if (!lockedRef.current) lastActive.current = 0
+        if (enabledRef.current && !lockedRef.current) {
+          void api.appPinLock().catch(() => undefined)
+          lock()
+        }
+      }, ms)
+    }
+    const onHideEvent = (opts: { pinLockNow: boolean }) => {
+      // Port tile window.open: one-shot skip of the immediate hide; if the page
+      // stays hidden past scheduleMs, lock as normal.
+      const result = takePinLockHideSuppress()
+      if (result.skip) {
+        if (result.scheduleMs != null) scheduleDelayedHideLock(result.scheduleMs)
+        return
+      }
+      clearDelayedHideLock()
+      if (!lockedRef.current) lastActive.current = 0
+      if (opts.pinLockNow && enabledRef.current && !lockedRef.current) {
+        void api.appPinLock().catch(() => undefined)
+      }
+    }
     const onVis = () => {
       if (document.visibilityState === 'hidden') {
-        // Port tiles / intentional window.open briefly suppress so iOS Safari
-        // pagehide does not look like a Home Base crash (PIN gate).
-        if (isPinLockSuppressed()) return
-        if (!lockedRef.current) lastActive.current = 0
+        // Visibility alone zeros idle clock; pagehide does server PIN lock.
+        onHideEvent({ pinLockNow: false })
       } else if (document.visibilityState === 'visible') {
+        clearDelayedHideLock()
+        clearPinLockHideGrace()
         if (lockedRef.current) return
         if (isPinLockSuppressed()) {
           markActive()
@@ -199,11 +237,7 @@ export function PinLock({ children }: { children: ReactNode }) {
       }
     }
     const onPageHide = () => {
-      if (isPinLockSuppressed()) return
-      lastActive.current = 0
-      if (enabledRef.current && !lockedRef.current) {
-        void api.appPinLock().catch(() => undefined)
-      }
+      onHideEvent({ pinLockNow: true })
     }
     window.addEventListener('pointerdown', onPointer, true)
     window.addEventListener('keydown', onKey, true)
@@ -219,6 +253,7 @@ export function PinLock({ children }: { children: ReactNode }) {
       document.removeEventListener('visibilitychange', onVis)
       window.removeEventListener('pagehide', onPageHide)
       window.clearInterval(tick)
+      clearDelayedHideLock()
     }
   }, [enabled, lock, markActive])
 
