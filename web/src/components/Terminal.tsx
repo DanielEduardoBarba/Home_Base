@@ -10,7 +10,12 @@ import {
   termClipboardKeyAction,
   writeClipboard,
 } from '../lib/termClipboard'
-import { TERM_ARROW_KEYS, TERM_SYMBOL_KEYS } from '../lib/termKeys'
+import {
+  TERM_ARROW_KEYS,
+  TERM_CTRL_LETTERS,
+  TERM_SYMBOL_KEYS,
+  toCtrlSequence,
+} from '../lib/termKeys'
 import {
   connStateLabel,
   connectWithReconnect,
@@ -47,6 +52,9 @@ export function TerminalView({ path, sessionId, onSession, onEnded, className }:
   const onEndedRef = useRef(onEnded)
   const [connState, setConnState] = useState<WsConnState>('connecting')
   const [actionsOpen, setActionsOpen] = useState(false)
+  /** Sticky Ctrl for iPhone / soft keyboards — next letter becomes Ctrl+letter. */
+  const [ctrlArmed, setCtrlArmed] = useState(false)
+  const ctrlArmedRef = useRef(false)
   const [hasSelection, setHasSelection] = useState(false)
   const endedRef = useRef(false)
   const announcedRef = useRef(false)
@@ -61,9 +69,15 @@ export function TerminalView({ path, sessionId, onSession, onEnded, className }:
   }, [onEnded])
 
   useEffect(() => {
+    ctrlArmedRef.current = ctrlArmed
+  }, [ctrlArmed])
+
+  useEffect(() => {
     if (!hostRef.current) return
     endedRef.current = false
     announcedRef.current = false
+    ctrlArmedRef.current = false
+    setCtrlArmed(false)
     setHasSelection(false)
 
     const term = new XTerm({
@@ -178,9 +192,24 @@ export function TerminalView({ path, sessionId, onSession, onEnded, className }:
     handleRef.current = handle
 
     const disposable = term.onData((data) => {
+      let payload = data
+      if (ctrlArmedRef.current && data.length === 1) {
+        // Esc cancels a pending Ctrl chord without sending.
+        if (data === '\x1b') {
+          ctrlArmedRef.current = false
+          setCtrlArmed(false)
+          return
+        }
+        const ctrl = toCtrlSequence(data)
+        if (ctrl != null) {
+          payload = ctrl
+          ctrlArmedRef.current = false
+          setCtrlArmed(false)
+        }
+      }
       const sock = handle.getSocket()
       if (sock?.readyState === WebSocket.OPEN) {
-        sock.send(JSON.stringify({ type: 'input', data }))
+        sock.send(JSON.stringify({ type: 'input', data: payload }))
       }
     })
 
@@ -240,11 +269,14 @@ export function TerminalView({ path, sessionId, onSession, onEnded, className }:
   }, [path, sessionId])
 
   function sendCtrl(letter: string) {
-    const code = String.fromCharCode(letter.toUpperCase().charCodeAt(0) - 64)
+    const code = toCtrlSequence(letter)
+    if (code == null) return
     const sock = handleRef.current?.getSocket()
     if (sock?.readyState === WebSocket.OPEN) {
       sock.send(JSON.stringify({ type: 'input', data: code }))
     }
+    ctrlArmedRef.current = false
+    setCtrlArmed(false)
     termRef.current?.focus()
   }
 
@@ -253,6 +285,15 @@ export function TerminalView({ path, sessionId, onSession, onEnded, className }:
     if (sock?.readyState === WebSocket.OPEN) {
       sock.send(JSON.stringify({ type: 'input', data }))
     }
+    termRef.current?.focus()
+  }
+
+  function toggleCtrlArmed() {
+    setCtrlArmed((on) => {
+      const next = !on
+      ctrlArmedRef.current = next
+      return next
+    })
     termRef.current?.focus()
   }
 
@@ -289,6 +330,21 @@ export function TerminalView({ path, sessionId, onSession, onEnded, className }:
           Keys
         </button>
         <div className="hb-term-quick">
+          <button
+            type="button"
+            onClick={toggleCtrlArmed}
+            disabled={!live}
+            className={`hb-term-key${ctrlArmed ? ' hb-term-key--armed' : ''}`}
+            title={
+              ctrlArmed
+                ? 'Ctrl armed — tap a letter (or Esc to cancel)'
+                : 'Arm Ctrl — next letter is Ctrl+letter (phone-friendly)'
+            }
+            aria-pressed={ctrlArmed}
+            aria-label="Ctrl"
+          >
+            Ctrl
+          </button>
           {(['C', 'D']).map((k) => (
             <button
               key={k}
@@ -354,6 +410,11 @@ export function TerminalView({ path, sessionId, onSession, onEnded, className }:
           {connStateLabel(connState)}
         </button>
       </div>
+      {ctrlArmed ? (
+        <div className="hb-term-ctrl-hint" role="status">
+          Ctrl on — tap a letter (Keys → A–Z, or soft keyboard). Esc cancels.
+        </div>
+      ) : null}
 
       {actionsOpen && (
         <div
@@ -364,7 +425,7 @@ export function TerminalView({ path, sessionId, onSession, onEnded, className }:
           onClick={() => setActionsOpen(false)}
         >
           <div
-            className="hb-surface w-full max-w-sm p-4 space-y-3 shadow-xl"
+            className="hb-surface hb-term-keys-sheet w-full max-w-sm p-4 space-y-3 shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-2">
@@ -377,18 +438,42 @@ export function TerminalView({ path, sessionId, onSession, onEnded, className }:
                 Close
               </button>
             </div>
-            <div className="grid grid-cols-3 gap-2">
-              {(['C', 'D', 'Z', 'L']).map((k) => (
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs text-mute leading-snug">
+                  Ctrl + any letter — tap below, or arm Ctrl then type.
+                </p>
                 <button
-                  key={k}
                   type="button"
                   disabled={!live}
-                  onClick={() => runAction(() => sendCtrl(k))}
-                  className="hb-btn hb-btn-ghost !min-h-11 text-sm font-mono"
+                  onClick={toggleCtrlArmed}
+                  className={`hb-btn hb-btn-ghost !min-h-11 !px-3 text-sm font-mono${
+                    ctrlArmed ? ' hb-term-key--armed' : ''
+                  }`}
+                  aria-pressed={ctrlArmed}
                 >
-                  Ctrl+{k}
+                  {ctrlArmed ? 'Ctrl on' : 'Ctrl'}
                 </button>
-              ))}
+              </div>
+              <div className="hb-term-ctrl-grid">
+                {TERM_CTRL_LETTERS.map((k) => (
+                  <button
+                    key={k}
+                    type="button"
+                    disabled={!live}
+                    onClick={() => sendCtrl(k)}
+                    className="hb-btn hb-btn-ghost hb-term-ctrl-cell font-mono"
+                    title={`Ctrl+${k}`}
+                    aria-label={`Ctrl+${k}`}
+                  >
+                    ^{k}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
               <button
                 type="button"
                 disabled={!live}
