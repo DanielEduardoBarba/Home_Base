@@ -135,15 +135,24 @@ export function PinLock({ children }: { children: ReactNode }) {
       setLocked(true)
       writeCachedGate(true, true)
       // Already locked: keep partial PIN entry (423 polls must not wipe digits).
-      if (!alreadyLocked) setDigits('')
+      if (!alreadyLocked) {
+        setDigits('')
+        // Fresh lock (idle / tab return / 423) — clean prompt, not error chrome.
+        setErrorHeadline('')
+        setErrorStatus('')
+        setShake(false)
+      }
       const detail = (e as CustomEvent).detail
       const parsed = parseAuthError(
         detail || { status: 423, detail: { code: 'pin_locked', message: 'App PIN required' } },
         { surface: 'pin' },
       )
-      if (parsed.kind === 'pin_required' || parsed.status === 423) {
+      // pin_required / 423 is the normal gate — overlay only, no red/gray error chrome.
+      // Wrong PIN / lockout messaging comes from tryUnlock + refreshPrefs.
+      if (parsed.kind === 'locked_out') {
         setErrorHeadline(parsed.headline)
         setErrorStatus(parsed.statusLine)
+        if (parsed.retryAfter > 0) setRetryAfter(parsed.retryAfter)
       }
     }
     window.addEventListener('storage', onStorage)
@@ -167,7 +176,12 @@ export function PinLock({ children }: { children: ReactNode }) {
     writeCachedGate(true, true)
     // Only clear on unlocked → locked. Re-lock (idle tick, tab return, 423)
     // must not wipe digits the user is mid-entering.
-    if (!alreadyLocked) setDigits('')
+    if (!alreadyLocked) {
+      setDigits('')
+      setErrorHeadline('')
+      setErrorStatus('')
+      setShake(false)
+    }
     if (alreadyLocked) return
     void api.appPinLock().catch(() => {
       /* UI still locked; next API call returns 423 */

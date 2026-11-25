@@ -79,7 +79,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         if (!credential) clearSession('unauthorized')
       }
     }
-    // Server-side App PIN gate — tell PinLock to cover the UI, with the 423 copy.
+    // Server-side App PIN gate — tell PinLock to cover the UI (no error chrome for 423).
     if (res.status === 423) {
       try {
         window.dispatchEvent(new CustomEvent('hb-pin-lock', { detail: err }))
