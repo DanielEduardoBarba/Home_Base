@@ -388,6 +388,77 @@ export function healEmptyAppProject(project: Project): Project | null {
   );
 }
 
+const UNITY_WEBGL_ACTION_IDS = new Set([
+  "webgl",
+  "webgl_serve",
+  "webgl_live",
+]);
+const UNITY_BRIDGE_ACTION_IDS = new Set(["editor", "mcp-bridge"]);
+
+/**
+ * Flow the project's allocated ports into Unity action args + env.
+ * Never leave a hard-coded 8410 (or stale -l N) when the workspace has its own webgl port.
+ */
+export function syncUnityActionPorts(
+  actions: Record<string, unknown>[],
+  ports: { id?: string; port?: number }[],
+): Record<string, unknown>[] {
+  const webglPort = ports.find((p) => p.id === "webgl")?.port;
+  const bridgePort = ports.find((p) => p.id === "mcp-bridge")?.port;
+  const webglStr =
+    webglPort != null && Number.isFinite(Number(webglPort))
+      ? String(webglPort)
+      : null;
+  const bridgeStr =
+    bridgePort != null && Number.isFinite(Number(bridgePort))
+      ? String(bridgePort)
+      : null;
+  if (!webglStr && !bridgeStr) return actions;
+
+  return actions.map((a) => {
+    const id = String(a.id || "");
+    const env: Record<string, string> = {
+      ...((a.env as Record<string, string> | undefined) || {}),
+    };
+    let args = Array.isArray(a.args) ? a.args.map(String) : [];
+    let script = a.script != null ? String(a.script) : undefined;
+    let touched = false;
+
+    if (webglStr && UNITY_WEBGL_ACTION_IDS.has(id)) {
+      env.UNITY_WEBGL_PORT = webglStr;
+      if (args.length === 0 || /^\d+$/.test(args[0] || "")) {
+        args = args.length === 0 ? [webglStr] : [webglStr, ...args.slice(1)];
+      } else {
+        const li = args.findIndex(
+          (x, i) => x === "-l" && /^\d+$/.test(args[i + 1] || ""),
+        );
+        if (li >= 0) args[li + 1] = webglStr;
+        else args = args.map((x) => (x === "8410" ? webglStr : x));
+      }
+      if (script) {
+        const next = script
+          .replace(/(-l\s+)\d+/g, `$1${webglStr}`)
+          .replace(/\b8410\b/g, webglStr);
+        if (next !== script) script = next;
+      }
+      touched = true;
+    }
+
+    if (bridgeStr && UNITY_BRIDGE_ACTION_IDS.has(id)) {
+      env.UNITY_MCP_PORT = bridgeStr;
+      touched = true;
+    }
+
+    if (!touched) return a;
+    return {
+      ...a,
+      args,
+      env,
+      ...(script !== undefined ? { script } : {}),
+    };
+  });
+}
+
 /** Upsert from preset name and/or raw fields (used by REST + Chat tools). */
 export function upsertProjectFromInput(input: {
   path: string;
@@ -419,22 +490,11 @@ export function upsertProjectFromInput(input: {
   if (input.ports) raw.ports = input.ports;
   if (input.actions) raw.actions = input.actions;
   // Unity: keep live-webgl / serve action listen port in sync with project webgl port.
-  if (String(raw.id) && Array.isArray(raw.actions) && Array.isArray(raw.ports)) {
-    const webglPort = (raw.ports as { id?: string; port?: number }[]).find(
-      (p) => p.id === "webgl",
-    )?.port;
-    if (webglPort) {
-      raw.actions = (raw.actions as Record<string, unknown>[]).map((a) => {
-        const id = String(a.id || "");
-        if (id !== "webgl" && id !== "webgl_serve" && id !== "webgl_live") {
-          return a;
-        }
-        const args = Array.isArray(a.args) ? [...a.args] : [];
-        if (args.length === 0) args.push(String(webglPort));
-        else args[0] = String(webglPort);
-        return { ...a, args };
-      });
-    }
+  if (Array.isArray(raw.actions) && Array.isArray(raw.ports)) {
+    raw.actions = syncUnityActionPorts(
+      raw.actions as Record<string, unknown>[],
+      raw.ports as { id?: string; port?: number }[],
+    );
   }
   return upsertProject(raw);
 }

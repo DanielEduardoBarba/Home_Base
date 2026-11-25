@@ -593,8 +593,16 @@ function spawnActionPty(
     splitScriptField(action.script || "").length <= 1 ? args : extraArgs,
   );
   const lan = advertiseEnv(project);
+  const webgl = (project.ports || []).find((p) => p.id === "webgl");
+  const bridge = (project.ports || []).find((p) => p.id === "mcp-bridge");
   const env = {
     ...lan,
+    ...(webgl?.port != null
+      ? { UNITY_WEBGL_PORT: String(webgl.port) }
+      : {}),
+    ...(bridge?.port != null
+      ? { UNITY_MCP_PORT: String(bridge.port) }
+      : {}),
     ...action.env,
   };
   appendTrace(

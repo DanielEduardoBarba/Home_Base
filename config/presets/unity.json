@@ -16,14 +16,23 @@
   ],
   "actions": [
     {
+      "id": "unity_dev",
+      "label": "Unity.Dev",
+      "type": "compose",
+      "compose": ["editor", "webgl_serve"],
+      "kind": "run",
+      "variant": "primary",
+      "group": "main",
+      "hint": "Start MCP bridge + WebGL preview together (placeholder until Build WebGL)"
+    },
+    {
       "id": "editor",
       "label": "Editor + MCP bridge",
       "script": "scripts/unity/start-editor-bridge.sh",
       "args": [],
       "kind": "run",
-      "variant": "primary",
       "group": "main",
-      "hint": "Headless Unity with Coplay MCP bridge on :6400"
+      "hint": "Headless Unity with Coplay MCP bridge on the project mcp-bridge port"
     },
     {
       "id": "webgl_build",
@@ -35,13 +44,22 @@
       "hint": "Batchmode WebGL → Builds/WebGL (stops this project's bridge first if live-webgl calls it)"
     },
     {
+      "id": "webgl_serve",
+      "label": "WebGL preview",
+      "script": "scripts/unity/serve-webgl.sh",
+      "args": [],
+      "kind": "run",
+      "group": "main",
+      "hint": "Serve Builds/WebGL (or a No-build-yet placeholder) on UNITY_WEBGL_PORT"
+    },
+    {
       "id": "webgl",
       "label": "WebGL live view",
       "script": "scripts/unity/live-webgl.sh",
-      "args": ["8410"],
+      "args": [],
       "kind": "run",
       "group": "main",
-      "hint": "Watch Assets → rebuild → serve on VPN/wg0:<webgl-port> (or HB_WEBGL_BIND / 127.0.0.1) with reload"
+      "hint": "Build if missing, serve, watch Assets → rebuild; stops bridge for each build then restarts it"
     },
     {
       "id": "stop",

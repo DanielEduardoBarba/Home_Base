@@ -207,13 +207,19 @@ export function projectLanEnv(
   projectPorts: { id: string; port: number }[],
 ): Record<string, string> {
   const env: Record<string, string> = { HOSTNAME: "0.0.0.0" };
+  const ports = new Map(projectPorts.map((p) => [p.id, p.port]));
+  // Unity: always flow workspace ports into action PTYs (never rely on hard-coded 8410).
+  const webglPort = ports.get("webgl");
+  const bridgePort = ports.get("mcp-bridge");
+  if (webglPort) env.UNITY_WEBGL_PORT = String(webglPort);
+  if (bridgePort) env.UNITY_MCP_PORT = String(bridgePort);
+
   const host = advertiseHost();
   if (!host) return env;
 
   env.HOMEBASE_ADVERTISE_HOST = host;
   env.REACT_NATIVE_PACKAGER_HOSTNAME = host;
 
-  const ports = new Map(projectPorts.map((p) => [p.id, p.port]));
   const apiPort = ports.get("api");
   const webPort = ports.get("web");
 
