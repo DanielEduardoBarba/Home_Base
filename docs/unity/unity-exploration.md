@@ -317,18 +317,21 @@ See **[mcp-tools.md](./mcp-tools.md)** for `homebase_unity_*` (status, bridge, f
 | Doctor API | `GET /api/unity/status` — Hub, editors+WebGL, license (product/type only), bridge reachability, sample project |
 | Settings UI | Settings → Unity panel + Setup scene link to Unity doctor |
 | System status | Lightweight `unity.hubPresent` / `unity.editorPresent` flags on `/api/system/status` |
-| Preset | `config/presets/unity.json` (webgl + mcp-bridge ports; editor/webgl_build/webgl_serve/stop actions) |
+| Preset | `config/presets/unity.json` (webgl + mcp-bridge ports; `unity_dev` compose, editor/webgl_build/webgl_serve/webgl/stop) |
 | Workspace create | `createMcpWorkspace(name, { preset: "unity" })` → batchmode createProject + MCP package + script copy + unity preset registration |
 | Detection | Folders with `ProjectSettings/ProjectVersion.txt` auto-get unity preset on reconcile/upsert |
-| Tests | `server/test/unit/unity.test.ts` |
+| Refresh | `homebase_unity_refresh_scripts` / upsert `refreshUnityScripts` — update scripts+actions, keep ports |
+| Tests | `server/test/unit/unity.test.ts`, `unity_ports.test.ts`, `unity_webgl_placeholder.test.ts` |
 
-### C — WebGL (script only; live view deferred)
+### C — WebGL (preview + live view)
 
 | Item | Result |
 |------|--------|
 | Build script | `scripts/unity/build-webgl.sh` — batchmode `-buildTarget WebGL` + `HomeBase.Editor.EditorBuildScript.BuildWebGL` (auto-seeded into project) |
-| Serve | `npx --yes serve -l <webgl-port> Builds/WebGL` (preset action `webgl_serve`) |
-| Live phone iframe / watch-reload | **Not implemented** (Step 5). Notes unchanged: prefer WebGL static preview over streaming Xvfb Editor |
+| Port allocation | Per-workspace `webgl` port → `UNITY_WEBGL_PORT` env + action args (never hard-coded 8410) |
+| Serve | `serve-webgl.sh` / `.mjs` — VPN/wg0 bind, gzip/br, placeholder when no `Builds/WebGL/index.html` |
+| Live | `live-webgl.sh` — serve first, build if missing, watch → rebuild; stop bridge for build, restart after |
+| Unity.Dev | Compose `editor` + `webgl_serve` so bridge and preview come up together |
 
 ### Human next steps
 
@@ -363,10 +366,11 @@ See **[mcp-tools.md](./mcp-tools.md)** for `homebase_unity_*` (status, bridge, f
 
 | Item | Result |
 |------|--------|
-| Scripts | `live-webgl.sh` (watch Assets/Packages/ProjectSettings → debounced rebuild → serve); `serve-webgl.sh` + `serve-webgl.mjs` (bind **`HB_WEBGL_BIND` → wg0 IPv4 → 127.0.0.1**, never 0.0.0.0 by default; `/__hb_webgl_v` + index poller) |
-| Preset | `webgl` action = live view; port arg synced on upsert |
-| Bridge coordination | **Stop this project’s Coplay bridge before each batchmode build** (project lock). Do not use `manage_build` for this path — documented in scripts + workspace README |
-| UI | Apps iframe + open-on-phone link once port is up |
+| Scripts | `live-webgl.sh` (serve first → watch → rebuild); `serve-webgl.sh` + `serve-webgl.mjs` (bind **`HB_WEBGL_BIND` → wg0 IPv4 → 127.0.0.1**, placeholder if no build; `/__hb_webgl_v` + index poller) |
+| Preset | `unity_dev` = bridge+preview; `webgl_serve` = static/placeholder; `webgl` = live view; ports → `UNITY_WEBGL_PORT` on upsert/spawn |
+| Bridge coordination | **Stop bridge before each batchmode build, restart after** (project lock). Do not use `manage_build` for this path |
+| UI | Apps card shows `downReason` + Build WebGL; iframe once port is up (placeholder or build) |
+| Upgrade path | Existing workspaces (e.g. lastmanholdout): `homebase_unity_refresh_scripts` |
 
 ### Step 5 — Sample (`~/MCP_WORKSPACES/unity-sample`)
 

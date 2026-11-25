@@ -16,6 +16,7 @@ Feature group: **projects** (same master MCP token + Projects feature toggle). M
 | `homebase_unity_run_tests` | `projectId`, `mode?`=`EditMode`\|`PlayMode` | Async batchmode tests → `jobId`. |
 | `homebase_unity_build_webgl` | `projectId` | Async: stop bridge → build → restart preview → `jobId`. |
 | `homebase_unity_preview_status` | `projectId` | WebGL URL/port/build presence. |
+| `homebase_unity_refresh_scripts` | `projectId` | Re-copy `scripts/unity/*` + re-apply unity preset actions; preserves ports; no game-code changes. |
 | `homebase_unity_screenshot` | `projectId` | Bridge `manage_camera` screenshot → path + optional base64. |
 | `homebase_unity_job_status` | `jobId` | Poll async build/test jobs. |
 | `homebase_unity_job_list` | `limit?` | Recent Unity jobs. |
@@ -23,8 +24,9 @@ Feature group: **projects** (same master MCP token + Projects feature toggle). M
 Related (not Unity-prefixed):
 
 - `homebase_create_mcp_workspace` `{ name, preset: "unity" }` — seat-owned `Unity -createProject` + Coplay package + scripts (HB-U-03).
+- `homebase_project_upsert` `{ path, refreshUnityScripts: true }` — same refresh as `homebase_unity_refresh_scripts` (by id or after upsert).
 - `homebase_github_create_repo` — empty workspace gets Unity `.gitignore` + initial commit + `development_grok` / `development` (HB-U-04).
-- `homebase_run_action` — still works for preset actions (`editor`, `webgl_build`, `webgl`, `stop`).
+- `homebase_run_action` — preset actions: `unity_dev` (bridge+preview), `editor`, `webgl_build`, `webgl_serve`, `webgl` (live), `stop`.
 
 ## Examples
 
