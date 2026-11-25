@@ -171,6 +171,68 @@ describe("unity workspace scripts", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("refreshUnityWorkspace re-applies preset actions and preserves ports", async () => {
+    const { refreshUnityWorkspace } = await import("../../src/workspace");
+    const { upsertProjectFromInput } = await import("../../src/config");
+    const root = mkdtempSync(join(tmpdir(), "hb-unity-refresh-"));
+    const prevHome = process.env.HOMEBASE_HOME;
+    const prevProjects = process.env.HOMEBASE_PROJECTS;
+    process.env.HOMEBASE_HOME = root;
+    process.env.HOMEBASE_PROJECTS = join(root, "projects.json");
+    mkdirSync(join(root, "config"), { recursive: true });
+    writeFileSync(join(root, "projects.json"), '{"projects":[]}\n');
+    try {
+      const proj = join(root, "holdout");
+      mkdirSync(join(proj, "ProjectSettings"), { recursive: true });
+      writeFileSync(
+        join(proj, "ProjectSettings/ProjectVersion.txt"),
+        "m_EditorVersion: 6000.6.4f1\n",
+      );
+      // Simulate old project: npx serve hard-coded to 8410 on allocated 8411.
+      upsertProjectFromInput({
+        path: proj,
+        id: "lastmanholdout",
+        name: "LastManHoldout",
+        ports: [
+          { id: "webgl", label: "WebGL", port: 8411 },
+          { id: "mcp-bridge", label: "MCP Bridge", port: 6400 },
+        ],
+        actions: [
+          {
+            id: "webgl_serve",
+            label: "Serve",
+            script: "npx --yes serve -l 8410 Builds/WebGL",
+            args: [],
+            kind: "run",
+          },
+          {
+            id: "editor",
+            label: "Editor",
+            script: "scripts/unity/start-editor-bridge.sh",
+            args: [],
+            kind: "run",
+          },
+        ],
+      });
+      const r = refreshUnityWorkspace("lastmanholdout");
+      expect(r.ok).toBe(true);
+      expect(r.project?.ports.find((p) => p.id === "webgl")?.port).toBe(8411);
+      expect(r.project?.actions.some((a) => a.id === "unity_dev")).toBe(true);
+      expect(r.project?.actions.some((a) => a.id === "webgl_serve")).toBe(true);
+      const serve = r.project?.actions.find((a) => a.id === "webgl_serve");
+      expect(serve?.script).toContain("serve-webgl.sh");
+      expect(serve?.env.UNITY_WEBGL_PORT).toBe("8411");
+      expect(existsSync(join(proj, "scripts/unity/serve-webgl.mjs"))).toBe(true);
+      expect(r.scriptsInstalled?.length).toBeGreaterThan(0);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOMEBASE_HOME;
+      else process.env.HOMEBASE_HOME = prevHome;
+      if (prevProjects === undefined) delete process.env.HOMEBASE_PROJECTS;
+      else process.env.HOMEBASE_PROJECTS = prevProjects;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("unityStatus (stubbed)", () => {

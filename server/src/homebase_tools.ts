@@ -197,6 +197,7 @@ export const MCP_TOOL_FEATURE: Record<string, McpFeatureId> = {
   homebase_unity_run_tests: "projects",
   homebase_unity_build_webgl: "projects",
   homebase_unity_preview_status: "projects",
+  homebase_unity_refresh_scripts: "projects",
   homebase_unity_screenshot: "projects",
   homebase_unity_job_status: "projects",
   homebase_unity_job_list: "projects",
@@ -857,7 +858,8 @@ export function buildHomebaseTools(
   if (!readonly) {
     tools.homebase_project_upsert = {
       description:
-        "Add or update a Home Base project. Pass absolute path; optional preset (example|homebase|unity), id, name, ports, actions.",
+        "Add or update a Home Base project. Pass absolute path; optional preset (example|homebase|unity), id, name, ports, actions. " +
+        "Set refreshUnityScripts:true to re-copy scripts/unity/* and re-apply unity preset actions (preserves ports; game code untouched).",
       parameters: {
         type: "object",
         properties: {
@@ -867,11 +869,48 @@ export function buildHomebaseTools(
           name: { type: "string" },
           ports: { type: "array" },
           actions: { type: "array" },
+          refreshUnityScripts: { type: "boolean" },
         },
         required: ["path"],
       },
       execute: async (args) => {
         try {
+          const refresh =
+            args.refreshUnityScripts === true ||
+            args.refresh_unity_scripts === true;
+          if (refresh) {
+            const { refreshUnityWorkspace } = await import("./workspace");
+            const id = args.id ? String(args.id) : "";
+            if (id) {
+              const r = refreshUnityWorkspace(id);
+              if (!r.ok || !r.project) {
+                return json({ ok: false, error: r.error || "refresh failed" });
+              }
+              return json({
+                ok: true,
+                refreshed: true,
+                scriptsInstalled: r.scriptsInstalled,
+                project: await projectPublic(r.project),
+              });
+            }
+            // No id: upsert first, then refresh by returned id.
+            const project = upsertProjectFromInput({
+              path: String(args.path || ""),
+              preset: args.preset ? String(args.preset) : "unity",
+              id: args.id ? String(args.id) : undefined,
+              name: args.name ? String(args.name) : undefined,
+              ports: Array.isArray(args.ports) ? args.ports : undefined,
+              actions: Array.isArray(args.actions) ? args.actions : undefined,
+            });
+            const r = refreshUnityWorkspace(project.id);
+            return json({
+              ok: r.ok,
+              refreshed: true,
+              scriptsInstalled: r.scriptsInstalled,
+              project: await projectPublic(r.project || project),
+              error: r.error,
+            });
+          }
           const project = upsertProjectFromInput({
             path: String(args.path || ""),
             preset: args.preset ? String(args.preset) : undefined,
@@ -886,6 +925,30 @@ export function buildHomebaseTools(
             error: e instanceof Error ? e.message : String(e),
           });
         }
+      },
+    };
+    tools.homebase_unity_refresh_scripts = {
+      description:
+        "Update scripts/unity/* and unity preset actions for an existing Unity project " +
+        "(e.g. lastmanholdout). Preserves allocated ports; does not touch game Assets/Packages. " +
+        "Use after Home Base ships newer serve/live/build helpers.",
+      parameters: {
+        type: "object",
+        properties: { projectId: { type: "string" } },
+        required: ["projectId"],
+      },
+      execute: async (args) => {
+        const { refreshUnityWorkspace } = await import("./workspace");
+        const { projectPublic: pub } = await import("./process");
+        const r = refreshUnityWorkspace(resolvePid(args));
+        if (!r.ok || !r.project) {
+          return json({ ok: false, error: r.error || "refresh failed" });
+        }
+        return json({
+          ok: true,
+          scriptsInstalled: r.scriptsInstalled,
+          project: await pub(r.project),
+        });
       },
     };
     tools.homebase_create_mcp_workspace = {

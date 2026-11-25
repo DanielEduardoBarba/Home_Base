@@ -18,6 +18,7 @@ import {
   BUNDLE_ROOT,
   healEmptyAppProject,
   loadProjects,
+  looksLikeUnityWorkspace,
   mcpWorkspaceUpsertFields,
   slugId,
   upsertProjectFromInput,
@@ -288,6 +289,60 @@ export function tombstoneMcpWorkspace(target: string): void {
   chownSeatUser(stone);
 }
 
+/**
+ * Refresh Unity helper scripts + preset actions for an existing project.
+ * Preserves path/id/name/ports; replaces actions from the unity preset and
+ * re-copies scripts/unity/* (game Assets/Packages untouched).
+ */
+export function refreshUnityWorkspace(projectId: string): {
+  ok: boolean;
+  error?: string;
+  project?: Project;
+  scriptsInstalled?: string[];
+} {
+  const want = String(projectId || "").trim();
+  if (!want) return { ok: false, error: "projectId required" };
+  const existing = loadProjects().get(want);
+  if (!existing) return { ok: false, error: "project not found" };
+  if (
+    !looksLikeUnityWorkspace(existing.path) &&
+    !(existing.ports || []).some((p) => p.id === "webgl" || p.id === "mcp-bridge")
+  ) {
+    return {
+      ok: false,
+      error: "project is not a Unity workspace (no ProjectVersion.txt / unity ports)",
+    };
+  }
+
+  installUnityWorkspaceScripts(existing.path);
+  const installed: string[] = [];
+  const destDir = join(existing.path, "scripts", "unity");
+  for (const name of [
+    "start-editor-bridge.sh",
+    "stop-editor-bridge.sh",
+    "build-webgl.sh",
+    "serve-webgl.sh",
+    "serve-webgl.mjs",
+    "webgl-bind.mjs",
+    "live-webgl.sh",
+  ]) {
+    if (existsSync(join(destDir, name))) installed.push(name);
+  }
+
+  // Re-apply unity preset actions while keeping this workspace's allocated ports.
+  const ports =
+    (existing.ports || []).length > 0 ? existing.ports : undefined;
+  const project = upsertProjectFromInput({
+    path: existing.path,
+    preset: "unity",
+    id: existing.id,
+    name: existing.name,
+    ports,
+  });
+
+  return { ok: true, project, scriptsInstalled: installed };
+}
+
 /** Copy Home Base Unity helper scripts into a workspace (project-relative actions). */
 export function installUnityWorkspaceScripts(projectPath: string): void {
   const abs = resolve(projectPath);
@@ -313,28 +368,33 @@ export function installUnityWorkspaceScripts(projectPath: string): void {
       /* ignore */
     }
   }
-  // Friendly README so humans know the bridge path
+  // Friendly README so humans know the bridge path (rewritten on refresh).
   const readme = join(abs, "README.homebase-unity.md");
-  if (!existsSync(readme)) {
+  try {
     writeFileSync(
       readme,
       [
         "# Unity workspace (Home Base)",
         "",
         "Actions (from the project card):",
-        "- `scripts/unity/start-editor-bridge.sh` — headless Editor + Coplay MCP on :6400",
+        "- `scripts/unity/start-editor-bridge.sh` — headless Editor + Coplay MCP bridge",
         "- `scripts/unity/stop-editor-bridge.sh` — stop this project's bridge Editor",
         "- `scripts/unity/build-webgl.sh` — batchmode WebGL → `Builds/WebGL`",
-        "- `scripts/unity/live-webgl.sh <port>` — watch Assets → rebuild → serve on VPN/wg0 (or `HB_WEBGL_BIND` / 127.0.0.1)",
-        "- `scripts/unity/serve-webgl.sh <port>` — static serve with reload poller (same bind rules; never 0.0.0.0 by default)",
+        "- `scripts/unity/live-webgl.sh` — build if missing, watch Assets → rebuild → serve (`UNITY_WEBGL_PORT`)",
+        "- `scripts/unity/serve-webgl.sh` — static serve / placeholder (same bind rules; never 0.0.0.0 by default)",
         "",
-        "Bridge vs WebGL: one Editor per project. Live WebGL stops this project's",
-        "Coplay bridge before each batchmode build (project lock). Prefer WebGL live",
-        "view for phone preview; use the bridge for authoring, not both at once.",
+        "Default action **Unity.Dev** starts bridge + WebGL preview together.",
+        "Bridge vs live rebuild: one Editor per project. Live WebGL stops this",
+        "project's Coplay bridge before each batchmode build, then restarts it.",
+        "",
+        "Refresh scripts/actions (no game code): `homebase_unity_refresh_scripts`",
+        "or `homebase_project_upsert` with `refreshUnityScripts: true`.",
         "",
       ].join("\n"),
       { mode: 0o644 },
     );
+  } catch {
+    /* ignore */
   }
   // HB-U-03: scripts/README written by root must become seat-owned.
   chownSeatUser(destDir);
