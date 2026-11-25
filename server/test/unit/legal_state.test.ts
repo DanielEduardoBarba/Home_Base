@@ -1,24 +1,34 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-
-const root = join(tmpdir(), `hb-legal-${process.pid}-${Date.now()}`);
-mkdirSync(root, { recursive: true });
-process.env.HOMEBASE_HOME = root;
-
-const {
+import {
   LEGAL_DOC_VERSION,
+  _setLegalPathForTests,
   acceptLegal,
   clearLegal,
   isLegalAccepted,
   legalPublic,
   requireLegalAccepted,
-} = await import("../../src/legal_state");
-const { HttpError } = await import("../../src/auth");
+} from "../../src/legal_state";
+import { HttpError } from "../../src/auth";
+
+const root = join(tmpdir(), `hb-legal-${process.pid}-${Date.now()}`);
+mkdirSync(root, { recursive: true });
+const legalFile = join(root, "legal.json");
+
+beforeEach(() => {
+  _setLegalPathForTests(legalFile);
+  clearLegal();
+});
 
 afterEach(() => {
   clearLegal();
+  _setLegalPathForTests(null);
+});
+
+afterEach(() => {
+  if (existsSync(root)) rmSync(root, { recursive: true, force: true });
 });
 
 describe("legal_state", () => {
@@ -43,8 +53,4 @@ describe("legal_state", () => {
   test("requireLegalAccepted throws when missing", () => {
     expect(() => requireLegalAccepted()).toThrow(HttpError);
   });
-});
-
-afterEach(() => {
-  if (existsSync(root)) rmSync(root, { recursive: true, force: true });
 });

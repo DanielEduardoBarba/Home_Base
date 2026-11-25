@@ -5,18 +5,30 @@
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   readFileSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { RUNTIME_DIR, ensureRuntimeDirs } from "./config";
 import { HttpError } from "./auth";
 
 /** Bump when Terms or Privacy text changes in a material way. */
 export const LEGAL_DOC_VERSION = "1";
 
-const PATH = join(RUNTIME_DIR, "legal.json");
+const DEFAULT_PATH = join(RUNTIME_DIR, "legal.json");
+/** Test-only override so suite order / shared HOMEBASE_HOME cannot flake. */
+let pathOverride: string | null = null;
+
+function legalPath(): string {
+  return pathOverride || DEFAULT_PATH;
+}
+
+/** Test-only: point legal.json at an isolated temp file. Pass null to restore. */
+export function _setLegalPathForTests(next: string | null): void {
+  pathOverride = next;
+}
 
 export type LegalState = {
   acceptedVersion: string | null;
@@ -35,9 +47,10 @@ function empty(): LegalState {
 }
 
 function load(): LegalState {
-  if (!existsSync(PATH)) return empty();
+  const path = legalPath();
+  if (!existsSync(path)) return empty();
   try {
-    const raw = JSON.parse(readFileSync(PATH, "utf8")) as Partial<LegalState>;
+    const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<LegalState>;
     const ver =
       typeof raw.acceptedVersion === "string" && raw.acceptedVersion.trim()
         ? raw.acceptedVersion.trim()
@@ -53,10 +66,18 @@ function load(): LegalState {
 }
 
 function save(state: LegalState): LegalState {
-  ensureRuntimeDirs();
-  writeFileSync(PATH, JSON.stringify(state, null, 2) + "\n", { mode: 0o600 });
+  const path = legalPath();
+  if (!pathOverride) ensureRuntimeDirs();
+  else {
+    try {
+      mkdirSync(dirname(path), { recursive: true });
+    } catch {
+      /* ignore */
+    }
+  }
+  writeFileSync(path, JSON.stringify(state, null, 2) + "\n", { mode: 0o600 });
   try {
-    chmodSync(PATH, 0o600);
+    chmodSync(path, 0o600);
   } catch {
     /* ignore */
   }
@@ -105,7 +126,8 @@ export function requireLegalAccepted(): void {
 
 export function clearLegal(): void {
   try {
-    if (existsSync(PATH)) unlinkSync(PATH);
+    const path = legalPath();
+    if (existsSync(path)) unlinkSync(path);
   } catch {
     /* ignore */
   }
