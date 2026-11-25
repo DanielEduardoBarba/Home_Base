@@ -1,0 +1,56 @@
+{
+  "id": "unity",
+  "name": "Unity",
+  "stateDir": ".unity",
+  "ports": [
+    {
+      "id": "webgl",
+      "label": "WebGL",
+      "port": 8410
+    },
+    {
+      "id": "mcp-bridge",
+      "label": "MCP Bridge",
+      "port": 6400
+    }
+  ],
+  "actions": [
+    {
+      "id": "editor",
+      "label": "Editor + MCP bridge",
+      "script": "scripts/unity/start-editor-bridge.sh",
+      "args": [],
+      "kind": "run",
+      "variant": "primary",
+      "group": "main",
+      "hint": "Headless Unity with Coplay MCP bridge on :6400"
+    },
+    {
+      "id": "webgl_build",
+      "label": "WebGL build",
+      "script": "scripts/unity/build-webgl.sh",
+      "args": [],
+      "kind": "run",
+      "group": "main",
+      "hint": "Batchmode WebGL → Builds/WebGL"
+    },
+    {
+      "id": "webgl_serve",
+      "label": "Serve WebGL",
+      "script": "npx",
+      "args": ["--yes", "serve", "-l", "8410", "Builds/WebGL"],
+      "kind": "run",
+      "group": "main",
+      "hint": "Static serve of last WebGL build"
+    },
+    {
+      "id": "stop",
+      "label": "Stop bridge",
+      "script": "scripts/unity/stop-editor-bridge.sh",
+      "args": [],
+      "kind": "run",
+      "variant": "danger",
+      "group": "main"
+    }
+  ]
+}

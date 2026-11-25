@@ -744,7 +744,7 @@ export function buildHomebaseTools(
   if (!readonly) {
     tools.homebase_project_upsert = {
       description:
-        "Add or update a Home Base project. Pass absolute path; optional preset (example|homebase), id, name, ports, actions.",
+        "Add or update a Home Base project. Pass absolute path; optional preset (example|homebase|unity), id, name, ports, actions.",
       parameters: {
         type: "object",
         properties: {
@@ -778,6 +778,8 @@ export function buildHomebaseTools(
     tools.homebase_create_mcp_workspace = {
       description:
         "Create a new bot workspace folder under ~/MCP_WORKSPACES and register it as a project. " +
+        "Optional preset=unity runs Unity -createProject (batchmode), adds the Coplay MCP package, " +
+        "and registers the unity preset (bridge/WebGL actions). " +
         "Requires Settings → MCP → Allow MCP workspace creation (off by default). Name only — no paths.",
       parameters: {
         type: "object",
@@ -787,13 +789,19 @@ export function buildHomebaseTools(
             description:
               "Folder name [A-Za-z0-9._-], max 64 chars, no leading dot",
           },
+          preset: {
+            type: "string",
+            description: "Optional preset id (e.g. unity)",
+          },
         },
         required: ["name"],
       },
       execute: async (args) => {
         const { createMcpWorkspace } = await import("./workspace");
         const { projectPublic: pub } = await import("./process");
-        const result = createMcpWorkspace(String(args.name || ""));
+        const result = createMcpWorkspace(String(args.name || ""), {
+          preset: args.preset ? String(args.preset) : undefined,
+        });
         if (!result.ok) return json({ ok: false, error: result.error });
         return json({ ok: true, project: await pub(result.project) });
       },

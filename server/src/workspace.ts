@@ -3,6 +3,7 @@
  */
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -14,6 +15,7 @@ import {
 } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import {
+  BUNDLE_ROOT,
   healEmptyAppProject,
   loadProjects,
   mcpWorkspaceUpsertFields,
@@ -23,6 +25,10 @@ import {
 } from "./config";
 import { mcpWorkspaceCreateAllowed } from "./mcp_server";
 import { detectSeatUser } from "./shell_env";
+import {
+  ensureUnityMcpPackageInManifest,
+  scaffoldUnityProject,
+} from "./unity";
 
 export const WORKSPACE_NAME_MAX = 64;
 const WORKSPACE_NAME_RE = /^[A-Za-z0-9._-]+$/;
@@ -281,19 +287,67 @@ export function tombstoneMcpWorkspace(target: string): void {
   chownSeatUser(stone);
 }
 
-function registerMcpFolder(rootReal: string, folderName: string): Project {
+/** Copy Home Base Unity helper scripts into a workspace (project-relative actions). */
+export function installUnityWorkspaceScripts(projectPath: string): void {
+  const abs = resolve(projectPath);
+  const destDir = join(abs, "scripts", "unity");
+  mkdirSync(destDir, { recursive: true });
+  const srcDir = join(BUNDLE_ROOT, "scripts", "unity");
+  for (const name of [
+    "start-editor-bridge.sh",
+    "stop-editor-bridge.sh",
+    "build-webgl.sh",
+  ]) {
+    const src = join(srcDir, name);
+    const dest = join(destDir, name);
+    if (!existsSync(src)) continue;
+    copyFileSync(src, dest);
+    try {
+      chmodSync(dest, 0o755);
+    } catch {
+      /* ignore */
+    }
+  }
+  // Friendly README so humans know the bridge path
+  const readme = join(abs, "README.homebase-unity.md");
+  if (!existsSync(readme)) {
+    writeFileSync(
+      readme,
+      [
+        "# Unity workspace (Home Base)",
+        "",
+        "Actions (from the project card):",
+        "- `scripts/unity/start-editor-bridge.sh` — headless Editor + Coplay MCP on :6400",
+        "- `scripts/unity/stop-editor-bridge.sh` — stop this project's bridge Editor",
+        "- `scripts/unity/build-webgl.sh` — batchmode WebGL → `Builds/WebGL`",
+        "",
+        "Serve a build: `npx --yes serve -l <webgl-port> Builds/WebGL`",
+        "Live WebGL phone view is Step 5; this workspace only scaffolds build + bridge.",
+        "",
+      ].join("\n"),
+      { mode: 0o644 },
+    );
+  }
+}
+
+function registerMcpFolder(
+  rootReal: string,
+  folderName: string,
+  opts: { preset?: string } = {},
+): Project {
   const target = join(rootReal, folderName);
   assertRealpathInside(rootReal, target);
   rejectSymlinkEscape(rootReal, target);
   const st = statSync(target);
   if (!st.isDirectory()) throw new Error("workspace path is not a directory");
   markMcpWorkspace(target);
-  // App checkouts (build.sh) get example Run/Ship + free ports; bare folders stay empty.
+  // Unity projects get unity preset; app checkouts get example; bare stay empty.
   return upsertProjectFromInput(
     mcpWorkspaceUpsertFields({
       path: target,
       name: folderName,
       id: projectIdForName(folderName),
+      preset: opts.preset,
     }),
   );
 }
@@ -370,7 +424,10 @@ export function reconcileMcpWorkspaces(): {
   return { registered, skipped };
 }
 
-export function createMcpWorkspace(name: string): CreateMcpWorkspaceResult {
+export function createMcpWorkspace(
+  name: string,
+  opts: { preset?: string } = {},
+): CreateMcpWorkspaceResult {
   if (!mcpWorkspaceCreateAllowed()) {
     return {
       ok: false,
@@ -385,6 +442,9 @@ export function createMcpWorkspace(name: string): CreateMcpWorkspaceResult {
   if (trimmed.startsWith("/") || trimmed.includes("..")) {
     return { ok: false, error: "workspace name must be a single folder name, not a path" };
   }
+
+  const preset = String(opts.preset || "").trim() || undefined;
+  const wantUnity = preset === "unity";
 
   const root = ensureMcpWorkspacesRoot();
   let rootReal: string;
@@ -411,13 +471,26 @@ export function createMcpWorkspace(name: string): CreateMcpWorkspaceResult {
       const abs = resolve(realpathSync(target));
       for (const p of loadProjects().values()) {
         if (resolve(p.path) === abs) {
+          if (wantUnity) {
+            installUnityWorkspaceScripts(abs);
+            ensureUnityMcpPackageInManifest(abs);
+          }
           return { ok: true, project: p };
         }
       }
       if (loadProjects().has(projectIdForName(trimmed))) {
         return { ok: false, error: "a project with this id is already registered" };
       }
-      const project = registerMcpFolder(rootReal, trimmed);
+      if (wantUnity) {
+        const scaffold = scaffoldUnityProject(abs);
+        if (!scaffold.ok) {
+          return { ok: false, error: scaffold.error || "Unity scaffold failed" };
+        }
+        installUnityWorkspaceScripts(abs);
+      }
+      const project = registerMcpFolder(rootReal, trimmed, {
+        preset: wantUnity ? "unity" : undefined,
+      });
       return { ok: true, project };
     } catch (e) {
       return {
@@ -438,9 +511,24 @@ export function createMcpWorkspace(name: string): CreateMcpWorkspaceResult {
 
   let created = false;
   try {
-    mkdirWorkspace(target);
-    created = true;
-    const project = registerMcpFolder(rootReal, trimmed);
+    if (wantUnity) {
+      // Unity -createProject makes the folder; do not mkdir first.
+      const scaffold = scaffoldUnityProject(target);
+      if (!scaffold.ok) {
+        return {
+          ok: false,
+          error: scaffold.error || "Unity createProject failed",
+        };
+      }
+      created = scaffold.created || existsSync(target);
+      installUnityWorkspaceScripts(target);
+    } else {
+      mkdirWorkspace(target);
+      created = true;
+    }
+    const project = registerMcpFolder(rootReal, trimmed, {
+      preset: wantUnity ? "unity" : undefined,
+    });
     return { ok: true, project };
   } catch (e) {
     if (created) {

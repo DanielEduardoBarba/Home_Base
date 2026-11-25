@@ -293,6 +293,48 @@ unityhub -- --headless editors -i
 
 ---
 
+## Step 2 status (2026-11-24)
+
+### A — MCP bridge (done)
+
+| Item | Result |
+|------|--------|
+| Scratch project | `~/MCP_WORKSPACES/unity-sample` created via `Unity -batchmode -nographics -quit -createProject` |
+| MCP package | `com.coplaydev.unity-mcp` (git `#main` → `MCPForUnity`) in `Packages/manifest.json` |
+| Headless bridge | `UNITY_MCP_ALLOW_BATCH=1 Unity -batchmode -nographics -executeMethod MCPForUnity.Editor.McpCiBoot.StartStdioForCi` (no Hub GUI) |
+| Scripts | `scripts/unity/start-editor-bridge.sh`, `stop-editor-bridge.sh` (repo + copied into sample) |
+| Verify | TCP `:6400` listen; framed handshake `WELCOME UNITY-MCP 1 FRAMING=1`; ping → `{"status":"success","result":{"message":"pong"}}` |
+| xvfb | Not required for this batchmode path; Xvfb still available for GUI Editor if needed later |
+
+### B — Home Base onboarding / template / license UI (done)
+
+| Item | Result |
+|------|--------|
+| Doctor API | `GET /api/unity/status` — Hub, editors+WebGL, license (product/type only), bridge reachability, sample project |
+| Settings UI | Settings → Unity panel + Setup scene link to Unity doctor |
+| System status | Lightweight `unity.hubPresent` / `unity.editorPresent` flags on `/api/system/status` |
+| Preset | `config/presets/unity.json` (webgl + mcp-bridge ports; editor/webgl_build/webgl_serve/stop actions) |
+| Workspace create | `createMcpWorkspace(name, { preset: "unity" })` → batchmode createProject + MCP package + script copy + unity preset registration |
+| Detection | Folders with `ProjectSettings/ProjectVersion.txt` auto-get unity preset on reconcile/upsert |
+| Tests | `server/test/unit/unity.test.ts` |
+
+### C — WebGL (script only; live view deferred)
+
+| Item | Result |
+|------|--------|
+| Build script | `scripts/unity/build-webgl.sh` — batchmode `-buildTarget WebGL` + `HomeBase.Editor.EditorBuildScript.BuildWebGL` (auto-seeded into project) |
+| Serve | `npx --yes serve -l <webgl-port> Builds/WebGL` (preset action `webgl_serve`) |
+| Live phone iframe / watch-reload | **Not implemented** (Step 5). Notes unchanged: prefer WebGL static preview over streaming Xvfb Editor |
+
+### Human next steps
+
+1. Deploy Home Base when ready: `./build.sh --deploy` (agent must not self-deploy).
+2. Sign-in / license changes remain Hub GUI only if Personal entitlement ever expires (do not ask agents).
+3. Register `unity-sample` in the project card if desired (`preset=unity`), or create new workspaces via MCP with `preset: "unity"`.
+4. Only one Coplay bridge on `:6400` at a time; stop before starting another project’s bridge.
+
+---
+
 ## Appendix — Redaction policy
 
 This document intentionally omits: account emails, serials, access/refresh tokens, machine-binding secrets, MCP auth tokens, and vault material. License reporting is limited to product tier (Personal) and file presence.

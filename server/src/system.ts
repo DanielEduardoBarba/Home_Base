@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { bindPort, isBackupBinary, readVersion } from "./config";
 import { accessHosts } from "./network";
 import { appendTrace } from "./trace";
@@ -25,12 +26,31 @@ export function systemStatus(): Record<string, unknown> {
     }
   }
   const https = tlsMaterialPresent() ? httpsPort() : 0;
+  // Lightweight Unity flags only (no CLI spawn) — full doctor is GET /api/unity/status
+  let unityHubPresent = false;
+  let unityEditorPresent = false;
+  try {
+    const home = process.env.HOME || "";
+    unityHubPresent =
+      existsSync("/usr/bin/unityhub") ||
+      existsSync(join(home, ".config/unityhub/hubInfo.json"));
+    unityEditorPresent = existsSync(
+      join(home, "Unity/Hub/Editor/6000.6.4f1/Editor/Unity"),
+    );
+  } catch {
+    /* ignore */
+  }
   return {
     wireguard,
     homebasedUnit: "homebased.service",
     version: readVersion(),
     backup: isBackupBinary(),
     callbackAuthEnvSet: callbackAuthEnvSet(),
+    unity: {
+      hubPresent: unityHubPresent,
+      editorPresent: unityEditorPresent,
+      statusPath: "/api/unity/status",
+    },
     ...accessHosts(bindPort(), { httpsPort: https > 0 ? https : null }),
   };
 }

@@ -287,14 +287,36 @@ export function looksLikeAppWorkspace(absPath: string): boolean {
   return existsSync(join(root, "build.sh"));
 }
 
+/** True when the folder is a Unity project (ProjectSettings/ProjectVersion.txt). */
+export function looksLikeUnityWorkspace(absPath: string): boolean {
+  const root = resolve(absPath);
+  return existsSync(join(root, "ProjectSettings", "ProjectVersion.txt"));
+}
+
+/** Pick a free WebGL preview port near the Unity preset default. */
+export function nextUnityWebglPort(start = 8410): number {
+  const used = new Set<number>();
+  for (const p of loadProjects().values()) {
+    for (const port of p.ports || []) {
+      const n = Number(port.port);
+      if (Number.isFinite(n)) used.add(n);
+    }
+  }
+  for (let p = start; p < start + 200; p++) {
+    if (!used.has(p)) return p;
+  }
+  return start;
+}
+
 /**
- * Build upsert input for an MCP workspace: empty folder stays bare; app
- * checkouts (build.sh) get the example Run/Ship actions + a free port triplet.
+ * Build upsert input for an MCP workspace: empty folder stays bare; Unity
+ * projects get the unity preset; app checkouts (build.sh) get example Run/Ship.
  */
 export function mcpWorkspaceUpsertFields(opts: {
   path: string;
   id?: string;
   name?: string;
+  preset?: string;
 }): {
   path: string;
   id?: string;
@@ -308,6 +330,21 @@ export function mcpWorkspaceUpsertFields(opts: {
     id: opts.id,
     name: opts.name,
   };
+  const forced = String(opts.preset || "").trim();
+  if (forced === "unity" || (!forced && looksLikeUnityWorkspace(abs))) {
+    const webgl = nextUnityWebglPort();
+    return {
+      ...base,
+      preset: "unity",
+      ports: [
+        { id: "webgl", label: "WebGL", port: webgl },
+        { id: "mcp-bridge", label: "MCP Bridge", port: 6400 },
+      ],
+    };
+  }
+  if (forced) {
+    return { ...base, preset: forced };
+  }
   if (!looksLikeAppWorkspace(abs)) return base;
   const ports = nextDevPortTriplet();
   return {
@@ -327,7 +364,12 @@ export function mcpWorkspaceUpsertFields(opts: {
  */
 export function healEmptyAppProject(project: Project): Project | null {
   if (project.actions?.length) return null;
-  if (!looksLikeAppWorkspace(project.path)) return null;
+  if (
+    !looksLikeAppWorkspace(project.path) &&
+    !looksLikeUnityWorkspace(project.path)
+  ) {
+    return null;
+  }
   return upsertProjectFromInput(
     mcpWorkspaceUpsertFields({
       path: project.path,

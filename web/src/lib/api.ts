@@ -948,6 +948,51 @@ export const api = {
       }
       error?: string
     }>('/api/github/status'),
+  unityStatus: () =>
+    request<{
+      ok: boolean
+      hub: {
+        present: boolean
+        path: string | null
+        version: string | null
+        headlessOk: boolean
+        note: string | null
+      }
+      editors: {
+        cliPresent: boolean
+        cliVersion: string | null
+        editors: {
+          version: string
+          path: string | null
+          modules: { id: string; installed: boolean; onDisk?: boolean }[]
+        }[]
+        webglReady: boolean
+      }
+      license: {
+        ok: boolean
+        products: { product: string; type: string }[]
+        entitlementPresent: boolean
+        legacyUlfPresent: boolean
+        note: string | null
+      }
+      bridge: {
+        port: number
+        reachable: boolean
+        xvfbPresent: boolean
+        statusFiles: number
+        sampleProject: {
+          path: string
+          exists: boolean
+          hasMcpPackage: boolean
+        }
+      }
+      checks: {
+        id: string
+        ok: boolean
+        label: string
+        detail: string | null
+      }[]
+    }>('/api/unity/status'),
   gitGithubStatus: () =>
     request<{
       ok: boolean

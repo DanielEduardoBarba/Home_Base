@@ -34,6 +34,7 @@ import { ActivityHistoryPanel } from './ActivityHistoryPanel'
 import { SecurityPanel } from './SecurityPanel'
 import { EmailAlertsPanel } from './EmailAlertsPanel'
 import { GitGithubPanel } from './GitGithubPanel'
+import { UnityPanel } from './UnityPanel'
 import { VoiceCheck } from './VoiceCheck'
 import type { PresentRequest } from '../lib/chatTypes'
 
@@ -49,6 +50,7 @@ type SettingsScene =
   | 'notifications'
   | 'email'
   | 'setup'
+  | 'unity'
   | 'wireguard'
   | 'cloudflare'
   | 'mcp'
@@ -489,6 +491,11 @@ export function SettingsTab({
             id: 'git',
             title: 'Git & GitHub',
             hint: 'Login env · gh sign-in · test push',
+          },
+          {
+            id: 'unity',
+            title: 'Unity',
+            hint: 'Hub · Editor · WebGL · license · MCP bridge',
           },
           { id: 'setup', title: 'Setup', hint: 'Replay first-run wizard' },
         ],
@@ -1512,6 +1519,35 @@ export function SettingsTab({
               Replay setup
             </button>
           </section>
+          <section className="hb-surface p-3.5 space-y-2 mt-3">
+            <h3 className="text-sm font-semibold text-text">Unity doctor</h3>
+            <p className="text-xs text-mute">
+              Hub, Editor, WebGL module, license tier, and MCP bridge checks live
+              under Settings → Unity (read-only).
+            </p>
+            <button
+              type="button"
+              className="hb-btn text-sm !min-h-11 w-full"
+              onClick={() => setScene('unity')}
+            >
+              Open Unity checks
+            </button>
+          </section>
+        </SceneShell>
+        {modals}
+      </>
+    )
+  }
+
+  if (scene === 'unity') {
+    return (
+      <>
+        <SceneShell
+          title="Unity"
+          hint="Read-only Hub / Editor / license / MCP bridge status."
+          onBack={goHub}
+        >
+          <UnityPanel />
         </SceneShell>
         {modals}
       </>

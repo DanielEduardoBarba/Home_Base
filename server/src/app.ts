@@ -770,6 +770,12 @@ app.get("/api/github/status", async (c) => {
   return c.json(githubAuthStatus());
 });
 
+app.get("/api/unity/status", async (c) => {
+  await requireAuth(c);
+  const { unityStatus } = await import("./unity");
+  return c.json(await unityStatus());
+});
+
 app.get("/api/git-github", async (c) => {
   await requireAuth(c);
   const {
