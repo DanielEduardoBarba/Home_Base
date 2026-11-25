@@ -22,7 +22,7 @@ function webglStatus(project: Project) {
   return (project.portsStatus || []).find((x) => x.id === 'webgl')
 }
 
-/** Unity WebGL live preview: phone-sized iframe + open-on-phone link. */
+/** Unity WebGL live preview: compact/collapsible iframe + open-on-phone link. */
 export function WebGLPreview({
   project,
   onBuildWebGL,
@@ -36,6 +36,7 @@ export function WebGLPreview({
   const buildExists = status?.buildExists
   const downReason = status?.downReason
   const [bust, setBust] = useState(0)
+  const [open, setOpen] = useState(true)
 
   const href = useMemo(() => {
     if (!port || typeof window === 'undefined') return ''
@@ -57,7 +58,15 @@ export function WebGLPreview({
   return (
     <div className="space-y-1.5 pt-1 border-t border-line/60">
       <div className="flex items-center justify-between gap-2">
-        <span className="hb-label">WebGL live view</span>
+        <button
+          type="button"
+          className="hb-label inline-flex items-center gap-1.5 text-left hover:text-text"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+        >
+          <span aria-hidden="true">{open ? '▾' : '▸'}</span>
+          WebGL live view
+        </button>
         <div className="flex items-center gap-1.5">
           {buildExists === false && onBuildWebGL ? (
             <button
@@ -93,36 +102,40 @@ export function WebGLPreview({
         </div>
       </div>
       <p className="text-[10px] text-mute break-all">{statusLine}</p>
-      <div
-        className="mx-auto w-full max-w-[390px] overflow-hidden rounded-lg border border-line/70 bg-black"
-        style={{ aspectRatio: '390 / 844' }}
-      >
-        {up && href ? (
-          <iframe
-            key={`${href}-${bust}`}
-            title={`${project.name} WebGL`}
-            src={`${href}${href.includes('?') ? '&' : '?'}_hb=${bust}`}
-            className="h-full w-full border-0 bg-black"
-            allow="autoplay; fullscreen"
-          />
-        ) : (
-          <div className="flex h-full min-h-[12rem] flex-col items-center justify-center gap-2 px-4 text-center text-[11px] text-mute">
-            <span>
-              {downReason ||
-                'Phone preview (~390×844). Start Unity.Dev or WebGL preview.'}
-            </span>
-            {buildExists === false && onBuildWebGL ? (
-              <button
-                type="button"
-                className="hb-btn !min-h-8 !px-3 text-[11px]"
-                onClick={() => onBuildWebGL()}
-              >
-                Build WebGL
-              </button>
-            ) : null}
-          </div>
-        )}
-      </div>
+      {open ? (
+        <div
+          className="mx-auto w-full max-w-[390px] max-h-[min(52vh,28rem)] overflow-hidden rounded-lg border border-line/70 bg-black"
+          style={{ aspectRatio: '390 / 844' }}
+        >
+          {up && href ? (
+            <iframe
+              key={`${href}-${bust}`}
+              title={`${project.name} WebGL`}
+              src={`${href}${href.includes('?') ? '&' : '?'}_hb=${bust}`}
+              className="h-full w-full border-0 bg-black"
+              allow="autoplay; fullscreen"
+            />
+          ) : (
+            <div className="flex h-full min-h-[8rem] flex-col items-center justify-center gap-2 px-4 text-center text-[11px] text-mute">
+              <span>
+                {downReason ||
+                  'Phone preview. Start Unity.Dev or WebGL preview.'}
+              </span>
+              {buildExists === false && onBuildWebGL ? (
+                <button
+                  type="button"
+                  className="hb-btn !min-h-8 !px-3 text-[11px]"
+                  onClick={() => onBuildWebGL()}
+                >
+                  Build WebGL
+                </button>
+              ) : null}
+            </div>
+          )}
+        </div>
+      ) : (
+        <p className="text-[11px] text-mute">Preview collapsed</p>
+      )}
     </div>
   )
 }

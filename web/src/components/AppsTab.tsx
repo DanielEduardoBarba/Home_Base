@@ -483,13 +483,6 @@ export function AppsTab({
           </div>
         )}
 
-        <WebGLPreview
-          project={project}
-          onBuildWebGL={
-            unityBuild ? () => void doRun(unityBuild) : undefined
-          }
-        />
-
         {isUnity ? (
           <div className="space-y-1.5 pt-0.5">
             <span className="hb-label">Unity</span>
@@ -578,6 +571,7 @@ export function AppsTab({
                   value={selectedRun?.id || ''}
                   onChange={(e) => setRunId(e.target.value)}
                   disabled={!!busy || running}
+                  aria-label="Run action"
                   className="hb-select flex-1 !min-h-10 !py-2 text-sm"
                 >
                   {runActions.map((a) => (
@@ -611,6 +605,13 @@ export function AppsTab({
             </div>
           )
         )}
+
+        <WebGLPreview
+          project={project}
+          onBuildWebGL={
+            unityBuild ? () => void doRun(unityBuild) : undefined
+          }
+        />
 
         {ship.length > 0 && (
           <div className="space-y-1.5 pt-1 border-t border-line/60">
