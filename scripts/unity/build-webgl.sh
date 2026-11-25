@@ -171,4 +171,5 @@ echo "Building WebGL → $OUT (log $LOG)"
   -logFile "$LOG"
 
 echo "WebGL build finished. Serve with: scripts/unity/serve-webgl.sh <port> \"$OUT\""
+echo "  (binds HB_WEBGL_BIND, else wg0 IPv4, else 127.0.0.1 — never 0.0.0.0 by default)"
 echo "Live watch+serve: scripts/unity/live-webgl.sh <port>"

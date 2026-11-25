@@ -359,7 +359,7 @@ unityhub -- --headless editors -i
 
 | Item | Result |
 |------|--------|
-| Scripts | `live-webgl.sh` (watch Assets/Packages/ProjectSettings → debounced rebuild → serve); `serve-webgl.sh` + `serve-webgl.mjs` (bind **0.0.0.0**, `/__hb_webgl_v` + index poller) |
+| Scripts | `live-webgl.sh` (watch Assets/Packages/ProjectSettings → debounced rebuild → serve); `serve-webgl.sh` + `serve-webgl.mjs` (bind **`HB_WEBGL_BIND` → wg0 IPv4 → 127.0.0.1**, never 0.0.0.0 by default; `/__hb_webgl_v` + index poller) |
 | Preset | `webgl` action = live view; port arg synced on upsert |
 | Bridge coordination | **Stop this project’s Coplay bridge before each batchmode build** (project lock). Do not use `manage_build` for this path — documented in scripts + workspace README |
 | UI | Apps iframe + open-on-phone link once port is up |

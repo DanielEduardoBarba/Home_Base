@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Tiny static WebGL server: bind 0.0.0.0, version endpoint, inject reload poller into index.html.
+ * Tiny static WebGL server: bind VPN/wg0 (or HB_WEBGL_BIND / 127.0.0.1),
+ * version endpoint, inject reload poller into index.html. Never defaults to 0.0.0.0.
  */
 import { createServer } from "node:http";
 import {
@@ -11,9 +12,12 @@ import {
   watch,
 } from "node:fs";
 import { extname, join, normalize, resolve, sep } from "node:path";
+import { resolveWebglBind } from "./webgl-bind.mjs";
 
 const port = Number(process.env.UNITY_WEBGL_PORT || 8410);
 const root = resolve(process.env.UNITY_WEBGL_DIR || "Builds/WebGL");
+const host = resolveWebglBind();
+
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -160,6 +164,7 @@ const server = createServer((req, res) => {
   }
 });
 
-server.listen(port, "0.0.0.0", () => {
-  console.log(`hb-webgl listening on http://0.0.0.0:${port}/ (dir ${root})`);
+server.listen(port, host, () => {
+  console.log(`hb-webgl listening on http://${host}:${port}/ (dir ${root})`);
 });
+

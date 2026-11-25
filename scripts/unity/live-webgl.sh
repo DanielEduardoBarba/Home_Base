@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # WebGL live view: initial build (if needed) + watch Assets/Packages/ProjectSettings
-# → debounced batchmode rebuild → static serve on 0.0.0.0:<port> with reload poller.
+# → debounced batchmode rebuild → static serve on VPN/wg0:<port> (HB_WEBGL_BIND / 127.0.0.1 fallback).
 #
 # Coplay bridge coordination (documented choice):
 #   One Editor holds the project lock. If this project's bridge Editor is running,

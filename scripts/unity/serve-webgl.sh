@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Static-serve a WebGL build on 0.0.0.0:<port> with a tiny reload poller.
-# Usage: serve-webgl.sh [port] [Builds/WebGL dir]
+# Static-serve a WebGL build on VPN/wg0:<port> (or HB_WEBGL_BIND / 127.0.0.1) with a reload poller.
+# Never defaults to 0.0.0.0. Usage: serve-webgl.sh [port] [Builds/WebGL dir]
 set -euo pipefail
 
 PORT="${1:-${UNITY_WEBGL_PORT:-8410}}"
@@ -16,12 +16,17 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_JS="${SCRIPT_DIR}/serve-webgl.mjs"
+BIND_JS="${SCRIPT_DIR}/webgl-bind.mjs"
 
 [[ -d "$DIR" ]] || { echo "error: WebGL build dir missing: $DIR" >&2; exit 1; }
 [[ -f "$SERVER_JS" ]] || { echo "error: missing $SERVER_JS" >&2; exit 1; }
+[[ -f "$BIND_JS" ]] || { echo "error: missing $BIND_JS" >&2; exit 1; }
+
+# Resolve bind host once for the banner (serve-webgl.mjs resolves again at listen).
+BIND="$(node -e "import('${BIND_JS}').then(m=>process.stdout.write(m.resolveWebglBind()))")"
 
 export UNITY_WEBGL_PORT="$PORT"
 export UNITY_WEBGL_DIR="$DIR"
-echo "Serving WebGL on 0.0.0.0:${PORT} → ${DIR}"
-echo "Phone URL: http://10.6.0.1:${PORT}/"
+echo "Serving WebGL on ${BIND}:${PORT} → ${DIR}"
+echo "Phone URL: http://${BIND}:${PORT}/"
 exec node "$SERVER_JS"

@@ -299,6 +299,7 @@ export function installUnityWorkspaceScripts(projectPath: string): void {
     "build-webgl.sh",
     "serve-webgl.sh",
     "serve-webgl.mjs",
+    "webgl-bind.mjs",
     "live-webgl.sh",
   ]) {
     const src = join(srcDir, name);
@@ -323,8 +324,8 @@ export function installUnityWorkspaceScripts(projectPath: string): void {
         "- `scripts/unity/start-editor-bridge.sh` — headless Editor + Coplay MCP on :6400",
         "- `scripts/unity/stop-editor-bridge.sh` — stop this project's bridge Editor",
         "- `scripts/unity/build-webgl.sh` — batchmode WebGL → `Builds/WebGL`",
-        "- `scripts/unity/live-webgl.sh <port>` — watch Assets → rebuild → serve on 0.0.0.0",
-        "- `scripts/unity/serve-webgl.sh <port>` — static serve with reload poller",
+        "- `scripts/unity/live-webgl.sh <port>` — watch Assets → rebuild → serve on VPN/wg0 (or `HB_WEBGL_BIND` / 127.0.0.1)",
+        "- `scripts/unity/serve-webgl.sh <port>` — static serve with reload poller (same bind rules; never 0.0.0.0 by default)",
         "",
         "Bridge vs WebGL: one Editor per project. Live WebGL stops this project's",
         "Coplay bridge before each batchmode build (project lock). Prefer WebGL live",

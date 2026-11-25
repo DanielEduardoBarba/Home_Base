@@ -41,7 +41,7 @@
       "args": ["8410"],
       "kind": "run",
       "group": "main",
-      "hint": "Watch Assets → rebuild → serve 0.0.0.0:<webgl-port> with reload (phone iframe)"
+      "hint": "Watch Assets → rebuild → serve on VPN/wg0:<webgl-port> (or HB_WEBGL_BIND / 127.0.0.1) with reload"
     },
     {
       "id": "stop",
