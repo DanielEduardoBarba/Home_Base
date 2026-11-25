@@ -2378,6 +2378,44 @@ html[data-hb-keyboard] .hb-vv-overlay-panel {
   font-size: 0.75rem !important;
 }
 
+.hb-term-host {
+  cursor: text;
+}
+
+.hb-term-host .xterm,
+.hb-term-host .xterm-screen,
+.hb-term-host .xterm-screen canvas {
+  cursor: text;
+}
+
+.hb-term-ctx {
+  border-radius: 0.55rem;
+  border: 1px solid var(--hb-line);
+  background: color-mix(in srgb, var(--hb-panel) 94%, transparent);
+  backdrop-filter: blur(10px);
+}
+
+.hb-term-ctx-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.55rem 0.85rem;
+  font-size: 0.8rem;
+  color: var(--hb-text);
+  background: transparent;
+  border: 0;
+}
+
+.hb-term-ctx-item:hover:not(:disabled),
+.hb-term-ctx-item:focus-visible:not(:disabled) {
+  background: color-mix(in srgb, var(--hb-accent) 16%, transparent);
+  color: var(--hb-accent);
+}
+
+.hb-term-ctx-item:disabled {
+  opacity: 0.4;
+}
+
 /* Only while the dock is open — a closing/stuck dock must not collapse the scene */
 .hb-work-body:has(.hb-chat-dock[data-open='1']) .hb-work-main {
   /* Reserve space for the mobile chat sheet without collapsing the scene */

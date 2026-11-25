@@ -11,6 +11,31 @@ export type TermKeyEvent = {
   type?: string
 }
 
+/** Soft cap so a huge clipboard paste cannot freeze the UI / flood the PTY. */
+export const TERM_PASTE_MAX_CHARS = 256 * 1024
+
+/**
+ * After a left-button mouseup, copy only when there is a selection *and* the
+ * pointer actually dragged (avoids overwriting the clipboard on a plain click).
+ * Middle button → paste. Right button is handled by the context menu.
+ */
+export function termPointerClipboardAction(
+  button: number,
+  hasSelection: boolean,
+  dragged = true,
+): TermKeyAction {
+  if (button === 1) return 'paste'
+  if (button === 0 && hasSelection && dragged) return 'copy'
+  return null
+}
+
+/** Clamp paste payload; empty stays empty. */
+export function clampTermPaste(text: string, max = TERM_PASTE_MAX_CHARS): string {
+  if (!text) return ''
+  if (text.length <= max) return text
+  return text.slice(0, max)
+}
+
 export function isApplePlatform(platform = '', userAgent = ''): boolean {
   return /Mac|iPhone|iPad|iPod/.test(platform) || /Mac OS X|iPhone|iPad|iPod/.test(userAgent)
 }

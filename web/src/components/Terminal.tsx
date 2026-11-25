@@ -5,9 +5,11 @@ import { Terminal as XTerm } from 'xterm'
 import 'xterm/css/xterm.css'
 import { wsUrl } from '../lib/api'
 import {
+  clampTermPaste,
   isApplePlatform,
   readClipboard,
   termClipboardKeyAction,
+  termPointerClipboardAction,
   writeClipboard,
 } from '../lib/termClipboard'
 import {
@@ -56,9 +58,13 @@ export function TerminalView({ path, sessionId, onSession, onEnded, className }:
   const [ctrlArmed, setCtrlArmed] = useState(false)
   const ctrlArmedRef = useRef(false)
   const [hasSelection, setHasSelection] = useState(false)
+  const [clipFlash, setClipFlash] = useState<'copied' | 'pasted' | null>(null)
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null)
   const endedRef = useRef(false)
   const announcedRef = useRef(false)
   const reconnectNoteAt = useRef(0)
+  const clipFlashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const ctxMenuOpenRef = useRef(false)
 
   useEffect(() => {
     onSessionRef.current = onSession
@@ -73,12 +79,30 @@ export function TerminalView({ path, sessionId, onSession, onEnded, className }:
   }, [ctrlArmed])
 
   useEffect(() => {
+    ctxMenuOpenRef.current = !!ctxMenu
+  }, [ctxMenu])
+
+  useEffect(() => {
+    if (!ctxMenu) return
+    function onKey(ev: KeyboardEvent) {
+      if (ev.key === 'Escape') {
+        ev.preventDefault()
+        setCtxMenu(null)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [ctxMenu])
+
+  useEffect(() => {
     if (!hostRef.current) return
+    let disposed = false
     endedRef.current = false
     announcedRef.current = false
     ctrlArmedRef.current = false
     setCtrlArmed(false)
     setHasSelection(false)
+    setCtxMenu(null)
 
     const term = new XTerm({
       cursorBlink: true,
@@ -89,12 +113,14 @@ export function TerminalView({ path, sessionId, onSession, onEnded, className }:
       fontFamily:
         '"Symbols Nerd Font Mono", "IBM Plex Mono", "DejaVu Sans Mono", "Noto Sans Mono", ui-monospace, monospace',
       fontSize: 13,
-      lineHeight: 1.25,
+      // 1.0 so Unicode block QR (Expo/Metro ▄▀█) rows abut; >1 leaves black gaps.
+      lineHeight: 1,
       theme: {
         background: '#0c1524',
         foreground: '#f4f8ff',
         cursor: '#2ee6c8',
-        selectionBackground: '#2ee6c844',
+        selectionBackground: '#2ee6c8aa',
+        selectionInactiveBackground: '#2ee6c866',
         black: '#0c1524',
         brightBlack: '#6b829e',
         green: '#4ade80',
@@ -217,26 +243,105 @@ export function TerminalView({ path, sessionId, onSession, onEnded, className }:
       typeof navigator !== 'undefined' ? navigator.platform : '',
       typeof navigator !== 'undefined' ? navigator.userAgent : '',
     )
+    const flashClip = (kind: 'copied' | 'pasted') => {
+      if (disposed) return
+      setClipFlash(kind)
+      if (clipFlashTimer.current) clearTimeout(clipFlashTimer.current)
+      clipFlashTimer.current = setTimeout(() => {
+        if (!disposed) setClipFlash(null)
+      }, 1200)
+    }
+
+    const copySelection = async (): Promise<boolean> => {
+      if (disposed) return false
+      const text = term.getSelection()
+      if (!text) return false
+      const ok = await writeClipboard(text)
+      if (disposed) return false
+      if (ok) flashClip('copied')
+      return ok
+    }
+
+    const pasteClipboard = async (raw?: string): Promise<boolean> => {
+      if (disposed) return false
+      const text = clampTermPaste(raw ?? (await readClipboard()))
+      if (!text || disposed) return false
+      term.paste(text)
+      flashClip('pasted')
+      return true
+    }
+
     term.attachCustomKeyEventHandler((ev) => {
+      // Context menu owns Escape via window listener; don't send it to the PTY.
+      if (ev.key === 'Escape' && ctxMenuOpenRef.current) return false
       const action = termClipboardKeyAction(ev, term.hasSelection(), apple)
       if (action === 'copy') {
         ev.preventDefault()
-        const text = term.getSelection()
-        if (text) void writeClipboard(text)
+        void copySelection()
         return false
       }
       if (action === 'paste') {
         ev.preventDefault()
-        void readClipboard().then((text) => {
-          if (text) term.paste(text)
-        })
+        void pasteClipboard()
         return false
       }
       return true
     })
     const selDisposable = term.onSelectionChange(() => {
-      setHasSelection(term.hasSelection())
+      if (!disposed) setHasSelection(term.hasSelection())
     })
+
+    const host = hostRef.current
+    let dragStart: { x: number; y: number } | null = null
+    const onMouseDown = (ev: MouseEvent) => {
+      // Stop middle-click autoscroll so it can paste instead.
+      if (ev.button === 1) {
+        ev.preventDefault()
+        return
+      }
+      if (ev.button === 0) dragStart = { x: ev.clientX, y: ev.clientY }
+    }
+    const onMouseUp = (ev: MouseEvent) => {
+      const dragged =
+        !!dragStart &&
+        (Math.abs(ev.clientX - dragStart.x) > 3 || Math.abs(ev.clientY - dragStart.y) > 3)
+      dragStart = null
+      const action = termPointerClipboardAction(ev.button, term.hasSelection(), dragged)
+      if (action === 'paste') {
+        ev.preventDefault()
+        void pasteClipboard()
+        return
+      }
+      if (action === 'copy') {
+        // Defer so xterm finishes the selection range first.
+        requestAnimationFrame(() => {
+          if (!disposed && term.hasSelection()) void copySelection()
+        })
+      }
+    }
+    const onContextMenu = (ev: MouseEvent) => {
+      ev.preventDefault()
+      // Word under cursor is selected by rightClickSelectsWord; Copy is explicit.
+      if (!disposed) setCtxMenu({ x: ev.clientX, y: ev.clientY })
+    }
+    const onCopyEvent = (ev: ClipboardEvent) => {
+      const text = term.getSelection()
+      if (!text || !ev.clipboardData) return
+      ev.clipboardData.setData('text/plain', text)
+      ev.preventDefault()
+      flashClip('copied')
+    }
+    const onPasteEvent = (ev: ClipboardEvent) => {
+      const text = ev.clipboardData?.getData('text/plain')
+      if (!text) return
+      ev.preventDefault()
+      void pasteClipboard(text)
+    }
+    host.addEventListener('mousedown', onMouseDown)
+    host.addEventListener('mouseup', onMouseUp)
+    host.addEventListener('contextmenu', onContextMenu)
+    host.addEventListener('copy', onCopyEvent)
+    host.addEventListener('paste', onPasteEvent)
 
     let roTimer: ReturnType<typeof setTimeout> | undefined
     const ro = new ResizeObserver(() => {
@@ -252,10 +357,17 @@ export function TerminalView({ path, sessionId, onSession, onEnded, className }:
         if (sock) sendResize(sock)
       }, 50)
     })
-    ro.observe(hostRef.current)
+    ro.observe(host)
 
     return () => {
+      disposed = true
       if (roTimer) clearTimeout(roTimer)
+      if (clipFlashTimer.current) clearTimeout(clipFlashTimer.current)
+      host.removeEventListener('mousedown', onMouseDown)
+      host.removeEventListener('mouseup', onMouseUp)
+      host.removeEventListener('contextmenu', onContextMenu)
+      host.removeEventListener('copy', onCopyEvent)
+      host.removeEventListener('paste', onPasteEvent)
       disposable.dispose()
       selDisposable.dispose()
       ro.disconnect()
@@ -265,6 +377,8 @@ export function TerminalView({ path, sessionId, onSession, onEnded, className }:
       termRef.current = null
       fitRef.current = null
       setHasSelection(false)
+      setCtxMenu(null)
+      setClipFlash(null)
     }
   }, [path, sessionId])
 
@@ -302,18 +416,41 @@ export function TerminalView({ path, sessionId, onSession, onEnded, className }:
     setActionsOpen(false)
   }
 
+  function flashClip(kind: 'copied' | 'pasted') {
+    setClipFlash(kind)
+    if (clipFlashTimer.current) clearTimeout(clipFlashTimer.current)
+    clipFlashTimer.current = setTimeout(() => setClipFlash(null), 1200)
+  }
+
   async function copyActiveSelection() {
     const term = termRef.current
     const text = term?.getSelection() || ''
     if (!text) return
-    await writeClipboard(text)
+    if (await writeClipboard(text)) flashClip('copied')
     term?.focus()
   }
 
   async function pasteFromClipboard() {
-    const text = await readClipboard()
-    if (text) termRef.current?.paste(text)
+    const text = clampTermPaste(await readClipboard())
+    if (text) {
+      termRef.current?.paste(text)
+      flashClip('pasted')
+    }
     termRef.current?.focus()
+  }
+
+  function closeCtxMenu() {
+    setCtxMenu(null)
+  }
+
+  async function ctxCopy() {
+    closeCtxMenu()
+    await copyActiveSelection()
+  }
+
+  async function ctxPaste() {
+    closeCtxMenu()
+    await pasteFromClipboard()
   }
 
   const live = connState === 'live'
@@ -389,9 +526,18 @@ export function TerminalView({ path, sessionId, onSession, onEnded, className }:
           onClick={() => void copyActiveSelection()}
           disabled={!hasSelection}
           className="hb-term-key"
-          title="Copy selection (Ctrl+Shift+C or Cmd+C)"
+          title="Copy selection (drag also copies · Ctrl+Shift+C / Cmd+C)"
         >
-          Copy
+          {clipFlash === 'copied' ? 'Copied' : 'Copy'}
+        </button>
+        <button
+          type="button"
+          onClick={() => void pasteFromClipboard()}
+          disabled={!live}
+          className="hb-term-key"
+          title="Paste (Ctrl+Shift+V / Cmd+V · middle-click)"
+        >
+          {clipFlash === 'pasted' ? 'Pasted' : 'Paste'}
         </button>
         <button
           type="button"
@@ -539,8 +685,53 @@ export function TerminalView({ path, sessionId, onSession, onEnded, className }:
         ref={hostRef}
         className="flex-1 min-h-0 p-2 hb-term-host"
         data-hb-no-ptr="1"
-        onClick={() => termRef.current?.focus()}
+        onClick={() => {
+          if (ctxMenu) closeCtxMenu()
+          else termRef.current?.focus()
+        }}
       />
+
+      {ctxMenu ? (
+        <div
+          className="fixed inset-0 z-[60]"
+          role="presentation"
+          onClick={closeCtxMenu}
+          onContextMenu={(e) => {
+            e.preventDefault()
+            closeCtxMenu()
+          }}
+        >
+          <div
+            className="hb-term-ctx absolute min-w-[8.5rem] py-1 shadow-xl"
+            style={{
+              left: Math.min(ctxMenu.x, typeof window !== 'undefined' ? window.innerWidth - 150 : ctxMenu.x),
+              top: Math.min(ctxMenu.y, typeof window !== 'undefined' ? window.innerHeight - 100 : ctxMenu.y),
+            }}
+            role="menu"
+            aria-label="Terminal clipboard"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!hasSelection}
+              className="hb-term-ctx-item"
+              onClick={() => void ctxCopy()}
+            >
+              Copy
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!live}
+              className="hb-term-ctx-item"
+              onClick={() => void ctxPaste()}
+            >
+              Paste
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

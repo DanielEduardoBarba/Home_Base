@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'bun:test'
-import { termClipboardKeyAction, writeClipboard, type TermKeyEvent } from './termClipboard'
+import {
+  clampTermPaste,
+  termClipboardKeyAction,
+  termPointerClipboardAction,
+  TERM_PASTE_MAX_CHARS,
+  writeClipboard,
+  type TermKeyEvent,
+} from './termClipboard'
 
 function ev(partial: Partial<TermKeyEvent> & Pick<TermKeyEvent, 'key'>): TermKeyEvent {
   return {
@@ -48,6 +55,36 @@ describe('termClipboardKeyAction', () => {
     expect(
       termClipboardKeyAction(ev({ key: 'c', ctrlKey: true, shiftKey: true, type: 'keyup' }), true, false),
     ).toBe(null)
+  })
+})
+
+describe('termPointerClipboardAction', () => {
+  test('left mouseup with a selection copies only after a drag', () => {
+    expect(termPointerClipboardAction(0, true, true)).toBe('copy')
+    expect(termPointerClipboardAction(0, true, false)).toBe(null)
+    expect(termPointerClipboardAction(0, false, true)).toBe(null)
+  })
+
+  test('middle click pastes', () => {
+    expect(termPointerClipboardAction(1, false)).toBe('paste')
+    expect(termPointerClipboardAction(1, true)).toBe('paste')
+  })
+
+  test('right click is left to the context menu', () => {
+    expect(termPointerClipboardAction(2, true)).toBe(null)
+  })
+})
+
+describe('clampTermPaste', () => {
+  test('passes through short text and empty', () => {
+    expect(clampTermPaste('')).toBe('')
+    expect(clampTermPaste('hello')).toBe('hello')
+  })
+
+  test('truncates oversized pastes', () => {
+    const big = 'x'.repeat(TERM_PASTE_MAX_CHARS + 50)
+    const out = clampTermPaste(big)
+    expect(out.length).toBe(TERM_PASTE_MAX_CHARS)
   })
 })
 
