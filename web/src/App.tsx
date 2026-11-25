@@ -23,6 +23,15 @@ import type { PresentRequest } from './lib/chatTypes'
 import { installClientLog } from './lib/clientLog'
 import { confirmNavigation } from './lib/navGuard'
 import { parseAppPath, serializeAppPath } from './lib/appRoutes'
+import { AppSceneProvider, useAppScene } from './lib/AppSceneContext'
+import {
+  readAppSceneSnapshot,
+  readSceneScroll,
+  resolveBootstrapScene,
+  resolveLandingPath,
+  shouldWriteHistory,
+  writeSceneScroll,
+} from './lib/appSceneSnapshot'
 import { NotifyProvider, useNotify } from './lib/NotifyContext'
 import { runSceneRefresh } from './lib/sceneRefresh'
 import { applyMobileSafeTop } from './lib/theme'
@@ -218,15 +227,26 @@ function NotFoundView({ path, onHome }: { path: string; onHome: () => void }) {
 }
 
 function AuthedApp() {
-  const [area, setArea] = useState<AppArea>('home')
-  const [tab, setTab] = useState<Tab>('work')
+  const {
+    area,
+    tab,
+    workItem,
+    selectedId,
+    routesReady,
+    bootstrapped,
+    setArea,
+    setTab,
+    setWorkItem,
+    setSelectedId,
+    setRoutesReady,
+    setBootstrapped,
+    applyScene,
+  } = useAppScene()
   const [notFoundPath, setNotFoundPath] = useState<string | null>(null)
-  const [routesReady, setRoutesReady] = useState(false)
   const applyingHistory = useRef(false)
   const [projects, setProjects] = useState<Project[]>([])
-  const [selectedId, setSelectedId] = useState('')
-  const [workItem, setWorkItem] = useState<WorkItem>('apps')
   const [attachSessionIds, setAttachSessionIds] = useState<string[] | null>(null)
+  const mainScrollRef = useRef<HTMLElement | null>(null)
   const [workPresent, setWorkPresent] = useState<PresentRequest | null>(null)
   /** Bumps so Work re-applies even if the same scene is requested twice. */
   const [workPresentKey, setWorkPresentKey] = useState(0)
@@ -252,44 +272,52 @@ function AuthedApp() {
   const [onboardingReady, setOnboardingReady] = useState(false)
 
   useEffect(() => {
-    const pid = readLastProjectId()
-    setHostLabel(location.hostname || 'host')
-    const savedTab = migrateLegacyWorkTab(readLastTab('work'), pid)
-    if (savedTab !== readLastTab('work')) writeLastTab(savedTab)
-    const savedItem = pid ? readWorkPlace(pid).item : 'apps'
-    const landed = (window as Window & { __HB_PATH?: string }).__HB_PATH || window.location.pathname
-    const parsed = parseAppPath(landed)
-    if (parsed.kind === 'notfound') {
-      setNotFoundPath(parsed.path)
-      setSelectedId(pid)
+    // Provider lives above PinLock — skip re-bootstrap when AuthedApp remounts
+    // after lock/unlock so Vision/Agent/etc. are not reset to Work/Shell defaults.
+    if (bootstrapped) {
       setRoutesReady(true)
       return
     }
-    const path = (landed.replace(/\/+$/, '') || '/')
-    let loc = parsed.loc
-    if (path === '/') {
-      loc = {
-        area: readLastArea('home'),
-        tab: savedTab,
+    setHostLabel(location.hostname || 'host')
+    const pid = readLastProjectId()
+    const savedTab = migrateLegacyWorkTab(readLastTab('work'), pid)
+    if (savedTab !== readLastTab('work')) writeLastTab(savedTab)
+    const savedItem = pid ? readWorkPlace(pid).item : 'apps'
+    const bootPath = (window as Window & { __HB_PATH?: string }).__HB_PATH
+    const landed = resolveLandingPath(bootPath, window.location.pathname)
+    const snap = readAppSceneSnapshot()
+    const boot = resolveBootstrapScene(
+      landed,
+      {
+        lastArea: readLastArea('home'),
+        lastTab: savedTab,
         workItem: savedItem,
-      }
-    } else if (path === '/work' || path === '/homework') {
-      loc = { ...parsed.loc, workItem: savedItem }
+        selectedId: pid,
+      },
+      snap,
+    )
+    if (boot.kind === 'notfound') {
+      setNotFoundPath(boot.path)
+      applyScene({ selectedId: boot.selectedId })
+      setRoutesReady(true)
+      setBootstrapped(true)
+      return
     }
-    loc = { ...loc, area: coerceArea(loc.area) }
-    setArea(loc.area)
-    setTab(loc.tab)
-    setWorkItem(loc.workItem)
-    writeLastArea(loc.area)
-    writeLastTab(loc.tab)
-    if (pid) writeWorkPlace(pid, { item: loc.workItem })
-    setSelectedId(pid)
-    const canonical = serializeAppPath(loc)
+    const area = coerceArea(boot.loc.area)
+    applyScene({
+      area,
+      tab: boot.loc.tab,
+      workItem: boot.loc.workItem,
+      selectedId: boot.loc.selectedId,
+    })
+    if (boot.loc.selectedId) writeWorkPlace(boot.loc.selectedId, { item: boot.loc.workItem })
+    const canonical = serializeAppPath({ area, tab: boot.loc.tab, workItem: boot.loc.workItem })
     if (window.location.pathname !== canonical) {
       window.history.replaceState({ hb: true }, '', canonical)
     }
     setRoutesReady(true)
-  }, [])
+    setBootstrapped(true)
+  }, [applyScene, bootstrapped, setBootstrapped, setRoutesReady])
 
   useEffect(() => {
     let cancelled = false
@@ -331,6 +359,20 @@ function AuthedApp() {
   useEffect(() => {
     if (tab === 'view') setViewVisited(true)
   }, [tab])
+
+  // Restore / persist main pane scroll across PinLock remounts where feasible.
+  useEffect(() => {
+    const el = mainScrollRef.current
+    if (!el) return
+    const top = readSceneScroll(area)
+    if (top > 0) el.scrollTop = top
+    const onScroll = () => writeSceneScroll(area, el.scrollTop)
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      writeSceneScroll(area, el.scrollTop)
+      el.removeEventListener('scroll', onScroll)
+    }
+  }, [area, tab, workItem, routesReady])
 
   useEffect(() => {
     setMoreOpen(false)
@@ -455,15 +497,22 @@ function AuthedApp() {
   }, [moreOpen])
 
   useEffect(() => {
-    if (!routesReady || notFoundPath) return
     if (applyingHistory.current) {
       applyingHistory.current = false
       return
     }
-    const path = serializeAppPath({ area, tab, workItem })
-    if (window.location.pathname === path) return
-    window.history.pushState({ hb: true }, '', path)
-  }, [area, tab, workItem, routesReady, notFoundPath])
+    const decision = shouldWriteHistory({
+      routesReady,
+      bootstrapped,
+      notFound: !!notFoundPath,
+      area,
+      tab,
+      workItem,
+      currentPath: window.location.pathname,
+    })
+    if (!decision.write) return
+    window.history.pushState({ hb: true }, '', decision.path)
+  }, [area, tab, workItem, routesReady, bootstrapped, notFoundPath])
 
   useEffect(() => {
     const onPop = () => {
@@ -700,7 +749,7 @@ function AuthedApp() {
   if (notFoundPath) {
     return (
       <div className="hb-app-shell h-full flex flex-col">
-        <main className="flex-1 min-h-0 overflow-hidden">
+        <main ref={mainScrollRef} className="flex-1 min-h-0 overflow-hidden">
           <NotFoundView path={notFoundPath} onHome={() => void goArea('home')} />
         </main>
       </div>
@@ -716,7 +765,7 @@ function AuthedApp() {
             <div className="hb-spinner" />
           </div>
         )}
-        <main className="flex-1 min-h-0 overflow-hidden">
+        <main ref={mainScrollRef} className="flex-1 min-h-0 overflow-hidden">
           <HomeDashboard
             version={version}
             hostLabel={hostLabel}
@@ -767,7 +816,7 @@ function AuthedApp() {
             <div className="hb-spinner" />
           </div>
         )}
-        <main className="flex-1 min-h-0 overflow-hidden">
+        <main ref={mainScrollRef} className="flex-1 min-h-0 overflow-hidden">
           <HomeUsageTab onHome={() => goArea('home')} />
         </main>
         <ToastStack />
@@ -785,7 +834,7 @@ function AuthedApp() {
             <div className="hb-spinner" />
           </div>
         )}
-        <main className="flex-1 min-h-0 overflow-hidden">
+        <main ref={mainScrollRef} className="flex-1 min-h-0 overflow-hidden">
           <SettingsTab
             onHome={() => goArea('home')}
             onOpenUsage={() => goArea('usage')}
@@ -811,7 +860,7 @@ function AuthedApp() {
             <div className="hb-spinner" />
           </div>
         )}
-        <main className="flex-1 min-h-0 overflow-hidden">
+        <main ref={mainScrollRef} className="flex-1 min-h-0 overflow-hidden">
           <HomeAgentTab
             projects={projects}
             selectedId={selectedId}
@@ -834,7 +883,7 @@ function AuthedApp() {
             <div className="hb-spinner" />
           </div>
         )}
-        <main className="flex-1 min-h-0 overflow-hidden">
+        <main ref={mainScrollRef} className="flex-1 min-h-0 overflow-hidden">
           <HomeAccessTab
             projects={projects}
             selectedId={selectedId}
@@ -857,7 +906,7 @@ function AuthedApp() {
             <div className="hb-spinner" />
           </div>
         )}
-        <main className="flex-1 min-h-0 overflow-hidden">
+        <main ref={mainScrollRef} className="flex-1 min-h-0 overflow-hidden">
           <HomeVisionTab
             projects={projects}
             selectedId={selectedId}
@@ -880,7 +929,7 @@ function AuthedApp() {
             <div className="hb-spinner" />
           </div>
         )}
-        <main className="flex-1 min-h-0 overflow-hidden">
+        <main ref={mainScrollRef} className="flex-1 min-h-0 overflow-hidden">
           <ContingencyTab onHome={() => goArea('home')} />
         </main>
         <ToastStack />
@@ -962,7 +1011,7 @@ function AuthedApp() {
           )}
         </button>
       </header>
-      <main className="flex-1 min-h-0 overflow-hidden relative">
+      <main ref={mainScrollRef} className="flex-1 min-h-0 overflow-hidden relative">
         {/* Mount View on first visit; keep mounted (hidden) so capture survives tab switches. */}
         {viewVisited && (
           <div
@@ -1168,9 +1217,11 @@ export default function App() {
 
   return (
     <NotifyProvider>
-      <PinLock>
-        <AuthedApp />
-      </PinLock>
+      <AppSceneProvider>
+        <PinLock>
+          <AuthedApp />
+        </PinLock>
+      </AppSceneProvider>
     </NotifyProvider>
   )
 }
