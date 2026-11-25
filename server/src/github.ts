@@ -4,7 +4,6 @@
  */
 import {
   existsSync,
-  mkdirSync,
   readdirSync,
   realpathSync,
   rmSync,
@@ -26,7 +25,9 @@ import {
   mcpWorkspaceCreateAllowed,
 } from "./mcp_server";
 import {
+  chownSeatUser,
   ensureMcpWorkspacesRoot,
+  ensureSeatOwnedDir,
   markMcpWorkspace,
   rejectSymlinkEscape,
   validateWorkspaceName,
@@ -573,15 +574,27 @@ export function cloneGithubWorkspace(opts: {
   const dup = assertNotDuplicate(target, name);
   if (dup) return plainError(dup);
 
-  const existedEmpty = existsSync(target) && !dirNonEmpty(target);
+  // HB-CLONE-01: prepare as seat-owned before git (setpriv seat) writes .git.
+  // mkdir as root alone leaves Permission denied on .git for the seat user.
+  const existedBefore = existsSync(target);
+  const existedEmpty = existedBefore && !dirNonEmpty(target);
   let createdDir = false;
-  if (!existsSync(target)) {
-    try {
-      mkdirSync(target, { mode: 0o755 });
+  try {
+    if (!existedBefore) {
+      ensureSeatOwnedDir(target);
       createdDir = true;
-    } catch (e) {
-      return plainError(e instanceof Error ? e.message : String(e));
+    } else if (existedEmpty) {
+      chownSeatUser(target);
     }
+  } catch (e) {
+    if (createdDir) {
+      try {
+        rmSync(target, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    }
+    return plainError(e instanceof Error ? e.message : String(e));
   }
 
   // Always clone into the target directory with "." so we control the path.

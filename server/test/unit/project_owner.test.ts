@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,8 +16,9 @@ import {
   resolveProjectOwner,
   wrapArgvForProject,
 } from "../../src/project_owner";
-import { setprivPrefix, wrapArgvForUser, type SeatUser } from "../../src/shell_env";
+import { detectSeatUser, setprivPrefix, wrapArgvForUser, type SeatUser } from "../../src/shell_env";
 import { buildOperatorCmd } from "../../src/operator_git_env";
+import { ensureSeatOwnedDir } from "../../src/workspace";
 
 describe("project owner spawn wrapper (HB-OWN-01)", () => {
   test("resolveProjectOwner reads directory uid", () => {
@@ -154,6 +157,27 @@ describe("ownership repair detection (HB-OWN-01)", () => {
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("ensureSeatOwnedDir (HB-CLONE-01)", () => {
+  test("creates dir and chowns to seat when running as root", () => {
+    const parent = mkdtempSync(join(tmpdir(), "hb-clone-"));
+    const target = join(parent, "fresh-ws");
+    try {
+      expect(existsSync(target)).toBe(false);
+      ensureSeatOwnedDir(target);
+      expect(existsSync(target)).toBe(true);
+      const uid = typeof process.getuid === "function" ? process.getuid() : -1;
+      if (uid === 0) {
+        const seat = detectSeatUser();
+        expect(statSync(target).uid).toBe(seat.uid);
+      } else {
+        expect(statSync(target).uid).toBe(uid);
+      }
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
     }
   });
 });

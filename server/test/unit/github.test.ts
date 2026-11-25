@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -40,10 +41,12 @@ writeFileSync(
 );
 mkdirSync(join(root, "demo-ws"), { recursive: true });
 
+// Env must be set before any src import (config caches paths at load).
 const { PROJECTS_PATH, RUNTIME_DIR } = await import("../../src/config");
 const mcp = await import("../../src/mcp_server");
 const gh = await import("../../src/github");
 const ws = await import("../../src/workspace");
+const { detectSeatUser } = await import("../../src/shell_env");
 
 function envIsolated(): boolean {
   return PROJECTS_PATH.startsWith(root) && RUNTIME_DIR.startsWith(root);
@@ -349,5 +352,93 @@ describeGh("github path confinement + origin refusal", () => {
     expect(path.startsWith(mcpRoot + "/")).toBe(true);
     expect(path.includes("..")).toBe(false);
     expect(readdirSync(mcpRoot)).toContain("confined-app");
+  });
+
+  test("HB-CLONE-01: clone prepares seat-owned dir; failure cleans up", () => {
+    mcp.saveMcpServer({
+      allowMcpGithubRepos: true,
+      allowMcpWorkspaceCreate: true,
+    });
+    const name = "clone-fail-cleanup";
+    const target = join(mcpRoot, name);
+    expect(existsSync(target)).toBe(false);
+
+    let sawCloneCwd: string | null = null;
+    let cloneCwdUid: number | null = null;
+    gh._setGithubRunnerForTests((cmd, args, opts) => {
+      if (cmd === "git" && args[0] === "clone") {
+        sawCloneCwd = opts?.cwd || null;
+        if (sawCloneCwd && existsSync(sawCloneCwd)) {
+          cloneCwdUid = statSync(sawCloneCwd).uid;
+        }
+        return {
+          code: 128,
+          stdout: "",
+          stderr: "fatal: Permission denied",
+        };
+      }
+      return { code: 1, stdout: "", stderr: `unexpected ${cmd}` };
+    });
+
+    const r = gh.cloneGithubWorkspace({
+      repo: "acme/widget",
+      workspaceName: name,
+      surface: "mcp",
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/Permission denied|git clone failed/i);
+    expect(existsSync(target)).toBe(false);
+    expect(sawCloneCwd).toBe(target);
+
+    const uid = typeof process.getuid === "function" ? process.getuid() : -1;
+    if (uid === 0) {
+      const seat = detectSeatUser();
+      expect(cloneCwdUid).toBe(seat.uid);
+    }
+  });
+
+  test("HB-CLONE-01: successful clone target is seat-owned when root", () => {
+    mcp.saveMcpServer({
+      allowMcpGithubRepos: true,
+      allowMcpWorkspaceCreate: true,
+    });
+    const name = "clone-seat-owned";
+    gh._setGithubRunnerForTests((cmd, args, opts) => {
+      if (cmd === "git" && args[0] === "clone") {
+        const cwd = opts?.cwd || "";
+        if (cwd) mkdirSync(join(cwd, ".git"), { recursive: true });
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (cmd === "git" && args[0] === "rev-parse" && args[1] === "--abbrev-ref") {
+        return { code: 0, stdout: "main\n", stderr: "" };
+      }
+      if (cmd === "git" && args[0] === "show-ref") {
+        return { code: 1, stdout: "", stderr: "" };
+      }
+      if (cmd === "git" && args[0] === "switch") {
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (cmd === "git" && args[0] === "remote" && args[1] === "get-url") {
+        return {
+          code: 0,
+          stdout: "https://github.com/acme/widget.git\n",
+          stderr: "",
+        };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    const r = gh.cloneGithubWorkspace({
+      repo: "acme/widget",
+      workspaceName: name,
+      surface: "mcp",
+    });
+    expect(r.ok).toBe(true);
+    const path = String(r.data?.path || "");
+    expect(existsSync(path)).toBe(true);
+    const uid = typeof process.getuid === "function" ? process.getuid() : -1;
+    if (uid === 0) {
+      const seat = detectSeatUser();
+      expect(statSync(path).uid).toBe(seat.uid);
+    }
   });
 });

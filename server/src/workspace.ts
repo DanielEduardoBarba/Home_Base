@@ -77,7 +77,8 @@ export function mcpWorkspacesRoot(): string {
   return join(detectSeatUser().home, "MCP_WORKSPACES");
 }
 
-function chownSeatUser(path: string): void {
+/** Chown a path to the seat user when homebased is root (HB-CLONE-01 / HB-OWN). */
+export function chownSeatUser(path: string): void {
   const seat = detectSeatUser();
   if (process.getuid?.() === 0 && seat.uid > 0) {
     try {
@@ -86,6 +87,17 @@ function chownSeatUser(path: string): void {
       /* ignore */
     }
   }
+}
+
+/**
+ * Ensure a directory exists and is seat-owned before seat-user git/gh writes into it.
+ * homebased runs as uid 0; mkdir alone leaves a root-owned folder that setpriv git cannot fill.
+ */
+export function ensureSeatOwnedDir(path: string): void {
+  if (!existsSync(path)) {
+    mkdirSync(path, { mode: 0o755 });
+  }
+  chownSeatUser(path);
 }
 
 export function ensureMcpWorkspacesRoot(): string {
