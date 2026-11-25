@@ -144,12 +144,15 @@ describe("unity preset fields", () => {
         name: "U1",
       });
       expect(fields.preset).toBe("unity");
-      expect((fields.ports as { id: string }[]).some((p) => p.id === "webgl")).toBe(
-        true,
+      const ports = fields.ports as { id: string; port: number }[];
+      expect(ports.some((p) => p.id === "webgl")).toBe(true);
+      expect(ports.some((p) => p.id === "mcp-bridge")).toBe(true);
+      expect(ports.find((p) => p.id === "webgl")?.port).toBeGreaterThanOrEqual(
+        8410,
       );
       expect(
-        (fields.ports as { id: string }[]).some((p) => p.id === "mcp-bridge"),
-      ).toBe(true);
+        ports.find((p) => p.id === "mcp-bridge")?.port,
+      ).toBeGreaterThanOrEqual(6400);
     } finally {
       if (prevHome === undefined) delete process.env.HOMEBASE_HOME;
       else process.env.HOMEBASE_HOME = prevHome;

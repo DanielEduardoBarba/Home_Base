@@ -30,6 +30,30 @@ MCP_PKG_URL="${UNITY_MCP_PACKAGE_URL:-https://github.com/CoplayDev/unity-mcp.git
 
 mkdir -p "$(dirname "$LOG")" "$STATUS_DIR"
 
+# Persist Coplay PortManager config so the Editor listens on UNITY_MCP_PORT
+# (hashed + legacy files under ~/.unity-mcp; project_path = <project>/Assets).
+write_bridge_port_config() {
+  local port="$1"
+  local assets="${PROJECT}/Assets"
+  python3 - "$STATUS_DIR" "$assets" "$port" <<'PY' || true
+import hashlib, json, pathlib, sys
+from datetime import datetime, timezone
+status_dir, assets, port = pathlib.Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+status_dir.mkdir(parents=True, exist_ok=True)
+h = hashlib.sha1(assets.encode()).hexdigest()[:8]
+body = {
+    "unity_port": port,
+    "created_date": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    "project_path": assets,
+}
+text = json.dumps(body, indent=2) + "\n"
+(status_dir / f"unity-mcp-port-{h}.json").write_text(text)
+(status_dir / "unity-mcp-port.json").write_text(text)
+print(f"Wrote MCP bridge port {port} for {assets}")
+PY
+}
+write_bridge_port_config "$BRIDGE_PORT"
+
 die() { echo "error: $*" >&2; exit 1; }
 
 [[ -x "$UNITY" ]] || die "Unity Editor not found at $UNITY (set UNITY_EDITOR)"

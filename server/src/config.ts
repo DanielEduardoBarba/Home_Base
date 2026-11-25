@@ -8,6 +8,8 @@ import {
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isPortListening } from "./ports";
+import { writeUnityMcpBridgePort } from "./unity_mcp_port";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -293,19 +295,81 @@ export function looksLikeUnityWorkspace(absPath: string): boolean {
   return existsSync(join(root, "ProjectSettings", "ProjectVersion.txt"));
 }
 
-/** Pick a free WebGL preview port near the Unity preset default. */
-export function nextUnityWebglPort(start = 8410): number {
+/** Ports already claimed by registered projects. */
+export function usedProjectPorts(exceptPath?: string): Set<number> {
+  const skip = exceptPath ? resolve(exceptPath) : "";
   const used = new Set<number>();
   for (const p of loadProjects().values()) {
+    if (skip && resolve(p.path) === skip) continue;
     for (const port of p.ports || []) {
       const n = Number(port.port);
-      if (Number.isFinite(n)) used.add(n);
+      if (Number.isFinite(n) && n > 0) used.add(n);
     }
   }
-  for (let p = start; p < start + 200; p++) {
-    if (!used.has(p)) return p;
+  return used;
+}
+
+/**
+ * Next free port starting at `start`, skipping ports used by projects and
+ * currently listening sockets (ss).
+ */
+export function nextFreeUnityPort(
+  start: number,
+  used: Set<number> = usedProjectPorts(),
+  span = 200,
+): number {
+  const base = Number.isFinite(start) && start > 0 ? Math.floor(start) : 6400;
+  for (let p = base; p < base + span; p++) {
+    if (used.has(p)) continue;
+    try {
+      if (isPortListening(p)) continue;
+    } catch {
+      /* ss unavailable — still skip used */
+    }
+    return p;
   }
-  return start;
+  return base;
+}
+
+/** Pick a free WebGL preview port near the Unity preset default. */
+export function nextUnityWebglPort(start = 8410): number {
+  return nextFreeUnityPort(start, usedProjectPorts());
+}
+
+/** Pick a free Coplay MCP bridge port near the Unity preset default (6400). */
+export function nextUnityBridgePort(start = 6400): number {
+  return nextFreeUnityPort(start, usedProjectPorts());
+}
+
+/**
+ * Allocate unique webgl + mcp-bridge ports for a Unity workspace.
+ * Reuses ports already stored for the same absolute path (e.g. lastmanholdout 8411/6400).
+ */
+export function allocateUnityPorts(opts: { path?: string } = {}): {
+  webgl: number;
+  bridge: number;
+} {
+  const abs = opts.path ? resolve(String(opts.path).trim()) : "";
+  let keepWebgl: number | undefined;
+  let keepBridge: number | undefined;
+  if (abs) {
+    for (const p of loadProjects().values()) {
+      if (resolve(p.path) !== abs) continue;
+      const w = Number((p.ports || []).find((x) => x.id === "webgl")?.port);
+      const b = Number((p.ports || []).find((x) => x.id === "mcp-bridge")?.port);
+      if (Number.isFinite(w) && w > 0) keepWebgl = w;
+      if (Number.isFinite(b) && b > 0) keepBridge = b;
+      break;
+    }
+  }
+  if (keepWebgl != null && keepBridge != null) {
+    return { webgl: keepWebgl, bridge: keepBridge };
+  }
+  const used = usedProjectPorts(abs || undefined);
+  const webgl = keepWebgl ?? nextFreeUnityPort(8410, used);
+  used.add(webgl);
+  const bridge = keepBridge ?? nextFreeUnityPort(6400, used);
+  return { webgl, bridge };
 }
 
 /**
@@ -332,22 +396,13 @@ export function mcpWorkspaceUpsertFields(opts: {
   };
   const forced = String(opts.preset || "").trim();
   if (forced === "unity" || (!forced && looksLikeUnityWorkspace(abs))) {
-    const webgl = nextUnityWebglPort();
-    // Preserve an existing webgl port if this path is already registered.
-    let port = webgl;
-    for (const p of loadProjects().values()) {
-      if (resolve(p.path) === abs) {
-        const existing = (p.ports || []).find((x) => x.id === "webgl");
-        if (existing?.port) port = Number(existing.port) || port;
-        break;
-      }
-    }
+    const { webgl, bridge } = allocateUnityPorts({ path: abs });
     return {
       ...base,
       preset: "unity",
       ports: [
-        { id: "webgl", label: "WebGL", port },
-        { id: "mcp-bridge", label: "MCP Bridge", port: 6400 },
+        { id: "webgl", label: "WebGL", port: webgl },
+        { id: "mcp-bridge", label: "MCP Bridge", port: bridge },
       ],
     };
   }
@@ -487,7 +542,16 @@ export function upsertProjectFromInput(input: {
   raw.path = abs;
   raw.id = String(input.id || raw.id || slugId(basename(abs)));
   raw.name = String(input.name || raw.name || basename(abs));
-  if (input.ports) raw.ports = input.ports;
+  if (input.ports) {
+    raw.ports = input.ports;
+  } else if (String(input.preset || "") === "unity") {
+    // POST /api/projects + Chat upsert: never ship hard-coded 8410/6400 from the preset.
+    const { webgl, bridge } = allocateUnityPorts({ path: abs });
+    raw.ports = [
+      { id: "webgl", label: "WebGL", port: webgl },
+      { id: "mcp-bridge", label: "MCP Bridge", port: bridge },
+    ];
+  }
   if (input.actions) raw.actions = input.actions;
   // Unity: keep live-webgl / serve action listen port in sync with project webgl port.
   if (Array.isArray(raw.actions) && Array.isArray(raw.ports)) {
@@ -496,7 +560,25 @@ export function upsertProjectFromInput(input: {
       raw.ports as { id?: string; port?: number }[],
     );
   }
-  return upsertProject(raw);
+  const project = upsertProject(raw);
+  // Persist Coplay bridge port into MCPForUnity PortManager config (+ EditorPrefs hint).
+  try {
+    const bridge = Number(
+      (project.ports || []).find((p) => p.id === "mcp-bridge")?.port,
+    );
+    if (
+      Number.isFinite(bridge) &&
+      bridge > 0 &&
+      (String(input.preset || "") === "unity" ||
+        looksLikeUnityWorkspace(abs) ||
+        (project.ports || []).some((p) => p.id === "mcp-bridge"))
+    ) {
+      writeUnityMcpBridgePort(abs, bridge);
+    }
+  } catch {
+    /* non-fatal */
+  }
+  return project;
 }
 
 export function deleteProject(id: string): boolean {
