@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../lib/api'
 import { formatWait } from '../lib/authErrors'
+import {
+  clearMcpLockout,
+  fetchSecurityStatus,
+  type McpLockoutSource,
+} from '../lib/securityMcpApi'
 import { useSceneRefresh } from '../lib/sceneRefresh'
 
 type Ev = Awaited<ReturnType<typeof api.securityEvents>>['events'][number]
@@ -50,7 +55,10 @@ export function SecurityPanel() {
   const [integrityError, setIntegrityError] = useState<string | undefined>()
   const [devices, setDevices] = useState<Dev[]>([])
   const [lockout, setLockout] = useState<{ locked: boolean; retryAfter: number; failCount: number; threshold: number } | null>(null)
-  const [mcpLockout, setMcpLockout] = useState<{ locked: boolean; retryAfter: number; failCount: number; ip: string } | null>(null)
+  const [mcpLockouts, setMcpLockouts] = useState<McpLockoutSource[]>([])
+  const [clearPassword, setClearPassword] = useState('')
+  const [clearPin, setClearPin] = useState('')
+  const [clearBusy, setClearBusy] = useState(false)
   const [error, setError] = useState('')
   const [msg, setMsg] = useState('')
   const [retryTick, setRetryTick] = useState(0)
@@ -62,15 +70,15 @@ export function SecurityPanel() {
 
   const load = useCallback(async () => {
     try {
-      const [log, st] = await Promise.all([api.securityEvents(filters), api.securityStatus()])
+      const [log, st] = await Promise.all([api.securityEvents(filters), fetchSecurityStatus()])
       setEvents(log.events)
       setTotal(log.total)
       setLimit(log.limit)
       setIntegrityOk(log.integrityOk)
       setIntegrityError(log.integrityError)
-      setDevices(st.devices)
+      setDevices(st.devices as Dev[])
       setLockout(st.lockout)
-      setMcpLockout(st.mcpLockout)
+      setMcpLockouts(Array.isArray(st.mcpLockouts) ? st.mcpLockouts : [])
       setError('')
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -83,12 +91,46 @@ export function SecurityPanel() {
   }, [load])
 
   useEffect(() => {
-    const locked = (lockout?.locked && (lockout.retryAfter || 0) > 0) || (mcpLockout?.locked && (mcpLockout.retryAfter || 0) > 0)
+    const anyMcpLocked = mcpLockouts.some((s) => s.locked && (s.retryAfter || 0) > 0)
+    const locked = (lockout?.locked && (lockout.retryAfter || 0) > 0) || anyMcpLocked
     if (!locked) return
     const t = window.setInterval(() => setRetryTick((n) => n + 1), 1000)
     return () => window.clearInterval(t)
-  }, [lockout, mcpLockout])
+  }, [lockout, mcpLockouts])
   void retryTick
+
+  async function runClearMcp(opts: { source?: string; all?: boolean }) {
+    const password = clearPassword.trim()
+    const pin = clearPin.trim()
+    if (!password && !pin) {
+      setError('Enter your password or PIN to clear MCP lockout')
+      return
+    }
+    setClearBusy(true)
+    setError('')
+    setMsg('')
+    try {
+      const out = await clearMcpLockout({
+        ...opts,
+        ...(password ? { password } : {}),
+        ...(pin ? { pin } : {}),
+      })
+      setClearPassword('')
+      setClearPin('')
+      setMsg(
+        out.sourcesCleared === 0
+          ? 'No MCP lockout sources to clear'
+          : opts.all
+            ? `Cleared ${out.sourcesCleared} MCP lockout source${out.sourcesCleared === 1 ? '' : 's'}`
+            : `Cleared MCP lockout for ${out.sources[0] || opts.source}`,
+      )
+      void load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setClearBusy(false)
+    }
+  }
 
   const page = Math.floor(offset / limit)
   const pages = Math.max(1, Math.ceil(total / limit))
@@ -100,7 +142,8 @@ export function SecurityPanel() {
         <p className="text-xs text-mute leading-relaxed">
           Login and PIN share one lockout. MCP tokens have a separate per-source limit. Remote
           sign-in cannot skip an active lockout. A password sign-in from a browser on this machine
-          (loopback only) can clear it; PIN alone cannot.
+          (loopback only) can clear the UI lockout; PIN alone cannot. Clear MCP lockouts below with
+          password or PIN — or run sudo homebase unlock --mcp on the laptop.
         </p>
         <div className="rounded-xl border border-line bg-panel-2/40 px-3 py-2 text-sm">
           {lockout?.locked ? (
@@ -114,17 +157,81 @@ export function SecurityPanel() {
               {lockout ? ` · ${lockout.failCount}/${lockout.threshold} failures` : ''}.
             </p>
           )}
-          {mcpLockout?.locked ? (
-            <p className="text-danger mt-1">
-              MCP lockout for this address ({mcpLockout.ip}) — try again in{' '}
-              {formatWait(mcpLockout.retryAfter)}.
-            </p>
+        </div>
+        <div className="rounded-xl border border-line bg-panel-2/40 px-3 py-2 space-y-2">
+          <p className="text-xs font-semibold text-text">MCP lockouts</p>
+          {mcpLockouts.length === 0 ? (
+            <p className="text-xs text-mute">No MCP lockout sources recorded.</p>
           ) : (
-            <p className="text-mute text-xs mt-1">
-              MCP from this address: not locked
-              {mcpLockout ? ` (${mcpLockout.failCount} recorded failures)` : ''}.
-            </p>
+            <ul className="space-y-2">
+              {mcpLockouts.map((s) => (
+                <li
+                  key={s.source}
+                  className="flex flex-wrap items-start justify-between gap-2 text-sm"
+                >
+                  <div className="min-w-0">
+                    <p className="font-mono text-xs text-text break-all">{s.source}</p>
+                    {s.locked ? (
+                      <p className="text-danger text-xs mt-0.5">
+                        Locked — try again in {formatWait(s.retryAfter)} · {s.failCount} failures
+                        {s.lockedUntil
+                          ? ` · until ${new Date(s.lockedUntil * 1000).toLocaleString()}`
+                          : ''}
+                      </p>
+                    ) : (
+                      <p className="text-mute text-xs mt-0.5">
+                        Not locked · {s.failCount} recorded failure{s.failCount === 1 ? '' : 's'}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className="hb-btn hb-btn-ghost text-xs !min-h-8 shrink-0"
+                    disabled={clearBusy}
+                    onClick={() => void runClearMcp({ source: s.source })}
+                  >
+                    Clear
+                  </button>
+                </li>
+              ))}
+            </ul>
           )}
+          <div className="flex flex-wrap gap-2 items-end pt-1 border-t border-line">
+            <label className="flex-1 min-w-[8rem] space-y-1">
+              <span className="block text-[11px] text-mute">Password</span>
+              <input
+                type="password"
+                autoComplete="current-password"
+                className="w-full rounded-[var(--radius-control)] bg-panel border border-line px-2 py-1.5 text-xs"
+                value={clearPassword}
+                onChange={(e) => setClearPassword(e.target.value)}
+                placeholder="To clear"
+                disabled={clearBusy}
+              />
+            </label>
+            <label className="w-24 space-y-1">
+              <span className="block text-[11px] text-mute">PIN</span>
+              <input
+                type="password"
+                inputMode="numeric"
+                autoComplete="off"
+                maxLength={4}
+                className="w-full rounded-[var(--radius-control)] bg-panel border border-line px-2 py-1.5 text-xs font-mono"
+                value={clearPin}
+                onChange={(e) => setClearPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                placeholder="····"
+                disabled={clearBusy}
+              />
+            </label>
+            <button
+              type="button"
+              className="hb-btn hb-btn-ghost text-xs !min-h-8"
+              disabled={clearBusy || mcpLockouts.length === 0}
+              onClick={() => void runClearMcp({ all: true })}
+            >
+              Clear all MCP
+            </button>
+          </div>
         </div>
       </section>
 

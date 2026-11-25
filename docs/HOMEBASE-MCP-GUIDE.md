@@ -363,10 +363,13 @@ Named connectors are minted in **Settings → MCP Server → Add connector**. Th
 | 401 | `mcp_token_invalid` | Wrong, missing, or malformed token | **Stop.** Do not retry. Ask the operator to mint or rotate the connector. |
 | 401 | `mcp_token_revoked` | Refresh reuse or operator revoke | **Stop.** Ask the operator to mint a new connector. |
 | 429 | `mcp_lockout` | Too many failed MCP attempts from this source | **Stop.** Wait `retryAfter` seconds. This lockout is **not** the human PIN/password lockout. |
+| 403 | `mcp_not_for_web` | Valid or MCP-shaped Bearer used on a Web GUI `/api` route | **Stop.** Use `/mcp` only. This does **not** increment MCP fail counts or start a lockout. |
 
 A helper that follows these rules lives in the repo at `scripts/hb-mcp.sh`. Box-side `hb.sh` also exits on HTTP 401 and does not retry.
 
 Never put tokens in URLs, logs, or group chat. `/mcp` accepts the `Authorization` header only.
 
-MCP token failures use a **per-source** rate limit and cannot lock the human out of the PIN pad or password login.
+MCP token failures use a **per-source** rate limit (IP or key in `.runtime/mcp_lockout.json`) and cannot lock the human out of the PIN pad or password login. Only invalid, expired, or revoked tokens on the `/mcp` auth path bump that counter. Presenting an MCP token on a web-only `/api` route returns `403 mcp_not_for_web` without counting as a failed MCP login.
+
+When a source is locked, wait for `retryAfter`, or clear it from **Settings → Security** (signed-in human + password or PIN step-up) or with `sudo homebase unlock --mcp` on the laptop. Clears write a hash-chained `lockout_cleared` event with method `settings_clear` or `cli_unlock` and may email a lockout-cleared alert (never including passwords, PINs, or tokens).
 

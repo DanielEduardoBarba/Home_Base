@@ -26,7 +26,8 @@ export type LockoutClearMethod =
   | "local_password_signin"
   | "cli_unlock"
   | "upgrade_migration"
-  | "expired";
+  | "expired"
+  | "settings_clear";
 
 export type LockoutFile = {
   schemaVersion?: number;
@@ -238,6 +239,7 @@ export function buildLockoutClearedEmail(opts: {
     cli_unlock: "sudo homebase unlock",
     upgrade_migration: "Upgrade migration (legacy lockout file)",
     expired: "Lockout expired",
+    settings_clear: "Settings → Security clear",
   };
   const fields = [
     { label: "Method", value: methodLabel[opts.method] },
@@ -250,11 +252,18 @@ export function buildLockoutClearedEmail(opts: {
       ? [{ label: "MCP sources cleared", value: String(opts.mcpSourcesCleared) }]
       : []),
   ];
+  const mcpSettings = opts.method === "settings_clear";
   return {
     subject: "Home Base · lockout cleared",
     eyebrow: "Security",
-    title: "A login lockout was cleared",
-    lead: "A human login/PIN lockout on this Home Base was cleared. If you did not do this, change the password on the laptop and review Settings → Security.",
+    title: mcpSettings
+      ? opts.mcpSourcesCleared && opts.mcpSourcesCleared > 1
+        ? "MCP lockouts were cleared"
+        : "An MCP lockout was cleared"
+      : "A login lockout was cleared",
+    lead: mcpSettings
+      ? "An MCP token lockout on this Home Base was cleared from Settings → Security. If you did not do this, change the password on the laptop and review Settings → Security."
+      : "A human login/PIN lockout on this Home Base was cleared. If you did not do this, change the password on the laptop and review Settings → Security.",
     tone: "warn",
     fields,
     tips: [
@@ -476,6 +485,109 @@ export function clearMcpLockouts(): { sourcesCleared: number } {
     }
   }
   return { sourcesCleared };
+}
+
+function mcpSourceKey(source: string): string {
+  const s = (source || "unknown").trim().slice(0, 64) || "unknown";
+  return s.replace(/[^A-Za-z0-9.:_-]/g, "_");
+}
+
+export type McpLockoutClearResult = {
+  cleared: boolean;
+  method: "settings_clear";
+  sourcesCleared: number;
+  sources: string[];
+  previousFailCount: number;
+  previousLockedUntil: number;
+  emailed: boolean;
+  emailGap?: string;
+};
+
+/**
+ * Clear one MCP lockout source or all sources from Settings → Security.
+ * Audits with method `settings_clear` and queues the lockout-cleared email.
+ * Never includes passwords, PINs, or tokens in log or email.
+ */
+export function clearMcpLockoutFromSettings(opts: {
+  source?: string;
+  all?: boolean;
+  ip?: string;
+  userAgent?: string;
+  path?: string;
+}): McpLockoutClearResult {
+  const file = loadMcpLockoutFile();
+  const allKeys = Object.keys(file.sources);
+  let targets: string[];
+  if (opts.all) {
+    targets = allKeys;
+  } else {
+    const key = mcpSourceKey(String(opts.source || ""));
+    targets = file.sources[key] ? [key] : [];
+  }
+
+  let previousFailCount = 0;
+  let previousLockedUntil = 0;
+  for (const key of targets) {
+    const row = file.sources[key];
+    if (!row) continue;
+    previousFailCount = Math.max(previousFailCount, Number(row.failCount || 0) || 0);
+    previousLockedUntil = Math.max(
+      previousLockedUntil,
+      Number(row.lockedUntil || 0) || 0,
+    );
+    delete file.sources[key];
+  }
+
+  if (opts.all) {
+    clearMcpLockouts();
+  } else if (targets.length > 0) {
+    saveMcpLockoutFile(file);
+  }
+
+  const sourcesCleared = targets.length;
+  const hadState = sourcesCleared > 0;
+  let emailed = false;
+  let emailGap: string | undefined;
+
+  if (hadState) {
+    const peek = peekEmailStatus();
+    emailed = peek.ready;
+    emailGap = peek.ready ? undefined : peek.gap || "email alerts not configured or no recipient";
+    if (!emailed && emailGap) reportEmailGap("settings_clear", emailGap);
+    const payload = buildLockoutClearedEmail({
+      method: "settings_clear",
+      previousFailCount,
+      previousLockedUntil,
+      ip: opts.ip,
+      userAgent: opts.userAgent,
+      mcpSourcesCleared: sourcesCleared,
+    });
+    if (peek.ready) queueClearEmail(payload, "settings_clear");
+
+    noteClear({
+      method: "settings_clear",
+      previousFailCount,
+      previousLockedUntil,
+      ip: opts.ip,
+      userAgent: opts.userAgent,
+      path: opts.path,
+      source: "ui",
+      emailSent: emailed,
+      emailGap,
+      message: `method=settings_clear · mcpSourcesCleared=${sourcesCleared} · sources=${targets.join(",")}`,
+    });
+  }
+
+  return {
+    cleared: hadState,
+    method: "settings_clear",
+    sourcesCleared,
+    sources: targets,
+    previousFailCount,
+    previousLockedUntil,
+    emailed,
+    emailGap,
+  };
 }
 
 export function unlockFromCli(opts: {

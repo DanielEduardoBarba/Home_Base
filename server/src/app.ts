@@ -226,31 +226,39 @@ app.use("/api/*", async (c, next) => {
   const looksMcp =
     /bearer\s+hb_mcp_/i.test(auth) || q.startsWith("hb_mcp_");
   if (looksMcp) {
-    const { recordMcpFailure } = await import("./auth");
     const { recordActivity } = await import("./activity_audit");
     const { desktopNotify } = await import("./desktop_notify");
     const { pushNotification } = await import("./notifications");
+    const { recordSecurityEvent } = await import("./security_log");
     const ip = clientIp(c);
-    recordMcpFailure(ip, "mcp_token_on_web_api", {
-      userAgent: clientUserAgent(c),
-      path: c.req.path,
-      result: "invalid",
+    const ua = clientUserAgent(c);
+    const path = c.req.path;
+    // Wrong surface for a (possibly valid) MCP token — notify and 403, but do
+    // NOT bump MCP fail counts / lockedUntil. Only /mcp auth failures lock out.
+    recordSecurityEvent({
+      event: "mcp_token_on_web_api",
+      source: "mcp",
+      result: "info",
+      ip,
+      userAgent: ua,
+      path,
       status: 403,
+      message: "MCP token presented on Web GUI API — rejected without lockout bump",
     });
     recordActivity({
       source: "auth",
       kind: "mcp_blocked_from_web",
-      summary: `MCP token rejected on Web API ${c.req.method} ${c.req.path}`,
+      summary: `MCP token rejected on Web API ${c.req.method} ${path}`,
       peerIp: ip,
     });
     pushNotification(
       "MCP token blocked from Web GUI",
-      `An MCP Bearer tried to call ${c.req.path} from ${ip}. Web GUI is for humans only.`,
-      { level: "error", category: "security", meta: { ip, path: c.req.path } },
+      `An MCP Bearer tried to call ${path} from ${ip}. Web GUI is for humans only.`,
+      { level: "error", category: "security", meta: { ip, path } },
     );
     desktopNotify(
       "MCP blocked from Web GUI",
-      `Token used on ${c.req.path} from ${ip}`,
+      `Token used on ${path} from ${ip}`,
       {
         urgency: "normal",
         replaceKey: `mcp-web:${ip}`,
@@ -2134,15 +2142,110 @@ app.get("/api/security/export", async (c) => {
 
 app.get("/api/security/status", async (c) => {
   await requireAuth(c);
-  const { lockoutStatus, mcpLockoutStatus } = await import("./auth");
+  const { lockoutStatus, mcpLockoutStatus, listMcpLockouts } = await import("./auth");
   const { listDevices } = await import("./devices");
   const { securityLogStats } = await import("./security_log");
   const ip = clientIp(c);
   return c.json({
     lockout: lockoutStatus(),
     mcpLockout: mcpLockoutStatus(ip),
+    mcpLockouts: listMcpLockouts(),
     devices: listDevices(),
     stats: securityLogStats(),
+  });
+});
+
+/**
+ * Clear one or all MCP lockout sources. Human session + password or PIN step-up.
+ * MCP Bearer tokens are rejected by the /api middleware (mcp_not_for_web).
+ */
+app.post("/api/security/mcp-lockout/clear", async (c) => {
+  await requireAuth(c);
+  const body = z
+    .object({
+      source: z.string().min(1).max(64).optional(),
+      all: z.boolean().optional(),
+      password: z.string().optional(),
+      pin: z.string().optional(),
+    })
+    .parse(await readJson(c));
+  const clearAll = body.all === true;
+  if (!clearAll && !body.source) {
+    throw new HttpError(400, {
+      code: "bad_request",
+      message: "Provide source or all:true",
+    });
+  }
+  if (clearAll && body.source) {
+    throw new HttpError(400, {
+      code: "bad_request",
+      message: "Pass either source or all:true, not both",
+    });
+  }
+  const password = String(body.password || "");
+  const pin = String(body.pin || "");
+  if (!password && !pin) {
+    throw new HttpError(400, {
+      code: "reauth_required",
+      message: "Password or PIN required to clear MCP lockout",
+    });
+  }
+  const { verifyPassword } = await import("./auth");
+  const { isAppPinEnabled, verifyAppPin } = await import("./app_pin");
+  // Step-up for an already signed-in session: reject wrong creds without
+  // bumping the human login lockout (same class as changePassword / clearAppPin).
+  let steppedUp = false;
+  if (password) {
+    if (!verifyPassword(password)) {
+      throw new HttpError(401, {
+        code: "bad_password",
+        message: "Incorrect password",
+      });
+    }
+    steppedUp = true;
+  }
+  if (!steppedUp && pin) {
+    if (!isAppPinEnabled()) {
+      throw new HttpError(400, {
+        code: "pin_disabled",
+        message: "App PIN is not enabled — use password",
+      });
+    }
+    if (!verifyAppPin(pin)) {
+      throw new HttpError(401, {
+        code: "bad_pin",
+        message: "Incorrect PIN",
+      });
+    }
+    steppedUp = true;
+  }
+  if (!steppedUp) {
+    throw new HttpError(400, {
+      code: "reauth_required",
+      message: "Password or PIN required to clear MCP lockout",
+    });
+  }
+  const { clearMcpLockoutFromSettings } = await import("./lockout_recovery");
+  const result = clearMcpLockoutFromSettings({
+    all: clearAll,
+    source: body.source,
+    ip: clientIp(c),
+    userAgent: clientUserAgent(c),
+    path: c.req.path,
+  });
+  if (!clearAll && !result.cleared) {
+    throw new HttpError(404, {
+      code: "mcp_lockout_source_not_found",
+      message: "No MCP lockout recorded for that source",
+    });
+  }
+  return c.json({
+    ok: true,
+    method: result.method,
+    sourcesCleared: result.sourcesCleared,
+    sources: result.sources,
+    emailed: result.emailed,
+    emailGap: result.emailGap,
   });
 });
 

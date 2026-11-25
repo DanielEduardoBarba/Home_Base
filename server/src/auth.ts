@@ -585,6 +585,33 @@ export function mcpLockoutStatus(ip = "unknown"): {
   };
 }
 
+/** All MCP lockout sources in mcp_lockout.json (Settings → Security). */
+export function listMcpLockouts(): Array<{
+  source: string;
+  failCount: number;
+  lockedUntil: number;
+  locked: boolean;
+  retryAfter: number;
+  threshold: number;
+}> {
+  const file = loadMcpLockout();
+  const now = Date.now() / 1000;
+  return Object.entries(file.sources)
+    .map(([source, data]) => {
+      const lockedUntil = Number(data.lockedUntil || 0) || 0;
+      const remaining = Math.max(0, Math.floor(lockedUntil - now));
+      return {
+        source,
+        failCount: Number(data.failCount || 0) || 0,
+        lockedUntil,
+        locked: remaining > 0,
+        retryAfter: remaining,
+        threshold: FAIL_THRESHOLD,
+      };
+    })
+    .sort((a, b) => a.source.localeCompare(b.source));
+}
+
 export function recordMcpSuccess(ip = "unknown"): void {
   const key = lockoutSourceKey(ip);
   const file = loadMcpLockout();
