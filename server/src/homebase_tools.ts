@@ -189,6 +189,17 @@ export const MCP_TOOL_FEATURE: Record<string, McpFeatureId> = {
   homebase_github_clone_workspace: "projects",
   homebase_github_connect_workspace: "projects",
   homebase_github_create_repo: "projects",
+  homebase_unity_status: "projects",
+  homebase_unity_bridge: "projects",
+  homebase_unity_call: "projects",
+  homebase_unity_list_tools: "projects",
+  homebase_unity_log_tail: "projects",
+  homebase_unity_run_tests: "projects",
+  homebase_unity_build_webgl: "projects",
+  homebase_unity_preview_status: "projects",
+  homebase_unity_screenshot: "projects",
+  homebase_unity_job_status: "projects",
+  homebase_unity_job_list: "projects",
   homebase_notifications: "notifications",
   homebase_notify: "notifications",
   homebase_system_status: "status",
@@ -451,6 +462,108 @@ export function buildHomebaseTools(
       return json({
         ...(await projectPublic(p)),
         logs: tailLogs(p, Number(args.logLines || 40)),
+      });
+    },
+  };
+  tools.homebase_unity_status = {
+    description:
+      "Unity Hub/Editor/modules (WebGL, iOS)/license + per-project bridge and editor-lock state. " +
+      "Pass projectId for project-scoped details; omit for laptop-wide doctor.",
+    parameters: {
+      type: "object",
+      properties: { projectId: { type: "string" } },
+    },
+    execute: async (args) => {
+      const { unityGlobalStatus, unityProjectStatus } = await import(
+        "./unity_ops"
+      );
+      const pid = String(args.projectId || args.project_id || "").trim();
+      if (pid) return json(await unityProjectStatus(pid));
+      return json(await unityGlobalStatus());
+    },
+  };
+  tools.homebase_unity_list_tools = {
+    description:
+      "List Coplay Unity MCP bridge tools (static catalog + live manage_tools if bridge is up). " +
+      "Remote bots cannot reach localhost:6400 — use homebase_unity_call after this.",
+    parameters: {
+      type: "object",
+      properties: { projectId: { type: "string" } },
+      required: ["projectId"],
+    },
+    execute: async (args) => {
+      const { unityListTools } = await import("./unity_ops");
+      return json(await unityListTools(resolvePid(args)));
+    },
+  };
+  tools.homebase_unity_log_tail = {
+    description:
+      "Tail Unity Editor.log, WebGL build log, or bridge log (secrets redacted).",
+    parameters: {
+      type: "object",
+      properties: {
+        projectId: { type: "string" },
+        source: {
+          type: "string",
+          description: "editor | webgl | bridge (default editor)",
+        },
+        lines: { type: "number" },
+      },
+      required: ["projectId"],
+    },
+    execute: async (args) => {
+      const { unityLogTail } = await import("./unity_ops");
+      return json(
+        unityLogTail({
+          projectId: resolvePid(args),
+          source: args.source
+            ? (String(args.source) as "editor" | "webgl" | "bridge")
+            : undefined,
+          lines: args.lines != null ? Number(args.lines) : undefined,
+        }),
+      );
+    },
+  };
+  tools.homebase_unity_preview_status = {
+    description: "WebGL preview URL/port/build presence for a Unity project.",
+    parameters: {
+      type: "object",
+      properties: { projectId: { type: "string" } },
+      required: ["projectId"],
+    },
+    execute: async (args) => {
+      const { unityPreviewStatus } = await import("./unity_ops");
+      return json(unityPreviewStatus(resolvePid(args)));
+    },
+  };
+  tools.homebase_unity_job_status = {
+    description:
+      "Status for an async Unity job (webgl_build / tests). Prefer this over tight polling.",
+    parameters: {
+      type: "object",
+      properties: { jobId: { type: "string" } },
+      required: ["jobId"],
+    },
+    execute: async (args) => {
+      const { getUnityJob } = await import("./unity_jobs");
+      const job = getUnityJob(String(args.jobId || ""));
+      if (!job) return json({ ok: false, error: "job not found" });
+      return json({ ok: true, job });
+    },
+  };
+  tools.homebase_unity_job_list = {
+    description: "List recent async Unity jobs (newest first).",
+    parameters: {
+      type: "object",
+      properties: { limit: { type: "number" } },
+    },
+    execute: async (args) => {
+      const { listUnityJobs } = await import("./unity_jobs");
+      return json({
+        ok: true,
+        jobs: listUnityJobs(
+          args.limit != null ? Number(args.limit) : 20,
+        ),
       });
     },
   };
@@ -888,9 +1001,10 @@ export function buildHomebaseTools(
     tools.homebase_github_create_repo = {
       description:
         "Create a new GitHub repo from a workspace (private by default), add origin, " +
-        "and push the current branch with -u (never force). Requires confirm:true, " +
-        "Allow MCP GitHub repo access, and Allow MCP git write actions. " +
-        "Does not delete/archive repos, change visibility, or remove remotes.",
+        "and push the current branch with -u (never force). For empty workspaces: writes " +
+        "a preset .gitignore, makes an initial commit, pushes, then creates development_grok " +
+        "(+ development). Requires confirm:true, Allow MCP GitHub repo access, and Allow MCP " +
+        "git write actions. Does not delete/archive repos, change visibility, or remove remotes.",
       parameters: {
         type: "object",
         properties: {
@@ -922,6 +1036,129 @@ export function buildHomebaseTools(
             surface: "mcp",
           }),
         );
+      },
+    };
+    tools.homebase_unity_bridge = {
+      description:
+        "Start/stop/status the Coplay MCP Editor bridge for a Unity projectId " +
+        "(one Editor per project; handles project lock). action=start|stop|status.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string" },
+          action: {
+            type: "string",
+            description: "start | stop | status",
+          },
+        },
+        required: ["projectId", "action"],
+      },
+      execute: async (args) => {
+        const { unityBridgeControl } = await import("./unity_ops");
+        const action = String(args.action || "").toLowerCase();
+        if (!["start", "stop", "status"].includes(action)) {
+          return json({ ok: false, error: "action must be start|stop|status" });
+        }
+        return json(
+          await unityBridgeControl({
+            projectId: resolvePid(args),
+            action: action as "start" | "stop" | "status",
+          }),
+        );
+      },
+    };
+    tools.homebase_unity_call = {
+      description:
+        "Proxy a call to the project's Coplay MCPForUnity bridge (framed TCP). " +
+        "Remote bots cannot reach localhost:6400 — this is the Unity MCP surface. " +
+        "Args: projectId, tool (e.g. manage_scene), optional args object. ping supported.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string" },
+          tool: { type: "string", description: "Unity bridge tool name" },
+          args: {
+            type: "object",
+            description: "Tool params object forwarded as params",
+          },
+          timeoutMs: { type: "number" },
+        },
+        required: ["projectId", "tool"],
+      },
+      execute: async (args) => {
+        const { callProjectUnityBridge } = await import("./unity_bridge");
+        const toolArgs =
+          args.args && typeof args.args === "object" && !Array.isArray(args.args)
+            ? (args.args as Record<string, unknown>)
+            : {};
+        return json(
+          await callProjectUnityBridge({
+            projectId: resolvePid(args),
+            tool: String(args.tool || ""),
+            args: toolArgs,
+            timeoutMs:
+              args.timeoutMs != null ? Number(args.timeoutMs) : undefined,
+          }),
+        );
+      },
+    };
+    tools.homebase_unity_build_webgl = {
+      description:
+        "Async WebGL build: stop bridge, batchmode build, restart preview serve. " +
+        "Returns jobId immediately — poll homebase_unity_job_status (do not block).",
+      parameters: {
+        type: "object",
+        properties: { projectId: { type: "string" } },
+        required: ["projectId"],
+      },
+      execute: async (args) => {
+        const { startUnityJob } = await import("./unity_jobs");
+        return json(
+          startUnityJob({
+            projectId: resolvePid(args),
+            kind: "webgl_build",
+          }),
+        );
+      },
+    };
+    tools.homebase_unity_run_tests = {
+      description:
+        "Async EditMode/PlayMode Unity tests in batchmode. Returns jobId — poll " +
+        "homebase_unity_job_status for pass/fail summary.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string" },
+          mode: {
+            type: "string",
+            description: "EditMode (default) or PlayMode",
+          },
+        },
+        required: ["projectId"],
+      },
+      execute: async (args) => {
+        const { startUnityJob } = await import("./unity_jobs");
+        return json(
+          startUnityJob({
+            projectId: resolvePid(args),
+            kind: "tests",
+            mode: args.mode ? String(args.mode) : undefined,
+          }),
+        );
+      },
+    };
+    tools.homebase_unity_screenshot = {
+      description:
+        "Screenshot via Unity bridge manage_camera (needs bridge running). " +
+        "Returns filesystem path + optional base64 thumbnail.",
+      parameters: {
+        type: "object",
+        properties: { projectId: { type: "string" } },
+        required: ["projectId"],
+      },
+      execute: async (args) => {
+        const { unityScreenshot } = await import("./unity_ops");
+        return json(await unityScreenshot({ projectId: resolvePid(args) }));
       },
     };
     tools.homebase_project_delete = {

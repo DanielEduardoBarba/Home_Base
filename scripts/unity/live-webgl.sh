@@ -10,6 +10,11 @@
 #   an open project; stop→batchmode→serve is the reliable path under Home Base.
 set -euo pipefail
 
+# Resolve seat home even when systemd/service HOME=/root (HB-U-03).
+if [[ -z "${HOME:-}" || "$HOME" == "/root" ]]; then
+  if [[ -d /home/daniel ]]; then HOME=/home/daniel; fi
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${UNITY_WEBGL_PORT:-}"
 if [[ -z "$PORT" ]]; then

@@ -26,6 +26,7 @@ import {
 import { mcpWorkspaceCreateAllowed } from "./mcp_server";
 import { detectSeatUser } from "./shell_env";
 import {
+  chownUnityWorkspaceToSeat,
   ensureUnityMcpPackageInManifest,
   scaffoldUnityProject,
 } from "./unity";
@@ -334,6 +335,14 @@ export function installUnityWorkspaceScripts(projectPath: string): void {
       ].join("\n"),
       { mode: 0o644 },
     );
+  }
+  // HB-U-03: scripts/README written by root must become seat-owned.
+  chownSeatUser(destDir);
+  chownSeatUser(readme);
+  try {
+    chownUnityWorkspaceToSeat(abs);
+  } catch {
+    /* best-effort */
   }
 }
 

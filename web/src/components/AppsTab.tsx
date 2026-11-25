@@ -89,6 +89,14 @@ export function AppsTab({
 
   useSceneRefresh(onRefresh)
 
+  const isUnity = useMemo(
+    () =>
+      Boolean(
+        project?.ports?.some((p) => p.id === 'webgl' || p.id === 'mcp-bridge'),
+      ),
+    [project],
+  )
+
   const runActions = useMemo(() => {
     if (!project) return []
     const actions = project.actions || []
@@ -96,6 +104,7 @@ export function AppsTab({
       (a) =>
         (a.group === 'main' || !a.group) &&
         a.type !== 'stop' &&
+        a.id !== 'stop' &&
         (a.kind === 'run' ||
           a.kind === 'expo' ||
           a.type === 'compose' ||
@@ -103,6 +112,15 @@ export function AppsTab({
           a.type === 'restart'),
     )
   }, [project])
+
+  const unityEditor = project?.actions?.find((a) => a.id === 'editor') || null
+  const unityBuild =
+    project?.actions?.find((a) => a.id === 'webgl_build') || null
+  const unityPreview =
+    project?.actions?.find(
+      (a) => a.id === 'webgl' || a.id === 'webgl_serve' || a.id === 'webgl_live',
+    ) || null
+  const unityStop = project?.actions?.find((a) => a.id === 'stop') || null
 
   const ship = project?.actions?.filter((a) => a.group === 'ship') || []
   const hotkeys = project?.actions?.filter((a) => a.group === 'hotkey') || []
@@ -119,18 +137,23 @@ export function AppsTab({
   const [runId, setRunId] = useState('')
   const [shipId, setShipId] = useState('')
   useEffect(() => {
-    // Prefer Run + Expo (run_all) over plain Run when available.
-    const prefer =
-      runActions.find(
-        (a) =>
-          a.id === 'run_all' ||
-          a.id === 'run-all' ||
-          /run\s*\+\s*expo|run\s*and\s*expo|run\s*all/i.test(a.label),
-      ) || runActions[0]
-    setRunId(prefer?.id || '')
+    if (isUnity) {
+      // Unity: default to Editor bridge, not Expo run_all.
+      setRunId(unityEditor?.id || unityPreview?.id || runActions[0]?.id || '')
+    } else {
+      // Prefer Run + Expo (run_all) over plain Run when available.
+      const prefer =
+        runActions.find(
+          (a) =>
+            a.id === 'run_all' ||
+            a.id === 'run-all' ||
+            /run\s*\+\s*expo|run\s*and\s*expo|run\s*all/i.test(a.label),
+        ) || runActions[0]
+      setRunId(prefer?.id || '')
+    }
     setShipId(ship[0]?.id || '')
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reset when project changes
-  }, [project?.id])
+  }, [project?.id, isUnity])
 
   const selectedRun =
     runActions.find((a) => a.id === runId) ||
@@ -452,45 +475,113 @@ export function AppsTab({
 
         <WebGLPreview project={project} />
 
-        {runActions.length > 0 && (
+        {isUnity ? (
           <div className="space-y-1.5 pt-0.5">
-            <span className="hb-label">Run</span>
-            <div className="flex gap-2">
-              <select
-                value={selectedRun?.id || ''}
-                onChange={(e) => setRunId(e.target.value)}
-                disabled={!!busy || running}
-                className="hb-select flex-1 !min-h-10 !py-2 text-sm"
-              >
-                {runActions.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.label}
-                  </option>
-                ))}
-              </select>
-              {running ? (
+            <span className="hb-label">Unity</span>
+            <div className="flex flex-wrap gap-2">
+              {unityEditor ? (
+                <button
+                  type="button"
+                  disabled={!!busy}
+                  title={unityEditor.hint || unityEditor.label}
+                  onClick={() => void doRun(unityEditor)}
+                  className="hb-btn hb-btn-primary !min-h-10 !px-3 text-sm"
+                >
+                  {busy === unityEditor.label ? '…' : 'Editor bridge'}
+                </button>
+              ) : null}
+              {unityBuild ? (
+                <button
+                  type="button"
+                  disabled={!!busy}
+                  title={unityBuild.hint || unityBuild.label}
+                  onClick={() => void doRun(unityBuild)}
+                  className="hb-btn !min-h-10 !px-3 text-sm"
+                >
+                  {busy === unityBuild.label ? '…' : 'Build WebGL'}
+                </button>
+              ) : null}
+              {unityPreview ? (
+                <button
+                  type="button"
+                  disabled={!!busy}
+                  title={unityPreview.hint || unityPreview.label}
+                  onClick={() => void doRun(unityPreview)}
+                  className="hb-btn !min-h-10 !px-3 text-sm"
+                >
+                  {busy === unityPreview.label ? '…' : 'Preview'}
+                </button>
+              ) : null}
+              {unityStop ? (
+                <HoldButton
+                  label={busy ? '…' : 'Stop bridge'}
+                  holdLabel="Hold…"
+                  holdMs={1200}
+                  tone="danger"
+                  disabled={!!busy}
+                  className="!min-h-10 !px-3 text-sm"
+                  title="Hold to stop Editor bridge"
+                  onConfirm={() => void doRun(unityStop)}
+                />
+              ) : running ? (
                 <HoldButton
                   label={busy ? '…' : 'Stop'}
                   holdLabel="Hold…"
                   holdMs={1200}
                   tone="danger"
                   disabled={!!busy}
-                  className="!min-h-10 !px-4 text-sm shrink-0"
+                  className="!min-h-10 !px-3 text-sm"
                   title="Hold to stop project"
                   onConfirm={() => void toggleRun()}
                 />
-              ) : (
-                <button
-                  type="button"
-                  disabled={!!busy || !selectedRun}
-                  onClick={() => void toggleRun()}
-                  className="hb-btn hb-btn-primary !min-h-10 !px-4 text-sm shrink-0"
-                >
-                  {busy ? '…' : 'Start'}
-                </button>
-              )}
+              ) : null}
             </div>
+            <p className="text-[11px] text-mute">
+              One Editor per project. Preview stops the bridge before each
+              batchmode WebGL build.
+            </p>
           </div>
+        ) : (
+          runActions.length > 0 && (
+            <div className="space-y-1.5 pt-0.5">
+              <span className="hb-label">Run</span>
+              <div className="flex gap-2">
+                <select
+                  value={selectedRun?.id || ''}
+                  onChange={(e) => setRunId(e.target.value)}
+                  disabled={!!busy || running}
+                  className="hb-select flex-1 !min-h-10 !py-2 text-sm"
+                >
+                  {runActions.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.label}
+                    </option>
+                  ))}
+                </select>
+                {running ? (
+                  <HoldButton
+                    label={busy ? '…' : 'Stop'}
+                    holdLabel="Hold…"
+                    holdMs={1200}
+                    tone="danger"
+                    disabled={!!busy}
+                    className="!min-h-10 !px-4 text-sm shrink-0"
+                    title="Hold to stop project"
+                    onConfirm={() => void toggleRun()}
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    disabled={!!busy || !selectedRun}
+                    onClick={() => void toggleRun()}
+                    className="hb-btn hb-btn-primary !min-h-10 !px-4 text-sm shrink-0"
+                  >
+                    {busy ? '…' : 'Start'}
+                  </button>
+                )}
+              </div>
+            </div>
+          )
         )}
 
         {ship.length > 0 && (

@@ -2,6 +2,11 @@
 # Stop the Home Base Unity MCP bridge Editor for a project path.
 set -euo pipefail
 
+# Resolve seat home even when systemd/service HOME=/root (HB-U-03).
+if [[ -z "${HOME:-}" || "$HOME" == "/root" ]]; then
+  if [[ -d /home/daniel ]]; then HOME=/home/daniel; fi
+fi
+
 if [[ -n "${1:-}" ]]; then
   PROJECT="$1"
 elif [[ -n "${UNITY_PROJECT:-}" ]]; then

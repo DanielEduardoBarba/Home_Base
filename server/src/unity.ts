@@ -13,6 +13,8 @@ import {
 } from "node:fs";
 import { createConnection } from "node:net";
 import { join } from "node:path";
+import { detectSeatUser, wrapArgvForSeat } from "./shell_env";
+import { repairProjectOwnership } from "./project_owner";
 import {
   DEFAULT_EDITOR_VERSION,
   hubInfoVersion,
@@ -58,7 +60,10 @@ function defaultRunner(
   args: string[],
   opts: { timeoutMs?: number } = {},
 ): UnityCmdResult {
-  const r = spawnSync(cmd, args, {
+  // HB-U-03: when homebased is root, drop to the seat user so Unity does not
+  // create root-owned ProjectSettings / Library / Temp trees.
+  const argv = wrapArgvForSeat([cmd, ...args]);
+  const r = spawnSync(argv[0]!, argv.slice(1), {
     encoding: "utf8",
     timeout: opts.timeoutMs ?? 15_000,
     env: seatPathEnv(),
@@ -67,6 +72,31 @@ function defaultRunner(
     code: r.status,
     stdout: r.stdout || "",
     stderr: r.stderr || "",
+  };
+}
+
+/** Chown a Unity workspace (and cache dirs we touch) to the seat user. */
+export function chownUnityWorkspaceToSeat(projectPath: string): {
+  repaired: number;
+  owner: { uid: number; gid: number; name: string };
+} {
+  const seat = detectSeatUser();
+  const r = repairProjectOwnership(projectPath, { owner: seat, log: false });
+  // Also ensure seat owns create/build log cache under ~/.cache/homebase-unity
+  const cache = join(seat.home, ".cache/homebase-unity");
+  if (existsSync(cache) && process.getuid?.() === 0 && seat.uid > 0) {
+    try {
+      spawnSync("chown", ["-R", `${seat.uid}:${seat.gid}`, cache], {
+        encoding: "utf8",
+        timeout: 30_000,
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+  return {
+    repaired: r.repaired,
+    owner: { uid: seat.uid, gid: seat.gid, name: seat.name },
   };
 }
 
@@ -257,6 +287,9 @@ export function editorsStatus(): {
         const linuxDisk = existsSync(
           join(editorRoot, "Editor/Data/PlaybackEngines/LinuxStandaloneSupport"),
         );
+        const iosDisk = existsSync(
+          join(editorRoot, "Editor/Data/PlaybackEngines/iOSSupport"),
+        );
         upsert({
           version,
           path: path || null,
@@ -270,6 +303,15 @@ export function editorsStatus(): {
               id: "linux-il2cpp",
               installed: names.has("linux-il2cpp") || linuxDisk,
               onDisk: linuxDisk,
+            },
+            {
+              id: "ios",
+              installed:
+                names.has("ios") ||
+                names.has("iphone") ||
+                names.has("iossupport") ||
+                iosDisk,
+              onDisk: iosDisk,
             },
           ],
         });
@@ -293,6 +335,7 @@ export function editorsStatus(): {
           installed: e.linuxOnDisk,
           onDisk: e.linuxOnDisk,
         },
+        { id: "ios", installed: e.iosOnDisk, onDisk: e.iosOnDisk },
       ],
     });
   }
@@ -568,6 +611,27 @@ function defaultCreateProjectRunner(
   unityBin: string,
   projectPath: string,
 ): UnityCmdResult {
+  // Ensure parent + cache exist and are seat-owned before createProject.
+  const seat = detectSeatUser();
+  const cacheDir = join(seat.home, ".cache/homebase-unity");
+  try {
+    mkdirSync(cacheDir, { recursive: true });
+    mkdirSync(join(projectPath, ".."), { recursive: true });
+  } catch {
+    /* ignore */
+  }
+  if (process.getuid?.() === 0 && seat.uid > 0) {
+    try {
+      spawnSync("chown", [`${seat.uid}:${seat.gid}`, cacheDir], {
+        encoding: "utf8",
+      });
+      spawnSync("chown", [`${seat.uid}:${seat.gid}`, join(projectPath, "..")], {
+        encoding: "utf8",
+      });
+    } catch {
+      /* ignore */
+    }
+  }
   return defaultRunner(
     unityBin,
     [
@@ -577,7 +641,7 @@ function defaultCreateProjectRunner(
       "-createProject",
       projectPath,
       "-logFile",
-      join(seatHome(), ".cache/homebase-unity/create-mcp.log"),
+      join(cacheDir, "create-mcp.log"),
     ],
     { timeoutMs: 600_000 },
   );
@@ -653,6 +717,12 @@ export function scaffoldUnityProject(projectPath: string): {
     created = true;
   }
   const mcp = ensureUnityMcpPackageInManifest(abs);
+  // Always heal ownership (HB-U-03) — even if create was stubbed/skipped.
+  try {
+    chownUnityWorkspaceToSeat(abs);
+  } catch {
+    /* best-effort */
+  }
   return {
     ok: mcp.ok,
     created,

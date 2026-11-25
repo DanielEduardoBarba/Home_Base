@@ -293,6 +293,10 @@ unityhub -- --headless editors -i
 
 ---
 
+## MCP tools for remote bots (2026-11-24)
+
+See **[mcp-tools.md](./mcp-tools.md)** for `homebase_unity_*` (status, bridge, framed `unity_call` proxy, async WebGL/tests, logs, screenshot). Ownership fix HB-U-03 + empty-repo create HB-U-04 are required for Unity MCP workspace flows.
+
 ## Step 2 status (2026-11-24)
 
 ### A — MCP bridge (done)

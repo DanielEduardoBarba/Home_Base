@@ -95,6 +95,43 @@ export function UnityPanel() {
       </section>
 
       <section className="hb-surface p-3.5 space-y-2">
+        <h3 className="text-sm font-semibold text-text">Editor & modules</h3>
+        <ul className="text-xs space-y-1">
+          {(status?.editors?.editors || []).map((ed) => (
+            <li key={ed.version} className="leading-snug">
+              <span className="text-text font-medium">{ed.version}</span>
+              <span className="text-mute">
+                {' '}
+                ·{' '}
+                {ed.modules
+                  .map(
+                    (m) =>
+                      `${m.id}${m.installed ? '' : ' (missing)'}`,
+                  )
+                  .join(', ')}
+              </span>
+            </li>
+          ))}
+          {!status?.editors?.editors?.length ? (
+            <li className="text-mute">No Editor under ~/Unity/Hub/Editor</li>
+          ) : null}
+        </ul>
+        <p className="text-xs text-mute">
+          WebGL:{' '}
+          <span className="text-text">
+            {status?.editors?.webglReady ? 'ready' : 'not installed'}
+          </span>
+          {' · '}
+          CLI:{' '}
+          <span className="text-text">
+            {status?.editors?.cliPresent
+              ? status.editors.cliVersion || 'present'
+              : 'missing'}
+          </span>
+        </p>
+      </section>
+
+      <section className="hb-surface p-3.5 space-y-2">
         <h3 className="text-sm font-semibold text-text">MCP bridge</h3>
         <p className="text-xs text-mute">
           Port {bridge?.port ?? 6400}:{' '}
@@ -111,7 +148,8 @@ export function UnityPanel() {
           {bridge?.sampleProject.hasMcpPackage ? ' · MCP package OK' : ''}
         </p>
         <p className="text-xs text-mute">
-          Start: <span className="font-mono">scripts/unity/start-editor-bridge.sh</span>
+          Remote bots use <span className="font-mono">homebase_unity_*</span>{' '}
+          MCP tools (bridge is localhost-only).
         </p>
       </section>
     </div>

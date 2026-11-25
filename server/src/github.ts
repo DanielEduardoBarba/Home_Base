@@ -9,10 +9,12 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   loadProjects,
+  looksLikeUnityWorkspace,
   mcpWorkspaceUpsertFields,
   slugId,
   upsertProjectFromInput,
@@ -32,6 +34,69 @@ import {
 import { validateBranchName } from "./git";
 import { gitEnvCheck, runOperatorCmd } from "./operator_git_env";
 import { repairProjectOwnership } from "./project_owner";
+
+/** Unity-oriented .gitignore for fresh MCP workspaces (HB-U-04). */
+export const UNITY_GITIGNORE = [
+  "# Home Base Unity workspace",
+  "[Ll]ibrary/",
+  "[Tt]emp/",
+  "[Oo]bj/",
+  "[Ll]ogs/",
+  "[Uu]ser[Ss]ettings/",
+  "[Mm]emoryCaptures/",
+  "[Bb]uild/",
+  "[Bb]uilds/",
+  "Build*/",
+  "Builds/WebGL/",
+  "*.csproj",
+  "*.sln",
+  "*.suo",
+  "*.user",
+  "*.userprefs",
+  "*.pidb",
+  "*.booproj",
+  "*.svd",
+  "*.pdb",
+  "*.mdb",
+  "*.opendb",
+  "*.VC.db",
+  ".vs/",
+  ".gradle/",
+  "ExportedObj/",
+  ".DS_Store",
+  "Thumbs.db",
+  "*.tmp",
+  "*.log",
+  "",
+].join("\n");
+
+/** Minimal ignore for non-Unity workspaces. */
+export const DEFAULT_WORKSPACE_GITIGNORE = [
+  "node_modules/",
+  ".env",
+  ".env.*",
+  "!.env.example",
+  "dist/",
+  "build/",
+  ".DS_Store",
+  "*.log",
+  "",
+].join("\n");
+
+/** Ensure a preset-appropriate .gitignore exists (does not overwrite). */
+export function ensureWorkspaceGitignore(cwd: string): {
+  written: boolean;
+  kind: "unity" | "default" | "existing";
+} {
+  const path = join(cwd, ".gitignore");
+  if (existsSync(path)) return { written: false, kind: "existing" };
+  const unity = looksLikeUnityWorkspace(cwd);
+  writeFileSync(path, unity ? UNITY_GITIGNORE : DEFAULT_WORKSPACE_GITIGNORE, {
+    mode: 0o644,
+  });
+  return { written: true, kind: unity ? "unity" : "default" };
+}
+
 
 export type CmdResult = {
   code: number | null;
@@ -125,6 +190,15 @@ function isGitRepo(cwd: string): boolean {
     timeoutMs: 10_000,
   });
   return r.code === 0 && r.stdout.trim() === "true";
+}
+
+/** True when HEAD resolves (repo has at least one commit). */
+export function repoHasCommits(cwd: string): boolean {
+  const r = run("git", ["rev-parse", "--verify", "HEAD"], {
+    cwd,
+    timeoutMs: 10_000,
+  });
+  return r.code === 0;
 }
 
 function dirNonEmpty(path: string): boolean {
@@ -726,6 +800,42 @@ export function createGithubRepoFromWorkspace(opts: {
     );
   }
 
+  // HB-U-04: fresh Unity/MCP workspaces often have zero commits — push would
+  // fail with "src refspec HEAD does not match any". Ensure ignore + commit.
+  const gi = ensureWorkspaceGitignore(cwd);
+  let initialCommit = false;
+  if (!repoHasCommits(cwd)) {
+    try {
+      repairProjectOwnership(cwd);
+    } catch {
+      /* best-effort */
+    }
+    const add = run("git", ["add", "-A"], { cwd, timeoutMs: 120_000 });
+    if (add.code !== 0) {
+      return plainError(
+        (add.stderr || add.stdout || "git add failed").slice(0, 400),
+      );
+    }
+    const commit = run(
+      "git",
+      [
+        "commit",
+        "--allow-empty",
+        "-m",
+        looksLikeUnityWorkspace(cwd)
+          ? "Initial Unity workspace (Home Base)"
+          : "Initial commit (Home Base)",
+      ],
+      { cwd, timeoutMs: 120_000 },
+    );
+    if (commit.code !== 0) {
+      return plainError(
+        (commit.stderr || commit.stdout || "git commit failed").slice(0, 400),
+      );
+    }
+    initialCommit = true;
+  }
+
   const name =
     String(opts.name || "").trim() ||
     project.name.replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 64) ||
@@ -795,9 +905,39 @@ export function createGithubRepoFromWorkspace(opts: {
       data: {
         origin: originUrl(cwd),
         pushed: false,
+        initialCommit,
+        gitignore: gi,
         note: "Repo may exist on GitHub; push failed (no force used).",
       },
     };
+  }
+
+  // Dan's branch flow: development_grok (+ optional development) from HEAD.
+  const grok = ensureDevelopmentGrok(cwd);
+  let developmentCreated = false;
+  const hasDev = run(
+    "git",
+    ["show-ref", "--verify", "--quiet", "refs/heads/development"],
+    { cwd, timeoutMs: 10_000 },
+  );
+  if (hasDev.code !== 0) {
+    const mk = run("git", ["branch", "development"], {
+      cwd,
+      timeoutMs: 15_000,
+    });
+    developmentCreated = mk.code === 0;
+  }
+  if (grok.ok) {
+    run("git", ["push", "-u", "origin", DEV_BRANCH], {
+      cwd,
+      timeoutMs: 300_000,
+    });
+  }
+  if (developmentCreated || hasDev.code === 0) {
+    run("git", ["push", "-u", "origin", "development"], {
+      cwd,
+      timeoutMs: 300_000,
+    });
   }
 
   return {
@@ -808,6 +948,10 @@ export function createGithubRepoFromWorkspace(opts: {
       visibility,
       origin: originUrl(cwd),
       pushed: true,
+      initialCommit,
+      gitignore: gi,
+      developmentGrok: grok.data || null,
+      developmentBranch: developmentCreated || hasDev.code === 0,
     },
   };
 }

@@ -146,6 +146,7 @@ export type DiskEditor = {
   editorRoot: string;
   webglOnDisk: boolean;
   linuxOnDisk: boolean;
+  iosOnDisk: boolean;
 };
 
 function moduleDirPresent(editorRoot: string, name: string): boolean {
@@ -181,6 +182,7 @@ export function scanEditorsOnDisk(roots = hubEditorRoots()): DiskEditor[] {
         editorRoot,
         webglOnDisk: moduleDirPresent(editorRoot, "WebGLSupport"),
         linuxOnDisk: moduleDirPresent(editorRoot, "LinuxStandaloneSupport"),
+        iosOnDisk: moduleDirPresent(editorRoot, "iOSSupport"),
       });
     }
   }

@@ -3,6 +3,11 @@
 # No Hub GUI, no license activate/return/sign-in.
 set -euo pipefail
 
+# Resolve seat home even when systemd/service HOME=/root (HB-U-03).
+if [[ -z "${HOME:-}" || "$HOME" == "/root" ]]; then
+  if [[ -d /home/daniel ]]; then HOME=/home/daniel; fi
+fi
+
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 UNITY_DEFAULT="${HOME}/Unity/Hub/Editor/6000.6.4f1/Editor/Unity"
 UNITY="${UNITY_EDITOR:-${UNITY:-$UNITY_DEFAULT}}"
