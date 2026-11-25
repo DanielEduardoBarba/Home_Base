@@ -149,9 +149,10 @@ async function runWebglBuildJob(job: UnityJob, project: Project): Promise<void> 
     }
     await runAction(project, "webgl_build");
 
-    // Best-effort: restart live preview serve if configured.
+    // Prefer static preview (does not fight the bridge) over live-webgl.
     const webgl = (project.actions || []).find(
-      (a) => a.id === "webgl" || a.id === "webgl_serve",
+      (a) =>
+        a.id === "webgl_serve" || a.id === "webgl" || a.id === "webgl_live",
     );
     let previewStarted = false;
     if (webgl) {
@@ -169,23 +170,46 @@ async function runWebglBuildJob(job: UnityJob, project: Project): Promise<void> 
       }
     }
 
+    // Restart bridge after build (project lock released).
+    let bridgeRestarted = false;
+    const editor = (project.actions || []).find((a) => a.id === "editor");
+    if (editor) {
+      try {
+        await runAction(project, "editor");
+        bridgeRestarted = true;
+      } catch (e) {
+        appendTrace(
+          "warn",
+          `unity job ${job.id}: bridge restart failed: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+          "unity",
+        );
+      }
+    }
+
     const preview = webglPreviewInfo(project);
     const logTail = lastBuildLogTail(30);
+    const indexOk = existsSync(join(preview.outDir, "index.html"));
     const errHint =
-      /error|failed|exception/i.test(logTail) && preview.sizeBytes === 0
-        ? logTail.slice(-500)
+      (!indexOk || /error|failed|exception/i.test(logTail)) &&
+      preview.sizeBytes === 0
+        ? logTail.slice(-500) || "WebGL build produced no Builds/WebGL/index.html"
         : null;
 
-    job.status = errHint && preview.sizeBytes === 0 ? "error" : "done";
+    job.status = errHint ? "error" : "done";
     job.finishedAt = Date.now();
     job.summary =
       job.status === "done"
-        ? `WebGL build ok · ${Math.round(preview.sizeBytes / 1024)} KiB`
-        : "WebGL build may have failed — see logTail";
+        ? `WebGL build ok · ${Math.round(preview.sizeBytes / 1024)} KiB` +
+          (bridgeRestarted ? " · bridge restarted" : "")
+        : "WebGL build failed — see logTail / Build WebGL on the project card";
     job.error = errHint || undefined;
     job.result = {
       ...preview,
       previewStarted,
+      bridgeRestarted,
+      buildExists: indexOk,
       logTail: logTail.slice(-1200),
     };
   } catch (e) {

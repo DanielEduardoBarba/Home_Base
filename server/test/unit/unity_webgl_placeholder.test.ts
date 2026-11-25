@@ -78,4 +78,19 @@ describe("unity webgl placeholder", () => {
     expect(sh).toContain("mkdir -p");
     expect(sh).not.toMatch(/\[\[ -d "\$DIR" \]\] \|\| \{ echo "error: WebGL build dir missing/);
   });
+
+  test("live-webgl stops bridge for build then restarts it; serves first", () => {
+    const sh = readFileSync(
+      join(BUNDLE_ROOT, "scripts/unity/live-webgl.sh"),
+      "utf8",
+    );
+    expect(sh).toContain("stop_bridge_if_ours");
+    expect(sh).toContain("restart_bridge");
+    expect(sh).toContain("start-editor-bridge.sh");
+    // Port comes up before optional initial build (placeholder).
+    const serveIdx = sh.indexOf('serve-webgl.sh"');
+    const buildIdx = sh.indexOf("no build yet");
+    expect(serveIdx).toBeGreaterThan(0);
+    expect(buildIdx).toBeGreaterThan(serveIdx);
+  });
 });

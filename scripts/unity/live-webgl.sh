@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# WebGL live view: initial build (if needed) + watch Assets/Packages/ProjectSettings
-# → debounced batchmode rebuild → static serve on VPN/wg0:<port> (HB_WEBGL_BIND / 127.0.0.1 fallback).
+# WebGL live view: serve immediately (placeholder if needed) + watch Assets/Packages/ProjectSettings
+# → debounced batchmode rebuild → auto-reload via serve-webgl.mjs poller.
 #
-# Coplay bridge coordination (documented choice):
-#   One Editor holds the project lock. If this project's bridge Editor is running,
-#   we STOP it before each batchmode WebGL build, then leave it stopped while live
-#   view is serving (authoring via bridge and WebGL batchmode cannot share one
-#   project). We do NOT call Coplay manage_build — that needs a live Editor with
-#   an open project; stop→batchmode→serve is the reliable path under Home Base.
+# Coplay bridge coordination (one Editor per project lock):
+#   STOP this project's bridge before each batchmode WebGL build, then RESTART it
+#   after the build finishes (success or fail). Authoring via bridge and WebGL
+#   batchmode cannot share one project lock during the build itself.
 set -euo pipefail
 
 # Resolve seat home even when systemd/service HOME=/root (HB-U-03).
@@ -34,11 +32,12 @@ fi
 OUT="${PROJECT}/Builds/WebGL"
 DEBOUNCE_SEC="${UNITY_WEBGL_DEBOUNCE:-8}"
 STATE_DIR="${HOME}/.cache/homebase-unity"
-mkdir -p "$STATE_DIR"
+mkdir -p "$STATE_DIR" "$OUT"
 WATCH_PIDFILE="${STATE_DIR}/live-webgl-watch-$$.pid"
 BUILD_LOCK="${STATE_DIR}/webgl-build.lock"
+LAST_BUILD_ERR="${STATE_DIR}/webgl-build-last-error.txt"
 
-# Resolve port from Home Base action args: live-webgl.sh 8410
+# Resolve port from Home Base action args / env
 export UNITY_WEBGL_PORT="$PORT"
 export UNITY_PROJECT="$PROJECT"
 
@@ -49,65 +48,60 @@ stop_bridge_if_ours() {
   fi
 }
 
+restart_bridge() {
+  if [[ "${UNITY_WEBGL_RESTART_BRIDGE:-1}" != "1" ]]; then
+    return 0
+  fi
+  if [[ -x "${SCRIPT_DIR}/start-editor-bridge.sh" ]]; then
+    echo "[live-webgl] restarting Coplay bridge after build…"
+    UNITY_PROJECT="$PROJECT" bash "${SCRIPT_DIR}/start-editor-bridge.sh" "$PROJECT" \
+      || echo "[live-webgl] bridge restart failed (preview still serving)" >&2
+  fi
+}
+
 build_once() {
   # flock so watch bursts don't overlap builds
   (
     flock -n 9 || { echo "[live-webgl] build already running — skip"; exit 0; }
     stop_bridge_if_ours
+    set +e
     bash "${SCRIPT_DIR}/build-webgl.sh" "$PROJECT" "$OUT"
+    local code=$?
+    set -e
+    if [[ $code -ne 0 ]]; then
+      local msg="WebGL build failed (exit $code) — see ~/.cache/homebase-unity/webgl-build.log"
+      echo "[live-webgl] $msg" >&2
+      echo "$msg" >"$LAST_BUILD_ERR"
+      restart_bridge
+      exit "$code"
+    fi
+    rm -f "$LAST_BUILD_ERR"
+    echo "[live-webgl] build ok → $OUT"
+    restart_bridge
   ) 9>"$BUILD_LOCK"
 }
 
+# Bring the port up immediately (placeholder until index.html exists).
+echo "[live-webgl] starting preview on :$PORT → $OUT"
+bash "${SCRIPT_DIR}/serve-webgl.sh" "$PORT" "$OUT" &
+SERVE_PID=$!
+
+cleanup() {
+  kill "$SERVE_PID" 2>/dev/null || true
+  if [[ -f "$WATCH_PIDFILE" ]]; then
+    kill "$(cat "$WATCH_PIDFILE" 2>/dev/null || true)" 2>/dev/null || true
+    rm -f "$WATCH_PIDFILE"
+  fi
+}
+trap cleanup EXIT
+
+# Initial build if missing (port already serving placeholder).
 if [[ ! -f "$OUT/index.html" ]]; then
   echo "[live-webgl] no build yet — building once…"
-  build_once
+  build_once || echo "[live-webgl] initial build failed — placeholder stays up (see $LAST_BUILD_ERR)"
 fi
 
-# Debounced watcher (inotifywait if present, else polling)
-watch_loop() {
-  echo "[live-webgl] watching Assets Packages ProjectSettings (debounce ${DEBOUNCE_SEC}s)"
-  local pending=0
-  trigger() {
-    pending=1
-  }
-  (
-    if command -v inotifywait >/dev/null 2>&1; then
-      inotifywait -m -r -e modify,create,delete,move \
-        --exclude '(/Library/|/Temp/|/Logs/|/Builds/|\.git/)' \
-        "$PROJECT/Assets" "$PROJECT/Packages" "$PROJECT/ProjectSettings" 2>/dev/null |
-      while read -r _; do
-        echo "change"
-      done
-    else
-      # Poll mtimes
-      local prev=""
-      while true; do
-        local cur
-        cur="$(find "$PROJECT/Assets" "$PROJECT/Packages" "$PROJECT/ProjectSettings" \
-          -type f -printf '%T@ %p\n' 2>/dev/null | sort | md5sum | awk '{print $1}')"
-        if [[ -n "$prev" && "$cur" != "$prev" ]]; then
-          echo "change"
-        fi
-        prev="$cur"
-        sleep 2
-      done
-    fi
-  ) | while read -r _; do
-    trigger
-    # debounce: wait for quiet period
-    while true; do
-      pending=0
-      sleep "$DEBOUNCE_SEC"
-      if [[ "$pending" -eq 0 ]]; then
-        echo "[live-webgl] debounced rebuild…"
-        build_once || echo "[live-webgl] rebuild failed (see log)"
-        break
-      fi
-    done
-  done
-}
-
-# Note: pending flag in subshell is imperfect with pipes; use a stamp file debounce.
+# Debounced watcher
 watch_loop_v2() {
   echo "[live-webgl] watching Assets Packages ProjectSettings (debounce ${DEBOUNCE_SEC}s)"
   local stamp="${STATE_DIR}/live-webgl-pending-$$"
@@ -136,10 +130,9 @@ watch_loop_v2() {
   ) &
   local wpid=$!
   echo "$wpid" >"$WATCH_PIDFILE"
-  trap 'kill "$wpid" 2>/dev/null || true; rm -f "$WATCH_PIDFILE" "$stamp"' EXIT
 
   local last_built=0
-  while kill -0 "$wpid" 2>/dev/null; do
+  while kill -0 "$wpid" 2>/dev/null && kill -0 "$SERVE_PID" 2>/dev/null; do
     if [[ -f "$stamp" ]]; then
       local t now
       t="$(cat "$stamp" 2>/dev/null || echo 0)"
@@ -148,7 +141,7 @@ watch_loop_v2() {
         last_built=$now
         rm -f "$stamp"
         echo "[live-webgl] debounced rebuild…"
-        build_once || echo "[live-webgl] rebuild failed (see log)"
+        build_once || echo "[live-webgl] rebuild failed (see $LAST_BUILD_ERR)"
       fi
     fi
     sleep 1
@@ -157,6 +150,6 @@ watch_loop_v2() {
 
 watch_loop_v2 &
 WATCH_BG=$!
-trap 'kill $WATCH_BG 2>/dev/null || true' EXIT
+trap 'kill $WATCH_BG 2>/dev/null || true; cleanup' EXIT
 
-exec bash "${SCRIPT_DIR}/serve-webgl.sh" "$PORT" "$OUT"
+wait "$SERVE_PID"
