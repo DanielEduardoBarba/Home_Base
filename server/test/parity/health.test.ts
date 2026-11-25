@@ -18,5 +18,8 @@ describe("parity health/version", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(typeof body.version).toBe("string");
     expect(typeof body.backup).toBe("boolean");
+    // Must come from real VERSION source (BUNDLE_ROOT / ROOT / share).
+    const { readVersion } = await import("../../src/config");
+    expect(body.version).toBe(readVersion());
   });
 });

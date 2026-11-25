@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Static-serve a WebGL build on VPN/wg0:<port> (or HB_WEBGL_BIND / 127.0.0.1) with a reload poller.
-# If Builds/WebGL is missing, still binds the port and serves a clear placeholder page.
-# Never defaults to 0.0.0.0. Usage: serve-webgl.sh [port] [Builds/WebGL dir]
+# If Builds/WebGL is missing, still binds the port and serves a "Build in progress" placeholder.
+# Survives atomic WebGL.next → WebGL swaps (re-resolves dir per request). Never defaults to 0.0.0.0.
+# Usage: serve-webgl.sh [port] [Builds/WebGL dir]
 set -euo pipefail
 
 PORT="${1:-${UNITY_WEBGL_PORT:-8410}}"
@@ -35,7 +36,7 @@ export UNITY_WEBGL_DIR="$DIR"
 if [[ -f "$DIR/index.html" ]]; then
   echo "Serving WebGL on ${BIND}:${PORT} → ${DIR}"
 else
-  echo "No WebGL build yet — placeholder on ${BIND}:${PORT} (run Build WebGL)"
+  echo "Build in progress — placeholder on ${BIND}:${PORT} (run Build WebGL)"
 fi
 echo "Phone URL: http://${BIND}:${PORT}/"
 exec node "$SERVER_JS"

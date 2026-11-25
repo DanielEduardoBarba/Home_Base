@@ -39,9 +39,9 @@
       "label": "WebGL build",
       "script": "scripts/unity/build-webgl.sh",
       "args": [],
-      "kind": "run",
+      "kind": "action",
       "group": "main",
-      "hint": "Batchmode WebGL → Builds/WebGL (stops this project's bridge first if live-webgl calls it)"
+      "hint": "Batchmode WebGL → Builds/WebGL.next then atomic swap (preview keeps serving last good build)"
     },
     {
       "id": "webgl_serve",
@@ -50,7 +50,7 @@
       "args": [],
       "kind": "run",
       "group": "main",
-      "hint": "Serve Builds/WebGL (or a No-build-yet placeholder) on UNITY_WEBGL_PORT"
+      "hint": "Serve Builds/WebGL (or Build-in-progress placeholder) on UNITY_WEBGL_PORT"
     },
     {
       "id": "webgl",
@@ -66,9 +66,10 @@
       "label": "Stop bridge",
       "script": "scripts/unity/stop-editor-bridge.sh",
       "args": [],
-      "kind": "run",
+      "kind": "action",
       "variant": "danger",
-      "group": "main"
+      "group": "main",
+      "hint": "Stop this project's Coplay bridge Editor only (WebGL preview keeps running)"
     }
   ]
 }

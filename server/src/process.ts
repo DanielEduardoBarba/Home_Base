@@ -7,6 +7,7 @@ import { homebaseListenPort, killPortListeners, isPortListening } from "./ports"
 import {
   getSession,
   killByProject,
+  killSession,
   listSessions,
   readSessionOutput,
   spawnShell,
@@ -605,13 +606,26 @@ function spawnActionPty(
       ? action.kind
       : "action";
   // Replace prior sessions of same kind so Start is idempotent.
+  // Unity: editor must not tear down an active WebGL preview (HB-U-14).
   if (kind === "run" || kind === "expo" || kind === "selfqa") {
     if (kind === "selfqa" && projectHasActiveSelfQa(project.id)) {
       throw new Error(
         "Project already has an active Self-QA session. Stop it before starting another.",
       );
     }
-    killByProject(project.id, new Set([kind]));
+    if (action.id === "editor" || action.id === "mcp-bridge") {
+      for (const s of listSessions(project.id)) {
+        if (s.kind !== kind) continue;
+        const label = `${s.title || ""} ${(s.cmdline || []).join(" ")}`;
+        if (
+          /start-editor-bridge|Editor \+ MCP|mcp-bridge|MCP bridge/i.test(label)
+        ) {
+          killSession(s.id);
+        }
+      }
+    } else {
+      killByProject(project.id, new Set([kind]));
+    }
   }
 
   // After replacing our own sessions, refuse if the matching port is still bound.

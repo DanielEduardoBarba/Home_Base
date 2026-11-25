@@ -1,12 +1,34 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { bindPort, isBackupBinary, readVersion } from "./config";
+import { BUNDLE_ROOT, ROOT, bindPort, isBackupBinary, readVersion } from "./config";
 import { accessHosts } from "./network";
 import { appendTrace } from "./trace";
 import { callbackAuthEnvSet } from "./secrets_vault";
 import { httpsPort, tlsMaterialPresent } from "./tls_certs";
 import { unityPresenceFlags } from "./unity_paths";
+
+/** Short git SHA for the running checkout / bundle (null if unavailable). */
+export function readGitCommit(): string | null {
+  for (const cwd of [BUNDLE_ROOT, ROOT]) {
+    try {
+      if (!cwd || !existsSync(cwd)) continue;
+      const r = spawnSync("git", ["-C", cwd, "rev-parse", "--short", "HEAD"], {
+        encoding: "utf8",
+        timeout: 3000,
+      });
+      if (r.status !== 0) continue;
+      const sha = String(r.stdout || "")
+        .trim()
+        .split("\n")[0]
+        ?.trim();
+      if (sha && /^[0-9a-f]{4,40}$/i.test(sha)) return sha;
+    } catch {
+      /* try next root */
+    }
+  }
+  return null;
+}
 
 export function systemStatus(): Record<string, unknown> {
   const wireguard: { id: string; unit: string; conf: string }[] = [];
@@ -54,6 +76,7 @@ export function systemStatus(): Record<string, unknown> {
     wireguard,
     homebasedUnit: "homebased.service",
     version: readVersion(),
+    commit: readGitCommit(),
     backup: isBackupBinary(),
     callbackAuthEnvSet: callbackAuthEnvSet(),
     unity: {

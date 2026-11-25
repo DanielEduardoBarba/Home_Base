@@ -28,11 +28,17 @@ elif [[ -f "${PWD}/ProjectSettings/ProjectVersion.txt" ]]; then
 else
   PROJECT="${HOME}/MCP_WORKSPACES/unity-sample"
 fi
+# Final serve dir (last good build). Stage into .next, swap only on success (HB-U-14).
 OUT="${2:-${PROJECT}/Builds/WebGL}"
+NEXT="${OUT}.next"
+PREV="${OUT}.prev"
 LOG="${UNITY_WEBGL_LOG:-${HOME}/.cache/homebase-unity/webgl-build.log}"
 METHOD="${UNITY_WEBGL_METHOD:-HomeBase.Editor.EditorBuildScript.BuildWebGL}"
 
-mkdir -p "$(dirname "$LOG")" "$OUT"
+mkdir -p "$(dirname "$LOG")" "$(dirname "$OUT")"
+# Never wipe $OUT while a preview may be serving it — build into staging.
+rm -rf "$NEXT" "$PREV"
+mkdir -p "$NEXT"
 
 [[ -x "$UNITY" ]] || { echo "error: Unity not found at $UNITY" >&2; exit 1; }
 [[ -f "$PROJECT/ProjectSettings/ProjectVersion.txt" ]] || {
@@ -139,7 +145,12 @@ namespace HomeBase.Editor
                 EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(ScenePath, true) };
             }
 
-            var outDir = Path.GetFullPath("Builds/WebGL");
+            // Stage into Builds/WebGL.next — bash atomically swaps into Builds/WebGL on success.
+            var outDir = Path.GetFullPath("Builds/WebGL.next");
+            if (Directory.Exists(outDir))
+            {
+                Directory.Delete(outDir, true);
+            }
             Directory.CreateDirectory(outDir);
             var scenes = EditorBuildSettings.scenes;
             if (scenes == null || scenes.Length == 0)
@@ -163,13 +174,37 @@ namespace HomeBase.Editor
 }
 CS
 
-echo "Building WebGL → $OUT (log $LOG)"
+echo "Building WebGL → $NEXT (log $LOG); last good stays at $OUT until swap"
+set +e
 "$UNITY" -batchmode -nographics -quit \
   -projectPath "$PROJECT" \
   -buildTarget WebGL \
   -executeMethod "$METHOD" \
   -logFile "$LOG"
+unity_code=$?
+set -e
 
-echo "WebGL build finished. Serve with: scripts/unity/serve-webgl.sh <port> \"$OUT\""
+if [[ $unity_code -ne 0 ]]; then
+  echo "error: Unity WebGL build failed (exit $unity_code) — leaving $OUT untouched" >&2
+  rm -rf "$NEXT"
+  exit "$unity_code"
+fi
+
+if [[ ! -f "$NEXT/index.html" ]]; then
+  echo "error: staging build missing index.html at $NEXT — leaving $OUT untouched" >&2
+  rm -rf "$NEXT"
+  exit 1
+fi
+
+# Atomic swap on same filesystem: old → .prev, new → final, drop .prev.
+# Preview serving $OUT keeps working (path re-resolves after rename).
+if [[ -e "$OUT" || -L "$OUT" ]]; then
+  rm -rf "$PREV"
+  mv "$OUT" "$PREV"
+fi
+mv "$NEXT" "$OUT"
+rm -rf "$PREV"
+
+echo "WebGL build finished → $OUT (atomic swap). Serve with: scripts/unity/serve-webgl.sh <port> \"$OUT\""
 echo "  (binds HB_WEBGL_BIND, else wg0 IPv4, else 127.0.0.1 — never 0.0.0.0 by default)"
 echo "Live watch+serve: scripts/unity/live-webgl.sh <port>"

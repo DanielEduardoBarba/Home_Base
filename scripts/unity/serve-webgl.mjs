@@ -2,7 +2,8 @@
 /**
  * Tiny static WebGL server: bind VPN/wg0 (or HB_WEBGL_BIND / 127.0.0.1),
  * version endpoint, inject reload poller into index.html. Never defaults to 0.0.0.0.
- * When Builds/WebGL/index.html is missing, serves a clear placeholder page.
+ * When Builds/WebGL/index.html is missing, serves a "Build in progress" placeholder.
+ * Re-resolves the build dir per request so an atomic WebGL.next → WebGL swap stays live.
  */
 import { createServer } from "node:http";
 import {
@@ -13,15 +14,20 @@ import {
   statSync,
   watch,
 } from "node:fs";
-import { extname, join, normalize, resolve, sep } from "node:path";
+import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { resolveWebglBind } from "./webgl-bind.mjs";
 
 const port = Number(process.env.UNITY_WEBGL_PORT || 8410);
-const root = resolve(process.env.UNITY_WEBGL_DIR || "Builds/WebGL");
+const rootEnv = process.env.UNITY_WEBGL_DIR || "Builds/WebGL";
 const host = resolveWebglBind();
 
+/** Path string for the serve root — stable across rename swaps into the same path. */
+function buildRoot() {
+  return resolve(rootEnv);
+}
+
 try {
-  mkdirSync(root, { recursive: true });
+  mkdirSync(buildRoot(), { recursive: true });
 } catch {
   /* ignore */
 }
@@ -52,7 +58,7 @@ const PLACEHOLDER = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>No WebGL build yet</title>
+<title>Build in progress</title>
 <style>
   :root { color-scheme: dark; }
   body {
@@ -68,8 +74,9 @@ const PLACEHOLDER = `<!DOCTYPE html>
 </head>
 <body>
 <main>
-  <h1>No WebGL build yet</h1>
-  <p>Run <strong>Build WebGL</strong> on the Home Base project card<br/>(or <code>webgl_build</code> / live view).</p>
+  <h1>Build in progress</h1>
+  <p>WebGL preview will appear here when the build finishes.<br/>
+  Run <strong>Build WebGL</strong> on the Home Base project card<br/>(or <code>webgl_build</code> / live view).</p>
 </main>
 <script data-hb-webgl-reload="1">
 (function(){
@@ -91,7 +98,7 @@ let buildStamp = stampNow();
 
 function hasBuild() {
   try {
-    return existsSync(join(root, "index.html"));
+    return existsSync(join(buildRoot(), "index.html"));
   } catch {
     return false;
   }
@@ -99,7 +106,7 @@ function hasBuild() {
 
 function stampNow() {
   try {
-    const index = join(root, "index.html");
+    const index = join(buildRoot(), "index.html");
     if (existsSync(index)) return String(statSync(index).mtimeMs);
   } catch {
     /* ignore */
@@ -112,7 +119,12 @@ function refreshStamp() {
 }
 
 try {
+  const root = buildRoot();
   watch(root, { recursive: true }, () => {
+    refreshStamp();
+  });
+  // Parent watch catches WebGL.next → WebGL rename swaps (dir inode changes).
+  watch(dirname(root), () => {
     refreshStamp();
   });
 } catch {
@@ -181,6 +193,7 @@ function sendPlaceholder(res) {
 
 const server = createServer((req, res) => {
   refreshStamp();
+  const root = buildRoot();
   const url = req.url || "/";
   if (url.startsWith("/__hb_webgl_v")) {
     res.writeHead(200, {
@@ -238,5 +251,5 @@ const server = createServer((req, res) => {
 
 server.listen(port, host, () => {
   const mode = hasBuild() ? "build" : "placeholder";
-  console.log(`hb-webgl listening on http://${host}:${port}/ (${mode}; dir ${root})`);
+  console.log(`hb-webgl listening on http://${host}:${port}/ (${mode}; dir ${buildRoot()})`);
 });

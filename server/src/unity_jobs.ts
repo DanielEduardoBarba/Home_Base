@@ -13,6 +13,8 @@ import {
 import { join } from "node:path";
 import { loadProjects, RUNTIME_DIR, type Project } from "./config";
 import { runAction, stopProject } from "./process";
+import { isPortListening } from "./ports";
+import { getSession } from "./pty";
 import { resolveSeatHome } from "./unity_paths";
 import { resolveWebglBind } from "./unity_webgl_bind";
 import { appendTrace } from "./trace";
@@ -124,58 +126,89 @@ function webglPreviewInfo(project: Project): {
   };
 }
 
+/** Wait until a PTY session exits (or timeout). Returns exit code or null. */
+async function waitSessionExit(
+  sessionId: string,
+  timeoutMs = 600_000,
+): Promise<number | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const s = getSession(sessionId);
+    if (!s || s.exited) {
+      return s?.exitCode ?? null;
+    }
+    await Bun.sleep(500);
+  }
+  return null;
+}
+
 async function runWebglBuildJob(job: UnityJob, project: Project): Promise<void> {
   job.status = "running";
   markUnityBuildBuilding(project.id, { jobId: job.id });
   try {
-    // Stop bridge so batchmode can take the project lock.
-    const stop = (project.actions || []).find((a) => a.id === "stop");
-    if (stop) {
-      try {
+    // Stop bridge only so batchmode can take the project lock.
+    // Never stopProject here — that kills the WebGL preview (HB-U-14).
+    try {
+      if ((project.actions || []).some((a) => a.id === "stop")) {
         await runAction(project, "stop");
-      } catch {
-        try {
-          stopProject(project);
-        } catch {
-          /* ignore */
-        }
       }
-    } else {
-      try {
-        stopProject(project);
-      } catch {
-        /* ignore */
-      }
+    } catch (e) {
+      appendTrace(
+        "warn",
+        `unity job ${job.id}: bridge stop failed: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+        "unity",
+      );
     }
 
     const build = (project.actions || []).find((a) => a.id === "webgl_build");
     if (!build) {
       throw new Error("project has no webgl_build action");
     }
-    await runAction(project, "webgl_build");
+    const buildRun = await runAction(project, "webgl_build");
+    const buildSessionId = buildRun.session?.id;
+    if (buildSessionId) {
+      const code = await waitSessionExit(buildSessionId);
+      if (code != null && code !== 0) {
+        throw new Error(
+          `webgl_build exited ${code} — see ~/.cache/homebase-unity/webgl-build.log`,
+        );
+      }
+      if (code == null) {
+        throw new Error("webgl_build timed out waiting for batchmode exit");
+      }
+    }
 
-    // Prefer static preview (does not fight the bridge) over live-webgl.
+    // Keep an already-serving preview (atomic swap leaves last good build up).
+    const webglPort = (project.ports || []).find((p) => p.id === "webgl")?.port;
+    const previewUp =
+      webglPort != null &&
+      Number.isFinite(Number(webglPort)) &&
+      isPortListening(Number(webglPort));
     const webgl = (project.actions || []).find(
       (a) =>
         a.id === "webgl_serve" || a.id === "webgl" || a.id === "webgl_live",
     );
     let previewStarted = false;
-    if (webgl) {
+    if (webgl && !previewUp) {
       try {
         await runAction(project, webgl.id);
         previewStarted = true;
       } catch (e) {
         appendTrace(
           "warn",
-          `unity job ${job.id}: preview restart failed: ${
+          `unity job ${job.id}: preview start failed: ${
             e instanceof Error ? e.message : String(e)
           }`,
           "unity",
         );
       }
+    } else if (previewUp) {
+      previewStarted = true;
     }
 
-    // Restart bridge after build (project lock released).
+    // Restart bridge after build (project lock released). Editor spawn keeps WebGL.
     let bridgeRestarted = false;
     const editor = (project.actions || []).find((a) => a.id === "editor");
     if (editor) {

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# WebGL live view: serve immediately (placeholder if needed) + watch Assets/Packages/ProjectSettings
-# → debounced batchmode rebuild → auto-reload via serve-webgl.mjs poller.
+# WebGL live view: serve immediately ("Build in progress" placeholder if needed) + watch
+# Assets/Packages/ProjectSettings → debounced batchmode rebuild (atomic WebGL.next swap) →
+# auto-reload via serve-webgl.mjs poller. Preview stays up across rebuilds.
 #
 # Coplay bridge coordination (one Editor per project lock):
 #   STOP this project's bridge before each batchmode WebGL build, then RESTART it
