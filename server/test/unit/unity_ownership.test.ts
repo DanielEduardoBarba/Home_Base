@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -24,10 +25,14 @@ describe("unity ownership (HB-U-03)", () => {
   test("scaffoldUnityProject chowns via create runner and returns ok", () => {
     const root = mkdtempSync(join(tmpdir(), "hb-unity-own-"));
     const project = join(root, "game");
+    const fakeUnity = join(root, "FakeUnity");
     try {
+      writeFileSync(fakeUnity, "#!/bin/sh\nexit 0\n");
+      chmodSync(fakeUnity, 0o755);
+
       _setUnityRunnerForTests((cmd, args) => {
         if (cmd === "bash" && args.some((a) => String(a).includes("command -v"))) {
-          return { code: 0, stdout: "/usr/bin/unity\n", stderr: "" };
+          return { code: 0, stdout: `${fakeUnity}\n`, stderr: "" };
         }
         if (args[0] === "editors") {
           return {
@@ -37,7 +42,7 @@ describe("unity ownership (HB-U-03)", () => {
                 items: [
                   {
                     version: "6000.0.0f1",
-                    location: "/usr/bin/FakeUnity",
+                    location: fakeUnity,
                     moduleNames: ["webgl"],
                   },
                 ],
