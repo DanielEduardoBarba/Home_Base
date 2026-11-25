@@ -113,6 +113,7 @@ export function AppsTab({
     )
   }, [project])
 
+  const unityDev = project?.actions?.find((a) => a.id === 'unity_dev') || null
   const unityEditor = project?.actions?.find((a) => a.id === 'editor') || null
   const unityBuild =
     project?.actions?.find((a) => a.id === 'webgl_build') || null
@@ -121,6 +122,9 @@ export function AppsTab({
       (a) => a.id === 'webgl' || a.id === 'webgl_serve' || a.id === 'webgl_live',
     ) || null
   const unityStop = project?.actions?.find((a) => a.id === 'stop') || null
+  const webglDownReason =
+    (project?.portsStatus || []).find((p) => p.id === 'webgl')?.downReason ||
+    ''
 
   const ship = project?.actions?.filter((a) => a.group === 'ship') || []
   const hotkeys = project?.actions?.filter((a) => a.group === 'hotkey') || []
@@ -138,8 +142,14 @@ export function AppsTab({
   const [shipId, setShipId] = useState('')
   useEffect(() => {
     if (isUnity) {
-      // Unity: default to Editor bridge, not Expo run_all.
-      setRunId(unityEditor?.id || unityPreview?.id || runActions[0]?.id || '')
+      // Unity: default to Unity.Dev (bridge + preview), then editor / live.
+      setRunId(
+        unityDev?.id ||
+          unityEditor?.id ||
+          unityPreview?.id ||
+          runActions[0]?.id ||
+          '',
+      )
     } else {
       // Prefer Run + Expo (run_all) over plain Run when available.
       const prefer =
@@ -473,13 +483,31 @@ export function AppsTab({
           </div>
         )}
 
-        <WebGLPreview project={project} />
+        <WebGLPreview
+          project={project}
+          onBuildWebGL={
+            unityBuild ? () => void doRun(unityBuild) : undefined
+          }
+        />
 
         {isUnity ? (
           <div className="space-y-1.5 pt-0.5">
             <span className="hb-label">Unity</span>
+            {webglDownReason ? (
+              <p className="text-[11px] text-mute">{webglDownReason}</p>
+            ) : null}
             <div className="flex flex-wrap gap-2">
-              {unityEditor ? (
+              {unityDev ? (
+                <button
+                  type="button"
+                  disabled={!!busy}
+                  title={unityDev.hint || unityDev.label}
+                  onClick={() => void doRun(unityDev)}
+                  className="hb-btn hb-btn-primary !min-h-10 !px-3 text-sm"
+                >
+                  {busy === unityDev.label ? '…' : 'Unity.Dev'}
+                </button>
+              ) : unityEditor ? (
                 <button
                   type="button"
                   disabled={!!busy}
@@ -509,7 +537,7 @@ export function AppsTab({
                   onClick={() => void doRun(unityPreview)}
                   className="hb-btn !min-h-10 !px-3 text-sm"
                 >
-                  {busy === unityPreview.label ? '…' : 'Preview'}
+                  {busy === unityPreview.label ? '…' : 'Live view'}
                 </button>
               ) : null}
               {unityStop ? (
@@ -537,8 +565,8 @@ export function AppsTab({
               ) : null}
             </div>
             <p className="text-[11px] text-mute">
-              One Editor per project. Preview stops the bridge before each
-              batchmode WebGL build.
+              Unity.Dev starts bridge + preview together. Live view stops the
+              bridge for each batchmode rebuild, then restarts it.
             </p>
           </div>
         ) : (

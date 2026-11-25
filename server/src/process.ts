@@ -179,6 +179,8 @@ export async function portsStatus(
   project: Project,
 ): Promise<Record<string, unknown>[]> {
   const out: Record<string, unknown>[] = [];
+  const webglIndex = join(project.path, "Builds", "WebGL", "index.html");
+  const webglBuildExists = existsSync(webglIndex);
   for (const p of project.ports || []) {
     try {
       const portNum = Number(p.port);
@@ -194,14 +196,29 @@ export async function portsStatus(
           health = { ok: false, url: "", status: null, error: "probe_failed" };
         }
       }
-      out.push({
+      const row: Record<string, unknown> = {
         id: p.id,
         port: portNum,
         label: p.label || p.id,
         up,
         listening: up,
         health,
-      });
+      };
+      if (p.id === "webgl") {
+        row.buildExists = webglBuildExists;
+        if (!up && !webglBuildExists) {
+          row.downReason =
+            "No WebGL build yet — run Build WebGL (or start preview for a placeholder)";
+          row.suggestAction = "webgl_build";
+        } else if (!up) {
+          row.downReason = "WebGL preview not running — start Unity.Dev or WebGL preview";
+          row.suggestAction = "webgl_serve";
+        } else if (!webglBuildExists) {
+          row.downReason = "Placeholder serving — run Build WebGL for the game";
+          row.suggestAction = "webgl_build";
+        }
+      }
+      out.push(row);
     } catch (e) {
       appendTrace(
         "warn",

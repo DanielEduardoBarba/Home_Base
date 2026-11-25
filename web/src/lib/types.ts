@@ -91,6 +91,11 @@ export interface PortStatus {
   /** Bun compat alias — prefer `up`. */
   listening?: boolean
   health?: { ok: boolean; url: string; status?: number | null } | null
+  /** Unity WebGL: Builds/WebGL/index.html present. */
+  buildExists?: boolean
+  /** Why the port is down / placeholder (Unity). */
+  downReason?: string
+  suggestAction?: string
 }
 
 export interface ActionDef {
