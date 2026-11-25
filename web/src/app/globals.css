@@ -3251,6 +3251,15 @@ html[data-hb-keyboard] .hb-chat-composer {
   min-height: 100%;
 }
 
+/* Phone viewport (~390×844): View column must consume leftover shell height */
+.hb-with-nav:has(.hb-view-stage),
+.hb-view-embedded {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
 /* View — remote screen stage (fill remaining shell height on mobile Chrome) */
 .hb-view-stage {
   touch-action: none;

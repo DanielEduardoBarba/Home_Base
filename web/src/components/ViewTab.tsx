@@ -1366,7 +1366,7 @@ export function ViewTab({ embedded = false }: ViewTabProps = {}) {
                       {zoom > 1.05 ? ` · ${zoom.toFixed(1)}×` : ''}
                     </>
                   ) : (
-                    <>Off{probe ? ` · ${probe}` : ''}</>
+                    <>Laptop screen{probe ? ` · ${probe}` : ''} · not Unity/WebGL</>
                   )}
                 </p>
               </div>
@@ -1387,7 +1387,12 @@ export function ViewTab({ embedded = false }: ViewTabProps = {}) {
                     <button
                       type="button"
                       className="hb-btn hb-btn-ghost hb-btn-sm"
-                      disabled={!live}
+                      disabled={!wanted}
+                      title={
+                        live
+                          ? 'Maximize View'
+                          : 'Maximize while connecting (hides nav chrome)'
+                      }
                       onClick={() => setMaximized(true)}
                     >
                       Max
@@ -1451,6 +1456,10 @@ export function ViewTab({ embedded = false }: ViewTabProps = {}) {
         {!wanted && (
           <div className="hb-view-idle">
             <p className="text-xs text-mute">Stream this laptop’s screen</p>
+            <p className="text-[0.65rem] text-mute mt-1 max-w-[18rem]">
+              Seat desktop only — Unity Game view / WebGL live preview live on the
+              Apps WebGL port, not here.
+            </p>
             <p className="text-[0.65rem] text-mute mt-1 max-w-[16rem]">
               Touch = trackpad · Point = tap to aim · Pinch to zoom
             </p>

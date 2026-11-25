@@ -333,11 +333,20 @@ export function mcpWorkspaceUpsertFields(opts: {
   const forced = String(opts.preset || "").trim();
   if (forced === "unity" || (!forced && looksLikeUnityWorkspace(abs))) {
     const webgl = nextUnityWebglPort();
+    // Preserve an existing webgl port if this path is already registered.
+    let port = webgl;
+    for (const p of loadProjects().values()) {
+      if (resolve(p.path) === abs) {
+        const existing = (p.ports || []).find((x) => x.id === "webgl");
+        if (existing?.port) port = Number(existing.port) || port;
+        break;
+      }
+    }
     return {
       ...base,
       preset: "unity",
       ports: [
-        { id: "webgl", label: "WebGL", port: webgl },
+        { id: "webgl", label: "WebGL", port },
         { id: "mcp-bridge", label: "MCP Bridge", port: 6400 },
       ],
     };
@@ -409,6 +418,24 @@ export function upsertProjectFromInput(input: {
   raw.name = String(input.name || raw.name || basename(abs));
   if (input.ports) raw.ports = input.ports;
   if (input.actions) raw.actions = input.actions;
+  // Unity: keep live-webgl / serve action listen port in sync with project webgl port.
+  if (String(raw.id) && Array.isArray(raw.actions) && Array.isArray(raw.ports)) {
+    const webglPort = (raw.ports as { id?: string; port?: number }[]).find(
+      (p) => p.id === "webgl",
+    )?.port;
+    if (webglPort) {
+      raw.actions = (raw.actions as Record<string, unknown>[]).map((a) => {
+        const id = String(a.id || "");
+        if (id !== "webgl" && id !== "webgl_serve" && id !== "webgl_live") {
+          return a;
+        }
+        const args = Array.isArray(a.args) ? [...a.args] : [];
+        if (args.length === 0) args.push(String(webglPort));
+        else args[0] = String(webglPort);
+        return { ...a, args };
+      });
+    }
+  }
   return upsertProject(raw);
 }
 

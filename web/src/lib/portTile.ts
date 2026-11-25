@@ -19,13 +19,24 @@ export function isPortStartAction(action: ActionDef | undefined | null): boolean
   )
 }
 
+/** Port id → action id aliases (Unity webgl port vs live/serve action names). */
+const PORT_ACTION_ALIASES: Record<string, string[]> = {
+  webgl: ['webgl', 'webgl_live', 'webgl_serve'],
+  'mcp-bridge': ['editor', 'mcp-bridge'],
+}
+
 export function findActionForPort(
   actions: ActionDef[] | undefined | null,
   portId: string,
 ): ActionDef | null {
   if (!actions || !portId) return null
-  const a = actions.find((x) => x && x.id === portId)
-  return a || null
+  const direct = actions.find((x) => x && x.id === portId)
+  if (direct) return direct
+  for (const alias of PORT_ACTION_ALIASES[portId] || []) {
+    const a = actions.find((x) => x && x.id === alias)
+    if (a) return a
+  }
+  return null
 }
 
 export function portTileHref(
@@ -51,6 +62,19 @@ export function decidePortTileClick(opts: {
   const up = Boolean(opts.port.up ?? opts.port.listening)
   const action = findActionForPort(opts.actions, opts.port.id)
   const label = opts.port.label || opts.port.id || `:${opts.port.port}`
+
+  // MCP bridge is TCP, not HTTP — never open http://host:6400/
+  if (opts.port.id === 'mcp-bridge') {
+    if (!up && isPortStartAction(action)) {
+      return { kind: 'run', action: action! }
+    }
+    return {
+      kind: 'toast',
+      message: up
+        ? `MCP bridge :${opts.port.port} is listening (TCP — not a browser URL)`
+        : `${label} (:${opts.port.port}) is not listening`,
+    }
+  }
 
   if (!up && isPortStartAction(action)) {
     return { kind: 'run', action: action! }

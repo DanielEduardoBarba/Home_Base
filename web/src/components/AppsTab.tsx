@@ -17,6 +17,7 @@ import { IconBtn } from './IconBtn'
 import { ProjectSelect } from './ProjectSelect'
 import { CursorJobsPanel } from './CursorJobsPanel'
 import { SelfQaPanel } from './SelfQaPanel'
+import { WebGLPreview } from './WebGLPreview'
 
 function Dot({ up }: { up?: boolean }) {
   return (
@@ -448,6 +449,8 @@ export function AppsTab({
             })}
           </div>
         )}
+
+        <WebGLPreview project={project} />
 
         {runActions.length > 0 && (
           <div className="space-y-1.5 pt-0.5">

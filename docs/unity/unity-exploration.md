@@ -335,6 +335,60 @@ unityhub -- --headless editors -i
 
 ---
 
+## Steps 3–5 status (2026-11-24)
+
+### Detection bug fix (0d4258c follow-up)
+
+| Item | Result |
+|------|--------|
+| Root cause | `homebased` runs as **root**; `system.ts` used `process.env.HOME` (`/root`) for Editor path while Hub was found via `/usr/bin/unityhub` → Hub OK, Editor “missing” |
+| Fix | `server/src/unity_paths.ts` — seat home via `detectSeatUser` / `/home/*` Hub scan; always merge CLI + filesystem; resolve `unity` CLI from `~/.local/bin` + `cli-install.json`; Hub `secondaryInstallPath`; same robustness for modules/license/CLI |
+| Regression | `server/test/unit/unity_paths.test.ts` fake Hub dir layout |
+
+### Step 3 — View fixes
+
+| Fix | Detail |
+|-----|--------|
+| Idle copy | View is **seat laptop screen**, not Unity/WebGL |
+| Max | Enabled while connecting (not only after first frame) so phone can hide nav chrome earlier |
+| Mobile stage | View column fills leftover shell height under top/bottom chrome |
+| Apps port tiles | `webgl` → `webgl`/`webgl_serve` action alias; `mcp-bridge` never opens `http://:6400/` (TCP toast / start editor) |
+| WebGL iframe | `WebGLPreview` on project card (~390×844) + “Open on phone” |
+
+### Step 4 — WebGL live view
+
+| Item | Result |
+|------|--------|
+| Scripts | `live-webgl.sh` (watch Assets/Packages/ProjectSettings → debounced rebuild → serve); `serve-webgl.sh` + `serve-webgl.mjs` (bind **0.0.0.0**, `/__hb_webgl_v` + index poller) |
+| Preset | `webgl` action = live view; port arg synced on upsert |
+| Bridge coordination | **Stop this project’s Coplay bridge before each batchmode build** (project lock). Do not use `manage_build` for this path — documented in scripts + workspace README |
+| UI | Apps iframe + open-on-phone link once port is up |
+
+### Step 5 — Sample (`~/MCP_WORKSPACES/unity-sample`)
+
+| Item | Result |
+|------|--------|
+| Scene | Rotating cube + TextMesh “Hello from DevCon1” (no holiday theme) |
+| Build | `scripts/unity/build-webgl.sh` → `Builds/WebGL` |
+| Serve | Leave `serve-webgl.sh` / live on port **8410** (or assigned project port) |
+| URL | **`http://10.6.0.1:8410/`** — curl OK: `index.html` 200 `text/html`; `WebGL.wasm.gz` 200 `application/wasm` + `Content-Encoding: gzip`; `WebGL.data.gz` 200 + gzip; left serving via `serve-webgl.sh` |
+
+### QA steps (after Dan `./build.sh --deploy`)
+
+1. Settings → Unity: Editor check **OK** (no longer “Hub yes / Editor no” under the service).
+2. Register / open `unity-sample` (unity preset); Start **WebGL live view**.
+3. Phone on VPN: open `http://10.6.0.1:<webgl-port>/` and confirm cube + text; iframe on Apps card at ~390×844.
+4. Touch an Asset under `Assets/` → wait debounce → page auto-reloads.
+5. View tab: idle text says laptop screen ≠ Unity; Max works while connecting.
+6. Do **not** run bridge + WebGL live on the same project at once (live stops bridge for builds).
+
+### Human next steps
+
+1. Deploy: `./build.sh --deploy` (agent must not self-deploy).
+2. Confirm sample still serving after deploy (restart may kill the PTY serve — re-Start WebGL live view).
+
+---
+
 ## Appendix — Redaction policy
 
 This document intentionally omits: account emails, serials, access/refresh tokens, machine-binding secrets, MCP auth tokens, and vault material. License reporting is limited to product tier (Personal) and file presence.

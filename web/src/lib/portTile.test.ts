@@ -130,3 +130,57 @@ describe('decidePortTileClick (okeroo-shaped config)', () => {
     expect(d).toEqual({ kind: 'open', href: 'https://192.168.0.4:3200/' })
   })
 })
+
+describe('Unity webgl / mcp-bridge port tiles', () => {
+  const unityActions = [
+    action({
+      id: 'webgl',
+      label: 'WebGL live view',
+      script: 'scripts/unity/live-webgl.sh',
+    }),
+    action({
+      id: 'editor',
+      label: 'Editor + MCP bridge',
+      script: 'scripts/unity/start-editor-bridge.sh',
+    }),
+  ]
+
+  test('webgl port id maps to webgl action when down', () => {
+    const d = decidePortTileClick({
+      port: { id: 'webgl', port: 8410, label: 'WebGL', up: false },
+      actions: unityActions,
+      location: loc,
+    })
+    expect(d.kind).toBe('run')
+    if (d.kind === 'run') expect(d.action.id).toBe('webgl')
+  })
+
+  test('webgl alias finds webgl_serve', () => {
+    expect(
+      findActionForPort(
+        [action({ id: 'webgl_serve', label: 'Serve', script: 'x' })],
+        'webgl',
+      )?.id,
+    ).toBe('webgl_serve')
+  })
+
+  test('mcp-bridge up does not open HTTP URL', () => {
+    const d = decidePortTileClick({
+      port: { id: 'mcp-bridge', port: 6400, up: true },
+      actions: unityActions,
+      location: loc,
+    })
+    expect(d.kind).toBe('toast')
+    if (d.kind === 'toast') expect(d.message).toContain('TCP')
+  })
+
+  test('mcp-bridge down starts editor action', () => {
+    const d = decidePortTileClick({
+      port: { id: 'mcp-bridge', port: 6400, up: false },
+      actions: unityActions,
+      location: loc,
+    })
+    expect(d.kind).toBe('run')
+    if (d.kind === 'run') expect(d.action.id).toBe('editor')
+  })
+})

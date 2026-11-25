@@ -6,6 +6,7 @@ import { accessHosts } from "./network";
 import { appendTrace } from "./trace";
 import { callbackAuthEnvSet } from "./secrets_vault";
 import { httpsPort, tlsMaterialPresent } from "./tls_certs";
+import { unityPresenceFlags } from "./unity_paths";
 
 export function systemStatus(): Record<string, unknown> {
   const wireguard: { id: string; unit: string; conf: string }[] = [];
@@ -26,19 +27,28 @@ export function systemStatus(): Record<string, unknown> {
     }
   }
   const https = tlsMaterialPresent() ? httpsPort() : 0;
-  // Lightweight Unity flags only (no CLI spawn) — full doctor is GET /api/unity/status
+  // Lightweight Unity flags only (no CLI spawn) — full doctor is GET /api/unity/status.
+  // homebased runs as root: process.env.HOME is /root — use seat home + Hub dir scan.
   let unityHubPresent = false;
   let unityEditorPresent = false;
+  let unityEditorPath: string | null = null;
   try {
-    const home = process.env.HOME || "";
-    unityHubPresent =
-      existsSync("/usr/bin/unityhub") ||
-      existsSync(join(home, ".config/unityhub/hubInfo.json"));
-    unityEditorPresent = existsSync(
-      join(home, "Unity/Hub/Editor/6000.6.4f1/Editor/Unity"),
-    );
+    const flags = unityPresenceFlags();
+    unityHubPresent = flags.hubPresent;
+    unityEditorPresent = flags.editorPresent;
+    unityEditorPath = flags.editorPath;
   } catch {
-    /* ignore */
+    try {
+      const home = process.env.HOME || "";
+      unityHubPresent =
+        existsSync("/usr/bin/unityhub") ||
+        existsSync(join(home, ".config/unityhub/hubInfo.json"));
+      unityEditorPresent = existsSync(
+        join(home, "Unity/Hub/Editor/6000.6.4f1/Editor/Unity"),
+      );
+    } catch {
+      /* ignore */
+    }
   }
   return {
     wireguard,
@@ -49,6 +59,7 @@ export function systemStatus(): Record<string, unknown> {
     unity: {
       hubPresent: unityHubPresent,
       editorPresent: unityEditorPresent,
+      editorPath: unityEditorPath,
       statusPath: "/api/unity/status",
     },
     ...accessHosts(bindPort(), { httpsPort: https > 0 ? https : null }),

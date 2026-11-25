@@ -110,10 +110,26 @@ export function buildActionCommand(
   return ["bash", "-lc", cmdline];
 }
 
+/** Action ids that occupy the Unity webgl port when started. */
+function actionOwnsPort(actionId: string, portId: string): boolean {
+  if (actionId === portId) return true;
+  if (portId === "webgl") {
+    return (
+      actionId === "webgl" ||
+      actionId === "webgl_live" ||
+      actionId === "webgl_serve"
+    );
+  }
+  if (portId === "mcp-bridge") {
+    return actionId === "editor" || actionId === "mcp-bridge";
+  }
+  return false;
+}
+
 /** If action id matches a project port that is already listening, refuse spawn. */
 export function assertPortFreeForAction(project: Project, actionId: string): void {
   for (const p of project.ports || []) {
-    if (p.id !== actionId) continue;
+    if (!actionOwnsPort(actionId, p.id)) continue;
     const portNum = Number(p.port);
     if (!Number.isFinite(portNum) || portNum <= 0) continue;
     if (isPortListening(portNum)) {

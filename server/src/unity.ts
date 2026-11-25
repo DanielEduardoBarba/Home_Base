@@ -12,11 +12,17 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createConnection } from "node:net";
-import { homedir } from "node:os";
-import { basename, join } from "node:path";
-import { detectSeatUser } from "./shell_env";
+import { join } from "node:path";
+import {
+  DEFAULT_EDITOR_VERSION,
+  hubInfoVersion,
+  resolveEditorBinary as resolveEditorBinaryFromDisk,
+  resolveSeatHome,
+  resolveUnityCliPath,
+  resolveUnityHubPath,
+  scanEditorsOnDisk,
+} from "./unity_paths";
 
-const DEFAULT_EDITOR_VERSION = "6000.6.4f1";
 const DEFAULT_BRIDGE_PORT = 6400;
 const MCP_PKG = "com.coplaydev.unity-mcp";
 
@@ -32,6 +38,21 @@ export type UnityCmdRunner = (
   opts?: { timeoutMs?: number },
 ) => UnityCmdResult;
 
+function seatPathEnv(): NodeJS.ProcessEnv {
+  const home = resolveSeatHome();
+  const localBin = join(home, ".local/bin");
+  const path = [localBin, process.env.PATH || "/usr/bin:/bin"]
+    .filter(Boolean)
+    .join(":");
+  return {
+    ...process.env,
+    HOME: home,
+    USER: process.env.SUDO_USER || process.env.USER || "",
+    PATH: path,
+    DISPLAY: process.env.DISPLAY || process.env.HOMEBASE_DISPLAY || "",
+  };
+}
+
 function defaultRunner(
   cmd: string,
   args: string[],
@@ -40,7 +61,7 @@ function defaultRunner(
   const r = spawnSync(cmd, args, {
     encoding: "utf8",
     timeout: opts.timeoutMs ?? 15_000,
-    env: { ...process.env, DISPLAY: process.env.DISPLAY || "" },
+    env: seatPathEnv(),
   });
   return {
     code: r.status,
@@ -57,14 +78,18 @@ export function _setUnityRunnerForTests(next: UnityCmdRunner | null): void {
 }
 
 function seatHome(): string {
-  try {
-    return detectSeatUser().home || homedir();
-  } catch {
-    return homedir();
-  }
+  return resolveSeatHome();
 }
 
 function which(bin: string): string | null {
+  if (bin === "unity") {
+    const known = resolveUnityCliPath();
+    if (known) return known;
+  }
+  if (bin === "unityhub") {
+    const known = resolveUnityHubPath();
+    if (known) return known;
+  }
   const r = runner("bash", ["-lc", `command -v ${bin} || true`], {
     timeoutMs: 5_000,
   });
@@ -126,13 +151,8 @@ export function hubStatus(): {
   headlessOk: boolean;
   note: string | null;
 } {
-  const path = which("unityhub") || (existsSync("/usr/bin/unityhub") ? "/usr/bin/unityhub" : null);
-  const hubInfo = readJsonFile(
-    join(seatHome(), ".config/unityhub/hubInfo.json"),
-  ) as { version?: string } | null;
-  const version =
-    (hubInfo && typeof hubInfo.version === "string" && hubInfo.version) ||
-    null;
+  const path = which("unityhub") || resolveUnityHubPath();
+  const version = hubInfoVersion();
   // Hub CLI needs a display; we do not attempt a live headless call here.
   return {
     present: Boolean(path),
@@ -148,18 +168,7 @@ export function hubStatus(): {
 export function resolveEditorBinary(
   version = DEFAULT_EDITOR_VERSION,
 ): string | null {
-  const candidates = [
-    join(seatHome(), "Unity/Hub/Editor", version, "Editor/Unity"),
-    `/home/${basename(seatHome())}/Unity/Hub/Editor/${version}/Editor/Unity`,
-  ];
-  for (const c of candidates) {
-    if (existsSync(c)) return c;
-  }
-  return null;
-}
-
-function moduleDirPresent(editorRoot: string, name: string): boolean {
-  return existsSync(join(editorRoot, "Editor/Data/PlaybackEngines", name));
+  return resolveEditorBinaryFromDisk(version);
 }
 
 export function editorsStatus(): {
@@ -175,43 +184,80 @@ export function editorsStatus(): {
     }[];
   }[];
   webglReady: boolean;
+  source: "cli+disk" | "disk" | "cli" | "none";
 } {
-  const unityBin = which("unity");
+  const unityBin = which("unity") || resolveUnityCliPath();
   let cliVersion: string | null = null;
   if (unityBin) {
     const v = runner(unityBin, ["--version"], { timeoutMs: 5_000 });
-    cliVersion = (v.stdout || v.stderr || "").trim().split("\n")[0] || null;
+    cliVersion = (rTrim(v.stdout || v.stderr || "")).split("\n")[0] || null;
   }
 
-  const editors: {
+  type Ed = {
     version: string;
     path: string | null;
     modules: { id: string; installed: boolean; onDisk?: boolean }[];
-  }[] = [];
+  };
+  const byVersion = new Map<string, Ed>();
 
+  const upsert = (ed: Ed) => {
+    const prev = byVersion.get(ed.version);
+    if (!prev) {
+      byVersion.set(ed.version, ed);
+      return;
+    }
+    // Prefer a path that exists on disk
+    const path =
+      (ed.path && existsSync(ed.path) ? ed.path : null) ||
+      (prev.path && existsSync(prev.path) ? prev.path : null) ||
+      ed.path ||
+      prev.path;
+    const modules = ed.modules.map((m) => {
+      const old = prev.modules.find((x) => x.id === m.id);
+      return {
+        id: m.id,
+        installed: Boolean(m.installed || old?.installed),
+        onDisk: Boolean(m.onDisk || old?.onDisk),
+      };
+    });
+    byVersion.set(ed.version, { version: ed.version, path, modules });
+  };
+
+  let cliParsed = false;
   if (unityBin) {
     const r = runner(unityBin, ["editors", "-i", "--json"], {
       timeoutMs: 12_000,
     });
     try {
       const parsed = JSON.parse(r.stdout || "{}") as {
-        data?: { items?: { version?: string; location?: string; moduleNames?: string[] }[] };
+        data?: {
+          items?: {
+            version?: string;
+            location?: string;
+            moduleNames?: string[];
+          }[];
+        };
       };
       for (const item of parsed.data?.items || []) {
         const version = String(item.version || "");
-        const path = item.location || resolveEditorBinary(version);
+        if (!version) continue;
+        const path =
+          (item.location && existsSync(item.location)
+            ? item.location
+            : null) || resolveEditorBinary(version);
         const names = new Set(
           (item.moduleNames || []).map((m) => m.toLowerCase()),
         );
         const editorRoot = path
           ? path.replace(/\/Editor\/Unity$/, "")
           : join(seatHome(), "Unity/Hub/Editor", version);
-        const webglDisk = moduleDirPresent(editorRoot, "WebGLSupport");
-        const linuxDisk = moduleDirPresent(
-          editorRoot,
-          "LinuxStandaloneSupport",
+        const webglDisk = existsSync(
+          join(editorRoot, "Editor/Data/PlaybackEngines/WebGLSupport"),
         );
-        editors.push({
+        const linuxDisk = existsSync(
+          join(editorRoot, "Editor/Data/PlaybackEngines/LinuxStandaloneSupport"),
+        );
+        upsert({
           version,
           path: path || null,
           modules: [
@@ -227,54 +273,56 @@ export function editorsStatus(): {
             },
           ],
         });
+        cliParsed = true;
       }
     } catch {
-      /* fall through to disk scan */
+      /* fall through — disk scan always runs */
     }
   }
 
-  if (!editors.length) {
-    const hubEditors = join(seatHome(), "Unity/Hub/Editor");
-    if (existsSync(hubEditors)) {
-      try {
-        for (const name of readdirSync(hubEditors)) {
-          const unityPath = join(hubEditors, name, "Editor/Unity");
-          if (!existsSync(unityPath)) continue;
-          const editorRoot = join(hubEditors, name);
-          const webglDisk = moduleDirPresent(editorRoot, "WebGLSupport");
-          const linuxDisk = moduleDirPresent(
-            editorRoot,
-            "LinuxStandaloneSupport",
-          );
-          editors.push({
-            version: name,
-            path: unityPath,
-            modules: [
-              { id: "webgl", installed: webglDisk, onDisk: webglDisk },
-              {
-                id: "linux-il2cpp",
-                installed: linuxDisk,
-                onDisk: linuxDisk,
-              },
-            ],
-          });
-        }
-      } catch {
-        /* ignore */
-      }
-    }
+  // Always merge filesystem scan (systemd HOME/PATH often hide CLI results).
+  const disk = scanEditorsOnDisk();
+  for (const e of disk) {
+    upsert({
+      version: e.version,
+      path: e.unityPath,
+      modules: [
+        { id: "webgl", installed: e.webglOnDisk, onDisk: e.webglOnDisk },
+        {
+          id: "linux-il2cpp",
+          installed: e.linuxOnDisk,
+          onDisk: e.linuxOnDisk,
+        },
+      ],
+    });
   }
 
+  const editors = [...byVersion.values()].sort((a, b) =>
+    a.version.localeCompare(b.version),
+  );
   const webglReady = editors.some((e) =>
     e.modules.some((m) => m.id === "webgl" && m.installed),
   );
+  const source =
+    cliParsed && disk.length
+      ? "cli+disk"
+      : disk.length
+        ? "disk"
+        : cliParsed
+          ? "cli"
+          : "none";
 
   return {
     cliPresent: Boolean(unityBin),
     cliVersion,
     editors,
     webglReady,
+    source,
   };
+}
+
+function rTrim(s: string): string {
+  return String(s || "").trim();
 }
 
 export function licenseStatus(): {

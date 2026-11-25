@@ -32,16 +32,16 @@
       "args": [],
       "kind": "run",
       "group": "main",
-      "hint": "Batchmode WebGL → Builds/WebGL"
+      "hint": "Batchmode WebGL → Builds/WebGL (stops this project's bridge first if live-webgl calls it)"
     },
     {
-      "id": "webgl_serve",
-      "label": "Serve WebGL",
-      "script": "npx",
-      "args": ["--yes", "serve", "-l", "8410", "Builds/WebGL"],
+      "id": "webgl",
+      "label": "WebGL live view",
+      "script": "scripts/unity/live-webgl.sh",
+      "args": ["8410"],
       "kind": "run",
       "group": "main",
-      "hint": "Static serve of last WebGL build"
+      "hint": "Watch Assets → rebuild → serve 0.0.0.0:<webgl-port> with reload (phone iframe)"
     },
     {
       "id": "stop",
