@@ -496,14 +496,32 @@ async function finishIdleJob(job: CursorJob): Promise<CursorJob> {
   return finishJob(job, "done");
 }
 
+/**
+ * Watch until the agent chat goes idle (no deadline). Used after the waitMs
+ * window ends while the process is still alive, and for fire-and-forget jobs.
+ * Marks timeout only via finishJob("timeout") when the process was killed.
+ */
+async function watchUntilIdle(job: CursorJob): Promise<CursorJob> {
+  while (true) {
+    if (TERMINAL_STATUSES.has(job.status)) return publicJob(job);
+    if (!chatRunning(job.projectId, job.chatId)) {
+      return finishIdleJob(job);
+    }
+    await Bun.sleep(IDLE_POLL_MS);
+  }
+}
+
 async function watchUntilSettled(job: CursorJob, maxMs: number): Promise<CursorJob> {
   const outcome = await awaitChatIdle(job, maxMs);
   if (outcome === "timeout") {
-    return finishJob(
-      job,
-      "timeout",
-      `Still running after ${Math.round(maxMs / 1000)}s — use callbackUrl or poll status sparingly (≥5 min)`,
-    );
+    // Wait window ended but the agent process is still alive — keep status
+    // "running", preserve startedAt/elapsed, continue watching, and fire the
+    // callback only on the real exit (summary/commit). Do not mark "timeout"
+    // unless the process is actually killed.
+    detach(() => {
+      void watchUntilIdle(job);
+    });
+    return publicJob(job);
   }
   if (outcome === "error") {
     return finishJob(
@@ -720,12 +738,12 @@ export async function startCursorJob(opts: {
     45 * 60_000,
     Math.max(0, Number(opts.waitMs) || 0),
   );
-  const watchCap = waitMs > 0 ? waitMs : 45 * 60_000;
 
   if (waitMs <= 0) {
-    // Fire-and-forget watch: also detached so /mcp close cannot cancel it.
+    // Fire-and-forget: watch until the agent exits (no artificial timeout).
+    // Detached so /mcp close cannot cancel it. Callback fires on real exit.
     detach(() => {
-      void watchUntilSettled(job, watchCap);
+      void watchUntilIdle(job);
     });
     return publicJob(job);
   }

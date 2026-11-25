@@ -432,6 +432,62 @@ describe("cursor job model / error helpers", () => {
   });
 });
 
+describe("homebase_cursor_job wait window", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test(
+    "waitMs expiry keeps running until agent exits; callback on real exit",
+    async () => {
+      const h = makeHarness();
+      const calls: Array<{ url: string; body: string }> = [];
+      globalThis.fetch = (async (
+        input: string | URL | Request,
+        init?: RequestInit,
+      ) => {
+        calls.push({ url: String(input), body: String(init?.body || "") });
+        return new Response("ok", { status: 200 });
+      }) as typeof fetch;
+
+      const t0 = Date.now();
+      // awaitChatIdle floors wait at 5s — job should still be running after that.
+      const job = await startCursorJob({
+        projectId: "demo",
+        prompt: "long job past wait window",
+        waitMs: 100,
+        callbackUrl: "http://127.0.0.1:9/wait-window-hook",
+      });
+
+      // Wait window ended while agent still alive — stay running, keep startedAt.
+      expect(job.status).toBe("running");
+      expect(job.finishedAt).toBeUndefined();
+      expect(job.startedAt).toBeGreaterThanOrEqual(t0);
+      expect(projectHasActiveCursorJob("demo")?.id).toBe(job.id);
+      expect(calls.length).toBe(0);
+      expect(Date.now() - job.startedAt).toBeGreaterThanOrEqual(4_500);
+
+      h.release(job.chatId);
+      await waitUntil(
+        () => getCursorJob(job.id)?.status === "done",
+        4_000,
+        "wait-window done",
+      );
+      await waitUntil(() => calls.length >= 1, 4_000, "wait-window webhook");
+
+      const done = getCursorJob(job.id);
+      expect(done?.status).toBe("done");
+      expect(done?.finishedAt).toBeGreaterThan(done!.startedAt);
+      expect(String(done?.summary || "")).toMatch(/Job finished/i);
+      expect(calls[0]?.body).toContain('"status":"done"');
+      expect(calls[0]?.body).toMatch(/Job finished/i);
+    },
+    20_000,
+  );
+});
+
 describe("homebase_cursor_job_cancel", () => {
   const originalFetch = globalThis.fetch;
 
