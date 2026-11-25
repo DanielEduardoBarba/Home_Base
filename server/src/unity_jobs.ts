@@ -17,6 +17,10 @@ import { resolveSeatHome } from "./unity_paths";
 import { resolveWebglBind } from "./unity_webgl_bind";
 import { appendTrace } from "./trace";
 import { redactUnityText } from "./unity";
+import {
+  markUnityBuildBuilding,
+  markUnityBuildFinished,
+} from "./unity_build_status";
 
 export type UnityJobKind = "webgl_build" | "tests" | "screenshot";
 
@@ -122,6 +126,7 @@ function webglPreviewInfo(project: Project): {
 
 async function runWebglBuildJob(job: UnityJob, project: Project): Promise<void> {
   job.status = "running";
+  markUnityBuildBuilding(project.id, { jobId: job.id });
   try {
     // Stop bridge so batchmode can take the project lock.
     const stop = (project.actions || []).find((a) => a.id === "stop");
@@ -212,12 +217,22 @@ async function runWebglBuildJob(job: UnityJob, project: Project): Promise<void> 
       buildExists: indexOk,
       logTail: logTail.slice(-1200),
     };
+    markUnityBuildFinished(project.id, {
+      ok: job.status === "done",
+      message: job.error || job.summary,
+      jobId: job.id,
+    });
   } catch (e) {
     job.status = "error";
     job.finishedAt = Date.now();
     job.error = redactUnityText(e instanceof Error ? e.message : String(e));
     job.summary = "WebGL build failed";
     job.result = { logTail: lastBuildLogTail(40) };
+    markUnityBuildFinished(project.id, {
+      ok: false,
+      message: job.error,
+      jobId: job.id,
+    });
   }
 }
 

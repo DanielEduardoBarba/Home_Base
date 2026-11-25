@@ -125,6 +125,21 @@ export function AppsTab({
   const webglDownReason =
     (project?.portsStatus || []).find((p) => p.id === 'webgl')?.downReason ||
     ''
+  const unityBuildStatus = project?.unityBuild
+  const unityBuilding =
+    unityBuildStatus?.state === 'building' ||
+    Boolean(
+      (project?.sessions || []).some(
+        (s) =>
+          s.alive &&
+          (/webgl.?build/i.test(s.label || '') ||
+            /build-webgl/i.test((s.cmdline || []).join(' '))),
+      ),
+    )
+  const unityBuildError =
+    !unityBuilding && unityBuildStatus?.state === 'error'
+      ? unityBuildStatus
+      : null
 
   const ship = project?.actions?.filter((a) => a.group === 'ship') || []
   const hotkeys = project?.actions?.filter((a) => a.group === 'hotkey') || []
@@ -486,6 +501,22 @@ export function AppsTab({
         {isUnity ? (
           <div className="space-y-1.5 pt-0.5">
             <span className="hb-label">Unity</span>
+            {unityBuilding ? (
+              <p className="text-[11px] text-sky" role="status">
+                building
+              </p>
+            ) : null}
+            {unityBuildError ? (
+              <p className="text-[11px] text-warn" role="status">
+                {unityBuildError.message || 'WebGL build failed'}
+                {unityBuildError.at ? (
+                  <span className="text-mute">
+                    {' '}
+                    · {new Date(unityBuildError.at).toLocaleString()}
+                  </span>
+                ) : null}
+              </p>
+            ) : null}
             {webglDownReason ? (
               <p className="text-[11px] text-mute">{webglDownReason}</p>
             ) : null}
@@ -493,7 +524,7 @@ export function AppsTab({
               {unityDev ? (
                 <button
                   type="button"
-                  disabled={!!busy}
+                  disabled={!!busy || unityBuilding}
                   title={unityDev.hint || unityDev.label}
                   onClick={() => void doRun(unityDev)}
                   className="hb-btn hb-btn-primary !min-h-10 !px-3 text-sm"
@@ -503,7 +534,7 @@ export function AppsTab({
               ) : unityEditor ? (
                 <button
                   type="button"
-                  disabled={!!busy}
+                  disabled={!!busy || unityBuilding}
                   title={unityEditor.hint || unityEditor.label}
                   onClick={() => void doRun(unityEditor)}
                   className="hb-btn hb-btn-primary !min-h-10 !px-3 text-sm"
@@ -514,12 +545,14 @@ export function AppsTab({
               {unityBuild ? (
                 <button
                   type="button"
-                  disabled={!!busy}
+                  disabled={!!busy || unityBuilding}
                   title={unityBuild.hint || unityBuild.label}
                   onClick={() => void doRun(unityBuild)}
                   className="hb-btn !min-h-10 !px-3 text-sm"
                 >
-                  {busy === unityBuild.label ? '…' : 'Build WebGL'}
+                  {unityBuilding || busy === unityBuild.label
+                    ? 'building…'
+                    : 'Build WebGL'}
                 </button>
               ) : null}
               {unityPreview ? (
@@ -621,6 +654,7 @@ export function AppsTab({
                 value={selectedShip?.id || ''}
                 onChange={(e) => setShipId(e.target.value)}
                 disabled={!!busy}
+                aria-label="Ship action"
                 className="hb-select flex-1 !min-h-10 !py-2 text-sm"
               >
                 {ship.map((a) => (

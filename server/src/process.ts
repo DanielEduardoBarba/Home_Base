@@ -19,6 +19,12 @@ import {
   projectSupportsSelfQa,
   startSelfQa,
 } from "./selfqa";
+import {
+  ensureUnityBuildStatusHook,
+  getUnityBuildStatus,
+  markUnityBuildBuilding,
+  markUnityBuildFinished,
+} from "./unity_build_status";
 
 export type RunActionOpts = {
   extraArgs?: string[];
@@ -257,6 +263,8 @@ export async function projectPublic(
   } catch {
     ownership = undefined;
   }
+  ensureUnityBuildStatusHook();
+  const unityBuild = getUnityBuildStatus(project.id);
   return {
     id: project.id,
     name: project.name,
@@ -269,6 +277,7 @@ export async function projectPublic(
     logs: tailLogs(project, 40),
     cursor: { configured: Boolean(process.env.CURSOR_API_KEY) },
     ownership,
+    ...(unityBuild ? { unityBuild } : {}),
   };
 }
 
@@ -543,7 +552,21 @@ export async function runAction(
     );
     // For run/expo, prior same-kind sessions are replaced inside spawn — check port after that kill.
     const session = spawnActionPty(project, action, extraArgs);
-    await awaitQuickNonZeroExit(session.id);
+    if (actionId === "webgl_build") {
+      markUnityBuildBuilding(project.id, { sessionId: session.id });
+    }
+    try {
+      await awaitQuickNonZeroExit(session.id);
+    } catch (quickFail) {
+      if (actionId === "webgl_build") {
+        markUnityBuildFinished(project.id, {
+          ok: false,
+          message:
+            quickFail instanceof Error ? quickFail.message : String(quickFail),
+        });
+      }
+      throw quickFail;
+    }
     const watched = watchActionSessions({
       projectId: project.id,
       actionId,

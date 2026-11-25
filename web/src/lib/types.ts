@@ -152,6 +152,14 @@ export interface Project {
   logs?: { path: string; exists: boolean; text: string }
   /** HB-OWN-01: files under the checkout not owned by the repo owner. */
   ownership?: OwnershipHealth
+  /** Unity WebGL build card status (building / last error + timestamp). */
+  unityBuild?: {
+    state: 'idle' | 'building' | 'ok' | 'error'
+    message?: string
+    at: number
+    sessionId?: string
+    jobId?: string
+  }
 }
 
 export interface CursorModel {
