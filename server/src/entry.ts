@@ -141,9 +141,9 @@ try {
 try {
   const { recoverInterruptedCallbacks } = await import("./cursor_jobs");
   const rec = await recoverInterruptedCallbacks();
-  if (rec.recovered || rec.expired || rec.lost) {
+  if (rec.recovered || rec.resumed || rec.expired || rec.lost) {
     logInfo(
-      `pending callback recovery recovered=${rec.recovered} expired=${rec.expired} lost=${rec.lost}`,
+      `pending callback recovery recovered=${rec.recovered} resumed=${rec.resumed} expired=${rec.expired} lost=${rec.lost}`,
       "boot",
     );
   }

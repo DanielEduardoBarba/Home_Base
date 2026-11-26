@@ -1022,6 +1022,68 @@ app.delete("/api/callback-auth", async (c) => {
   return c.json(clearCallbackAuth());
 });
 
+app.get("/api/callback-url", async (c) => {
+  await requireAuth(c);
+  const { getDefaultCallbackUrlMeta } = await import("./cursor_callbacks");
+  return c.json(getDefaultCallbackUrlMeta());
+});
+
+app.post("/api/callback-url", async (c) => {
+  await requireAuth(c);
+  const body = z.object({ url: z.string().min(1) }).parse(await readJson(c));
+  const {
+    setDefaultCallbackUrl,
+    getDefaultCallbackUrlMeta,
+  } = await import("./cursor_callbacks");
+  try {
+    setDefaultCallbackUrl(body.url);
+    return c.json(getDefaultCallbackUrlMeta());
+  } catch (e) {
+    throw new HttpError(400, e instanceof Error ? e.message : String(e));
+  }
+});
+
+app.delete("/api/callback-url", async (c) => {
+  await requireAuth(c);
+  const {
+    clearDefaultCallbackUrl,
+    getDefaultCallbackUrlMeta,
+  } = await import("./cursor_callbacks");
+  clearDefaultCallbackUrl();
+  return c.json(getDefaultCallbackUrlMeta());
+});
+
+app.get("/api/webhooks/health", async (c) => {
+  await requireAuth(c);
+  const {
+    listWebhookHealth,
+    webhookHealthHasFailures,
+  } = await import("./cursor_jobs");
+  const limit = Number(c.req.query("limit") || 40);
+  const rows = listWebhookHealth(limit);
+  return c.json({
+    rows,
+    hasFailures: webhookHealthHasFailures(),
+  });
+});
+
+app.post("/api/webhooks/test-ping", async (c) => {
+  await requireAuth(c);
+  let body: { callbackUrl?: string } = {};
+  try {
+    body = z
+      .object({ callbackUrl: z.string().optional() })
+      .parse(await readJson(c));
+  } catch {
+    body = {};
+  }
+  const { sendWebhookTestPing } = await import("./cursor_jobs");
+  const result = await sendWebhookTestPing({
+    callbackUrl: body.callbackUrl,
+  });
+  return c.json(result);
+});
+
 app.get("/api/usage", async (c) => {
   await requireAuth(c);
   const force = c.req.query("refresh") === "1";

@@ -16,6 +16,7 @@ import { useAccessibleDialog } from '../lib/useAccessibleDialog'
 import { IconBtn } from './IconBtn'
 import { ProjectSelect } from './ProjectSelect'
 import { CursorJobsPanel } from './CursorJobsPanel'
+import { WebhookHealthPanel } from './WebhookHealthPanel'
 import { SelfQaPanel } from './SelfQaPanel'
 import { WebGLPreview } from './WebGLPreview'
 
@@ -682,6 +683,7 @@ export function AppsTab({
       </section>
 
       <CursorJobsPanel projectId={project.id} onRefresh={onRefresh} />
+      <WebhookHealthPanel compact />
 
       <SelfQaPanel
         projectId={project.id}

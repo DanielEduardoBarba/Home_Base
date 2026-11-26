@@ -100,13 +100,19 @@ This lives in the repo until Home Base is pulled and deployed. The running servi
 
 | Preference | How |
 |---|---|
-| **Best** | `callbackUrl` = Developer’s webhook-trigger HTTPS URL — one POST wakes Developer once |
+| **Best** | `callbackUrl` = Developer’s webhook-trigger HTTPS URL — POSTs wake Developer (retries on failure) |
 | **Good** | `waitMs: 600000` — one long wait (test your client; some give up earlier) |
 | **Last resort** | `homebase_cursor_job_status` at most **every 5 minutes** |
 
-**Webhook auth (optional):** If the receiver requires `Authorization: Bearer <key>`, pass `callbackAuth` on `homebase_cursor_job` with the **exact** header value (e.g. `"Bearer abc"`). If omitted, Home Base uses the default stored in **Settings → Job webhook auth** (encrypted AES-256-GCM vault). The `HOMEBASE_CALLBACK_AUTH` environment variable is **not** read for delivery. If it is still set (for example in `/var/lib/homebased/.env`), a first start may one-time import it into the vault when the vault is empty, and Settings plus `/api/health` / system status show a boolean-only warning (`callbackAuthEnvSet`) until you remove the env var. Auth is never returned in job status/list and is never written in plaintext to logs or runtime files.
+**Webhook auth (optional):** If the receiver requires `Authorization: Bearer <key>`, pass `callbackAuth` on `homebase_cursor_job` with the **exact** header value (e.g. `"Bearer abc"`). If omitted, Home Base uses the default stored in **Settings → Job webhook auth** (encrypted AES-256-GCM vault). The `HOMEBASE_CALLBACK_AUTH` environment variable is **not** read for delivery. If it is still set (for example in `/var/lib/homebased/.env`), a first start may one-time import it into the vault when the vault is empty, and Settings plus `/api/health` / system status show a boolean-only warning (`callbackAuthEnvSet`) until you remove the env var. Auth is never returned in job status/list/health and is never written in plaintext to logs or runtime files.
 
-**Restart mid-job:** When a job has a `callbackUrl`, Home Base persists an encrypted pending-callback record (`cursor_callbacks.pending.enc`, mode 0600). If Home Base restarts before the job finishes, startup POSTs the webhook with status `interrupted` and the summary `Home Base restarted while this job was running; the job did not finish`, with the `Authorization` header intact, then deletes the record. Records older than 24 hours are expired and logged, not delivered. If the stored token cannot be decrypted, the webhook is **not** sent unauthenticated; a lost-callback entry appears in `homebase_cursor_job_list`.
+**Default callback URL (optional):** **Settings → Job webhooks** can store a default wake URL. When a job omits `callbackUrl`, that default is used so a forgotten argument cannot silently skip the wake. Per-job `callbackUrl` still wins when provided.
+
+**Persistence + retries:** Job snapshots are written to `cursor_jobs.state.json` (no auth). When a job has a callback URL, Home Base also keeps an encrypted pending-callback record (`cursor_callbacks.pending.enc`, mode 0600) that holds the auth blob and delivery bookkeeping. On every terminal status (`done` / `error` / `timeout` / `interrupted` / `cancelled`) Home Base POSTs the webhook and **retries with backoff** (up to 5 attempts). Each attempt is logged with time, HTTP status or error, and attempt number — never the Authorization value. The pending record is removed only after success or final failure; failed attempts remain visible in webhook health.
+
+**Restart mid-job / undelivered:** If Home Base restarts while a job was still `queued`/`running`, startup delivers the webhook with status `interrupted` and the summary `Home Base restarted while this job was running; the job did not finish`, Authorization intact. If the job had already finished but the webhook had not yet succeeded, startup **resumes** delivery with the original terminal status (it is **not** re-labeled `interrupted`). Records older than 24 hours are expired and logged, not delivered. If the stored token cannot be decrypted, the webhook is **not** sent unauthenticated; a lost-callback entry appears in `homebase_cursor_job_list` / webhook health.
+
+**Health:** Settings → Job webhooks (also on Apps next to Cursor jobs) and MCP `homebase_webhook_health` show per-job redacted URL (host+path), sent-at, status code, retries, last error, and a failed badge. `homebase_webhook_test_ping` POSTs a one-shot test body (`type: homebase.webhook_test_ping`) using the Settings default URL/auth when args are omitted.
 
 Webhook body (POST JSON):
 
@@ -126,7 +132,7 @@ Webhook body (POST JSON):
 }
 ```
 
-If `job.webhookError` appears on status, the laptop couldn’t reach the URL — switch to `waitMs` or fix network.
+If `job.webhookError` / health `failed` appears, check network or the wake URL — retries may still be in flight (`pending`).
 
 ---
 
@@ -260,10 +266,12 @@ Placeholders:
 | `homebase_git_fetch` / `_pull` / `_checkout` / `_create_branch` / `_merge` / `_commit` / `_push` / `_stash` | Non-destructive git writes (**Allow MCP git write actions**, default Off) |
 | `homebase_selfqa` | Start Self-QA sprint (`./build.sh --selfqa`); one per project; `callbackUrl` (+ optional `callbackAuth`) POSTs `SUMMARY.json` |
 | `homebase_run_action` | Run action; optional `callbackUrl`/`callbackAuth` when session(s) exit; `actionId: selfqa` starts Self-QA |
-| `homebase_cursor_job` | One job per project at a time; `callbackUrl` (+ optional `callbackAuth`) or `waitMs: 600000` |
+| `homebase_cursor_job` | One job per project at a time; `callbackUrl` (+ optional `callbackAuth`) or `waitMs: 600000`; falls back to Settings default callback URL |
 | `homebase_cursor_job_status` | Rare (≥5 min) |
 | `homebase_cursor_job_list` | See active/recent |
 | `homebase_cursor_job_cancel` | Cancel queued/running job or Self-QA (`projectId`, optional `jobId`); status `cancelled` + webhook |
+| `homebase_webhook_health` | Redacted delivery health per job (sent-at, status, retries, failed); never returns auth |
+| `homebase_webhook_test_ping` | One-shot test POST to `callbackUrl` or Settings default; never returns auth |
 | `homebase_session_output` | Read-only tail of a PTY/session (`projectId`, `sessionId`, `lines` ≤ 500). Secrets (tokens, Bearer, keys, passwords) are redacted. Requires MCP auth. |
 | `homebase_presence_express` | Blob on laptop: `mood` / `form` / `color` / `energy` / `bubble` / `name` |
 | `homebase_presence_status` | Who is remoted in + guidance |

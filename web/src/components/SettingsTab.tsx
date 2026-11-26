@@ -36,7 +36,9 @@ import { EmailAlertsPanel } from './EmailAlertsPanel'
 import { GitGithubPanel } from './GitGithubPanel'
 import { UnityPanel } from './UnityPanel'
 import { VoiceCheck } from './VoiceCheck'
+import { WebhookHealthPanel } from './WebhookHealthPanel'
 import type { PresentRequest } from '../lib/chatTypes'
+import { fetchWebhookHealth } from '../lib/webhookHealthApi'
 
 type SettingsScene =
   | 'hub'
@@ -46,6 +48,7 @@ type SettingsScene =
   | 'sudo'
   | 'cursor'
   | 'callbackAuth'
+  | 'webhooks'
   | 'usage'
   | 'notifications'
   | 'email'
@@ -182,6 +185,7 @@ export function SettingsTab({
   const [callbackAuthValue, setCallbackAuthValue] = useState('')
   const [callbackAuthMsg, setCallbackAuthMsg] = useState('')
   const [callbackAuthBusy, setCallbackAuthBusy] = useState(false)
+  const [webhookHasFailures, setWebhookHasFailures] = useState(false)
   const [sudoPersistent, setSudoPersistent] = useState(false)
   const [sudoSession, setSudoSession] = useState(false)
   const [sudoTtlSec, setSudoTtlSec] = useState(0)
@@ -235,6 +239,9 @@ export function SettingsTab({
         setCallbackAuthHint(s.hint)
         setCallbackAuthEnvSet(!!s.envSet)
       })
+      .catch(() => undefined)
+    void fetchWebhookHealth(5)
+      .then((h) => setWebhookHasFailures(!!h.hasFailures))
       .catch(() => undefined)
     refreshSudo()
     void api
@@ -483,6 +490,13 @@ export function SettingsTab({
                 : 'Optional default for job webhooks',
           },
           {
+            id: 'webhooks',
+            title: 'Job webhooks',
+            hint: webhookHasFailures
+              ? 'Delivery failures — open health'
+              : 'Health · default URL · test ping',
+          },
+          {
             id: 'usage',
             title: 'AI usage',
             hint: 'Opens Usage · same view as Cursor Spending',
@@ -616,6 +630,7 @@ export function SettingsTab({
     callbackAuthConfigured,
     callbackAuthHint,
     callbackAuthEnvSet,
+    webhookHasFailures,
     mcpEnabled,
     mcpTokenCount,
     emailReady,
@@ -1263,6 +1278,21 @@ export function SettingsTab({
     )
   }
 
+
+  if (scene === 'webhooks') {
+    return (
+      <>
+        <SceneShell
+          title="Job webhooks"
+          hint="Delivery health, default wake URL, and a test ping. Auth is never shown here."
+          onBack={goHub}
+        >
+          <WebhookHealthPanel />
+        </SceneShell>
+        {modals}
+      </>
+    )
+  }
 
   if (scene === 'callbackAuth') {
     return (

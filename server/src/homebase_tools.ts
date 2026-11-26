@@ -172,6 +172,8 @@ export const MCP_TOOL_FEATURE: Record<string, McpFeatureId> = {
   homebase_cursor_job_status: "projects",
   homebase_cursor_job_list: "projects",
   homebase_cursor_job_cancel: "projects",
+  homebase_webhook_health: "projects",
+  homebase_webhook_test_ping: "projects",
   homebase_git_status: "projects",
   homebase_git_branches: "projects",
   homebase_git_log: "projects",
@@ -1374,11 +1376,13 @@ export function buildHomebaseTools(
         "One active job per projectId (rejects overlaps so development_grok is not raced). " +
         "Cursor pulls/pushes development_grok by default; returns ≤10-line summary + commit. " +
         "Preferred: callbackUrl webhook (one wake) OR waitMs=600000. " +
+        "If callbackUrl is omitted, Settings default callback URL is used when set. " +
         "Optional callbackAuth = exact Authorization header value (e.g. \"Bearer abc\"); " +
         "else Settings → Job webhook auth (encrypted vault). " +
         "HOMEBASE_CALLBACK_AUTH env is not used for delivery. " +
         "Auth is never returned in job status/list. " +
-        "If Home Base restarts mid-job, the webhook is posted with status interrupted. " +
+        "Webhooks retry with backoff up to 5 attempts; job plus encrypted pending survive restarts. " +
+        "Mid-job restart posts status interrupted; finished-but-undelivered resumes the original status. " +
         "If polling status, ≥5 minutes apart. Not for Vision.",
       parameters: {
         type: "object",
@@ -1408,7 +1412,8 @@ export function buildHomebaseTools(
           callbackUrl: {
             type: "string",
             description:
-              "Optional http(s) URL — Home Base POSTs JSON when the job finishes (preferred over polling)",
+              "Optional http(s) URL — Home Base POSTs JSON when the job finishes (preferred over polling). " +
+              "Falls back to Settings default callback URL when omitted.",
           },
           callbackAuth: {
             type: "string",
@@ -1570,6 +1575,59 @@ export function buildHomebaseTools(
             error: e instanceof Error ? e.message : String(e),
           });
         }
+      },
+    };
+    tools.homebase_webhook_health = {
+      description:
+        "Job webhook delivery health: redacted callbackUrl (host+path), sent-at, HTTP status, " +
+        "retries, last error, and a failed flag. Never returns Authorization or tokens. " +
+        "Use after homebase_cursor_job finishes or when a wake seems missing.",
+      parameters: {
+        type: "object",
+        properties: {
+          limit: {
+            type: "number",
+            description: "Max rows (default 40)",
+          },
+        },
+      },
+      execute: async (args) => {
+        const {
+          listWebhookHealth,
+          webhookHealthHasFailures,
+        } = await import("./cursor_jobs");
+        const rows = listWebhookHealth(
+          args.limit != null ? Number(args.limit) : 40,
+        );
+        return json({
+          ok: true,
+          hasFailures: webhookHealthHasFailures(),
+          rows,
+        });
+      },
+    };
+    tools.homebase_webhook_test_ping = {
+      description:
+        "POST a one-shot test ping to a callbackUrl or the Settings default callback URL. " +
+        "Uses Settings job webhook auth when configured. Returns redacted URL + status code. " +
+        "Never returns Authorization. Does not start a Cursor job.",
+      parameters: {
+        type: "object",
+        properties: {
+          callbackUrl: {
+            type: "string",
+            description:
+              "Optional http(s) URL. When omitted, uses Settings default callback URL.",
+          },
+        },
+      },
+      execute: async (args) => {
+        const { sendWebhookTestPing } = await import("./cursor_jobs");
+        const result = await sendWebhookTestPing({
+          callbackUrl:
+            args.callbackUrl != null ? String(args.callbackUrl) : undefined,
+        });
+        return json({ ok: result.ok, ...result });
       },
     };
     tools.homebase_stop_project = {

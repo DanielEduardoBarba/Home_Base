@@ -20,12 +20,21 @@ import {
 import {
   INTERRUPTED_SUMMARY,
   PENDING_MAX_AGE_MS,
+  WEBHOOK_MAX_ATTEMPTS,
   clearAllPendingCallbacks,
+  clearCursorJobsState,
   decryptPendingAuth,
+  loadCursorJobsState,
+  loadDefaultCallbackUrl,
   loadPendingCallbacks,
+  persistCursorJobsState,
   persistPendingCallback,
+  redactCallbackUrl,
   removePendingCallback,
+  updatePendingCallback,
+  webhookBackoffMs,
   type PendingCallbackRecord,
+  type WebhookAttempt,
 } from "./cursor_callbacks";
 import { loadCallbackAuthFromVault } from "./secrets_vault";
 import { redactSecrets } from "./redact";
@@ -78,6 +87,13 @@ export type CursorJob = {
   callbackUrl?: string;
   webhookDelivered?: boolean;
   webhookError?: string;
+  /** Epoch ms of the successful delivery (if any). */
+  webhookSentAt?: number;
+  /** Number of POST attempts so far. */
+  webhookAttempts?: number;
+  webhookLastStatusCode?: number;
+  webhookLastAttemptAt?: number;
+  webhookAttemptLog?: WebhookAttempt[];
   /** True when a webhook auth value was set for this job (never the value itself). */
   callbackAuthExpected?: boolean;
   /** HB-OWN-01: .git ownership probe after the job settles. */
@@ -133,26 +149,129 @@ export function _setCursorJobDepsForTests(partial: Partial<JobDeps> | null): voi
 
 /** Test-only: drop in-memory jobs between cases. */
 export function _resetCursorJobsForTests(): void {
+  for (const t of retryTimers.values()) clearTimeout(t);
+  retryTimers.clear();
   jobs.clear();
   callbackAuthByJobId.clear();
   clearAllPendingCallbacks();
+  clearCursorJobsState();
+  jobsHydrated = false;
 }
 
-/** Drop in-memory state only (leave pending file) — simulates a process restart. */
+/** Drop in-memory state only (leave pending + job files) — simulates a process restart. */
 export function _forgetInMemoryJobsForTests(): void {
+  for (const t of retryTimers.values()) clearTimeout(t);
+  retryTimers.clear();
   jobs.clear();
   callbackAuthByJobId.clear();
+  jobsHydrated = false;
 }
 
 const jobs = new Map<string, CursorJob>();
-/** Webhook Authorization header values — memory only; never on CursorJob / disk. */
+/** Webhook Authorization header values — memory only; never on CursorJob / disk JSON. */
 const callbackAuthByJobId = new Map<string, string>();
+const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+let jobsHydrated = false;
 const MAX_JOBS = 40;
 const DEFAULT_BRANCH = "development_grok";
 const MAX_SUMMARY_LINES = 10;
 const MAX_SUMMARY_CHARS = 1200;
 const KICKOFF_WAIT_MS = 15_000;
 const IDLE_POLL_MS = 200;
+
+const TERMINAL_STATUSES: ReadonlySet<CursorJobStatus> = new Set([
+  "done",
+  "error",
+  "timeout",
+  "interrupted",
+  "cancelled",
+]);
+
+function isTerminalStatus(status: unknown): status is CursorJobStatus {
+  return (
+    typeof status === "string" &&
+    TERMINAL_STATUSES.has(status as CursorJobStatus)
+  );
+}
+
+function persistJobsNow(): void {
+  try {
+    const ordered = [...jobs.values()].sort((a, b) => b.startedAt - a.startedAt);
+    persistCursorJobsState(
+      ordered.slice(0, MAX_JOBS).map((j) => ({ ...j }) as Record<string, unknown>),
+    );
+  } catch (e) {
+    appendTrace(
+      "warn",
+      `cursor jobs persist failed: ${e instanceof Error ? e.message : String(e)}`,
+      "cursor-job",
+    );
+  }
+}
+
+function hydrateJobsFromDisk(): void {
+  if (jobsHydrated) return;
+  jobsHydrated = true;
+  try {
+    for (const raw of loadCursorJobsState()) {
+      const id = String(raw.id || "").trim();
+      if (!id || jobs.has(id)) continue;
+      const status = String(raw.status || "error") as CursorJobStatus;
+      const job: CursorJob = {
+        id,
+        projectId: String(raw.projectId || ""),
+        chatId: String(raw.chatId || ""),
+        status,
+        prompt: String(raw.prompt || ""),
+        model: String(raw.model || ""),
+        mode: String(raw.mode || ""),
+        cwd: String(raw.cwd || ""),
+        branch: String(raw.branch || ""),
+        summary: typeof raw.summary === "string" ? raw.summary : undefined,
+        commit: (raw.commit as CursorJobCommit | null | undefined) ?? undefined,
+        error: typeof raw.error === "string" ? raw.error : undefined,
+        startedAt: Number(raw.startedAt) || 0,
+        finishedAt:
+          raw.finishedAt != null ? Number(raw.finishedAt) : undefined,
+        source: typeof raw.source === "string" ? raw.source : undefined,
+        callbackUrl:
+          typeof raw.callbackUrl === "string" ? raw.callbackUrl : undefined,
+        webhookDelivered:
+          raw.webhookDelivered != null
+            ? Boolean(raw.webhookDelivered)
+            : undefined,
+        webhookError:
+          typeof raw.webhookError === "string" ? raw.webhookError : undefined,
+        webhookSentAt:
+          raw.webhookSentAt != null ? Number(raw.webhookSentAt) : undefined,
+        webhookAttempts:
+          raw.webhookAttempts != null
+            ? Number(raw.webhookAttempts)
+            : undefined,
+        webhookLastStatusCode:
+          raw.webhookLastStatusCode != null
+            ? Number(raw.webhookLastStatusCode)
+            : undefined,
+        webhookLastAttemptAt:
+          raw.webhookLastAttemptAt != null
+            ? Number(raw.webhookLastAttemptAt)
+            : undefined,
+        webhookAttemptLog: Array.isArray(raw.webhookAttemptLog)
+          ? (raw.webhookAttemptLog as WebhookAttempt[])
+          : undefined,
+        callbackAuthExpected: Boolean(raw.callbackAuthExpected),
+        ownershipQa: raw.ownershipQa as CursorJob["ownershipQa"],
+      };
+      jobs.set(id, job);
+    }
+  } catch (e) {
+    appendTrace(
+      "warn",
+      `cursor jobs hydrate failed: ${e instanceof Error ? e.message : String(e)}`,
+      "cursor-job",
+    );
+  }
+}
 
 /**
  * Resolve webhook Authorization header value.
@@ -201,25 +320,39 @@ function forgetCallbackAuth(jobId: string): void {
   callbackAuthByJobId.delete(jobId);
 }
 
+function clearRetryTimer(jobId: string): void {
+  const t = retryTimers.get(jobId);
+  if (t) clearTimeout(t);
+  retryTimers.delete(jobId);
+}
+
 function trimJobs(): void {
   if (jobs.size <= MAX_JOBS) return;
   const ordered = [...jobs.values()].sort((a, b) => a.startedAt - b.startedAt);
   while (jobs.size > MAX_JOBS && ordered.length) {
     const old = ordered.shift();
-    if (
-      old &&
-      (old.status === "done" ||
-        old.status === "error" ||
-        old.status === "timeout" ||
-        old.status === "interrupted" ||
-        old.status === "cancelled")
-    ) {
-      forgetCallbackAuth(old.id);
-      jobs.delete(old.id);
-    } else {
-      break;
-    }
+    if (!old) break;
+    if (!isTerminalStatus(old.status)) break;
+    // Prefer dropping successful/no-webhook terminals first; failed health last.
+    const keepFailedHealth =
+      old.callbackUrl &&
+      old.webhookDelivered === false &&
+      (old.webhookAttempts || 0) >= WEBHOOK_MAX_ATTEMPTS &&
+      ordered.some(
+        (j) =>
+          isTerminalStatus(j.status) &&
+          !(
+            j.callbackUrl &&
+            j.webhookDelivered === false &&
+            (j.webhookAttempts || 0) >= WEBHOOK_MAX_ATTEMPTS
+          ),
+      );
+    if (keepFailedHealth) continue;
+    forgetCallbackAuth(old.id);
+    clearRetryTimer(old.id);
+    jobs.delete(old.id);
   }
+  persistJobsNow();
 }
 
 export function gitTip(cwd: string): CursorJobCommit | null {
@@ -332,10 +465,74 @@ function normalizeCallbackUrl(raw: unknown): string | undefined {
   }
 }
 
+function resolveJobCallbackUrl(param?: string | null): string | undefined {
+  const fromParam = String(param ?? "").trim();
+  if (fromParam) return normalizeCallbackUrl(fromParam);
+  const fromDefault = loadDefaultCallbackUrl();
+  if (!fromDefault) return undefined;
+  return normalizeCallbackUrl(fromDefault);
+}
+
+function syncPendingFromJob(job: CursorJob, auth?: string): void {
+  if (!job.callbackUrl) return;
+  try {
+    persistPendingCallback({
+      jobId: job.id,
+      projectId: job.projectId,
+      callbackUrl: job.callbackUrl,
+      startedAt: job.startedAt,
+      auth,
+      jobStatus: job.status,
+      finishedAt: job.finishedAt,
+      summary: job.summary,
+      error: job.error,
+      branch: job.branch,
+      chatId: job.chatId,
+    });
+  } catch (e) {
+    appendTrace(
+      "error",
+      `cursor job ${job.id} failed to persist pending callback: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+      "cursor-job",
+    );
+  }
+}
+
+function scheduleWebhookRetry(jobId: string, attemptJustFinished: number): void {
+  clearRetryTimer(jobId);
+  if (attemptJustFinished >= WEBHOOK_MAX_ATTEMPTS) return;
+  const delay = webhookBackoffMs(attemptJustFinished - 1);
+  const timer = setTimeout(() => {
+    retryTimers.delete(jobId);
+    const job = jobs.get(jobId);
+    if (!job?.callbackUrl) return;
+    if (job.webhookDelivered) return;
+    void deliverWebhook(job);
+  }, delay);
+  retryTimers.set(jobId, timer);
+}
+
+/**
+ * POST the job webhook once. Retries with backoff up to WEBHOOK_MAX_ATTEMPTS.
+ * Pending + auth are kept until success or final failure — never logged.
+ */
 async function deliverWebhook(job: CursorJob): Promise<void> {
   const url = job.callbackUrl;
   if (!url) return;
+  if (job.webhookDelivered) {
+    forgetCallbackAuth(job.id);
+    removePendingCallback(job.id);
+    return;
+  }
   const auth = callbackAuthByJobId.get(job.id);
+  const attempt = (job.webhookAttempts || 0) + 1;
+  const at = Date.now();
+  let ok = false;
+  let statusCode: number | undefined;
+  let errMsg: string | undefined;
+
   try {
     const headers: Record<string, string> = {
       "content-type": "application/json",
@@ -365,31 +562,81 @@ async function deliverWebhook(job: CursorJob): Promise<void> {
       }),
       signal: AbortSignal.timeout(15_000),
     });
+    statusCode = res.status;
     if (!res.ok) {
-      job.webhookDelivered = false;
-      job.webhookError = redactCallbackSecrets(`HTTP ${res.status}`, auth);
+      errMsg = redactCallbackSecrets(`HTTP ${res.status}`, auth);
     } else {
-      job.webhookDelivered = true;
-      job.webhookError = undefined;
+      ok = true;
     }
   } catch (e) {
-    job.webhookDelivered = false;
     const raw = e instanceof Error ? e.message : String(e);
-    job.webhookError = redactCallbackSecrets(raw, auth);
+    errMsg = redactCallbackSecrets(raw, auth);
+  }
+
+  const entry: WebhookAttempt = {
+    at,
+    attempt,
+    ok,
+    statusCode,
+    error: errMsg,
+  };
+  const log = [...(job.webhookAttemptLog || []), entry].slice(-WEBHOOK_MAX_ATTEMPTS);
+  job.webhookAttempts = attempt;
+  job.webhookLastAttemptAt = at;
+  job.webhookLastStatusCode = statusCode;
+  job.webhookAttemptLog = log;
+  if (ok) {
+    job.webhookDelivered = true;
+    job.webhookError = undefined;
+    job.webhookSentAt = at;
+  } else {
+    job.webhookDelivered = false;
+    job.webhookError = errMsg;
   }
   jobs.set(job.id, job);
+  persistJobsNow();
+
+  const redactedUrl = redactCallbackUrl(url) || url;
   const logMsg = redactCallbackSecrets(
-    `cursor job ${job.id} webhook ${job.webhookDelivered ? "ok" : job.webhookError}`,
+    `cursor job ${job.id} webhook attempt=${attempt}/${WEBHOOK_MAX_ATTEMPTS} ` +
+      `url=${redactedUrl} ` +
+      (ok
+        ? `ok status=${statusCode ?? 200}`
+        : `fail status=${statusCode ?? "n/a"} error=${errMsg || "unknown"}`),
     auth,
   );
-  appendTrace(
-    job.webhookDelivered ? "info" : "warn",
-    logMsg,
-    "cursor-job",
-  );
-  // Auth is only needed for delivery; drop after attempt so status/list stay clean.
-  forgetCallbackAuth(job.id);
-  removePendingCallback(job.id);
+  appendTrace(ok ? "info" : "warn", logMsg, "cursor-job");
+
+  updatePendingCallback(job.id, {
+    jobStatus: job.status,
+    finishedAt: job.finishedAt,
+    summary: job.summary,
+    error: job.error,
+    attempts: attempt,
+    lastAttemptAt: at,
+    lastStatusCode: statusCode,
+    lastError: errMsg,
+    webhookDelivered: job.webhookDelivered,
+    webhookSentAt: job.webhookSentAt,
+    attemptLog: log,
+  });
+
+  if (ok || attempt >= WEBHOOK_MAX_ATTEMPTS) {
+    clearRetryTimer(job.id);
+    forgetCallbackAuth(job.id);
+    removePendingCallback(job.id);
+    if (!ok) {
+      appendTrace(
+        "warn",
+        `cursor job ${job.id} webhook gave up after ${attempt} attempts`,
+        "cursor-job",
+      );
+    }
+    return;
+  }
+
+  // Keep auth + pending for retries.
+  scheduleWebhookRetry(job.id, attempt);
 }
 
 async function awaitChatIdle(
@@ -417,20 +664,12 @@ async function awaitChatIdle(
   return chatRunning(projectId, chatId) ? "timeout" : "done";
 }
 
-const TERMINAL_STATUSES: ReadonlySet<CursorJobStatus> = new Set([
-  "done",
-  "error",
-  "timeout",
-  "interrupted",
-  "cancelled",
-]);
-
 async function finishJob(
   job: CursorJob,
   status: CursorJobStatus,
   error?: string,
 ): Promise<CursorJob> {
-  if (job.finishedAt && TERMINAL_STATUSES.has(job.status)) {
+  if (job.finishedAt && isTerminalStatus(job.status)) {
     return publicJob(job);
   }
   job.status = status;
@@ -465,6 +704,10 @@ async function finishJob(
   }
   job.commit = gitTip(job.cwd);
   jobs.set(job.id, job);
+  persistJobsNow();
+  if (job.callbackUrl) {
+    syncPendingFromJob(job, callbackAuthByJobId.get(job.id));
+  }
   await deliverWebhook(job);
   return publicJob(job);
 }
@@ -503,7 +746,7 @@ async function finishIdleJob(job: CursorJob): Promise<CursorJob> {
  */
 async function watchUntilIdle(job: CursorJob): Promise<CursorJob> {
   while (true) {
-    if (TERMINAL_STATUSES.has(job.status)) return publicJob(job);
+    if (isTerminalStatus(job.status)) return publicJob(job);
     if (!chatRunning(job.projectId, job.chatId)) {
       return finishIdleJob(job);
     }
@@ -638,7 +881,7 @@ export async function startCursorJob(opts: {
   const mode = String(opts.mode || "agent").trim() || "agent";
   const branch =
     String(opts.branch || DEFAULT_BRANCH).trim() || DEFAULT_BRANCH;
-  const callbackUrl = normalizeCallbackUrl(opts.callbackUrl);
+  const callbackUrl = resolveJobCallbackUrl(opts.callbackUrl);
   const callbackAuth = resolveCallbackAuth(opts.callbackAuth);
   const title =
     String(opts.title || "").trim() ||
@@ -646,6 +889,7 @@ export async function startCursorJob(opts: {
 
   await deps.validateModel(model);
 
+  hydrateJobsFromDisk();
   const tab = deps.createChat(projectId, { title, cwd });
   const job: CursorJob = {
     id: randomBytes(6).toString("hex"),
@@ -665,24 +909,9 @@ export async function startCursorJob(opts: {
   if (callbackUrl) {
     job.callbackAuthExpected = Boolean(callbackAuth);
     if (callbackAuth) callbackAuthByJobId.set(job.id, callbackAuth);
-    try {
-      persistPendingCallback({
-        jobId: job.id,
-        projectId,
-        callbackUrl,
-        startedAt: job.startedAt,
-        auth: callbackAuth,
-      });
-    } catch (e) {
-      appendTrace(
-        "error",
-        `cursor job ${job.id} failed to persist pending callback: ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-        "cursor-job",
-      );
-    }
+    syncPendingFromJob(job, callbackAuth);
   }
+  persistJobsNow();
   trimJobs();
 
   appendTrace(
@@ -733,6 +962,10 @@ export async function startCursorJob(opts: {
 
   job.status = "running";
   jobs.set(job.id, job);
+  persistJobsNow();
+  if (job.callbackUrl) {
+    syncPendingFromJob(job, callbackAuthByJobId.get(job.id));
+  }
 
   const waitMs = Math.min(
     45 * 60_000,
@@ -768,7 +1001,7 @@ export async function cancelCursorJob(opts: {
   if (job.projectId !== projectId) {
     throw new Error(`job ${jobId} does not belong to project ${projectId}`);
   }
-  if (TERMINAL_STATUSES.has(job.status)) {
+  if (isTerminalStatus(job.status)) {
     return publicJob(job);
   }
   if (job.chatId) {
@@ -804,6 +1037,7 @@ export async function cancelCursorJobByChat(
 }
 
 export function getCursorJob(id: string): CursorJob | null {
+  hydrateJobsFromDisk();
   const job = jobs.get(String(id || "").trim());
   if (!job) return null;
   maybeFinishIfIdle(job);
@@ -811,6 +1045,7 @@ export function getCursorJob(id: string): CursorJob | null {
 }
 
 export function listCursorJobs(limit = 20): CursorJob[] {
+  hydrateJobsFromDisk();
   return [...jobs.values()]
     .sort((a, b) => b.startedAt - a.startedAt)
     .slice(0, Math.min(50, Math.max(1, limit)))
@@ -825,40 +1060,190 @@ function synthesizeRecoveredJob(
   status: CursorJobStatus,
   extra?: Partial<CursorJob>,
 ): CursorJob {
+  const existing = jobs.get(rec.jobId);
   return {
     id: rec.jobId,
-    projectId: rec.projectId,
-    chatId: "",
+    projectId: rec.projectId || existing?.projectId || "",
+    chatId: rec.chatId || existing?.chatId || "",
     status,
-    prompt: "",
-    model: "",
-    mode: "",
-    cwd: "",
-    branch: "",
-    summary: INTERRUPTED_SUMMARY,
-    startedAt: rec.startedAt,
-    finishedAt: Date.now(),
-    source: "system",
+    prompt: existing?.prompt || "",
+    model: existing?.model || "",
+    mode: existing?.mode || "",
+    cwd: existing?.cwd || "",
+    branch: rec.branch || existing?.branch || "",
+    summary:
+      status === "interrupted"
+        ? INTERRUPTED_SUMMARY
+        : rec.summary || existing?.summary || INTERRUPTED_SUMMARY,
+    error: rec.error || existing?.error,
+    commit: existing?.commit,
+    startedAt: rec.startedAt || existing?.startedAt || Date.now(),
+    finishedAt: rec.finishedAt || existing?.finishedAt || Date.now(),
+    source: existing?.source || "system",
     callbackUrl: rec.callbackUrl,
-    callbackAuthExpected: rec.hasAuth,
+    callbackAuthExpected: rec.hasAuth || Boolean(existing?.callbackAuthExpected),
+    webhookDelivered: existing?.webhookDelivered,
+    webhookError: existing?.webhookError,
+    webhookSentAt: existing?.webhookSentAt,
+    webhookAttempts: rec.attempts || existing?.webhookAttempts,
+    webhookLastStatusCode:
+      rec.lastStatusCode ?? existing?.webhookLastStatusCode,
+    webhookLastAttemptAt: rec.lastAttemptAt ?? existing?.webhookLastAttemptAt,
+    webhookAttemptLog: rec.attemptLog || existing?.webhookAttemptLog,
     ...extra,
   };
 }
 
+export type WebhookHealthRow = {
+  jobId: string;
+  projectId: string;
+  jobStatus: string;
+  callbackUrlRedacted?: string;
+  callbackAuthExpected: boolean;
+  webhookDelivered?: boolean;
+  webhookSentAt?: number;
+  webhookAttempts?: number;
+  webhookLastStatusCode?: number;
+  webhookLastAttemptAt?: number;
+  webhookError?: string;
+  /** True when delivery failed after all retries (or lost/decrypt). */
+  failed: boolean;
+  pending: boolean;
+  startedAt: number;
+  finishedAt?: number;
+};
+
+/** Public health view — URLs redacted; never includes auth. */
+export function listWebhookHealth(limit = 40): WebhookHealthRow[] {
+  hydrateJobsFromDisk();
+  const pendingIds = new Set(loadPendingCallbacks().map((r) => r.jobId));
+  return [...jobs.values()]
+    .filter((j) => j.callbackUrl)
+    .sort((a, b) => b.startedAt - a.startedAt)
+    .slice(0, Math.min(80, Math.max(1, limit)))
+    .map((j) => {
+      const attempts = j.webhookAttempts || 0;
+      const failed =
+        j.webhookDelivered === false &&
+        (attempts >= WEBHOOK_MAX_ATTEMPTS ||
+          Boolean(j.webhookError && !pendingIds.has(j.id)));
+      return {
+        jobId: j.id,
+        projectId: j.projectId,
+        jobStatus: j.status,
+        callbackUrlRedacted: redactCallbackUrl(j.callbackUrl),
+        callbackAuthExpected: Boolean(j.callbackAuthExpected),
+        webhookDelivered: j.webhookDelivered,
+        webhookSentAt: j.webhookSentAt,
+        webhookAttempts: j.webhookAttempts,
+        webhookLastStatusCode: j.webhookLastStatusCode,
+        webhookLastAttemptAt: j.webhookLastAttemptAt,
+        webhookError: j.webhookError
+          ? redactCallbackSecrets(j.webhookError)
+          : undefined,
+        failed,
+        pending: pendingIds.has(j.id),
+        startedAt: j.startedAt,
+        finishedAt: j.finishedAt,
+      };
+    });
+}
+
+export function webhookHealthHasFailures(): boolean {
+  return listWebhookHealth(80).some((r) => r.failed);
+}
+
 /**
- * On Home Base startup: leftover pending callbacks from a mid-job restart
- * are delivered with status `interrupted` and Authorization intact, then deleted.
- * Records older than 24h are expired and logged (not delivered).
- * If auth was set but cannot be decrypted, the webhook is not sent unauthenticated
- * and a lost-callback entry is listed in homebase_cursor_job_list.
+ * Send a one-shot test ping to the given URL (or Settings default).
+ * Uses vault callback auth when configured. Never returns the auth value.
+ */
+export async function sendWebhookTestPing(opts?: {
+  callbackUrl?: string;
+}): Promise<{
+  ok: boolean;
+  urlRedacted?: string;
+  statusCode?: number;
+  error?: string;
+  at: number;
+}> {
+  const url =
+    resolveJobCallbackUrl(opts?.callbackUrl) ||
+    normalizeCallbackUrl(loadDefaultCallbackUrl());
+  if (!url) {
+    return {
+      ok: false,
+      error: "No callbackUrl and no Settings default callback URL",
+      at: Date.now(),
+    };
+  }
+  const auth = resolveCallbackAuth(undefined);
+  const at = Date.now();
+  try {
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      "user-agent": "homebase-webhook-test/1",
+    };
+    if (auth) headers.authorization = auth;
+    const res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        type: "homebase.webhook_test_ping",
+        at,
+        message: "Home Base webhook test ping",
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const ok = res.ok;
+    const err = ok
+      ? undefined
+      : redactCallbackSecrets(`HTTP ${res.status}`, auth);
+    appendTrace(
+      ok ? "info" : "warn",
+      `webhook test ping url=${redactCallbackUrl(url)} status=${res.status} ok=${ok}`,
+      "cursor-job",
+    );
+    return {
+      ok,
+      urlRedacted: redactCallbackUrl(url),
+      statusCode: res.status,
+      error: err,
+      at,
+    };
+  } catch (e) {
+    const raw = e instanceof Error ? e.message : String(e);
+    const error = redactCallbackSecrets(raw, auth);
+    appendTrace(
+      "warn",
+      `webhook test ping url=${redactCallbackUrl(url)} fail error=${error}`,
+      "cursor-job",
+    );
+    return {
+      ok: false,
+      urlRedacted: redactCallbackUrl(url),
+      error,
+      at,
+    };
+  }
+}
+
+/**
+ * On Home Base startup: hydrate persisted jobs, then deliver leftover pending
+ * callbacks. Still-running jobs → status `interrupted`. Already-finished jobs
+ * with undelivered webhooks → resume delivery with the original terminal status
+ * (never re-labeled interrupted). Retries use the same backoff as live delivery.
+ * Records older than 24h are expired. Decrypt failures → lost-callback entry.
  */
 export async function recoverInterruptedCallbacks(): Promise<{
   recovered: number;
+  resumed: number;
   expired: number;
   lost: number;
 }> {
+  hydrateJobsFromDisk();
   const pending = loadPendingCallbacks();
   let recovered = 0;
+  let resumed = 0;
   let expired = 0;
   let lost = 0;
   const now = Date.now();
@@ -887,17 +1272,45 @@ export async function recoverInterruptedCallbacks(): Promise<{
         callbackAuthExpected: true,
       });
       jobs.set(lostJob.id, lostJob);
+      persistJobsNow();
       removePendingCallback(rec.jobId);
       lost++;
       continue;
     }
-    const job = synthesizeRecoveredJob(rec, "interrupted");
+
+    const known = jobs.get(rec.jobId);
+    const priorStatus = String(rec.jobStatus || known?.status || "");
+    const alreadyTerminal = isTerminalStatus(priorStatus);
+
+    let job: CursorJob;
+    if (alreadyTerminal) {
+      // Resume undelivered finished job — do NOT re-label as interrupted.
+      job = synthesizeRecoveredJob(rec, priorStatus as CursorJobStatus, {
+        summary: rec.summary || known?.summary,
+        finishedAt: rec.finishedAt || known?.finishedAt || Date.now(),
+        webhookDelivered: false,
+      });
+      resumed++;
+    } else {
+      job = synthesizeRecoveredJob(rec, "interrupted");
+      recovered++;
+    }
+
     if (auth) callbackAuthByJobId.set(job.id, auth);
+    // Carry prior attempt count so retries continue toward WEBHOOK_MAX_ATTEMPTS.
+    if (rec.attempts > 0) {
+      job.webhookAttempts = rec.attempts;
+      job.webhookAttemptLog = rec.attemptLog;
+      job.webhookLastStatusCode = rec.lastStatusCode;
+      job.webhookLastAttemptAt = rec.lastAttemptAt;
+      job.webhookError = rec.lastError;
+    }
     jobs.set(job.id, job);
+    persistJobsNow();
+    syncPendingFromJob(job, auth);
     await deliverWebhook(job);
-    recovered++;
   }
-  return { recovered, expired, lost };
+  return { recovered, resumed, expired, lost };
 }
 
-export { INTERRUPTED_SUMMARY };
+export { INTERRUPTED_SUMMARY, WEBHOOK_MAX_ATTEMPTS, redactCallbackUrl };

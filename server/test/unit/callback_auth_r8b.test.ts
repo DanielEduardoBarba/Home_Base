@@ -423,3 +423,225 @@ describeIso("1.20.3b callback auth (R8b)", () => {
     }
   });
 });
+
+function mockFetchStatus(
+  handler: (n: number) => { status: number },
+): {
+  calls: Array<{ url: string; headers: Record<string, string>; body: string }>;
+  restore: () => void;
+} {
+  const calls: Array<{
+    url: string;
+    headers: Record<string, string>;
+    body: string;
+  }> = [];
+  let n = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    n += 1;
+    const url = String(input);
+    const headers: Record<string, string> = {};
+    const raw = init?.headers;
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      for (const [k, v] of Object.entries(raw as Record<string, string>)) {
+        headers[k.toLowerCase()] = String(v);
+      }
+    }
+    calls.push({ url, headers, body: String(init?.body || "") });
+    const { status } = handler(n);
+    return new Response(status >= 200 && status < 300 ? "ok" : "err", {
+      status,
+    });
+  }) as typeof fetch;
+  return { calls, restore: () => (globalThis.fetch = original) };
+}
+
+describeIso("webhook persistence + retry", () => {
+  afterEach(() => {
+    jobs._resetCursorJobsForTests();
+    jobs._setCursorJobDepsForTests(null);
+    callbacks._setWebhookBackoffForTests(null);
+    callbacks.clearDefaultCallbackUrl();
+    vault._setCallbackAuthForTests(undefined);
+    delete process.env.HOMEBASE_CALLBACK_AUTH;
+  });
+
+  test("redactCallbackUrl strips userinfo query and hash", () => {
+    expect(
+      callbacks.redactCallbackUrl(
+        "https://user:pass@hooks.example/wake?token=abc#frag",
+      ),
+    ).toBe("https://hooks.example/wake");
+  });
+
+  test("retries with backoff then succeeds; auth never in logs or public JSON", async () => {
+    const h = makeHarness();
+    callbacks._setWebhookBackoffForTests([5, 5, 5, 5, 5]);
+    const { calls, restore } = mockFetchStatus((n) => ({
+      status: n < 3 ? 503 : 200,
+    }));
+    try {
+      const job = await jobs.startCursorJob({
+        projectId: "demo",
+        prompt: "retry webhook",
+        waitMs: 0,
+        callbackUrl: "http://127.0.0.1:9/retry?secret=SHOULD_STRIP",
+        callbackAuth: DUMMY,
+      });
+      expect(JSON.stringify(job)).not.toContain(DUMMY_NEEDLE);
+      h.release(job.chatId);
+      await waitUntil(
+        () => jobs.getCursorJob(job.id)?.webhookDelivered === true,
+        8_000,
+        "webhook delivered after retries",
+      );
+      expect(calls.length).toBe(3);
+      expect(calls.every((c) => c.headers.authorization === DUMMY)).toBe(true);
+      const health = jobs.listWebhookHealth(10).find((r) => r.jobId === job.id);
+      expect(health?.callbackUrlRedacted).toBe("http://127.0.0.1:9/retry");
+      expect(health?.failed).toBe(false);
+      expect(JSON.stringify(health)).not.toContain(DUMMY_NEEDLE);
+      const traces = listTrace(400)
+        .items.map((t) => t.message)
+        .join("\n");
+      expect(traces).toMatch(/attempt=1\/5/);
+      expect(traces).not.toContain(DUMMY_NEEDLE);
+      expect(traces).not.toContain("SHOULD_STRIP");
+      expect(existsSync(callbacks.PENDING_CALLBACKS_PATH)).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
+  test("resumes finished undelivered webhook after restart without re-labeling interrupted", async () => {
+    callbacks._setWebhookBackoffForTests([5, 5, 5]);
+    const { calls, restore } = mockFetchStatus(() => ({ status: 200 }));
+    try {
+      callbacks.persistPendingCallback({
+        jobId: "job-resume-1",
+        projectId: "demo",
+        callbackUrl: "http://127.0.0.1:9/resume",
+        startedAt: Date.now() - 60_000,
+        auth: DUMMY,
+        jobStatus: "done",
+        finishedAt: Date.now() - 30_000,
+        summary: "already finished summary",
+      });
+      callbacks.updatePendingCallback("job-resume-1", {
+        attempts: 1,
+        lastStatusCode: 502,
+        lastError: "HTTP 502",
+        webhookDelivered: false,
+      });
+      callbacks.persistCursorJobsState([
+        {
+          id: "job-resume-1",
+          projectId: "demo",
+          chatId: "c1",
+          status: "done",
+          prompt: "x",
+          model: "auto",
+          mode: "agent",
+          cwd: join(root, "demo"),
+          branch: "development_grok",
+          summary: "already finished summary",
+          startedAt: Date.now() - 60_000,
+          finishedAt: Date.now() - 30_000,
+          callbackUrl: "http://127.0.0.1:9/resume",
+          callbackAuthExpected: true,
+          webhookDelivered: false,
+          webhookAttempts: 1,
+        },
+      ]);
+      jobs._forgetInMemoryJobsForTests();
+      const stats = await jobs.recoverInterruptedCallbacks();
+      expect(stats.resumed).toBe(1);
+      expect(stats.recovered).toBe(0);
+      await waitUntil(() => calls.length >= 1, 4_000, "resumed webhook");
+      const payload = JSON.parse(calls[0]!.body) as {
+        job?: { status?: string; summary?: string };
+      };
+      expect(payload.job?.status).toBe("done");
+      expect(payload.job?.summary).toBe("already finished summary");
+      expect(calls[0]?.headers.authorization).toBe(DUMMY);
+      const row = jobs.listCursorJobs(10).find((j) => j.id === "job-resume-1");
+      expect(row?.status).toBe("done");
+      expect(row?.webhookDelivered).toBe(true);
+      expect(JSON.stringify(row)).not.toContain(DUMMY_NEEDLE);
+    } finally {
+      restore();
+    }
+  });
+
+  test("final failure keeps health failed badge and drops pending", async () => {
+    const h = makeHarness();
+    callbacks._setWebhookBackoffForTests([1, 1, 1, 1, 1]);
+    const { restore } = mockFetchStatus(() => ({ status: 500 }));
+    try {
+      const job = await jobs.startCursorJob({
+        projectId: "demo",
+        prompt: "always fail webhook",
+        waitMs: 0,
+        callbackUrl: "http://127.0.0.1:9/fail",
+        callbackAuth: DUMMY,
+      });
+      h.release(job.chatId);
+      await waitUntil(
+        () =>
+          (jobs.getCursorJob(job.id)?.webhookAttempts || 0) >=
+          callbacks.WEBHOOK_MAX_ATTEMPTS,
+        8_000,
+        "all attempts exhausted",
+      );
+      expect(existsSync(callbacks.PENDING_CALLBACKS_PATH)).toBe(false);
+      const health = jobs.listWebhookHealth(10).find((r) => r.jobId === job.id);
+      expect(health?.failed).toBe(true);
+      expect(health?.webhookAttempts).toBe(callbacks.WEBHOOK_MAX_ATTEMPTS);
+      expect(JSON.stringify(health)).not.toContain(DUMMY_NEEDLE);
+    } finally {
+      restore();
+    }
+  });
+
+  test("default callback URL used when job omits callbackUrl", async () => {
+    const h = makeHarness();
+    callbacks.setDefaultCallbackUrl("http://127.0.0.1:9/default-wake");
+    const { calls, restore } = mockFetchStatus(() => ({ status: 200 }));
+    try {
+      const job = await jobs.startCursorJob({
+        projectId: "demo",
+        prompt: "use default url",
+        waitMs: 0,
+      });
+      expect(job.callbackUrl).toBe("http://127.0.0.1:9/default-wake");
+      h.release(job.chatId);
+      await waitUntil(
+        () => jobs.getCursorJob(job.id)?.webhookDelivered === true,
+        4_000,
+        "default url webhook",
+      );
+      expect(calls[0]?.url).toBe("http://127.0.0.1:9/default-wake");
+    } finally {
+      restore();
+    }
+  });
+
+  test("test ping never returns auth and redacts url", async () => {
+    const { restore } = mockFetchStatus(() => ({ status: 204 }));
+    try {
+      const res = await jobs.sendWebhookTestPing({
+        callbackUrl: "http://127.0.0.1:9/ping?tok=secret",
+      });
+      expect(res.ok).toBe(true);
+      expect(res.statusCode).toBe(204);
+      expect(res.urlRedacted).toBe("http://127.0.0.1:9/ping");
+      expect(JSON.stringify(res)).not.toMatch(/Bearer|tok=secret/i);
+    } finally {
+      restore();
+    }
+  });
+});
+
